@@ -11,10 +11,12 @@ import {
   checkStateOf,
   filesViewState,
   fileViewState,
+  unitsViewState,
   type CheckState,
   type ReviewFileRow,
   type ReviewUnitRow,
 } from "../../derive/reviewFiles";
+import type { GraphIndex } from "../../graph/graphIndex";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionContext";
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
@@ -38,7 +40,13 @@ interface UnitTarget {
   unit: ReviewUnitRow;
 }
 
-type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget;
+interface UnitGroupTarget {
+  kind: "unit-group";
+  label: string;
+  units: readonly ReviewUnitRow[];
+}
+
+type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget | UnitGroupTarget;
 
 interface CachedFolderTarget {
   memberIds: readonly string[] | undefined;
@@ -47,8 +55,10 @@ interface CachedFolderTarget {
 }
 
 interface ReviewTargetIndex {
+  graphIndex: GraphIndex;
   filesByModuleId: ReadonlyMap<string, FileTarget>;
   unitsByNodeId: ReadonlyMap<string, UnitTarget>;
+  unitGroupsByNodeId: ReadonlyMap<string, UnitGroupTarget>;
   foldersByNodeId: Map<string, CachedFolderTarget>;
 }
 
@@ -94,9 +104,10 @@ function EnabledReviewNodeViewedChrome({
     nodeId,
     state.minimalRollups[nodeId],
     state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
+    state.index,
   ));
   const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
-  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick } = useBlueprintActions();
+  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick, toggleReviewUnitsViewed } = useBlueprintActions();
   if (target === null || state === null) {
     return children;
   }
@@ -133,6 +144,8 @@ function EnabledReviewNodeViewedChrome({
               toggleReviewFilesViewed(target.files.map((file) => file.path));
             } else if (target.kind === "file") {
               toggleReviewFileViewed(target.file.path);
+            } else if (target.kind === "unit-group") {
+              toggleReviewUnitsViewed(target.units.map((unit) => unit.nodeId));
             } else {
               toggleReviewUnitTick(target.unit.nodeId);
             }
@@ -194,13 +207,14 @@ function targetFor(
   nodeId: string,
   folderMemberIds: readonly string[] | undefined,
   folderLabel: string,
+  graphIndex: GraphIndex,
 ): ReviewViewedTarget | null {
-  const index = reviewTargetIndex(files);
+  const index = reviewTargetIndex(files, graphIndex);
   if (scope === "file") {
     return index.filesByModuleId.get(nodeId) ?? null;
   }
   if (scope === "unit") {
-    return index.unitsByNodeId.get(nodeId) ?? null;
+    return index.unitGroupsByNodeId.get(nodeId) ?? index.unitsByNodeId.get(nodeId) ?? null;
   }
   return folderTarget(index, nodeId, folderMemberIds, folderLabel);
 }
@@ -226,22 +240,44 @@ function folderTarget(
   return target;
 }
 
-function reviewTargetIndex(files: readonly ReviewFileRow[]): ReviewTargetIndex {
+function reviewTargetIndex(files: readonly ReviewFileRow[], graphIndex: GraphIndex): ReviewTargetIndex {
   const cached = TARGET_INDEX_CACHE.get(files);
-  if (cached !== undefined) {
+  if (cached !== undefined && cached.graphIndex === graphIndex) {
     return cached;
   }
   const filesByModuleId = new Map<string, FileTarget>();
   const unitsByNodeId = new Map<string, UnitTarget>();
+  const groupedUnits = new Map<string, ReviewUnitRow[]>();
   for (const file of files) {
     if (file.moduleId !== null) {
       filesByModuleId.set(file.moduleId, { kind: "file", file });
     }
     for (const unit of file.units) {
       unitsByNodeId.set(unit.nodeId, { kind: "unit", file, unit });
+      for (const ancestor of graphIndex.ancestorsOf(unit.nodeId)) {
+        if (ancestor.id === unit.nodeId || ancestor.kind === "module" || ancestor.kind === "package") {
+          continue;
+        }
+        const group = groupedUnits.get(ancestor.id);
+        group ? group.push(unit) : groupedUnits.set(ancestor.id, [unit]);
+      }
     }
   }
-  const index = { filesByModuleId, unitsByNodeId, foldersByNodeId: new Map<string, CachedFolderTarget>() };
+  const unitGroupsByNodeId = new Map([...groupedUnits].map(([nodeId, descendants]) => {
+    const ownUnit = unitsByNodeId.get(nodeId)?.unit;
+    return [nodeId, {
+      kind: "unit-group" as const,
+      label: graphIndex.nodesById.get(nodeId)?.displayName ?? nodeId,
+      units: ownUnit === undefined ? descendants : [ownUnit, ...descendants],
+    }];
+  }));
+  const index = {
+    graphIndex,
+    filesByModuleId,
+    unitsByNodeId,
+    unitGroupsByNodeId,
+    foldersByNodeId: new Map<string, CachedFolderTarget>(),
+  };
   TARGET_INDEX_CACHE.set(files, index);
   return index;
 }
@@ -257,6 +293,9 @@ function viewStateFor(
   if (target.kind === "folder") {
     return filesViewState(target.files, unitTicks, fileTicks);
   }
+  if (target.kind === "unit-group") {
+    return unitsViewState(target.units, unitTicks);
+  }
   return target.kind === "file"
     ? fileViewState(target.file, unitTicks, fileTicks)
     : checkStateOf(target.unit.fingerprint, unitTicks[target.unit.nodeId]);
@@ -265,7 +304,8 @@ function viewStateFor(
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {
   const subject = target.kind === "folder"
     ? `${target.label} folder`
-    : target.kind === "file" ? target.file.path : target.unit.displayName;
+    : target.kind === "file" ? target.file.path
+      : target.kind === "unit-group" ? target.label : target.unit.displayName;
   if (state === "done") {
     return `Viewed ${subject} — click to unmark`;
   }

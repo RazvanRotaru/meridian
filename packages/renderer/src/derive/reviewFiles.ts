@@ -242,11 +242,19 @@ export function fileViewState(
   if (file.units.length === 0) {
     return checkStateOf(file.fingerprint, fileTicks[file.path]);
   }
-  const states = file.units.map((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]));
+  return unitsViewState(file.units, unitTicks);
+}
+
+/** Aggregate changed leaves beneath a structural unit (for example, methods inside a class). */
+export function unitsViewState(
+  units: readonly ReviewUnitRow[],
+  unitTicks: Record<string, ReviewTick>,
+): CheckState {
+  const states = units.map((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]));
   if (states.some((state) => state === "stale")) {
     return "stale";
   }
-  return states.every((state) => state === "done") ? "done" : "todo";
+  return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
 }
 
 /** Aggregate a set of changed files for folder-level progress. A stale descendant wins so a folder
@@ -285,6 +293,24 @@ export function applyUnitTick(
     return next;
   }
   next[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+  return next;
+}
+
+/** Toggle all directly changed leaves represented by one structural ancestor. */
+export function applyUnitsToggle(
+  units: readonly ReviewUnitRow[],
+  ticks: Record<string, ReviewTick>,
+  at: string,
+): Record<string, ReviewTick> {
+  const markViewed = unitsViewState(units, ticks) !== "done";
+  const next = { ...ticks };
+  for (const unit of units) {
+    if (markViewed) {
+      next[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+    } else {
+      delete next[unit.nodeId];
+    }
+  }
   return next;
 }
 
