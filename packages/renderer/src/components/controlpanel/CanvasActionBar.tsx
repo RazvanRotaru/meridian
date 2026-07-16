@@ -60,6 +60,7 @@ export function CanvasActionBar({
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalLayoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
+  const minimalCodebaseProjectionPending = useBlueprint((state) => state.minimalCodebaseProjectionPending);
   const flowPaneLayoutStatus = useBlueprint((state) => state.flowPaneLayoutStatus);
   const syntheticExecutionStatus = useBlueprint((state) => state.syntheticExecutionStatus);
   const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
@@ -68,6 +69,7 @@ export function CanvasActionBar({
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
       state.review === null
+      || state.minimalCodebaseProjectionPending
       || (state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
       || state.moduleSelected.size !== 1
       || state.flowSelection !== null
@@ -118,6 +120,7 @@ export function CanvasActionBar({
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
   const canExtract = selectedCount > 0
+    && !minimalCodebaseProjectionPending
     && (!minimalOpen || minimalView === "codebase" || minimalLayoutStatus === "ready")
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";

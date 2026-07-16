@@ -4061,7 +4061,9 @@ describe("PR review artifact swap and restore", () => {
     store.getState().setMinimalView("codebase");
 
     expect(store.getState().minimalView).toBe("codebase");
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(extractedPairKey));
+    await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
     const contextHead = source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")!;
     const contextBase = source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1-base")!;
     expect(contextHead.request).toMatchObject({
@@ -4080,14 +4082,18 @@ describe("PR review artifact swap and restore", () => {
     const firstContextPairKey = store.getState().activeProjectionKey;
     source.activationCalls.length = 0;
     store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, true);
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(firstContextPairKey));
+    await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
     expect(source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")?.request.expandedIds)
       .toContain(CLASS_ID);
 
     const expandedPairKey = store.getState().activeProjectionKey;
     source.activationCalls.length = 0;
     store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, false);
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(expandedPairKey));
+    await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
     expect(source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")?.request.expandedIds)
       .not.toContain(CLASS_ID);
 
@@ -4122,21 +4128,64 @@ describe("PR review artifact swap and restore", () => {
     source.activationCalls.length = 0;
 
     store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, true);
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(
       source.activationCalls.some((call) =>
         graphIdFromOptions(call.options) === "pr-head-1"
         && call.request.expandedIds.includes(CLASS_ID)),
     ).toBe(true));
     store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, false);
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(
       source.activationCalls.filter((call) => graphIdFromOptions(call.options) === "pr-head-1").length,
     ).toBeGreaterThanOrEqual(2));
     await vi.waitFor(() => expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID));
+    await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
 
     releaseExpansion(HEAD_ARTIFACT);
     await Promise.resolve();
     expect(store.getState().minimalCodebaseExpansionOverrides.get(CLASS_ID)).toBe(false);
     expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID);
+  });
+
+  it("lets Back retire a stalled Codebase refresh without leaving the parent busy", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().selectModule(METHOD_ID);
+    await store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+
+    source.clearCache();
+    let releaseContext!: (artifact: GraphArtifact) => void;
+    const slowContext = new Promise<GraphArtifact>((resolve) => { releaseContext = resolve; });
+    let delayNextHead = true;
+    source.setPreparedResolver((graphId) => {
+      if (graphId.endsWith("-base")) return ARTIFACT;
+      if (delayNextHead) {
+        delayNextHead = false;
+        return slowContext;
+      }
+      return HEAD_ARTIFACT;
+    });
+    source.activationCalls.length = 0;
+
+    const codebaseNavigation = store.getState().setMinimalView("codebase");
+    await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(true));
+
+    await store.getState().backMinimalGraph();
+
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(false);
+    expect(store.getState().minimalRfNodes.length).toBeGreaterThan(0);
+
+    releaseContext(HEAD_ARTIFACT);
+    await codebaseNavigation;
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(false);
   });
 
   it("rejects an old Codebase pair when the same PR receives new revision descriptors", async () => {
@@ -4160,6 +4209,7 @@ describe("PR review artifact swap and restore", () => {
 
     const contextNavigation = store.getState().setMinimalView("codebase");
     await vi.waitFor(() => expect(source.activationCalls.length).toBeGreaterThan(0));
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     store.setState({
       prPreparedHead: preparedDescriptor("pr-head-2"),
       prPreparedMergeBase: preparedDescriptor("pr-head-2-base"),
@@ -4167,6 +4217,7 @@ describe("PR review artifact swap and restore", () => {
     releaseContext(HEAD_ARTIFACT);
     await contextNavigation;
 
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(false);
     expect(store.getState().activeProjectionKey).toBe(extractedPairKey);
     expect(store.getState().activeProjectionGraphId).toBe("pr-head-1");
     expect(store.getState().minimalView).toBe("graph");

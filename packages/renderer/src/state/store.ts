@@ -580,6 +580,9 @@ export interface BlueprintState {
   minimalCodebaseTargetIds: string[];
   /** Disclosure gates captured with the target ids; never retains hidden ReactFlow nodes. */
   minimalCodebaseRetainedExpandedIds: Set<string>;
+  /** True while a wider immutable projection pair is replacing the Codebase context. The view
+   * renders an explicit busy shell instead of exposing nodes whose camera/layout may go stale. */
+  minimalCodebaseProjectionPending: boolean;
   /** The parsed PR-review data (affected-flow rows + flow trees); null hides the review surface.
    * Sourced EITHER from a `meridian review` artifact extension, OR built at runtime from a GitHub PR
    * (selectPr → reviewPrInGraph). */
@@ -1872,6 +1875,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let projectionRequestSeq = 0;
   let projectionRequestController: AbortController | null = null;
   let minimalCodebaseProjectionBaseline: MinimalCodebaseProjectionBaseline | null = null;
+  let minimalCodebaseProjectionActivitySeq = 0;
   const minimalSceneCache = new RecentViewProjectionCache<string, MinimalGraphSceneSnapshot>(
     DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
     dependencies.recentAllocationBudget,
@@ -2138,8 +2142,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       projectionRequestController?.abort();
       projectionRequestController = null;
       projectionRequestSeq += 1;
+      minimalCodebaseProjectionActivitySeq += 1;
       minimalCodebaseProjectionBaseline = null;
       clearMinimalSceneNavigation();
+      set({ minimalCodebaseProjectionPending: false });
     };
     const restoreCurrentMinimalScene = async (
       activity: LayoutActivity = { label: "Restoring extracted graph…" },
@@ -2151,6 +2157,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ...restoreMinimalGraphScene(scene),
           minimalCodebaseTargetIds: [],
           minimalCodebaseRetainedExpandedIds: new Set<string>(),
+          minimalCodebaseProjectionPending: false,
         });
         return true;
       }
@@ -2164,6 +2171,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutActivity: needsLayout ? activity : null,
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
       });
       if (needsLayout) await get().minimalRelayout(activity);
       return false;
@@ -2251,6 +2259,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const root = state.index.nodesById.get(rootId);
       if (
         state.review === null
+        || state.minimalCodebaseProjectionPending
         || state.minimalSeedIds.length === 0
         || (state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
         || state.flowSelection !== null
@@ -2309,6 +2318,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
         reviewSelectedId: reveal?.selectedId ?? null,
         reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
         flowSelection: null,
@@ -2920,6 +2930,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     };
 
+    /** Keep every Codebase projection replacement visibly atomic. A superseded expand/collapse may
+     * finish later, but only the newest activity can release the busy shell. */
+    const refreshMinimalCodebaseProjection = async (additionalGateIds: readonly string[] = []): Promise<void> => {
+      const activity = ++minimalCodebaseProjectionActivitySeq;
+      set({ minimalCodebaseProjectionPending: true });
+      try {
+        await activateMinimalCodebaseProjection(additionalGateIds);
+      } finally {
+        if (minimalCodebaseProjectionActivitySeq === activity) {
+          set({ minimalCodebaseProjectionPending: false });
+        }
+      }
+    };
+
     const restoreMinimalCodebaseProjection = async (): Promise<boolean> => {
       const baseline = minimalCodebaseProjectionBaseline;
       if (baseline === null) return true;
@@ -2982,7 +3006,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseProjectionBaseline = null;
         return true;
       }
-      if (get().minimalView === "codebase") set({ minimalView: "graph" });
+      if (get().minimalView === "codebase") {
+        minimalCodebaseProjectionActivitySeq += 1;
+        set({ minimalView: "graph", minimalCodebaseProjectionPending: false });
+      }
       const restored = await restoreMinimalCodebaseProjection();
       const current = get();
       return restored
@@ -3311,6 +3338,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     minimalCodebaseTargetIds: [],
     minimalCodebaseRetainedExpandedIds: new Set<string>(),
+    minimalCodebaseProjectionPending: false,
     review,
     reviewAffectedIds: new Set(initialReviewProjection?.affected.map((node) => node.nodeId) ?? []),
     reviewDiffOnly: false,
@@ -5252,11 +5280,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => { void get().setMinimalView(view); })) return;
       if (view === "codebase") {
         const { targetIds, retainedExpandedIds } = minimalCodebaseInputsForState(state);
+        const needsProjection = projectionDataSource !== null && state.prPreparedArtifactCurrent;
         retainCurrentMinimalScene(state);
         set({
           minimalView: "codebase",
           minimalCodebaseTargetIds: targetIds,
           minimalCodebaseRetainedExpandedIds: retainedExpandedIds,
+          minimalCodebaseProjectionPending: needsProjection,
           // The exact extracted scene is now an inactive, evictable cache allocation. Keeping these
           // arrays in Zustand would pin the whole hidden graph outside the shared budget.
           minimalBasePositions: {},
@@ -5268,15 +5298,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             ? null
             : { ...state.reviewFlowBaseline, minimalBasePositions: {} },
         });
-        if (projectionDataSource !== null && state.prPreparedArtifactCurrent) {
-          await activateMinimalCodebaseProjection();
+        if (needsProjection) {
+          await refreshMinimalCodebaseProjection();
           // A preflight failure can safely fall back before changing projections. Rehydrate the
           // extracted sibling from the bounded cache (or relayout after eviction) in that case.
           if (get().minimalView === "graph") await restoreCurrentMinimalScene();
         }
         return;
       }
-      set({ minimalView: "graph" });
+      minimalCodebaseProjectionActivitySeq += 1;
+      set({ minimalView: "graph", minimalCodebaseProjectionPending: false });
       if (
         projectionDataSource !== null
         && state.prPreparedArtifactCurrent
@@ -5300,7 +5331,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // Both directions are transport changes. A rapid expand→collapse aborts the first request,
         // and the final request is built from the current override map, so stale expanded pairs can
         // never install after the disclosure was closed.
-        void activateMinimalCodebaseProjection(expanded ? [nodeId] : []);
+        void refreshMinimalCodebaseProjection(expanded ? [nodeId] : []);
       }
     },
 
@@ -5308,6 +5339,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // surface; every later extraction snapshots the active graph and pushes another frame. An open
     // PR is ambient session context, not an overlay owner, so nested extraction never destroys it.
     async buildMinimalGraph() {
+      if (get().minimalCodebaseProjectionPending) return;
       if (
         get().minimalView === "graph"
         && minimalCodebaseProjectionBaseline !== null
@@ -5415,6 +5447,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
         reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
         moduleGhostInspection: null,
         ...syntheticExecutionReset(),
@@ -5469,6 +5502,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (!guardReviewLineComposerTransition(() => { void get().backMinimalGraph(); })) {
         return;
+      }
+      // Back owns the next projection coordinate. Cancel any wider Codebase refresh and retire its
+      // busy-state lease before restoring the parent; an abort-ignorant transport may settle much
+      // later, but its activity can no longer keep or clear the parent's shell.
+      minimalCodebaseProjectionActivitySeq += 1;
+      projectionRequestController?.abort();
+      projectionRequestController = null;
+      projectionRequestSeq += 1;
+      if (initial.minimalCodebaseProjectionPending) {
+        set({ minimalCodebaseProjectionPending: false });
       }
       const projectionFrame = minimalProjectionFrames.get(parent.sceneKey) ?? null;
       if (projectionFrame?.active !== null && projectionFrame?.active !== undefined) {
@@ -5570,6 +5613,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const stateBeforeClose = get();
       const closingPrReview = stateBeforeClose.prReviewed;
+      minimalCodebaseProjectionActivitySeq += 1;
       projectionRequestController?.abort();
       projectionRequestController = null;
       projectionRequestSeq += 1;
@@ -5614,6 +5658,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
         reviewFocusedSubgraph: null,
         ...(closingPrReview !== null
           ? {
@@ -6157,6 +6202,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -6227,6 +6273,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        minimalCodebaseProjectionPending: false,
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -8857,6 +8904,7 @@ function applyPrReviewToMap(
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     minimalCodebaseTargetIds: [],
     minimalCodebaseRetainedExpandedIds: new Set<string>(),
+    minimalCodebaseProjectionPending: false,
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,

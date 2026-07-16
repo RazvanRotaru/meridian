@@ -9,6 +9,7 @@ import { buildBlockDeps } from "../derive/blockDeps";
 import {
   applyMinimalCodebaseExpansionOverrides,
   deriveMinimalCodebaseContext,
+  type MinimalCodebaseContext,
 } from "../derive/minimalCodebaseContext";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { MAP_RELATION_POLICY } from "../graph/lensRelationPolicy";
@@ -24,6 +25,11 @@ import { EmptyMinimalCodebaseContext, MinimalCodebaseSummary } from "./MinimalCo
 
 type ContextLayoutStatus = "laying-out" | "ready" | "error";
 const EMPTY_LAYOUT = { nodes: [] as Node[], edges: [] as Edge[] };
+interface ContextLayoutResult {
+  context: MinimalCodebaseContext | null;
+  layout: typeof EMPTY_LAYOUT;
+  status: ContextLayoutStatus;
+}
 const NO_SEMANTIC_COMMIT = { mode: "retained-anchor", commit: () => false } as const;
 const CONTEXT_FIT = { maxZoom: 1 } as const;
 export function MinimalCodebaseView({
@@ -37,6 +43,7 @@ export function MinimalCodebaseView({
   const index = useBlueprint((state) => state.index);
   const capturedTargetIds = useBlueprint((state) => state.minimalCodebaseTargetIds);
   const retainedExpandedIds = useBlueprint((state) => state.minimalCodebaseRetainedExpandedIds);
+  const projectionPending = useBlueprint((state) => state.minimalCodebaseProjectionPending);
   const selected = useBlueprint((state) => state.moduleSelected);
   const expansionOverrides = useBlueprint((state) => state.minimalCodebaseExpansionOverrides);
   const rollups = useBlueprint((state) => state.minimalRollups);
@@ -65,18 +72,20 @@ export function MinimalCodebaseView({
     [capturedTargetIds, selected],
   );
   const canonicalContext = useMemo(
-    () => deriveMinimalCodebaseContext({
-      index,
-      moduleGraph,
-      blockDeps,
-      flows,
-      minimalMemberIds: contextTargetIds,
-      minimalRollups: rollups,
-      hiddenIds: showTests ? undefined : index.testIds,
-      expandedIds: retainedExpandedIds,
-      demoteCommons: false,
-    }),
-    [blockDeps, contextTargetIds, flows, index, moduleGraph, retainedExpandedIds, rollups, showTests],
+    () => projectionPending
+      ? null
+      : deriveMinimalCodebaseContext({
+          index,
+          moduleGraph,
+          blockDeps,
+          flows,
+          minimalMemberIds: contextTargetIds,
+          minimalRollups: rollups,
+          hiddenIds: showTests ? undefined : index.testIds,
+          expandedIds: retainedExpandedIds,
+          demoteCommons: false,
+        }),
+    [blockDeps, contextTargetIds, flows, index, moduleGraph, projectionPending, retainedExpandedIds, rollups, showTests],
   );
   // Context disclosure is intentionally local to this mount. The canvas remains read-only for
   // selection/navigation, and leaving this tab drops the overrides without ever touching the
@@ -120,29 +129,45 @@ export function MinimalCodebaseView({
     const nextExpanded = !context.reveal.moduleExpanded.has(nodeId);
     setMinimalCodebaseExpansionOverride(nodeId, nextExpanded);
   }, [context, setMinimalCodebaseExpansionOverride]);
-  const [layout, setLayout] = useState(EMPTY_LAYOUT);
-  const [layoutStatus, setLayoutStatus] = useState<ContextLayoutStatus>("laying-out");
+  const [layoutResult, setLayoutResult] = useState<ContextLayoutResult>({
+    context: null,
+    layout: EMPTY_LAYOUT,
+    status: "laying-out",
+  });
 
   useEffect(() => {
     let current = true;
-    if (context === null) {
-      setLayout(EMPTY_LAYOUT);
-      setLayoutStatus("ready");
+    if (projectionPending) {
+      setLayoutResult({ context: null, layout: EMPTY_LAYOUT, status: "laying-out" });
       return () => { current = false; };
     }
-    setLayoutStatus("laying-out");
+    if (context === null) {
+      setLayoutResult({ context: null, layout: EMPTY_LAYOUT, status: "ready" });
+      return () => { current = false; };
+    }
+    setLayoutResult({ context, layout: EMPTY_LAYOUT, status: "laying-out" });
     void layoutModuleTree(context.tree.nodes, context.tree.edges, MAP_RELATION_POLICY).then(
       (next) => {
         if (!current) return;
-        setLayout(next);
-        setLayoutStatus("ready");
+        setLayoutResult({ context, layout: next, status: "ready" });
       },
       () => {
-        if (current) setLayoutStatus("error");
+        if (current) setLayoutResult({ context, layout: EMPTY_LAYOUT, status: "error" });
       },
     );
     return () => { current = false; };
-  }, [context]);
+  }, [context, projectionPending]);
+
+  // A context can change between render and the passive layout effect. Never expose the previous
+  // context's nodes or ready status during that window: doing so lets navigation fit stale geometry
+  // and strand the eventual projection beneath the review rail.
+  const layoutCurrent = !projectionPending && layoutResult.context === context;
+  const layout = layoutCurrent ? layoutResult.layout : EMPTY_LAYOUT;
+  const layoutStatus: ContextLayoutStatus = projectionPending
+    ? "laying-out"
+    : layoutCurrent
+      ? layoutResult.status
+      : context === null ? "ready" : "laying-out";
 
   const highlighted = useMemo(() => {
     const ids = new Set(context?.highlightTargetIds ?? EMPTY_HIGHLIGHTS);
@@ -188,12 +213,14 @@ export function MinimalCodebaseView({
       // PR nodes keep their added/modified/deleted rings; a neutral selection ring would mask the
       // very change colours this overview exists to locate. Paint still emphasizes the full set.
       paintSelectionOverride={paintTargets}
-      nodeDiffPreview={reviewActive}
+      nodeDiffPreview={reviewActive && !projectionPending}
       emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
       groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
       wireHover
       requestOverlayChrome={false}
-      busy={layoutStatus === "laying-out" ? { label: "Locating code in the codebase…" } : undefined}
+      busy={layoutStatus === "laying-out"
+        ? { label: projectionPending ? "Loading codebase projection…" : "Locating code in the codebase…" }
+        : undefined}
       autoFitView={false}
       semanticLayers={[]}
       semanticDepths={navigation.semanticDepths}
@@ -209,7 +236,7 @@ export function MinimalCodebaseView({
         targetCount={contextTargetIds.length}
         highlightedCount={highlighted.size}
       />
-      {context === null && layoutStatus === "ready" ? <EmptyMinimalCodebaseContext /> : null}
+      {!projectionPending && context === null && layoutStatus === "ready" ? <EmptyMinimalCodebaseContext /> : null}
       <MapLegend
         hasSteps={layout.nodes.some((node) => node.type === "step")}
         showPackages={layout.nodes.some((node) => node.type === "package")}
