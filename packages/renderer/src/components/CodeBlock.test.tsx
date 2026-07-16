@@ -106,6 +106,32 @@ describe("CodeBlock edge evidence", () => {
   });
 });
 
+describe("CodeBlock language-aware syntax highlighting", () => {
+  it("uses Python comments, multiline strings, numbers, and keywords for .py files", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: '# explain\nasync def run(value: int = 0x2A):\n    """Return a value."""\n    except_value = None\n    return value',
+      sourceFile: "src/backend/completions.py",
+    }));
+
+    expect(html).toContain('<span style="color:#6A9955"># explain</span>');
+    expect(html).toContain('<span style="color:#C678DD">def</span>');
+    expect(html).toContain('<span style="color:#C678DD">None</span>');
+    expect(html).toContain('<span style="color:#E5C07B">&quot;&quot;&quot;Return a value.&quot;&quot;&quot;</span>');
+    expect(html).toContain('<span style="color:#56B6C2">0x2A</span>');
+    expect(html).toContain('<span style="color:#C9D3E0">except_value</span>');
+  });
+
+  it("prefers explicit Python node metadata when a file has no useful extension", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "raise RuntimeError('failed')",
+      language: "python",
+      sourceFile: "bin/worker",
+    }));
+
+    expect(html).toContain('<span style="color:#C678DD">raise</span>');
+  });
+});
+
 describe("CodeBlock structural focus", () => {
   it("anchors the first structural row instead of scrolling to leading context", () => {
     expect(codeFocusScrollTop(51, true)).toBe(51);

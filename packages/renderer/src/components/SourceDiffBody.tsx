@@ -337,6 +337,8 @@ export function SourceDiffBody({
           foldUnchanged={model.foldUnchanged}
           diffLines={model.diffLines}
           sourceSide={model.sourceSide}
+          language={model.view.node.language}
+          sourceFile={model.file}
         />
       ) : null}
       {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}

@@ -1,8 +1,8 @@
 /**
- * A tiny, dependency-free TS/JS syntax highlighter. A real grammar (Prism/Shiki) would pull a
- * package, but the build must work offline — so a single regex splits source into comments,
+ * A tiny, dependency-free source syntax highlighter. A real grammar (Prism/Shiki) would pull a
+ * package, but the build must work offline — so small regex tokenizers split source into comments,
  * strings, numbers and keywords, and everything else stays the default light colour. It is
- * deliberately approximate (one JS/TS-ish tokenizer for the whole codebase, no per-line-vs-regex
+ * deliberately approximate (small language-specific tokenizers, no per-line-vs-regex
  * disambiguation) yet must NEVER throw: any tokenizing edge case falls back to the raw text, which
  * React still escapes as a plain string child.
  */
@@ -31,7 +31,7 @@ const COLOR = {
   number: "#56B6C2", // teal
 } as const;
 
-const KEYWORDS = new Set([
+const JS_TS_KEYWORDS = new Set([
   "const", "let", "var", "function", "return", "if", "else", "for", "while", "do", "class", "new",
   "await", "async", "import", "from", "export", "type", "interface", "extends", "implements", "try",
   "catch", "finally", "switch", "case", "default", "throw", "typeof", "instanceof", "this", "super",
@@ -40,25 +40,44 @@ const KEYWORDS = new Set([
   "undefined", "abstract", "declare", "keyof", "satisfies", "infer",
 ]);
 
+const PYTHON_KEYWORDS = new Set([
+  "False", "None", "True", "and", "as", "assert", "async", "await", "break", "case", "class",
+  "continue", "def", "del", "elif", "else", "except", "finally", "for", "from", "global", "if",
+  "import", "in", "is", "lambda", "match", "nonlocal", "not", "or", "pass", "raise", "return",
+  "try", "type", "while", "with", "yield",
+]);
+
+type SyntaxLanguage = "javascript" | "python" | "plain";
+
 // One left-to-right pass, longest-construct-first: comments and strings are matched WHOLE before
 // numbers/identifiers, so a keyword-like word inside a string or comment is never re-coloured, and
 // matching a full identifier stops `constant` from lighting up its `const` prefix.
-const TOKEN_RE =
+const JS_TS_TOKEN_RE =
   /(\/\/[^\n]*)|(\/\*[\s\S]*?\*\/)|(`(?:\\.|[^`\\])*`)|("(?:\\.|[^"\\])*")|('(?:\\.|[^'\\])*')|(\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|([A-Za-z_$][A-Za-z0-9_$]*)/g;
+
+// Python needs its own comment delimiter, keyword vocabulary, string prefixes, and multiline
+// strings. Keeping the same seven semantic capture groups lets the renderer share the safe,
+// left-to-right piece assembly with the JS/TS tokenizer.
+const PYTHON_TOKEN_RE =
+  /(#[^\n]*)|((?:[rRuUbBfF]{0,2})"""[\s\S]*?""")|((?:[rRuUbBfF]{0,2})'''[\s\S]*?''')|((?:[rRuUbBfF]{0,2})"(?:\\.|[^"\\])*")|((?:[rRuUbBfF]{0,2})'(?:\\.|[^'\\])*')|(\b(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
 
 type Piece = { text: string; color: string };
 
 // Walk the regex matches, emitting the untokenized gaps between them as plain pieces so no
 // character is dropped. Group 7 is an identifier — only keyword when it is in the reserved set.
-function tokenize(code: string): Piece[] {
+function tokenize(code: string, language: SyntaxLanguage): Piece[] {
+  if (language === "plain") return [{ text: code, color: COLOR.plain }];
+  const tokenRe = language === "python" ? PYTHON_TOKEN_RE : JS_TS_TOKEN_RE;
+  const keywords = language === "python" ? PYTHON_KEYWORDS : JS_TS_KEYWORDS;
   const pieces: Piece[] = [];
   let last = 0;
-  for (let m = TOKEN_RE.exec(code); m !== null; m = TOKEN_RE.exec(code)) {
+  tokenRe.lastIndex = 0;
+  for (let m = tokenRe.exec(code); m !== null; m = tokenRe.exec(code)) {
     if (m.index > last) {
       pieces.push({ text: code.slice(last, m.index), color: COLOR.plain });
     }
-    pieces.push({ text: m[0], color: colorFor(m) });
-    last = TOKEN_RE.lastIndex;
+    pieces.push({ text: m[0], color: colorFor(m, language, keywords) });
+    last = tokenRe.lastIndex;
   }
   if (last < code.length) {
     pieces.push({ text: code.slice(last), color: COLOR.plain });
@@ -66,12 +85,23 @@ function tokenize(code: string): Piece[] {
   return pieces;
 }
 
-function colorFor(m: RegExpExecArray): string {
-  if (m[1] !== undefined || m[2] !== undefined) return COLOR.comment;
-  if (m[3] !== undefined || m[4] !== undefined || m[5] !== undefined) return COLOR.string;
+function colorFor(m: RegExpExecArray, language: SyntaxLanguage, keywords: ReadonlySet<string>): string {
+  if (m[1] !== undefined || (language === "javascript" && m[2] !== undefined)) return COLOR.comment;
+  if ((language === "python" && m[2] !== undefined) || m[3] !== undefined || m[4] !== undefined || m[5] !== undefined) return COLOR.string;
   if (m[6] !== undefined) return COLOR.number;
-  if (m[7] !== undefined) return KEYWORDS.has(m[7]) ? COLOR.keyword : COLOR.plain;
+  if (m[7] !== undefined) return keywords.has(m[7]) ? COLOR.keyword : COLOR.plain;
   return COLOR.plain;
+}
+
+/** Prefer extractor metadata, then use the concrete file extension for mixed/legacy artifacts. */
+export function sourceSyntaxLanguage(language: string | undefined, file: string | undefined): SyntaxLanguage {
+  const normalized = language?.toLowerCase();
+  if (normalized === "python" || normalized === "py") return "python";
+  if (["typescript", "javascript", "tsx", "jsx", "ts", "js"].includes(normalized ?? "")) return "javascript";
+  const extension = file?.toLowerCase().match(/(?:^|\/)[^/]+(\.[^./]+)$/)?.[1];
+  if ([".py", ".pyw", ".pyi"].includes(extension ?? "")) return "python";
+  if ([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"].includes(extension ?? "")) return "javascript";
+  return "plain";
 }
 
 export function CodeBlock({
@@ -95,6 +125,8 @@ export function CodeBlock({
   foldUnchanged = false,
   diffLines,
   sourceSide = "head",
+  language,
+  sourceFile,
 }: {
   code: string;
   /** Exact source rows represented by `code`; zero prevents an empty string becoming a fake line 1. */
@@ -147,17 +179,20 @@ export function CodeBlock({
   diffLines?: readonly CodeDiffLine[];
   /** Which revision `code` belongs to. Removed-file fallbacks show BASE rows directly as deletes. */
   sourceSide?: CodeSourceSide;
+  /** Extractor language and file path used to select the small built-in tokenizer. */
+  language?: string;
+  sourceFile?: string;
 }) {
+  const syntaxLanguage = sourceSyntaxLanguage(language, sourceFile);
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
   // tokenizing surprise blank the panel — fall back to the raw, still-escaped source.
   const pieces = useMemo(() => {
     try {
-      TOKEN_RE.lastIndex = 0;
-      return tokenize(code);
+      return tokenize(code, syntaxLanguage);
     } catch {
       return [{ text: code, color: COLOR.plain }];
     }
-  }, [code]);
+  }, [code, syntaxLanguage]);
   const highlightedLines = useMemo(
     () => lineCount === 0 ? [] : splitHighlightedLines(pieces),
     [lineCount, pieces],
