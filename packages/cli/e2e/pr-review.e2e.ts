@@ -55,6 +55,7 @@ const nativeFetch = globalThis.fetch.bind(globalThis);
 interface SubmittedReview {
   event: string;
   body?: string;
+  commit_id?: string;
   comments: Array<{ path: string; line: number; side: string; body: string }>;
 }
 
@@ -384,6 +385,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(submittedReviews).toEqual([
       {
         event: "COMMENT",
+        commit_id: fixture!.headSha,
         comments: [
           {
             path: "src/pricing/loyaltyTiers.ts",
