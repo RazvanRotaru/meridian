@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, type BlueprintStore } from "./store";
@@ -41,10 +41,16 @@ const ARTIFACT: GraphArtifact = {
   },
 };
 
-function freshStore(): BlueprintStore {
-  const index = buildGraphIndex(ARTIFACT);
+const PRIVATE_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: ARTIFACT.nodes.map((candidate) =>
+    candidate.id === METHOD_ID ? { ...candidate, tags: ["private"] } : candidate),
+};
+
+function freshStore(artifact: GraphArtifact = ARTIFACT): BlueprintStore {
+  const index = buildGraphIndex(artifact);
   return createBlueprintStore({
-    artifact: ARTIFACT,
+    artifact,
     index,
     provider: null,
     hasOverlay: false,
@@ -76,8 +82,53 @@ describe("module-map expansion actions", () => {
 
   it("revealModule expands the owning file and unit for hidden member definitions", () => {
     const store = freshStore();
+    store.setState({ showPrivate: false });
     store.getState().revealModule(METHOD_ID);
     expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, UNIT_ID]));
     expect(store.getState().moduleSelected).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().showPrivate).toBe(false);
+  });
+
+  it("revealModule exposes an explicitly requested private member", () => {
+    const store = freshStore(PRIVATE_ARTIFACT);
+    store.setState({ showPrivate: false, moduleRelayout: vi.fn(async () => {}) });
+
+    store.getState().revealModule(METHOD_ID);
+
+    expect(store.getState().showPrivate).toBe(true);
+    expect(store.getState().moduleExpanded).toEqual(new Set([FILE_ID, UNIT_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([METHOD_ID]));
+  });
+
+  it("reveals a private palette pick through its owning Service card", () => {
+    const store = freshStore(PRIVATE_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({ viewMode: "call", showPrivate: false, moduleRelayout });
+
+    store.getState().revealInView(METHOD_ID);
+
+    expect(store.getState().showPrivate).toBe(true);
+    expect(store.getState().mapExtra).toEqual(new Set([UNIT_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([UNIT_ID]));
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
+
+  it("exposes an added private pick without relayout when its owning card is already pinned", () => {
+    const store = freshStore(PRIVATE_ARTIFACT);
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({ viewMode: "modules", showPrivate: false, moduleRelayout });
+
+    store.getState().addToView(METHOD_ID);
+    expect(store.getState().showPrivate).toBe(true);
+    expect(store.getState().mapExtra).toEqual(new Set([UNIT_ID]));
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+
+    store.setState({ showPrivate: false });
+    moduleRelayout.mockClear();
+    store.getState().addToView(METHOD_ID);
+
+    expect(store.getState().showPrivate).toBe(true);
+    expect(store.getState().mapExtra).toEqual(new Set([UNIT_ID]));
+    expect(moduleRelayout).not.toHaveBeenCalled();
   });
 });

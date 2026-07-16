@@ -3654,6 +3654,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleFocus: directory?.id ?? null,
         moduleExpanded: expanded,
         moduleSelected: new Set([nodeId]),
+        showPrivate: state.showPrivate || state.index.privateIds.has(nodeId),
         mapExtra: new Set<string>(), // a focus jump ends the scratch "+" pins from the level we left.
         mapGhostPins: new Map<string, ReadonlySet<string>>(),
         moduleGhostInspection: null,
@@ -3728,6 +3729,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({
           mapExtra: new Set(state.mapExtra).add(card),
           moduleSelected: new Set([card]),
+          showPrivate: state.showPrivate || state.index.privateIds.has(rawId),
           moduleGhostInspection: null,
         });
         void get().moduleRelayout(nodeLayoutActivity(state, "Revealing", card));
@@ -3744,9 +3746,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const card = resolveCard(rawId);
+      const revealPrivate = !state.showPrivate && state.index.privateIds.has(rawId);
       if (!state.mapExtra.has(card)) {
-        set({ mapExtra: new Set(state.mapExtra).add(card) });
+        set({
+          mapExtra: new Set(state.mapExtra).add(card),
+          ...(revealPrivate ? { showPrivate: true } : {}),
+        });
         void get().moduleRelayout(nodeLayoutActivity(state, "Adding", card));
+      } else if (revealPrivate) {
+        // The card is already laid out; exposing its explicitly requested private member is paint-only.
+        set({ showPrivate: true });
       }
     },
 

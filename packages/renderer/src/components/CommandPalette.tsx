@@ -14,7 +14,8 @@
  * BlueprintCanvas so the shortcut works everywhere; a pure overlay that only calls store actions.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 import type { GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
@@ -28,13 +29,29 @@ const LOGIC_KINDS = new Set(["function", "method", "module"]);
 // Cap the list so a huge graph never renders thousands of rows into the scroll container.
 const MAX_ROWS = 40;
 
+export type SearchScope = "public" | "all" | "private";
+
+export interface SearchScopeCounts {
+  public: number;
+  all: number;
+  private: number;
+}
+
+const SEARCH_SCOPE_OPTIONS: ReadonlyArray<{ id: SearchScope; label: string }> = [
+  { id: "public", label: "Public" },
+  { id: "all", label: "All symbols" },
+  { id: "private", label: "Private only" },
+];
+
 /** One searchable node row, pre-computed once so keystrokes only filter (never re-scan the graph). */
-interface SymbolEntry {
+export interface SymbolEntry {
   id: NodeId;
   displayName: string;
   qualifiedName: string;
   file: string;
   kind: string;
+  /** The palette's opt-in private surface: methods whose names begin with Python's `__` prefix. */
+  isPrivateMethod: boolean;
   /** Steps in this node's logic flow, or null when it ships none (a container, or an empty body). */
   stepCount: number | null;
 }
@@ -50,6 +67,9 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [highlighted, setHighlighted] = useState(0);
+  const [scope, setScope] = useState<SearchScope>("public");
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
@@ -71,18 +91,24 @@ export function CommandPalette() {
     if (open) {
       setQuery("");
       setHighlighted(0);
+      setScope("public");
+      setScopeMenuOpen(false);
     }
   }, [open]);
 
   // Rank once per artifact + mode (not on every keystroke): map lists every navigable node by name;
   // logic ranks flow-bearing symbols first. The order carries through the substring filter below.
   const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, isMap), [artifact, index.nodesById, isMap]);
-  const results = useMemo(() => selectResults(symbols, query, isMap), [symbols, query, isMap]);
+  const scopeCounts = useMemo(() => countSearchScopes(symbols), [symbols]);
+  const results = useMemo(
+    () => selectResults(symbols, query, isMap, scope),
+    [symbols, query, isMap, scope],
+  );
 
-  // Typing shifts the result set, so re-prime the highlight to the top match.
+  // Typing or changing the search scope shifts the result set, so re-prime the highlight.
   useEffect(() => {
     setHighlighted(0);
-  }, [query]);
+  }, [query, scope]);
   // Keep the highlighted row in view as arrow keys walk past the fold. Block body is REQUIRED: a
   // concise arrow would return scrollIntoView's result, which React treats as a cleanup function and
   // invokes on the next run — in browsers where it returns a non-undefined value that crashes.
@@ -111,9 +137,13 @@ export function CommandPalette() {
   };
 
   // Arrow keys move the highlight (clamped to the list); Enter reveals it, ⌘/Ctrl+Enter adds it (map
-  // lenses); Escape closes. preventDefault on the arrows stops the caret jumping to the input's ends.
+  // lenses); Escape closes. Option/Alt+P opens the extensible scope menu without changing the query.
+  // preventDefault on the arrows stops the caret jumping to the input's ends.
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
-    if (event.key === "ArrowDown") {
+    if (event.altKey && event.code === "KeyP") {
+      event.preventDefault();
+      setScopeMenuOpen(true);
+    } else if (event.key === "ArrowDown") {
       event.preventDefault();
       setHighlighted((row) => Math.min(row + 1, results.length - 1));
     } else if (event.key === "ArrowUp") {
@@ -140,14 +170,25 @@ export function CommandPalette() {
   return (
     <div style={BACKDROP_STYLE} onClick={close}>
       <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
-        <input
-          style={INPUT_STYLE}
-          autoFocus
-          placeholder={isMap ? "Reveal a node — Enter to go there, + to add it here…" : "Search a symbol to open its logic flow…"}
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-          onKeyDown={onInputKeyDown}
-        />
+        <div style={SEARCH_HEADER_STYLE}>
+          <input
+            ref={inputRef}
+            style={INPUT_STYLE}
+            autoFocus
+            placeholder={isMap ? "Reveal a node — Enter to go there, + to add it here…" : "Search a symbol to open its logic flow…"}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={onInputKeyDown}
+          />
+          <SearchScopeControl
+            scope={scope}
+            counts={scopeCounts}
+            open={scopeMenuOpen}
+            onOpenChange={setScopeMenuOpen}
+            onScopeChange={setScope}
+            onReturnToInput={() => inputRef.current?.focus()}
+          />
+        </div>
         <div style={LIST_STYLE}>
           {results.length > 0 ? (
             results.map((entry, row) => (
@@ -168,6 +209,129 @@ export function CommandPalette() {
         </div>
         <div style={FOOTER_STYLE}>{isMap ? "↑↓ navigate · ↵ reveal · ⌘↵ add · esc close" : "↑↓ navigate · ↵ open · esc close"}</div>
       </div>
+    </div>
+  );
+}
+
+/** The compact, extensible scope selector. It shares the input row so results stay visually primary. */
+export function SearchScopeControl(props: {
+  scope: SearchScope;
+  counts: SearchScopeCounts;
+  open: boolean;
+  onOpenChange(open: boolean): void;
+  onScopeChange(scope: SearchScope): void;
+  onReturnToInput(): void;
+}) {
+  const menuId = useId();
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const selectedIndex = SEARCH_SCOPE_OPTIONS.findIndex((option) => option.id === props.scope);
+  const [activeIndex, setActiveIndex] = useState(selectedIndex);
+
+  useEffect(() => {
+    if (!props.open) {
+      return;
+    }
+    setActiveIndex(selectedIndex);
+    requestAnimationFrame(() => optionRefs.current[selectedIndex]?.focus());
+  }, [props.open, selectedIndex]);
+
+  useEffect(() => {
+    if (!props.open) {
+      return;
+    }
+    const closeFromOutside = (event: PointerEvent) => {
+      if (!wrapRef.current?.contains(event.target as Node)) {
+        props.onOpenChange(false);
+      }
+    };
+    document.addEventListener("pointerdown", closeFromOutside, true);
+    return () => document.removeEventListener("pointerdown", closeFromOutside, true);
+  }, [props.open, props.onOpenChange]);
+
+  if (props.counts.private === 0) {
+    return null;
+  }
+
+  const focusOption = (index: number) => {
+    const next = (index + SEARCH_SCOPE_OPTIONS.length) % SEARCH_SCOPE_OPTIONS.length;
+    setActiveIndex(next);
+    optionRefs.current[next]?.focus();
+  };
+  const closeToInput = () => {
+    props.onOpenChange(false);
+    requestAnimationFrame(props.onReturnToInput);
+  };
+  const selectScope = (scope: SearchScope) => {
+    props.onScopeChange(scope);
+    closeToInput();
+  };
+  const onMenuKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>, option: SearchScope) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusOption(activeIndex + 1);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      focusOption(activeIndex - 1);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      focusOption(0);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      focusOption(SEARCH_SCOPE_OPTIONS.length - 1);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      closeToInput();
+    } else if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectScope(option);
+    }
+  };
+  const activeLabel = SEARCH_SCOPE_OPTIONS[selectedIndex]?.label ?? "Public";
+
+  return (
+    <div ref={wrapRef} style={SCOPE_CONTROL_STYLE}>
+      <button
+        type="button"
+        style={SCOPE_BUTTON_STYLE}
+        aria-label={`Search scope: ${activeLabel}`}
+        aria-haspopup="menu"
+        aria-expanded={props.open}
+        aria-controls={menuId}
+        aria-keyshortcuts="Alt+P"
+        title="Choose search scope (⌥P)"
+        onClick={() => props.open ? closeToInput() : props.onOpenChange(true)}
+      >
+        <span>{activeLabel}</span>
+        <ChevronDownIcon width={15} height={15} aria-hidden="true" />
+      </button>
+      <kbd style={SCOPE_SHORTCUT_STYLE} aria-hidden="true">⌥P</kbd>
+      {props.open ? (
+        <div id={menuId} role="menu" aria-label="Search scope" style={SCOPE_MENU_STYLE}>
+          {SEARCH_SCOPE_OPTIONS.map((option, index) => {
+            const selected = option.id === props.scope;
+            return (
+              <button
+                key={option.id}
+                ref={(node) => { optionRefs.current[index] = node; }}
+                type="button"
+                role="menuitemradio"
+                aria-checked={selected}
+                tabIndex={activeIndex === index ? 0 : -1}
+                style={scopeMenuItemStyle(activeIndex === index, selected)}
+                onMouseEnter={() => setActiveIndex(index)}
+                onFocus={() => setActiveIndex(index)}
+                onKeyDown={(event) => onMenuKeyDown(event, option.id)}
+                onClick={() => selectScope(option.id)}
+              >
+                <span style={SCOPE_CHECK_STYLE}>{selected ? <CheckIcon width={14} height={14} aria-hidden="true" /> : null}</span>
+                <span style={SCOPE_OPTION_LABEL_STYLE}>{option.label}</span>
+                <span style={SCOPE_COUNT_STYLE}>{props.counts[option.id]}</span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -217,9 +381,10 @@ function ResultRow(props: {
  * package/class/interface/object), sorted by name — a pick resolves to its drawable card on
  * reveal/add. Logic/UI: every function/method/module, flow-bearing first (then alphabetically) so
  * flow-openable symbols rank above those without. Both preserve their order through the substring
- * filter. `logicFlow` is a loose extension record.
+ * filter. Dunder methods are classified here, then filtered at query time so the user can opt back
+ * into them without rescanning the graph. `logicFlow` is a loose extension record.
  */
-function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, isMap: boolean): SymbolEntry[] {
+export function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, isMap: boolean): SymbolEntry[] {
   const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>;
   const kinds = isMap ? MAP_KINDS : LOGIC_KINDS;
   const entries: SymbolEntry[] = [];
@@ -234,6 +399,7 @@ function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, 
       qualifiedName: node.qualifiedName,
       file: node.location?.file ?? "",
       kind: node.kind,
+      isPrivateMethod: node.kind === "method" && node.displayName.startsWith("__"),
       // Exit steps are charted control flow, not WORK — the size hint counts only executable steps.
       stepCount: Array.isArray(steps) ? steps.filter((step) => (step as { kind?: string }).kind !== "exit").length : null,
     });
@@ -254,18 +420,28 @@ function byFlowThenName(a: SymbolEntry, b: SymbolEntry): number {
 }
 
 /**
- * The rows to show: with no query, a sensible default set — a map lens shows the top nodes, logic
- * shows the top flow-bearing symbols (the ones worth jumping into); with a query, nodes whose display
- * OR qualified name contains the (lowercased) needle. Capped.
+ * The rows to show: dunder methods are filtered by the selected public/all/private scope before the
+ * row cap. With no query, a map lens shows the top nodes and logic shows the top flow-bearing symbols;
+ * with a query, nodes whose display OR qualified name contains the (lowercased) needle. Capped.
  */
-function selectResults(symbols: SymbolEntry[], query: string, isMap: boolean): SymbolEntry[] {
+export function selectResults(
+  symbols: SymbolEntry[],
+  query: string,
+  isMap: boolean,
+  scope: SearchScope = "public",
+): SymbolEntry[] {
   const needle = query.trim().toLowerCase();
   if (!needle) {
-    const base = isMap ? symbols : symbols.filter((entry) => entry.stepCount !== null);
+    const base = symbols.filter(
+      (entry) => isEntryInScope(entry, scope) && (isMap || entry.stepCount !== null),
+    );
     return base.slice(0, MAX_ROWS);
   }
   const matched: SymbolEntry[] = [];
   for (const entry of symbols) {
+    if (!isEntryInScope(entry, scope)) {
+      continue;
+    }
     if (entry.displayName.toLowerCase().includes(needle) || entry.qualifiedName.toLowerCase().includes(needle)) {
       matched.push(entry);
       if (matched.length >= MAX_ROWS) {
@@ -274,6 +450,22 @@ function selectResults(symbols: SymbolEntry[], query: string, isMap: boolean): S
     }
   }
   return matched;
+}
+
+export function countSearchScopes(symbols: readonly SymbolEntry[]): SearchScopeCounts {
+  const privateCount = symbols.reduce((count, entry) => count + Number(entry.isPrivateMethod), 0);
+  return {
+    public: symbols.length - privateCount,
+    all: symbols.length,
+    private: privateCount,
+  };
+}
+
+function isEntryInScope(entry: SymbolEntry, scope: SearchScope): boolean {
+  if (scope === "all") {
+    return true;
+  }
+  return scope === "private" ? entry.isPrivateMethod : !entry.isPrivateMethod;
 }
 
 // The palette floats above every view (and the code modal at zIndex 30), pinned near the top-center
@@ -297,24 +489,109 @@ const DIALOG_STYLE: React.CSSProperties = {
   background: "#12171E",
   border: "1px solid #2A2F37",
   borderRadius: 12,
-  overflow: "hidden",
+  overflow: "visible",
   boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
 };
-const INPUT_STYLE: React.CSSProperties = {
-  width: "100%",
-  boxSizing: "border-box",
-  fontSize: 15,
-  padding: "12px 14px",
+const SEARCH_HEADER_STYLE: React.CSSProperties = {
+  position: "relative",
+  zIndex: 3,
+  flexShrink: 0,
+  display: "flex",
+  alignItems: "center",
+  minHeight: 42,
   background: "#10151C",
-  border: "none",
   borderBottom: "1px solid #2A2F37",
+  borderRadius: "11px 11px 0 0",
+};
+const INPUT_STYLE: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  height: 42,
+  boxSizing: "border-box",
+  font: "inherit",
+  fontSize: 15,
+  padding: "0 14px",
+  background: "transparent",
+  border: "none",
   color: "#E6EDF3",
   outline: "none",
+};
+const SCOPE_CONTROL_STYLE: React.CSSProperties = {
+  position: "relative",
+  flexShrink: 0,
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+  marginRight: 10,
+};
+const SCOPE_BUTTON_STYLE: React.CSSProperties = {
+  height: 30,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 7,
+  padding: "0 9px 0 11px",
+  border: "1px solid #3A424D",
+  borderRadius: 7,
+  background: "#151B23",
+  color: "#E6EDF3",
+  font: "inherit",
+  fontSize: 12.5,
+  fontWeight: 500,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
+};
+const SCOPE_SHORTCUT_STYLE: React.CSSProperties = {
+  height: 24,
+  minWidth: 31,
+  boxSizing: "border-box",
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: "0 6px",
+  border: "1px solid #303743",
+  borderRadius: 6,
+  background: "#10151C",
+  color: "#7B8695",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 10,
+  lineHeight: 1,
+};
+const SCOPE_MENU_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: "calc(100% + 8px)",
+  right: "max(-116px, calc(40px - 10vw))",
+  zIndex: 10,
+  width: 190,
+  boxSizing: "border-box",
+  display: "flex",
+  flexDirection: "column",
+  gap: 2,
+  padding: 5,
+  border: "1px solid #343D49",
+  borderRadius: 10,
+  background: "rgba(17,22,29,0.98)",
+  boxShadow: "0 12px 32px rgba(0,0,0,0.48)",
+};
+const SCOPE_CHECK_STYLE: React.CSSProperties = {
+  width: 14,
+  height: 14,
+  flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+};
+const SCOPE_OPTION_LABEL_STYLE: React.CSSProperties = { flex: 1, minWidth: 0, textAlign: "left" };
+const SCOPE_COUNT_STYLE: React.CSSProperties = {
+  flexShrink: 0,
+  color: "#9AA4B2",
+  fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+  fontSize: 11,
 };
 const LIST_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: 2,
+  minHeight: 0,
   padding: 6,
   overflowY: "auto",
 };
@@ -416,4 +693,22 @@ function kindTagStyle(kind: string): React.CSSProperties {
     return KIND_TAG_STYLE;
   }
   return { ...KIND_TAG_STYLE, color: "#56C271", borderColor: "#2C4133" };
+}
+
+function scopeMenuItemStyle(active: boolean, selected: boolean): React.CSSProperties {
+  return {
+    width: "100%",
+    minHeight: 34,
+    display: "flex",
+    alignItems: "center",
+    gap: 9,
+    padding: "0 9px",
+    border: "none",
+    borderRadius: 6,
+    background: active || selected ? "#222B38" : "transparent",
+    color: selected || active ? "#E6EDF3" : "#B0BAC6",
+    font: "inherit",
+    fontSize: 12.5,
+    cursor: "pointer",
+  };
 }
