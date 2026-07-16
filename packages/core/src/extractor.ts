@@ -94,6 +94,7 @@ const KIND_RANK: Record<string, number> = {
   typeAlias: 2,
   function: 3,
   method: 3,
+  promise: 3,
 };
 
 export function rankOfKind(kind: NodeKind): number {

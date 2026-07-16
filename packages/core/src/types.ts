@@ -30,6 +30,7 @@ export type NodeKind =
   | "typeAlias"
   | "function"
   | "method"
+  | "promise"
   | (string & {});
 
 export type EdgeKind =
@@ -46,6 +47,11 @@ export type EdgeKind =
   | "implements"
   | "implementedBy"
   | "instantiates"
+  | "createsPromise"
+  | "returnsPromise"
+  | "awaitsPromise"
+  | "resolvesPromise"
+  | "rejectsPromise"
   | (string & {});
 
 /** A complete, language-independent classification of how confidently an edge was resolved. */

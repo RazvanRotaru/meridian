@@ -12,8 +12,28 @@ function port(nodeId: string, direction: "in" | "out", protocol: string, channel
 
 describe("channelNodeId", () => {
   it("keeps the node-id grammar: no whitespace, no hash", () => {
-    expect(channelNodeId("http", "GET /api/orders")).toBe("ipc:http/GET+/api/orders");
-    expect(channelNodeId("electron", "notes#load")).toBe("ipc:electron/notes%23load");
+    expect(channelNodeId("http", "GET /api/orders")).toBe("ipc:http/channel=GET%20%2Fapi%2Forders");
+    expect(channelNodeId("electron", "notes#load")).toBe("ipc:electron/channel=notes%23load");
+    expect(channelNodeId("electron", "notes#load", "renderer main", "app#1"))
+      .toBe("ipc:electron/lane=renderer%20main/scope=app%231/channel=notes%23load");
+  });
+
+  it("encodes qualified components injectively", () => {
+    expect(channelNodeId("electron", "ready", "frame")).not.toBe(
+      channelNodeId("electron", "ready", undefined, "frame"),
+    );
+    expect(channelNodeId("electron", "b/c", "a")).not.toBe(
+      channelNodeId("electron", "c", "a/b"),
+    );
+    expect(channelNodeId("electron", "a+b", "lane")).not.toBe(
+      channelNodeId("electron", "a b", "lane"),
+    );
+    expect(channelNodeId("electron", "a+b")).not.toBe(
+      channelNodeId("electron", "a b"),
+    );
+    expect(channelNodeId("electron", "a%23b")).not.toBe(
+      channelNodeId("electron", "a#b"),
+    );
   });
 });
 
@@ -27,7 +47,7 @@ describe("materializeChannels", () => {
       port("ts:b#handle", "in", "electron", "notes:load"),
     ]);
     const channel = nodes.find((entry) => entry.kind === "channel");
-    expect(channel?.id).toBe("ipc:electron/notes:load");
+    expect(channel?.id).toBe("ipc:electron/channel=notes%3Aload");
     expect(edges).toContainEqual(expect.objectContaining({ kind: "sends", source: "ts:a#send", target: channel!.id }));
     expect(edges).toContainEqual(expect.objectContaining({ kind: "handles", source: channel!.id, target: "ts:b#handle" }));
   });
@@ -49,6 +69,55 @@ describe("materializeChannels", () => {
     expect(edges).toHaveLength(1);
     expect(edges[0].weight).toBe(2);
     expect(edges[0].callSites).toHaveLength(2);
+  });
+
+  it("keeps incompatible transport lanes separate", () => {
+    const { nodes, edges } = materializeChannels(NODES, NO_EDGES, [
+      { ...port("ts:a#send", "out", "electron", "notes:load"), lane: "renderer-main-invoke" },
+      { ...port("ts:b#handle", "in", "electron", "notes:load"), lane: "main-renderer-message" },
+    ]);
+    expect(nodes.filter((entry) => entry.kind === "channel")).toHaveLength(2);
+    expect(edges).toHaveLength(2);
+  });
+
+  it("marks selector-only correlations as candidates and enters a resolved handler", () => {
+    const nodes = [...NODES, node("ts:b#register")];
+    const { nodes: materializedNodes, edges } = materializeChannels(nodes, NO_EDGES, [
+      { ...port("ts:a#send", "out", "postmessage", "type:ready"), confidence: 0.65 },
+      {
+        ...port("ts:b#register", "in", "postmessage", "type:ready"),
+        confidence: 0.65,
+        handlerNodeId: "ts:b#handle",
+      },
+    ]);
+    const channel = materializedNodes.find((entry) => entry.kind === "channel");
+    expect(channel?.tags).toContain("candidate");
+    expect(edges).toContainEqual(expect.objectContaining({
+      kind: "handles",
+      target: "ts:b#handle",
+      resolution: "unresolved",
+      confidence: 0.65,
+    }));
+  });
+
+  it("derives candidate channel metadata independently of port order", () => {
+    const approximate = {
+      ...port("ts:a#send", "out" as const, "electron", "notes:changed"),
+      lane: "main-renderer-message",
+      confidence: 0.6,
+    };
+    const exact = {
+      ...port("ts:b#handle", "in" as const, "electron", "notes:changed"),
+      lane: "main-renderer-message",
+    };
+    const channelOf = (ports: Port[]) => materializeChannels(NODES, NO_EDGES, ports).nodes
+      .find((entry) => entry.kind === "channel");
+
+    expect(channelOf([approximate, exact])).toEqual(channelOf([exact, approximate]));
+    expect(channelOf([exact, approximate])).toMatchObject({
+      tags: expect.arrayContaining(["candidate"]),
+      summary: expect.stringContaining("60% confidence"),
+    });
   });
 });
 

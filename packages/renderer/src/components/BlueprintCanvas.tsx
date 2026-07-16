@@ -29,11 +29,14 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const flowPaneOpen = useBlueprint((state) => state.flowPaneOrigin === "request"
     ? state.telemetryMode && state.requestFlowTraceId !== null
     : state.flowSelection !== null
-      && flowPaneShouldRender(state.reviewFlowBaseline !== null, state.reviewOpenFlowSplitOnSelect));
+      && flowPaneShouldRender(
+        state.reviewFlowBaseline !== null,
+        state.reviewOpenFlowSplitOnSelect || state.reviewFlowExplicitView !== null,
+      ));
   const reviewFlowOpen = useBlueprint((state) => state.flowPaneOrigin !== "request"
-    && state.flowSelection !== null
-    && state.reviewFlowBaseline !== null
-      && state.reviewOpenFlowSplitOnSelect);
+      && state.flowSelection !== null
+      && state.reviewFlowBaseline !== null
+      && (state.reviewOpenFlowSplitOnSelect || state.reviewFlowExplicitView !== null));
   const syntheticFlowOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic" && state.flowSelection !== null);
   return (
     <div style={SHELL_STYLE}>

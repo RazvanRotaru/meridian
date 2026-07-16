@@ -22,9 +22,16 @@ export const HANDLES_KIND = "handles";
 
 export type PortDirection = "in" | "out";
 
+/** What the boundary occurrence does. Direction remains the compatibility/topology primitive;
+ * operation preserves enough semantics for a causal reader to distinguish a notification from a
+ * request, and a subscription site from the handler that answers a request. */
+export type PortOperation = "notify" | "request" | "subscribe" | "handle" | "respond";
+
 export interface Port {
-  /** The callable (or module, for top-level sites) that owns the call site. */
+  /** The callable (or module, for top-level sites) that registers or invokes the boundary. */
   nodeId: NodeId;
+  /** Actual inbound callback when it has its own graph node; registration remains `nodeId`. */
+  handlerNodeId?: NodeId;
   direction: PortDirection;
   /** Transport, open vocabulary: "http" | "electron" | "ws" | "queue" | ... */
   protocol: string;
@@ -33,22 +40,45 @@ export interface Port {
   /** The raw text at the call site (original URL/first argument), for display and diagnostics. */
   label: string;
   callSite: CallSite;
+  /** Stable built-in/project model that recognized this surface. Older artifacts omit it. */
+  surfaceId?: string;
+  /** Boundary semantics beyond the coarse in/out direction. Older artifacts omit it. */
+  operation?: PortOperation;
+  /** Transport route within a protocol, e.g. Electron renderer→main invoke vs message lanes. */
+  lane?: string;
+  /** Proven endpoint/bus identity. Equal channels in different scopes must never join. */
+  scope?: string;
+  /**
+   * Artifact scopes identify a resource instance only inside the artifact that extracted it. The
+   * linker namespaces them by system before joining. Missing remains globally comparable for
+   * backward compatibility (for example a proven absolute URL origin).
+   */
+  scopeKind?: "global" | "artifact";
+  /** Strength of the channel correlation. Omitted means exact/backward-compatible (1.0). */
+  confidence?: number;
 }
 
-/** Channel node id: `ipc:<protocol>/<channel-slug>` — same grammar as every other pseudo-id. */
-export function channelNodeId(protocol: string, channel: string): NodeId {
-  return `ipc:${protocol}/${channelSlug(channel)}`;
+/** Channel node id: protocol plus optional transport lane/scope and the normalized channel.
+ * Every component is named and URI-encoded so a lane can never be mistaken for a scope and
+ * arbitrary static selector strings remain injective (`a b` cannot collide with `a+b`, etc.). */
+export function channelNodeId(protocol: string, channel: string, lane?: string, scope?: string): NodeId {
+  const qualifiers = [
+    ...(lane === undefined ? [] : [`lane=${channelComponent(lane)}`]),
+    ...(scope === undefined ? [] : [`scope=${channelComponent(scope)}`]),
+    `channel=${channelComponent(channel)}`,
+  ];
+  return `ipc:${channelComponent(protocol)}/${qualifiers.join("/")}`;
 }
 
-/** The node-id grammar forbids whitespace and `#` in the module path; nothing else needs escaping. */
-function channelSlug(channel: string): string {
-  return channel.replace(/\s+/g, "+").replace(/#/g, "%23");
+function channelComponent(value: string): string {
+  return encodeURIComponent(value);
 }
 
 /**
  * Materialize every literal-channel port into the graph: one `channel` node per distinct
- * (protocol, channel), a `sends` edge into it from each exit, a `handles` edge out of it into each
- * entry. Ports with `channel: null` (dynamic) materialize nothing — they stay manifest-only.
+ * (protocol, lane, scope, channel), a `sends` edge into it from each exit, a `handles` edge out of
+ * it into each entry. Ports with `channel: null` (dynamic) materialize nothing — they stay
+ * manifest-only.
  * A one-ended channel is deliberately kept: a dangling channel node IS the finding ("someone sends
  * on this and nobody here listens"). Idempotent per channel; edges aggregate by call site.
  */
@@ -62,25 +92,63 @@ export function materializeChannels(
   if (literal.length === 0) {
     return { nodes, edges };
   }
-  const channels = new Map<string, GraphNode>();
+  const channelGroups = new Map<string, {
+    protocol: string;
+    channel: string;
+    lane: string | undefined;
+    scope: string | undefined;
+    confidence: number;
+  }>();
   const rawEdges: RawGraphEdge[] = [];
   for (const port of literal) {
     const channel = port.channel as string;
-    const id = channelNodeId(port.protocol, channel);
-    if (!channels.has(id) && !known.has(id)) {
-      channels.set(id, channelNode(id, port.protocol, channel));
-    }
+    const id = channelNodeId(port.protocol, channel, port.lane, port.scope);
+    const confidence = port.confidence ?? 1;
+    const resolution = confidence >= 1 ? "resolved" : "unresolved";
+    const group = channelGroups.get(id);
+    if (group) group.confidence = Math.min(group.confidence, confidence);
+    else channelGroups.set(id, {
+      protocol: port.protocol,
+      channel,
+      lane: port.lane,
+      scope: port.scope,
+      confidence,
+    });
+    const endpoint = port.direction === "in" && port.handlerNodeId && known.has(port.handlerNodeId)
+      ? port.handlerNodeId
+      : port.nodeId;
     rawEdges.push(
       port.direction === "out"
-        ? { source: port.nodeId, target: id, kind: SENDS_KIND, resolution: "resolved", callSite: port.callSite }
-        : { source: id, target: port.nodeId, kind: HANDLES_KIND, resolution: "resolved", callSite: port.callSite },
+        ? { source: port.nodeId, target: id, kind: SENDS_KIND, resolution, confidence, callSite: port.callSite }
+        : { source: id, target: endpoint, kind: HANDLES_KIND, resolution, confidence, callSite: port.callSite },
     );
+  }
+  const channels = new Map<string, GraphNode>();
+  for (const [id, group] of channelGroups) {
+    if (!known.has(id)) {
+      channels.set(id, channelNode(
+        id,
+        group.protocol,
+        group.channel,
+        group.lane,
+        group.scope,
+        group.confidence,
+      ));
+    }
   }
   const channelEdges = dedupeAgainst(edges, aggregateEdges(rawEdges));
   return { nodes: [...nodes, ...channels.values()], edges: [...edges, ...channelEdges] };
 }
 
-function channelNode(id: NodeId, protocol: string, channel: string): GraphNode {
+function channelNode(
+  id: NodeId,
+  protocol: string,
+  channel: string,
+  lane: string | undefined,
+  scope: string | undefined,
+  confidence: number,
+): GraphNode {
+  const qualifier = [lane, scope].filter(Boolean).join(" · ");
   return {
     id,
     kind: CHANNEL_KIND,
@@ -88,8 +156,10 @@ function channelNode(id: NodeId, protocol: string, channel: string): GraphNode {
     displayName: channel,
     parentId: null,
     location: { file: `(${protocol})`, startLine: 1 },
-    summary: `${protocol} channel — an IPC boundary joined by its channel key`,
-    tags: [protocol],
+    summary: confidence >= 1
+      ? `${protocol} channel${qualifier ? ` (${qualifier})` : ""} — joined by exact static evidence`
+      : `${protocol} selector${qualifier ? ` (${qualifier})` : ""} — candidate IPC correlation (${Math.round(confidence * 100)}% confidence)`,
+    tags: [protocol, ...(lane ? [lane] : []), ...(confidence < 1 ? ["candidate"] : [])],
   };
 }
 

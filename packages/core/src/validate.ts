@@ -25,12 +25,12 @@ export interface ValidationResult {
 
 const KNOWN_NODE_KINDS = new Set([
   "package", "module", "namespace", "class", "interface", "enum", "typeAlias", "function", "method",
-  "external", "unresolved", "channel", "system",
+  "external", "unresolved", "channel", "system", "promise",
 ]);
 const KNOWN_EDGE_KINDS = new Set([
   "registers", "binds", "provides", "injects", "owns", "aliases",
   "calls", "references", "imports", "extends", "implements", "implementedBy", "instantiates", "renders",
-  "sends", "handles",
+  "sends", "handles", "createsPromise", "returnsPromise", "awaitsPromise", "resolvesPromise", "rejectsPromise",
 ]);
 
 export function validateArtifact(input: unknown): ValidationResult {

@@ -572,9 +572,12 @@ export interface BlueprintState {
   /** Projection shown in the PR review's bottom logic-flow split. This browser-local reader
    * preference is deliberately separate from the full Logic lens's URL-synced `logicView`. */
   reviewFlowSplitView: ReviewFlowSplitView;
-  /** Whether selecting an impacted PR flow also opens its bottom split. The flow remains selected
+  /** Whether selecting an affected PR flow also opens its bottom split. The flow remains selected
    * and highlighted in the main graph when this browser-local preference is off. */
   reviewOpenFlowSplitOnSelect: boolean;
+  /** One explicit "View flow" request. Non-null forces the current review split open in this
+   * projection without mutating the reader's persisted auto-open or projection preferences. */
+  reviewFlowExplicitView: ReviewFlowSplitView | null;
   /** Pointer gesture which opens the graph node's transient code preview. Browser-local so a
    * reader's preference follows them between repositories and reviews. */
   reviewCodePreviewTrigger: ReviewCodePreviewTrigger;
@@ -762,6 +765,8 @@ export interface BlueprintState {
   recenter(): void;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
+  /** Open one review flow in a requested projection without changing saved review preferences. */
+  openReviewFlow(ref: FlowSelectionRef, view: ReviewFlowSplitView): void;
   /** Select one artifact node from the bottom flow pane. Request execution reveals/highlights the
    * exact observed node on the graph; PR review narrows the Map to that node's incident relationships
    * (including on-demand ghosts). Null clears request emphasis or restores the whole review flow. */
@@ -1977,6 +1982,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: reveal?.selectedId ?? null,
         reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneOrigin: null,
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
@@ -2058,6 +2064,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: reveal.selectedId,
         reviewLitNodeIds: new Set(reveal.litNodeIds),
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
@@ -2526,6 +2533,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewLineComposer: null,
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
+    reviewFlowExplicitView: null,
     reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
     reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
     reviewPanelHidden: false,
@@ -2655,6 +2663,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         requestTargetRevealSeq += 1;
         set({
           flowSelection: null,
+          reviewFlowExplicitView: null,
           flowPaneOrigin: null,
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
@@ -2717,6 +2726,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           || !sameMembers(minimalMemberIds, state.minimalMemberIds);
         set({
           flowSelection: ref,
+          reviewFlowExplicitView: null,
           flowPaneOrigin: "explorer",
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
@@ -2756,6 +2766,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       set({
         flowSelection: ref,
+        reviewFlowExplicitView: null,
         flowPaneOrigin: "explorer",
         requestFlowTraceId: null,
         requestFlowExpansionOverrides: new Set<string>(),
@@ -2860,6 +2871,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         telemetryMode: true,
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneOrigin: "request",
         requestFlowTraceId: trace.traceId,
         requestFlowExpansionOverrides: new Set<string>(),
@@ -2983,6 +2995,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    openReviewFlow(ref, view) {
+      // Reuse the canonical review-selection path so graph reveal, baseline capture, and flow
+      // highlighting stay identical to an ordinary row selection. The transient override is
+      // applied afterwards and never written to localStorage.
+      get().selectFlowEntry(ref);
+      const state = get();
+      if (state.flowSelection === null || !sameFlowSelection(state.flowSelection, ref)) {
+        return;
+      }
+      if (view !== "graph") {
+        // A preference for Graph may have started an ELK pass during selection. Supersede it before
+        // mounting the requested DOM projection so a stale result cannot win later.
+        flowPaneLayoutSeq += 1;
+        set({
+          reviewFlowExplicitView: view,
+          recenterSeq: state.recenterSeq + 1,
+          flowPaneRfNodes: [],
+          flowPaneRfEdges: [],
+          flowPaneLayoutStatus: "idle",
+        });
+        return;
+      }
+      set({ reviewFlowExplicitView: view, recenterSeq: state.recenterSeq + 1 });
+      void get().flowPaneRelayout();
+    },
+
     requestSyntheticEditor(rootId, host) {
       set({ syntheticEditorRequest: { rootId, host } });
     },
@@ -3029,6 +3067,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneLayoutSeq += 1;
         set({
           flowSelection: null,
+          reviewFlowExplicitView: null,
           flowPaneOrigin: null,
           requestFlowTraceId: null,
           requestFlowExpansionOverrides: new Set<string>(),
@@ -4459,6 +4498,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewLitNodeIds: null,
             reviewSelectedId: null,
             flowSelection: null,
+            reviewFlowExplicitView: null,
             flowPaneExpansionOverrides: new Set<string>(),
             flowPaneCollapsedEdges: new Set<string>(),
             logicSelected: null,
@@ -4481,6 +4521,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const clearSyntheticFlow = state.flowPaneOrigin === "synthetic"
         ? {
             flowSelection: null,
+            reviewFlowExplicitView: null,
             flowPaneOrigin: null,
             requestFlowTraceId: null,
             requestFlowExpansionOverrides: new Set<string>(),
@@ -4517,6 +4558,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ...(nested
           ? {
               flowSelection: null,
+              reviewFlowExplicitView: null,
               flowPaneOrigin: null,
               requestFlowTraceId: null,
               requestFlowExpansionOverrides: new Set<string>(),
@@ -4682,6 +4724,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ...(reviewFlowOpen
           ? {
               flowSelection: null,
+              reviewFlowExplicitView: null,
               flowPaneExpansionOverrides: new Set<string>(),
               flowPaneCollapsedEdges: new Set<string>(),
               logicSelected: null,
@@ -5024,6 +5067,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // A file/unit click switches back to graph review; the bottom split belongs to a selected
         // logic flow and must not linger with a now-unrelated pane selection.
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
@@ -5091,6 +5135,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewSelectedId: file.moduleId,
         reviewLitNodeIds: lit,
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
@@ -5165,6 +5210,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
@@ -5224,6 +5270,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
         flowSelection: null,
+        reviewFlowExplicitView: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
         logicSelected: null,
@@ -5265,7 +5312,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
     toggleReviewTick(flowId) {
       const { review, reviewTicks } = get();
-      const row = review?.rows.find((candidate) => candidate.flow.flowId === flowId);
+      const row = review?.rows.find((candidate) => candidate.memberFlowIds.includes(flowId));
       if (!review || !row) {
         return;
       }
@@ -5461,8 +5508,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reviewFlowOpen = state.review !== null
         && state.minimalSeedIds.length > 0
         && state.flowSelection !== null
-        && state.reviewFlowBaseline !== null;
-      set({ reviewFlowSplitView: view });
+        && state.reviewFlowBaseline !== null
+        && (state.reviewOpenFlowSplitOnSelect || state.reviewFlowExplicitView !== null);
+      set({
+        reviewFlowSplitView: view,
+        reviewFlowExplicitView: state.reviewFlowExplicitView === null ? null : view,
+      });
       if (!reviewFlowOpen) {
         return;
       }
@@ -5471,7 +5522,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (state.flowPaneOrigin === "synthetic") {
         return;
       }
-      if (!state.reviewOpenFlowSplitOnSelect || view !== "graph") {
+      if (view !== "graph") {
         flowPaneLayoutSeq += 1;
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
@@ -5502,8 +5553,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!reviewFlowSelected) {
         return;
       }
-      const executionGraph = state.flowPaneOrigin === "synthetic" || state.reviewFlowSplitView === "graph";
-      if (!open || !executionGraph) {
+      const effectiveView = state.reviewFlowExplicitView ?? state.reviewFlowSplitView;
+      const executionGraph = state.flowPaneOrigin === "synthetic" || effectiveView === "graph";
+      const splitOpen = open || state.reviewFlowExplicitView !== null;
+      if (!splitOpen || !executionGraph) {
         flowPaneLayoutSeq += 1;
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
@@ -7265,6 +7318,7 @@ function applyPrReviewToMap(
     // Deleted impact and test classification must use the same exact merge-base Git diff used to
     // build the prepared artifact. The boot graph may represent a newer base tip.
     baseIndex: swapped ? (prReviewComparison?.index ?? null) : null,
+    baseArtifact: swapped ? (prReviewComparison?.artifact ?? null) : null,
     showTests: get().showTests,
   });
   const { review, visibleContext } = projection;
@@ -7927,6 +7981,7 @@ function requestFlowPaneReset(state?: BlueprintState): Partial<BlueprintState> {
   if (state !== undefined && state.flowPaneOrigin !== "request") return {};
   return {
     flowSelection: null,
+    reviewFlowExplicitView: null,
     flowPaneOrigin: null,
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),
@@ -7999,6 +8054,7 @@ function shouldResetLogicHostedSynthetic(
 function logicHostedSyntheticReset(): Partial<BlueprintState> {
   return {
     flowSelection: null,
+    reviewFlowExplicitView: null,
     flowPaneOrigin: null,
     requestFlowTraceId: null,
     requestFlowExpansionOverrides: new Set<string>(),

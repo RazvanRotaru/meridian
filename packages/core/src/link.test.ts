@@ -96,6 +96,59 @@ describe("linkArtifacts", () => {
     expect(linked.stats.danglingChannels).toBe(1);
   });
 
+  it("never template-joins HTTP ports across different or unknown endpoint scopes", () => {
+    const scopedWeb: LinkSource = {
+      ...WEB,
+      ports: [
+        { ...WEB.ports[0], scope: "origin:https://one.example" },
+        { ...WEB.ports[0], scope: "origin:https://two.example" },
+      ],
+    };
+    const relinked = linkArtifacts([scopedWeb, API]);
+
+    expect(relinked.stats.httpTemplateJoins).toBe(0);
+    expect(relinked.stats.crossSystemChannels).toBe(0);
+    expect(relinked.nodes.filter((entry) =>
+      entry.kind === "channel" && entry.displayName === "GET /api/orders/123",
+    )).toHaveLength(2);
+    expect(relinked.nodes.find((entry) =>
+      entry.kind === "channel" && entry.displayName === "GET /api/orders/:id",
+    )).toBeTruthy();
+  });
+
+  it("template-joins HTTP ports when their endpoint scopes are proven equal", () => {
+    const scope = "origin:https://api.example";
+    const scopedWeb: LinkSource = { ...WEB, ports: WEB.ports.map((entry) => ({ ...entry, scope })) };
+    const scopedApi: LinkSource = { ...API, ports: API.ports.map((entry) => ({ ...entry, scope })) };
+    const relinked = linkArtifacts([scopedWeb, scopedApi]);
+
+    expect(relinked.stats.httpTemplateJoins).toBe(1);
+    expect(relinked.stats.crossSystemChannels).toBe(1);
+  });
+
+  it("namespaces artifact-local client instances before considering channel identity", () => {
+    const localScope = "factory:axios.instance@src/client.ts:1:1";
+    const first: LinkSource = {
+      ...WEB,
+      name: "web-a",
+      ports: WEB.ports.map((entry) => ({ ...entry, scope: localScope, scopeKind: "artifact" })),
+    };
+    const second: LinkSource = {
+      ...WEB,
+      name: "web-b",
+      ports: WEB.ports.map((entry) => ({ ...entry, scope: localScope, scopeKind: "artifact" })),
+    };
+    const relinked = linkArtifacts([first, second]);
+
+    expect(new Set(relinked.ports.map((entry) => entry.scope))).toEqual(new Set([
+      `artifact:web-a/${localScope}`,
+      `artifact:web-b/${localScope}`,
+    ]));
+    expect(relinked.nodes.filter((entry) =>
+      entry.kind === "channel" && entry.displayName === "GET /api/orders/123",
+    )).toHaveLength(2);
+  });
+
   it("merges each source's logic flows and entry modules, namespacing keys and call targets", () => {
     const withFlows: LinkSource = {
       ...WEB,

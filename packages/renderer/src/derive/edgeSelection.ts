@@ -20,6 +20,11 @@ const CALL_EDGE_KINDS: ReadonlySet<string> = new Set([
   "references",
   "sends",
   "handles",
+  "createsPromise",
+  "returnsPromise",
+  "awaitsPromise",
+  "resolvesPromise",
+  "rejectsPromise",
 ]);
 
 /** The single kind that expresses React component composition (JSX child rendering). */

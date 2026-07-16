@@ -66,6 +66,18 @@ describe("computeCoverage", () => {
     expect(report.summary.percent).toBe(33);
   });
 
+  it("does not count non-callable function-depth resource nodes as coverage leaves", () => {
+    const promiseId = "promise:src/svc.ts#Service.ready";
+    const withResource = computeCoverage(
+      [...NODES, node(promiseId, "promise", "src/svc.ts", "ts:src/svc#Service")],
+      EDGES,
+    );
+
+    expect(withResource.leaves[promiseId]).toBeUndefined();
+    expect(withResource.summary.callables).toBe(report.summary.callables);
+    expect(withResource.containers["ts:src/svc#Service"]).toMatchObject({ total: 2, percent: 50 });
+  });
+
   it("covers a constructor when a test instantiates its class", () => {
     const withCtor = computeCoverage(
       [

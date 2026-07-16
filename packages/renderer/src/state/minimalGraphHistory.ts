@@ -49,6 +49,7 @@ export interface MinimalGraphHistoryEntry {
   syntheticFlowPresentation: BlueprintState["syntheticFlowPresentation"];
   reviewFlowSplitView: BlueprintState["reviewFlowSplitView"];
   reviewOpenFlowSplitOnSelect: BlueprintState["reviewOpenFlowSplitOnSelect"];
+  reviewFlowExplicitView: BlueprintState["reviewFlowExplicitView"];
   logicSelected: BlueprintState["logicSelected"];
   reviewFlowBaseline: BlueprintState["reviewFlowBaseline"];
 }
@@ -100,6 +101,7 @@ export function captureMinimalGraphHistory(state: BlueprintState): MinimalGraphH
     syntheticFlowPresentation: state.syntheticFlowPresentation,
     reviewFlowSplitView: state.reviewFlowSplitView,
     reviewOpenFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+    reviewFlowExplicitView: state.reviewFlowExplicitView,
     logicSelected: state.logicSelected,
     reviewFlowBaseline: cloneReviewFlowBaseline(state.reviewFlowBaseline),
   };
@@ -148,6 +150,7 @@ export function restoreMinimalGraphHistory(parent: MinimalGraphHistoryEntry): Pa
     syntheticSelectedMomentId: parent.syntheticSelectedMomentId,
     syntheticFlowOrientation: parent.syntheticFlowOrientation,
     syntheticFlowPresentation: parent.syntheticFlowPresentation,
+    reviewFlowExplicitView: parent.reviewFlowExplicitView,
     logicSelected: parent.logicSelected,
     reviewFlowBaseline: cloneReviewFlowBaseline(parent.reviewFlowBaseline),
   };

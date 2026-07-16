@@ -162,10 +162,24 @@ function aliasedSymbol(symbol: TsSymbol | undefined): TsSymbol | undefined {
   return symbol?.getAliasedSymbol() ?? symbol;
 }
 
-/** Prefer the body-bearing declaration (the implementation) over overload signatures. */
-function implementationDeclaration(symbol: TsSymbol | undefined): Node | undefined {
+/**
+ * Prefer the body-bearing declaration (the implementation) over overload signatures. An inferred
+ * object-return member may resolve to the RETURN OBJECT's shorthand (`return { replay }`) rather
+ * than to the lexical callable that supplies its value. Follow that compiler-provided value symbol
+ * so a later `binding.replay()` keeps the real helper as its call target.
+ */
+function implementationDeclaration(symbol: TsSymbol | undefined, seen = new Set<TsSymbol>()): Node | undefined {
+  if (!symbol || seen.has(symbol)) return undefined;
+  seen.add(symbol);
   const declarations = symbol?.getDeclarations() ?? [];
-  return declarations.find(hasBody) ?? declarations[0];
+  const body = declarations.find(hasBody);
+  if (body) return body;
+  for (const declaration of declarations) {
+    if (!Node.isShorthandPropertyAssignment(declaration)) continue;
+    const value = implementationDeclaration(declaration.getValueSymbol(), seen);
+    if (value) return value;
+  }
+  return declarations[0];
 }
 
 function hasBody(node: Node): boolean {

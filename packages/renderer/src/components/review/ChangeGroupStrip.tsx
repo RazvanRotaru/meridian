@@ -8,6 +8,7 @@
 
 import { memo, useEffect, useMemo, useState } from "react";
 import type { ChangeGroup } from "@meridian/core";
+import { affectedFlowTouchesIds } from "../../derive/reviewData";
 import { isReviewPathInScope, normalizeReviewPathScope, reviewPathSuggestions } from "../../derive/reviewPathScope";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { NO_FOCUS_RING, SECTION_COUNT, SECTION_TITLE } from "./reviewPanelKit";
@@ -33,9 +34,12 @@ function ChangeGroupStripImpl() {
   const focusedSubgraph = useBlueprint((state) => state.reviewFocusedSubgraph);
   const allFiles = useBlueprint((state) => state.reviewFiles);
   const review = useBlueprint((state) => state.review);
-  const impactedFlowIds = useMemo(
-    () => new Set((review?.rows ?? []).filter((row) => row.group === "impacted").map((row) => row.flow.flowId)),
-    [review],
+  const prSelected = useBlueprint((state) => state.prSelected);
+  const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const headAccurate = prSelected === null || preparedHeadCurrent;
+  const affectedFlowRows = useMemo(
+    () => (review?.rows ?? []).filter((row) => headAccurate || row.group === "impacted"),
+    [headAccurate, review],
   );
   const { selectReviewGroup, selectReviewPathScope, closeReviewSubgraph } = useBlueprintActions();
   const [pathDraft, setPathDraft] = useState(pathScope ?? "");
@@ -67,7 +71,10 @@ function ChangeGroupStripImpl() {
   }
   const groupedFiles = reviewGroups?.groups.reduce((sum, group) => sum + group.files.length, 0) ?? 0;
   const totalFiles = allFiles.length;
-  const groupImpactedCount = (group: ChangeGroup) => group.flowIds.filter((flowId) => impactedFlowIds.has(flowId)).length;
+  const groupAffectedCount = (group: ChangeGroup) => {
+    const members = new Set(group.flowIds);
+    return affectedFlowRows.filter((row) => affectedFlowTouchesIds(row, members)).length;
+  };
   return (
     <section style={STRIP}>
       <div style={STRIP_HEAD}>
@@ -88,7 +95,7 @@ function ChangeGroupStripImpl() {
           <button type="button" aria-pressed={activeGroupId === null} style={activeGroupId === null ? ROW_SELECTED : ROW} onClick={() => selectReviewGroup(null)}>
             <span style={ALL_DOT} />
             <span style={ROW_LABEL}>All groups</span>
-            <span style={ROW_META}>{groupedFiles < totalFiles ? `${groupedFiles} of ${totalFiles} files · ${impactedFlowIds.size} impacted` : `${groupedFiles} files · ${impactedFlowIds.size} impacted`}</span>
+            <span style={ROW_META}>{groupedFiles < totalFiles ? `${groupedFiles} of ${totalFiles} files · ${affectedFlowRows.length} affected` : `${groupedFiles} files · ${affectedFlowRows.length} affected`}</span>
           </button>
           {reviewGroups!.groups.map((group, index) => {
             const selected = activeGroupId === group.id;
@@ -96,7 +103,7 @@ function ChangeGroupStripImpl() {
               <button key={group.id} type="button" aria-pressed={selected} style={selected ? ROW_SELECTED : ROW} onClick={() => selectReviewGroup(group.id)} title={group.label}>
                 <span style={{ ...DOT, background: DOT_PALETTE[index % DOT_PALETTE.length] }} />
                 <span style={ROW_LABEL}>{group.label}</span>
-                <span style={ROW_META}>{group.files.length} files · {groupImpactedCount(group)} impacted</span>
+                <span style={ROW_META}>{group.files.length} files · {groupAffectedCount(group)} affected</span>
               </button>
             );
           })}
@@ -138,7 +145,7 @@ function ChangeGroupStripImpl() {
 
 export const ChangeGroupStrip = memo(ChangeGroupStripImpl);
 
-const STRIP: React.CSSProperties = { padding: "8px 10px", borderBottom: "1px solid #20262F", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 4, maxHeight: "min(250px, 34%)", minHeight: 0, flexShrink: 1, overflow: "hidden" };
+const STRIP: React.CSSProperties = { width: "100%", height: "100%", padding: "8px 10px", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 4, minHeight: 0, overflow: "hidden" };
 const STRIP_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, padding: "0 4px 6px" };
 const GROUP_LIST: React.CSSProperties = { minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", paddingRight: 2 };
 const SPLIT_NOTE: React.CSSProperties = { marginLeft: "auto", fontSize: 10.5, color: "#7D8695" };

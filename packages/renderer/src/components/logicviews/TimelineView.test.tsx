@@ -7,7 +7,7 @@ import { TimelineView } from "./TimelineView";
 const ROOT = "ts:src/run.ts#run";
 const TARGET = "ts:src/work.ts#work";
 const STEPS: FlowStep[] = [
-  { kind: "call", label: "work", target: TARGET, resolution: "resolved" },
+  { kind: "call", label: "work()", target: TARGET, resolution: "resolved" },
   { kind: "exit", variant: "return", label: "done" },
 ];
 const FLOWS: LogicFlows = {
@@ -15,12 +15,13 @@ const FLOWS: LogicFlows = {
 };
 const INDEX = {
   nodesById: new Map([
-    [TARGET, { id: TARGET, kind: "function", location: { file: "src/work.ts", startLine: 1 } }],
+    [ROOT, { id: ROOT, kind: "function", displayName: "run", location: { file: "src/run.ts", startLine: 1 } }],
+    [TARGET, { id: TARGET, kind: "function", displayName: "work", location: { file: "src/work.ts", startLine: 1 } }],
   ]),
   changedStatus: new Map([[TARGET, "modified"]]),
 } as unknown as GraphIndex;
 
-function render(selected: string | null = null, drillEnabled = true) {
+function render(drillEnabled = true, showZoomControls = false) {
   return renderToStaticMarkup(
     <TimelineView
       density="compact"
@@ -28,59 +29,31 @@ function render(selected: string | null = null, drillEnabled = true) {
       steps={STEPS}
       flows={FLOWS}
       index={INDEX}
-      selected={selected}
+      selected={TARGET}
       drillEnabled={drillEnabled}
+      showZoomControls={showZoomControls}
       onSelect={() => undefined}
       onDrill={() => undefined}
     />,
   );
 }
 
-describe("TimelineView", () => {
-  it("renders target-bearing items as keyboard-accessible selection buttons", () => {
-    const markup = render(TARGET);
-
-    expect(markup).toMatch(/<button(?=[^>]*type="button")(?=[^>]*aria-pressed="true")[^>]*>/);
-    expect(markup).toContain('aria-keyshortcuts="Shift+Enter"');
-    expect(markup).toContain("work");
-  });
-
-  it("does not advertise drill navigation in the review-only Timeline", () => {
-    expect(render(null, false)).not.toContain("aria-keyshortcuts");
-  });
-
-  it("labels an unchanged call whose target is modified without using the call-site change marker", () => {
+describe("TimelineView compatibility export", () => {
+  it("renders the participant sequence projection for the persisted timeline mode", () => {
     const markup = render();
 
+    expect(markup).toContain('aria-label="Static sequence diagram"');
+    expect(markup).toContain('data-sequence-message-kind="call"');
+    expect(markup).not.toContain('data-sequence-message-kind="return"');
+    expect(markup).toContain("Return from work to run: returns.");
     expect(markup).toContain("TARGET MODIFIED");
-    expect(markup).toContain('aria-label="Call target modified in this PR"');
-    expect(markup).toContain('data-pr-target-change-status="modified"');
-    expect(markup).toContain("bottom:-20px");
-    expect(markup).not.toContain('data-pr-change-marker="true"');
+    expect(markup).toContain('aria-label="Select call target work()"');
   });
 
-  it("does not dim the whole Timeline when review focus points inside a summarized loop", () => {
-    const markup = renderToStaticMarkup(
-      <TimelineView
-        density="compact"
-        rootId={ROOT}
-        steps={[{ kind: "loop", label: "for each item", body: STEPS }]}
-        flows={FLOWS}
-        index={INDEX}
-        selected={TARGET}
-        drillEnabled={false}
-        onSelect={() => undefined}
-        onDrill={() => undefined}
-      />,
-    );
+  it("supports review-safe navigation and local zoom controls", () => {
+    const markup = render(false, true);
 
-    expect(markup).toContain("for each item");
-    expect(markup).not.toContain("opacity:0.55");
-  });
-
-  it("keeps the compact return label inside the scrollable surface", () => {
-    const markup = render();
-
-    expect(markup).toMatch(/top:18px[^>]*><span[^>]*top:-14px[^>]*>function returns<\/span>/);
+    expect(markup).not.toContain("aria-keyshortcuts");
+    expect(markup).toContain('aria-label="Sequence diagram zoom"');
   });
 });

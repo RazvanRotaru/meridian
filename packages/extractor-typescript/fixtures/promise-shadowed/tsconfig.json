@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "noLib": true,
+    "strict": true,
+    "target": "es2022"
+  },
+  "include": ["src"]
+}

@@ -39,7 +39,7 @@ describe("calleesOf", () => {
   it("dedups repeated targets, taking label/kind from the target node", () => {
     const index = fakeIndex(
       [node("ts:m#A", "function", "A"), node("ts:m#B", "method", "B")],
-      [edge("ts:m#A", "ts:m#B", "resolved"), edge("ts:m#A", "ts:m#B", "resolved", "references")],
+      [edge("ts:m#A", "ts:m#B", "resolved"), edge("ts:m#A", "ts:m#B", "resolved", "instantiates")],
     );
     const callees = calleesOf(index, "ts:m#A");
     expect(callees).toEqual([{ id: "ts:m#B", resolution: "resolved", kind: "method", label: "B" }]);
@@ -65,6 +65,17 @@ describe("calleesOf", () => {
 
   it("returns empty for a node with no out-edges", () => {
     expect(calleesOf(fakeIndex([], []), "ts:m#nobody")).toEqual([]);
+  });
+
+  it("does not treat structural or resource relations as callees", () => {
+    const index = fakeIndex(
+      [node("ts:m#A", "function", "A"), node("promise:m#ready", "promise", "ready")],
+      [
+        edge("ts:m#A", "promise:m#ready", "resolved", "returnsPromise"),
+        edge("ts:m#A", "ts:m#B", "resolved", "references"),
+      ],
+    );
+    expect(calleesOf(index, "ts:m#A")).toEqual([]);
   });
 });
 

@@ -1,7 +1,7 @@
 /**
  * The PR-review side panel. Files first: every changed file with its touched code units and a
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content). Change groups and
- * impacted logic flows stay pinned above that file scroller, and a footer submits review decisions
+ * affected logic flows stay pinned above that file scroller, and a footer submits review decisions
  * together with any draft comments. The header tracks viewed-files progress, states the review's provenance (which graph,
  * which code), offers the fallback review's opt-in "Extract head graph", and Reset (ticks only —
  * never drafts) and Hide; a hidden panel folds into a narrow reopen rail. Self-hides when there
@@ -14,20 +14,35 @@ import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
 import type { PrSummary } from "../../state/prTypes";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
+import { ResizableSplitView } from "../flowexplorer/FlowSplitView";
 import { ChangeGroupStrip } from "./ChangeGroupStrip";
 import { ReviewFilesSection } from "./ReviewFilesSection";
-import { ReviewFlowsSection } from "./ReviewFlowsSection";
+import { ReviewFlowsSection, visibleAffectedFlows } from "./ReviewFlowsSection";
 import { ReviewSubmissionFooter } from "./ReviewSubmissionFooter";
 import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 import { selectedPrSummary } from "../../state/store";
+import { isReviewPathInScope } from "../../derive/reviewPathScope";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
   const hidden = useBlueprint((state) => state.reviewPanelHidden);
   const showTests = useBlueprint((state) => state.showTests);
   const reviewDiffOnly = useBlueprint((state) => state.reviewDiffOnly);
-  const visibleFileCount = useBlueprint((state) => state.reviewFiles.length);
+  const reviewFiles = useBlueprint((state) => state.reviewFiles);
+  const reviewGroups = useBlueprint((state) => state.reviewGroups);
+  const activeGroupId = useBlueprint((state) => state.reviewActiveGroupId);
+  const pathScope = useBlueprint((state) => state.reviewPathScope);
+  const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
+  const prSelected = useBlueprint((state) => state.prSelected);
+  const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const footerVisible = useBlueprint((state) => state.prReviewed !== null || (state.showTests
+    ? state.reviewComments.length > 0
+    : state.reviewComments.some((comment) => !isReviewTestPath(
+      comment.path,
+      state.index,
+      state.prReviewBaseline?.index ?? null,
+    ))));
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
@@ -42,6 +57,7 @@ function ReviewPanelImpl() {
     toggleShowTests,
   } = useBlueprintActions();
   const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [filesExpanded, setFilesExpanded] = useState(false);
   const preferencesButtonRef = useRef<HTMLButtonElement | null>(null);
   const closePreferences = () => {
     setPreferencesOpen(false);
@@ -53,36 +69,63 @@ function ReviewPanelImpl() {
   if (hidden) {
     return <CollapsedRail />;
   }
+  const activeGroup = activeGroupId === null
+    ? null
+    : reviewGroups?.groups.find((group) => group.id === activeGroupId) ?? null;
+  const activeGroupFiles = activeGroup === null ? null : new Set(activeGroup.files);
+  const scopePresent = reviewFiles.some((file) => file.moduleId !== null
+    && (activeGroupFiles === null || activeGroupFiles.has(file.path)));
+  const filesPresent = reviewFiles.some((file) => (activeGroupFiles === null || activeGroupFiles.has(file.path))
+    && (pathScope === null || isReviewPathInScope(file.path, pathScope))
+    && (focusedSubgraphPaths === null || focusedSubgraphPaths.includes(file.path)));
+  const flowsPresent = visibleAffectedFlows(
+    review.rows,
+    prSelected === null || preparedHeadCurrent,
+  ).length > 0;
+  const testsHiddenNoticeVisible = !showTests && reviewFiles.length === 0;
+  const scopeVisible = !filesExpanded && (scopePresent || testsHiddenNoticeVisible);
+  const affectedFlowsVisible = !filesExpanded && flowsPresent;
   return (
     <div style={PANEL}>
-      <Header
-        review={review}
-        preferencesOpen={preferencesOpen}
-        preferencesButtonRef={preferencesButtonRef}
-        onTogglePreferences={() => preferencesOpen ? closePreferences() : setPreferencesOpen(true)}
-      />
-      <div style={BODY_STACK}>
-        {/* Keep the review body mounted while preferences cover it: file/flow fold state and an
-            in-progress comment composer live locally in these children and must survive a settings
-            visit. `inert` + visibility remove the covered controls from every interaction path. */}
-        <div
-          style={{ ...REVIEW_BODY, visibility: preferencesOpen ? "hidden" : "visible" }}
-          inert={preferencesOpen}
-          aria-hidden={preferencesOpen || undefined}
-        >
-          {!showTests && visibleFileCount === 0 ? (
-            <div style={TESTS_HIDDEN_NOTICE} role="status">
-              Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
-            </div>
-          ) : null}
-          <ChangeGroupStrip />
-          <ReviewFlowsSection />
-          <div style={SCROLL}>
-            <ReviewFilesSection />
+      <ReviewPanelResizableLayout
+        header={(
+          <Header
+            review={review}
+            preferencesOpen={preferencesOpen}
+            preferencesButtonRef={preferencesButtonRef}
+            onTogglePreferences={() => preferencesOpen ? closePreferences() : setPreferencesOpen(true)}
+          />
+        )}
+        scope={(
+          <div style={REVIEW_SECTION_SURFACE}>
+            {testsHiddenNoticeVisible ? (
+              <div style={TESTS_HIDDEN_NOTICE} role="status">
+                Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
+              </div>
+            ) : null}
+            <ChangeGroupStrip />
           </div>
-          <ReviewSubmissionFooter />
-        </div>
-        {preferencesOpen ? (
+        )}
+        flows={<ReviewFlowsSection />}
+        files={(
+          <div
+            data-review-files-scroll="true"
+            data-review-files-expanded={filesExpanded ? "true" : "false"}
+            style={SCROLL}
+          >
+            <ReviewFilesSection
+              expanded={filesExpanded}
+              onExpandedChange={setFilesExpanded}
+            />
+          </div>
+        )}
+        footer={<ReviewSubmissionFooter />}
+        scopeVisible={scopeVisible}
+        flowsVisible={affectedFlowsVisible}
+        filesVisible={filesPresent}
+        footerVisible={footerVisible}
+        bodyCovered={preferencesOpen}
+        overlay={preferencesOpen ? (
           <div style={PREFERENCES_LAYER}>
             <ReviewPreferencesPane
               excludeTestChanges={!showTests}
@@ -109,8 +152,141 @@ function ReviewPanelImpl() {
             />
           </div>
         ) : null}
-      </div>
+      />
     </div>
+  );
+}
+
+export interface ReviewPanelResizableLayoutProps {
+  header: React.ReactNode;
+  scope: React.ReactNode;
+  flows: React.ReactNode;
+  files: React.ReactNode;
+  footer: React.ReactNode;
+  scopeVisible: boolean;
+  flowsVisible: boolean;
+  filesVisible: boolean;
+  footerVisible: boolean;
+  bodyCovered?: boolean;
+  overlay?: React.ReactNode;
+}
+
+const REVIEW_SPLIT_DEFAULTS = {
+  header: 0.23,
+  scope: 0.22,
+  flows: 0.26,
+  files: 0.72,
+} as const;
+
+/** Four nested instances of the application splitter make every review boundary adjustable. The
+ * visibility flags remove empty/focus-mode panes and their separator without unmounting children. */
+export function ReviewPanelResizableLayout(props: ReviewPanelResizableLayoutProps) {
+  const [headerRatio, setHeaderRatio] = useState<number>(REVIEW_SPLIT_DEFAULTS.header);
+  const [scopeRatio, setScopeRatio] = useState<number>(REVIEW_SPLIT_DEFAULTS.scope);
+  const [flowsRatio, setFlowsRatio] = useState<number>(REVIEW_SPLIT_DEFAULTS.flows);
+  const [filesRatio, setFilesRatio] = useState<number>(REVIEW_SPLIT_DEFAULTS.files);
+  const filesAndFooterVisible = props.filesVisible || props.footerVisible;
+  const afterScopeVisible = props.flowsVisible || filesAndFooterVisible;
+  const bodyVisible = props.scopeVisible || afterScopeVisible || props.overlay !== undefined;
+
+  const filesAndFooter = (
+    <ResizableSplitView
+      open
+      orientation="horizontal"
+      primary={props.files}
+      secondary={props.footer}
+      primaryRatio={filesRatio}
+      defaultPrimaryRatio={REVIEW_SPLIT_DEFAULTS.files}
+      onPrimaryRatioChange={setFilesRatio}
+      primaryPaneId="review-files-pane"
+      secondaryPaneId="review-submit-pane"
+      primaryLabel="Changed files"
+      secondaryLabel="submit review"
+      separatorLabel="Resize changed files and submit review"
+      minimumPrimarySize={80}
+      minimumSecondarySize={96}
+      handleSize={6}
+      primaryVisible={props.filesVisible}
+      secondaryVisible={props.footerVisible}
+    />
+  );
+
+  const flowsAndRemaining = (
+    <ResizableSplitView
+      open
+      orientation="horizontal"
+      primary={props.flows}
+      secondary={filesAndFooter}
+      primaryRatio={flowsRatio}
+      defaultPrimaryRatio={REVIEW_SPLIT_DEFAULTS.flows}
+      onPrimaryRatioChange={setFlowsRatio}
+      primaryPaneId="review-flows-pane"
+      secondaryPaneId="review-after-flows-pane"
+      primaryLabel="Affected logic flows"
+      secondaryLabel="files and submission"
+      separatorLabel="Resize affected logic flows and remaining review sections"
+      minimumPrimarySize={48}
+      minimumSecondarySize={170}
+      handleSize={6}
+      primaryVisible={props.flowsVisible}
+      secondaryVisible={filesAndFooterVisible}
+    />
+  );
+
+  const reviewSections = (
+    <ResizableSplitView
+      open
+      orientation="horizontal"
+      primary={props.scope}
+      secondary={flowsAndRemaining}
+      primaryRatio={scopeRatio}
+      defaultPrimaryRatio={REVIEW_SPLIT_DEFAULTS.scope}
+      onPrimaryRatioChange={setScopeRatio}
+      primaryPaneId="review-scope-pane"
+      secondaryPaneId="review-after-scope-pane"
+      primaryLabel="Review scope"
+      secondaryLabel="remaining review sections"
+      separatorLabel="Resize review scope and remaining review sections"
+      minimumPrimarySize={72}
+      minimumSecondarySize={210}
+      handleSize={6}
+      primaryVisible={props.scopeVisible}
+      secondaryVisible={afterScopeVisible}
+    />
+  );
+
+  return (
+    <ResizableSplitView
+      open
+      orientation="horizontal"
+      primary={props.header}
+      secondary={(
+        <div style={BODY_STACK}>
+          {/* Keep the whole review workspace mounted while preferences cover it: splitter ratios,
+              folds, path drafts, and comment composers all survive the overlay and focus mode. */}
+          <div
+            style={{ ...REVIEW_BODY, visibility: props.bodyCovered ? "hidden" : "visible" }}
+            inert={props.bodyCovered}
+            aria-hidden={props.bodyCovered || undefined}
+          >
+            {reviewSections}
+          </div>
+          {props.overlay}
+        </div>
+      )}
+      primaryRatio={headerRatio}
+      defaultPrimaryRatio={REVIEW_SPLIT_DEFAULTS.header}
+      onPrimaryRatioChange={setHeaderRatio}
+      primaryPaneId="review-header-pane"
+      secondaryPaneId="review-workspace-pane"
+      primaryLabel="Pull request context"
+      secondaryLabel="review workspace"
+      separatorLabel="Resize pull request context and review workspace"
+      minimumPrimarySize={96}
+      minimumSecondarySize={260}
+      handleSize={6}
+      secondaryVisible={bodyVisible}
+    />
   );
 }
 
@@ -424,12 +600,16 @@ function ExtractFailedWarning() {
 export const ReviewPanel = memo(ReviewPanelImpl);
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
+export const REVIEW_PANEL_DEFAULT_WIDTH = 380;
+export const REVIEW_PANEL_RAIL_WIDTH = 30;
 
 const PANEL: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
-  width: 380,
+  width: "100%",
+  minWidth: 0,
   height: "100%",
+  boxSizing: "border-box",
   background: "#0B0E13",
   borderLeft: "1px solid #20262F",
 };
@@ -443,7 +623,7 @@ const TESTS_HIDDEN_NOTICE: React.CSSProperties = {
   fontSize: 11,
   lineHeight: 1.45,
 };
-const HEADER: React.CSSProperties = { padding: "14px 16px 12px", borderBottom: "1px solid #20262F", display: "flex", flexDirection: "column", gap: 8 };
+const HEADER: React.CSSProperties = { height: "100%", minHeight: 0, overflowY: "auto", boxSizing: "border-box", padding: "14px 16px 12px", display: "flex", flexDirection: "column", gap: 8 };
 const HEADER_TOP: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const HEADER_TITLE: React.CSSProperties = { fontSize: 10.5, fontWeight: 750, letterSpacing: 0.5, textTransform: "uppercase", color: "#9AA4B2" };
 const PR_NUMBER: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, fontWeight: 700, lineHeight: "18px" };
@@ -479,7 +659,7 @@ const RAIL: React.CSSProperties = {
   flexDirection: "column",
   alignItems: "center",
   gap: 10,
-  width: 30,
+  width: REVIEW_PANEL_RAIL_WIDTH,
   height: "100%",
   padding: "12px 0",
   boxSizing: "border-box",
@@ -511,7 +691,8 @@ const WARNING: React.CSSProperties = { fontSize: 11, color: "#D29922", backgroun
 const EXTRACT_WARNING: React.CSSProperties = { ...WARNING, display: "flex", alignItems: "flex-start", gap: 6 };
 const EXTRACT_WARNING_DETAIL: React.CSSProperties = { color: "#9A7B2D" };
 const WARNING_DISMISS: React.CSSProperties = { font: "inherit", border: "none", background: "transparent", color: "#D29922", cursor: "pointer", padding: 0, lineHeight: "14px", fontSize: 13, ...NO_FOCUS_RING };
-const BODY_STACK: React.CSSProperties = { position: "relative", flex: 1, minHeight: 0 };
+const BODY_STACK: React.CSSProperties = { position: "relative", width: "100%", height: "100%", minHeight: 0 };
 const REVIEW_BODY: React.CSSProperties = { display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0 };
+const REVIEW_SECTION_SURFACE: React.CSSProperties = { display: "flex", flexDirection: "column", width: "100%", height: "100%", minHeight: 0, overflow: "hidden" };
 const PREFERENCES_LAYER: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
-const SCROLL: React.CSSProperties = { flex: 1, minHeight: 0, overflowY: "auto", padding: "8px 10px 24px" };
+const SCROLL: React.CSSProperties = { width: "100%", height: "100%", minHeight: 0, boxSizing: "border-box", overflowY: "auto", padding: "8px 10px 24px" };

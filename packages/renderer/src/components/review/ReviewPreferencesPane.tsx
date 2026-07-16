@@ -39,8 +39,8 @@ const OPTION_DETAILS: Record<ReviewFlowSplitView, {
   recommended?: boolean;
 }> = {
   timeline: {
-    label: "Timeline",
-    description: "Follow calls in execution order, including awaited and background work.",
+    label: "Sequence",
+    description: "Follow calls between participants with lifelines, returns, loops, and alternatives.",
     recommended: true,
   },
   graph: {

@@ -19,6 +19,8 @@ export interface Callee {
 }
 
 const EXTERNAL_PREFIXES = ["ext:", "unresolved:"] as const;
+/** Relations that actually execute a target. Structural/resource edges are not callees. */
+const EXECUTION_EDGE_KINDS: ReadonlySet<string> = new Set(["calls", "instantiates", "renders"]);
 
 const EMPTY: ReadonlySet<string> = new Set();
 
@@ -33,6 +35,9 @@ export function calleesOf(index: GraphIndex, nodeId: string): Callee[] {
   const callees: Callee[] = [];
   const seen = new Set<string>();
   for (const edge of index.outEdges.get(nodeId) ?? []) {
+    if (!EXECUTION_EDGE_KINDS.has(edge.kind)) {
+      continue;
+    }
     if (seen.has(edge.target)) {
       continue;
     }

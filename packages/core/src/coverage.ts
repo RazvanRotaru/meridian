@@ -10,7 +10,6 @@
  */
 
 import type { GraphEdge, GraphNode, NodeId } from "./types";
-import { rankOfKind } from "./extractor";
 import { collectTestIds } from "./test-detection";
 
 export type LeafCoverageStatus = "covered" | "indirect" | "uncovered";
@@ -75,7 +74,7 @@ export function computeCoverage(nodes: GraphNode[], edges: GraphEdge[]): Coverag
 }
 
 function isCallableKind(kind: string): boolean {
-  return rankOfKind(kind) === 3;
+  return kind === "function" || kind === "method";
 }
 
 const CONSTRUCTOR_NAMES = new Set(["constructor", "__init__"]);

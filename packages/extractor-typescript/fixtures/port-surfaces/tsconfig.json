@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "lib": ["es2022", "dom"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "target": "es2022",
+    "strict": true
+  },
+  "include": ["src"]
+}

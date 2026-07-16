@@ -123,7 +123,7 @@ export function reviewSuccessLabel(event: PrReviewSubmissionEvent): string {
   return event === "APPROVE" ? "Pull request approved" : event === "REQUEST_CHANGES" ? "Changes requested" : "Comments submitted";
 }
 
-const FOOTER: React.CSSProperties = { borderTop: "1px solid #20262F", padding: "11px 14px", display: "flex", flexDirection: "column", gap: 8, background: "#0B0E13" };
+const FOOTER: React.CSSProperties = { width: "100%", height: "100%", minHeight: 0, boxSizing: "border-box", overflowY: "auto", padding: "11px 14px", display: "flex", flexDirection: "column", gap: 8, background: "#0B0E13" };
 const LOCAL_FOOTER: React.CSSProperties = { ...FOOTER, color: "#9AA4B2", fontSize: 12 };
 const HEADING_ROW: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
 const TITLE: React.CSSProperties = { color: "#E6EDF3", fontSize: 12, fontWeight: 700 };

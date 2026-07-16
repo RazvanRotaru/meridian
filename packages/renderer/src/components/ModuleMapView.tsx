@@ -23,7 +23,7 @@
  * containment trail) navigates back out. Recenter/focus is a separate explicit canvas action.
  */
 
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Node } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EmptyModuleMapCard, ServiceScopeBreadcrumb } from "./ModuleMapChrome";
@@ -46,7 +46,12 @@ import { useRecenter } from "./canvas/useRecenter";
 import { useSemanticSurfaceNavigation } from "./canvas/useSemanticSurfaceNavigation";
 import { MinimalGraphView } from "./MinimalGraphView";
 import { MinimalCodebaseView } from "./MinimalCodebaseView";
-import { ReviewPanel } from "./review/ReviewPanel";
+import {
+  REVIEW_PANEL_DEFAULT_WIDTH,
+  REVIEW_PANEL_RAIL_WIDTH,
+  ReviewPanel,
+} from "./review/ReviewPanel";
+import { DEFAULT_GRAPH_RATIOS, ResizableSplitView } from "./flowexplorer/FlowSplitView";
 import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 import { clusteringFor } from "../derive/serviceClusteringCache";
@@ -58,6 +63,7 @@ const SERVICE_DOMAIN_KIND = "serviceDomain";
 export function ModuleMapView() {
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewPanelHidden = useBlueprint((state) => state.reviewPanelHidden);
   const minimalView = useBlueprint((state) => state.minimalView);
   const { setMinimalView } = useBlueprintActions();
   const sourceMounted = !minimalOpen || !reviewActive;
@@ -101,26 +107,74 @@ export function ModuleMapView() {
           </GraphSurfaceProvider>
         </div>
       ) : null}
-      {minimalOpen ? (
-        <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
-          <div style={REVIEW_SPLIT_STYLE}>
-            <div
-              style={REVIEW_GRAPH_STYLE}
-              role="region"
-              aria-label={minimalView === "codebase" ? "Codebase context graph" : "Extracted graph"}
-            >
-              <GraphSurfaceProvider>
-                {minimalView === "codebase" ? (
-                  <MinimalCodebaseView onBackToGraph={showExtractedGraph} backButtonRef={backButtonRef} />
-                ) : (
-                  <MinimalGraphView onShowCodebase={showCodebase} codebaseButtonRef={codebaseButtonRef} />
-                )}
-              </GraphSurfaceProvider>
-            </div>
-            <ReviewPanel />
+      <ReviewResizableOverlay
+        visible={minimalOpen}
+        reviewActive={reviewActive}
+        reviewPanelHidden={reviewPanelHidden}
+        primary={(
+          <div
+            style={REVIEW_GRAPH_STYLE}
+            role="region"
+            aria-label={minimalView === "codebase" ? "Codebase context graph" : "Extracted graph"}
+          >
+            <GraphSurfaceProvider>
+              {minimalView === "codebase" ? (
+                <MinimalCodebaseView onBackToGraph={showExtractedGraph} backButtonRef={backButtonRef} />
+              ) : (
+                <MinimalGraphView onShowCodebase={showCodebase} codebaseButtonRef={codebaseButtonRef} />
+              )}
+            </GraphSurfaceProvider>
           </div>
-        </div>
-      ) : null}
+        )}
+      />
+    </div>
+  );
+}
+
+/**
+ * Keep the review split's position in a deliberately small component. Pointer movement then
+ * rerenders only this wrapper (the primary ReactNode remains referentially stable), not the large
+ * ModuleMapView/provider tree. Keeping the wrapper mounted also remembers a user's width when the
+ * minimal overlay closes and reopens.
+ */
+function ReviewResizableOverlay(props: {
+  visible: boolean;
+  reviewActive: boolean;
+  reviewPanelHidden: boolean;
+  primary: React.ReactNode;
+}) {
+  const [reviewGraphRatio, setReviewGraphRatio] = useState<number>(DEFAULT_GRAPH_RATIOS.review);
+  const fixedDefaultInitialized = useRef(false);
+  const updateReviewGraphRatio = useCallback((next: number) => {
+    fixedDefaultInitialized.current = true;
+    setReviewGraphRatio(next);
+  }, []);
+
+  if (!props.visible) return null;
+  return (
+    <div data-graph-surface="minimal" style={MINIMAL_OVERLAY_STYLE}>
+      <div style={REVIEW_SPLIT_STYLE}>
+        <ResizableSplitView
+          open={props.reviewActive && !props.reviewPanelHidden}
+          orientation="vertical"
+          primaryRatio={reviewGraphRatio}
+          defaultPrimaryRatio={DEFAULT_GRAPH_RATIOS.review}
+          defaultSecondarySize={REVIEW_PANEL_DEFAULT_WIDTH}
+          initializeDefaultSecondarySize={!fixedDefaultInitialized.current}
+          minimumPrimarySize={REVIEW_GRAPH_MIN_WIDTH}
+          minimumSecondarySize={REVIEW_PANEL_MIN_WIDTH}
+          onPrimaryRatioChange={updateReviewGraphRatio}
+          primaryPaneId="meridian-review-graph-pane"
+          secondaryPaneId="meridian-pr-review-pane"
+          primaryLabel="Graph"
+          secondaryLabel="PR review"
+          separatorLabel="Resize graph and PR review"
+          keepSecondaryWhenClosed={props.reviewActive}
+          closedSecondarySize={REVIEW_PANEL_RAIL_WIDTH}
+          primary={props.primary}
+          secondary={<ReviewPanel />}
+        />
+      </div>
     </div>
   );
 }
@@ -310,6 +364,8 @@ function miniMapColor(node: Node): string {
 }
 
 const REVIEW_SPLIT_STYLE: React.CSSProperties = { position: "absolute", inset: 0, display: "flex" };
-const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", flex: 1, minWidth: 0 };
+const REVIEW_GRAPH_STYLE: React.CSSProperties = { position: "relative", width: "100%", height: "100%", minWidth: 0 };
+const REVIEW_GRAPH_MIN_WIDTH = 320;
+const REVIEW_PANEL_MIN_WIDTH = 300;
 const SOURCE_SURFACE_LAYER_STYLE: React.CSSProperties = { position: "absolute", inset: 0 };
 const MINIMAL_OVERLAY_STYLE: React.CSSProperties = { position: "absolute", inset: 0, zIndex: 10 };
