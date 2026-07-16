@@ -9,11 +9,12 @@ function node(
   file: string,
   parentId: string | null,
   lines: { start: number; end: number } = { start: 1, end: 20 },
+  qualifiedName: string = id,
 ): GraphNode {
   return {
     id,
     kind,
-    qualifiedName: id,
+    qualifiedName,
     displayName: id.split("#").pop() ?? id,
     parentId,
     location: { file, startLine: lines.start, endLine: lines.end },
@@ -137,5 +138,147 @@ describe("deriveReviewProjection", () => {
     ]);
     expect(projection.review.rows.some((row) => row.flow.flowId === getCartId)).toBe(false);
     expect(projection.review.rows.some((row) => row.flow.flowId === placeOrderId)).toBe(false);
+  });
+
+  it("classifies affected flow trees against the exact merge-base artifact", () => {
+    const file = "src/registration.ts";
+    const moduleId = "ts:src/registration.ts";
+    const changedId = `${moduleId}#bootstrap`;
+    const newId = `${moduleId}#acknowledgeRegistration`;
+    const dependencyId = `${moduleId}#installHook`;
+    const nodes = [
+      node(moduleId, "module", file, null, { start: 1, end: 60 }),
+      node(changedId, "function", file, moduleId, { start: 5, end: 20 }),
+      node(newId, "function", file, moduleId, { start: 24, end: 38 }),
+      node(dependencyId, "function", file, moduleId, { start: 42, end: 50 }),
+    ];
+    const head = {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-07-12T00:00:00.000Z",
+      generator: { name: "test", version: "0" },
+      target: { name: "fixture", root: ".", language: "typescript" },
+      nodes,
+      edges: [],
+      extensions: {
+        logicFlow: {
+          [changedId]: [{ kind: "call", label: "installHook", target: dependencyId, resolution: "resolved" }],
+          [newId]: [{ kind: "call", label: "installHook", target: dependencyId, resolution: "resolved" }],
+          [dependencyId]: [],
+        },
+      },
+    } as unknown as GraphArtifact;
+    const base = {
+      ...head,
+      extensions: {
+        logicFlow: {
+          [changedId]: [{ kind: "exit", variant: "return", label: null }],
+          [dependencyId]: [],
+        },
+      },
+    } as unknown as GraphArtifact;
+    const context: ReviewContext = {
+      changedFiles: [{ path: file, status: "modified", hunks: [{ start: 5, end: 38 }] }],
+      baseRef: "main",
+      baseSha: null,
+      headRef: "feature",
+      reviewKey: "repo|pr-flow-comparison",
+      warnings: [],
+    };
+
+    const projection = deriveReviewProjection(context, head, buildGraphIndex(head), {
+      baseIndex: buildGraphIndex(base),
+      baseArtifact: base,
+      showTests: true,
+    });
+
+    expect(projection.review.rows.map((row) => [row.flow.flowId, row.flowChange])).toEqual([
+      [changedId, "changed"],
+      [newId, "new"],
+    ]);
+  });
+
+  it("keeps flow change unknown when the comparison artifact has no logicFlow data", () => {
+    const base = { ...ARTIFACT, extensions: {} } as unknown as GraphArtifact;
+    const projection = deriveReviewProjection(CONTEXT, ARTIFACT, buildGraphIndex(ARTIFACT), {
+      baseIndex: buildGraphIndex(base),
+      baseArtifact: base,
+      showTests: true,
+    });
+
+    expect(projection.review.rows.map((row) => row.flowChange)).toEqual(["unknown", "unknown"]);
+  });
+
+  it("matches flows semantically across a pure file rename", () => {
+    const oldFile = "src/old.ts";
+    const newFile = "src/new.ts";
+    const oldModule = `ts:${oldFile}`;
+    const newModule = `ts:${newFile}`;
+    const oldRun = `${oldModule}#Service.run`;
+    const newRun = `${newModule}#Service.run`;
+    const oldHelper = `${oldModule}#Service.helper`;
+    const newHelper = `${newModule}#Service.helper`;
+    const base = {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-07-12T00:00:00.000Z",
+      generator: { name: "test", version: "0" },
+      target: { name: "fixture", root: ".", language: "typescript" },
+      nodes: [
+        node(oldModule, "module", oldFile, null, { start: 1, end: 40 }, oldFile),
+        node(oldRun, "method", oldFile, oldModule, { start: 5, end: 20 }, "Service.run"),
+        node(oldHelper, "method", oldFile, oldModule, { start: 24, end: 32 }, "Service.helper"),
+      ],
+      edges: [],
+      extensions: {
+        logicFlow: {
+          [oldRun]: [{
+            kind: "call",
+            label: "helper",
+            target: oldHelper,
+            resolution: "resolved",
+            source: { file: oldFile, line: 10 },
+          }],
+          [oldHelper]: [],
+        },
+      },
+    } as unknown as GraphArtifact;
+    const head = {
+      ...base,
+      nodes: [
+        node(newModule, "module", newFile, null, { start: 1, end: 40 }, newFile),
+        node(newRun, "method", newFile, newModule, { start: 5, end: 20 }, "Service.run"),
+        node(newHelper, "method", newFile, newModule, { start: 24, end: 32 }, "Service.helper"),
+      ],
+      extensions: {
+        logicFlow: {
+          [newRun]: [{
+            kind: "call",
+            label: "helper",
+            target: newHelper,
+            resolution: "resolved",
+            source: { file: newFile, line: 10 },
+          }],
+          [newHelper]: [],
+        },
+      },
+    } as unknown as GraphArtifact;
+    const context: ReviewContext = {
+      changedFiles: [{ path: newFile, previousPath: oldFile, status: "renamed" }],
+      baseRef: "main",
+      baseSha: null,
+      headRef: "feature",
+      reviewKey: "repo|pr-rename",
+      warnings: [],
+    };
+
+    const projection = deriveReviewProjection(context, head, buildGraphIndex(head), {
+      baseIndex: buildGraphIndex(base),
+      baseArtifact: base,
+      showTests: true,
+    });
+
+    expect(projection.review.rows.map((row) => [row.flow.flowId, row.flowChange])).toEqual([
+      [newRun, "unchanged"],
+      [newHelper, "unchanged"],
+    ]);
   });
 });

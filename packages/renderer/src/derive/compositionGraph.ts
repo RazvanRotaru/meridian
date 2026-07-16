@@ -97,13 +97,26 @@ export interface CompEdgeSpec {
   ipcChannels?: IpcChannelDetail[];
 }
 
-/** Recover a channel's display key + protocol from its `ipc:<protocol>/<slug>` id (core's grammar). */
+/** Recover a channel's display key + protocol from core's encoded channel id.
+ * Legacy v1 ids remain readable so older artifacts still render. */
 export function channelInfoFromId(id: string): { channel: string; protocol: string } {
   const body = id.startsWith("ipc:") ? id.slice(4) : id;
   const slash = body.indexOf("/");
-  const protocol = slash === -1 ? "ipc" : body.slice(0, slash);
-  const channel = (slash === -1 ? body : body.slice(slash + 1)).replace(/\+/g, " ").replace(/%23/g, "#");
+  const protocol = decodeChannelComponent(slash === -1 ? "ipc" : body.slice(0, slash));
+  const tail = slash === -1 ? body : body.slice(slash + 1);
+  const encodedChannel = tail.split("/").find((component) => component.startsWith("channel="))?.slice("channel=".length);
+  const channel = encodedChannel === undefined
+    ? decodeChannelComponent(tail.replace(/\+/g, " "))
+    : decodeChannelComponent(encodedChannel);
   return { channel, protocol };
+}
+
+function decodeChannelComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
 }
 
 /** A channel's full inspector detail from its id + which sides it has anywhere in the artifact. */
@@ -267,8 +280,8 @@ function channelNodesById(edges: GraphEdge[], sides: Map<string, { out: boolean;
   return byId;
 }
 
-// A channel id is `ipc:<protocol>/<slug>` — recover the protocol and display label from it, so the
-// aggregate path needn't carry the channel GraphNodes. Matches core's channelNodeId grammar.
+// Recover the protocol and display label from the channel id so the aggregate path needn't carry
+// the channel GraphNodes. Matches core's channelNodeId grammar and reads legacy artifacts too.
 function channelSpecFromId(id: string, sides: { out: boolean; in: boolean } | undefined): CompNodeSpec {
   const { channel, protocol } = channelInfoFromId(id);
   const data: ChannelCompData = {

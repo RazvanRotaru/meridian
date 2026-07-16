@@ -350,6 +350,7 @@ describe("change groups in PR review", () => {
     const { store, outerNodes, outerEdges } = await rolledReviewStore();
     const file = store.getState().reviewFiles.find((candidate) => candidate.path === "src/a.ts")!;
     const expectedLit = new Set([FILE_A, ...file.units.map((unit) => unit.nodeId)]);
+    store.setState({ reviewFlowExplicitView: "timeline" });
 
     store.getState().focusReviewFile("src/a.ts");
 
@@ -364,6 +365,7 @@ describe("change groups in PR review", () => {
     expect(store.getState().moduleSelected).toEqual(new Set([FILE_A]));
     expect(store.getState().reviewSelectedId).toBe(FILE_A);
     expect(store.getState().reviewLitNodeIds).toEqual(expectedLit);
+    expect(store.getState().reviewFlowExplicitView).toBeNull();
     expect(store.getState().recenterSeq).toBe(0);
 
     await vi.waitFor(() => {
@@ -402,11 +404,13 @@ describe("change groups in PR review", () => {
 
     // The focused child keeps its other exact files collapsed. Revealing a unit in one of them
     // opens that file locally instead of nesting another focused-subgraph history entry.
+    store.setState({ reviewFlowExplicitView: "timeline" });
     store.getState().selectReviewNode(FN_B);
     expect(store.getState().reviewFocusedSubgraph?.rootId).toBe(FS_ID);
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_A, FILE_B]));
     expect(store.getState().reviewSelectedId).toBe(FN_B);
+    expect(store.getState().reviewFlowExplicitView).toBeNull();
     expect(store.getState().recenterSeq).toBe(1);
 
     await vi.waitFor(() => {

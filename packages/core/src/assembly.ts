@@ -16,6 +16,8 @@ export interface RawGraphEdge {
   kind: EdgeKind;
   resolution: EdgeResolution;
   callSite: CallSite;
+  /** Static evidence strength when the relationship is intentionally approximate. */
+  confidence?: number;
 }
 
 export function edgeId(kind: string, source: string, target: string): string {
@@ -31,6 +33,10 @@ export function aggregateEdges(rawEdges: RawGraphEdge[]): GraphEdge[] {
     if (existing) {
       existing.callSites!.push(raw.callSite);
       existing.weight = existing.callSites!.length;
+      if (raw.confidence !== undefined) {
+        existing.confidence = Math.max(existing.confidence ?? 0, raw.confidence);
+      }
+      if (raw.resolution === "resolved") existing.resolution = "resolved";
       continue;
     }
     byKey.set(id, {
@@ -41,6 +47,7 @@ export function aggregateEdges(rawEdges: RawGraphEdge[]): GraphEdge[] {
       resolution: raw.resolution,
       weight: 1,
       callSites: [raw.callSite],
+      confidence: raw.confidence,
     });
   }
   return [...byKey.values()];

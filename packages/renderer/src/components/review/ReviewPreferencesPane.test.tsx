@@ -68,7 +68,7 @@ describe("ReviewPreferencesPane", () => {
     expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length + 2);
     expect(markup.match(/name="review-flow-split-view"/g)).toHaveLength(MODES.length);
     expect(MODES.every((mode) => markup.includes(`value="${mode}"`))).toBe(true);
-    expect(markup).toContain("Timeline");
+    expect(markup).toContain("Sequence");
     expect(markup).toContain("Recommended");
     expect(markup).toContain("Execution graph");
     expect(markup).toContain("Metro");

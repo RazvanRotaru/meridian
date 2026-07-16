@@ -185,21 +185,32 @@ function remapEdge(edge: GraphEdge, name: string, remap: (id: NodeId) => NodeId)
 }
 
 function remapPort(port: Port, name: string, remap: (id: NodeId) => NodeId): Port {
-  return { ...port, nodeId: remap(port.nodeId), callSite: { ...port.callSite, file: `${name}/${port.callSite.file}` } };
+  const artifactScope = port.scope !== undefined && port.scopeKind === "artifact";
+  return {
+    ...port,
+    nodeId: remap(port.nodeId),
+    handlerNodeId: port.handlerNodeId ? remap(port.handlerNodeId) : undefined,
+    scope: artifactScope ? `artifact:${name}/${port.scope}` : port.scope,
+    scopeKind: artifactScope ? "global" : port.scopeKind,
+    callSite: { ...port.callSite, file: `${name}/${port.callSite.file}` },
+  };
 }
 
 /**
  * Unify concrete HTTP exits onto entry route templates so both ends share one channel key. Only
  * exits move (an entry's template IS the canonical key); non-HTTP ports pass through untouched.
+ * Scope is part of the transport identity: an absolute-origin request must never borrow an
+ * unscoped (or differently scoped) server template merely because its path happens to match.
  */
 function unifyHttpChannels(ports: Port[]): { unified: Port[]; httpTemplateJoins: number } {
-  const templatesByMethod = new Map<string, string[]>();
+  const templatesByMethodAndScope = new Map<string, string[]>();
   for (const port of ports) {
     if (port.direction !== "in" || port.protocol !== "http" || port.channel === null) {
       continue;
     }
     const { method, path } = splitHttpChannel(port.channel);
-    templatesByMethod.set(method, [...(templatesByMethod.get(method) ?? []), path]);
+    const key = httpTemplateScopeKey(method, port.scope);
+    templatesByMethodAndScope.set(key, [...(templatesByMethodAndScope.get(key) ?? []), path]);
   }
   let httpTemplateJoins = 0;
   const unified = ports.map((port) => {
@@ -207,7 +218,10 @@ function unifyHttpChannels(ports: Port[]): { unified: Port[]; httpTemplateJoins:
       return port;
     }
     const { method, path } = splitHttpChannel(port.channel);
-    const template = matchRouteTemplate(path, templatesByMethod.get(method) ?? []);
+    const template = matchRouteTemplate(
+      path,
+      templatesByMethodAndScope.get(httpTemplateScopeKey(method, port.scope)) ?? [],
+    );
     if (template === null || template === path) {
       return port;
     }
@@ -215,6 +229,10 @@ function unifyHttpChannels(ports: Port[]): { unified: Port[]; httpTemplateJoins:
     return { ...port, channel: `${method} ${template}` };
   });
   return { unified, httpTemplateJoins };
+}
+
+function httpTemplateScopeKey(method: string, scope: string | undefined): string {
+  return JSON.stringify([method, scope ?? null]);
 }
 
 function splitHttpChannel(channel: string): { method: string; path: string } {
@@ -236,7 +254,7 @@ function joinStats(
     if (port.channel === null) {
       continue;
     }
-    const key = `${port.protocol}\u0000${port.channel}`;
+    const key = `${port.protocol}\u0000${port.lane ?? ""}\u0000${port.scope ?? ""}\u0000${port.channel}`;
     const sides = channelSides.get(key) ?? { out: new Set<string>(), in: new Set<string>() };
     sides[port.direction === "out" ? "out" : "in"].add(bySystemOf(port.nodeId));
     channelSides.set(key, sides);

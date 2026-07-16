@@ -25,7 +25,7 @@ export function deriveReviewProjection(
   context: ReviewContext,
   artifact: GraphArtifact,
   index: GraphIndex,
-  options: { baseIndex: GraphIndex | null; showTests: boolean },
+  options: { baseIndex: GraphIndex | null; baseArtifact?: GraphArtifact | null; showTests: boolean },
 ): ReviewProjection {
   const allFiles = deriveReviewFiles(context, artifact, index, { baseIndex: options.baseIndex });
   const excludedTestFileCount = options.showTests ? 0 : allFiles.filter((file) => file.isTest).length;
@@ -38,7 +38,12 @@ export function deriveReviewProjection(
   const files = includedPaths === null
     ? allFiles
     : deriveReviewFiles(visibleContext, artifact, index, { baseIndex: options.baseIndex });
-  const visibleReview = deriveReviewDataFromContext(visibleContext, artifact, index);
+  const visibleReview = deriveReviewDataFromContext(
+    visibleContext,
+    artifact,
+    index,
+    options.baseArtifact ?? null,
+  );
   const review: ReviewData = {
     ...visibleReview,
     // Preserve the complete source context for reversible toggling and stable progress/drafts.

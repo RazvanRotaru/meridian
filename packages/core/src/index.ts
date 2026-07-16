@@ -25,5 +25,6 @@ export * from "./link";
 export * from "./review";
 export * from "./affected-nodes";
 export * from "./affected-flows";
+export * from "./causal-flow";
 export * from "./change-groups";
 export * from "./test-execution-coverage";

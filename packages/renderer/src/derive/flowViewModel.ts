@@ -1,6 +1,6 @@
 /**
  * The SHARED base of every Logic-flow presentation. All four sub-views (exec-pins graph, metro,
- * blocks, timeline) render the SAME `FlowStep[]` tree with the same navigation state (root, drill
+ * blocks, sequence) render the SAME `FlowStep[]` tree with the same navigation state (root, drill
  * trail, selection) — only the projection differs. What they read in common lives here: the view
  * mode vocabulary, the flow palette (one meaning = one colour across every sub-view), and the pure
  * step-level helpers (expandability, provenance, termination) so no view re-derives them
@@ -22,7 +22,9 @@ export const STATIC_LOGIC_VIEW_MODES: ReadonlyArray<{ mode: StaticLogicViewMode;
   { mode: "graph", label: "Exec graph" },
   { mode: "metro", label: "Metro" },
   { mode: "blocks", label: "Blocks" },
-  { mode: "timeline", label: "Timeline" },
+  // Keep the stored key for backward-compatible URLs/preferences; the projection is now a
+  // participant/lifeline sequence diagram rather than the legacy pseudo-time lane chart.
+  { mode: "timeline", label: "Sequence" },
 ];
 
 export const LOGIC_VIEW_MODES: ReadonlyArray<{ mode: LogicViewMode; label: string }> = [

@@ -43,6 +43,7 @@ export function buildLogicFlows(
   index: ResolutionIndex,
   keepIds: ReadonlySet<string>,
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
+  includeExitOnly: ReadonlySet<string> = new Set(),
 ): LogicFlows {
   const flows: LogicFlows = {};
   // Promise-return analysis is memoized across every callable; only the file-aware walking
@@ -55,7 +56,7 @@ export function buildLogicFlows(
     const steps = stepsOf(descriptor, moduleSourcesById, createWalker(index, descriptor.location.file, annotate));
     // Exit steps alone don't make a flow worth charting — `function f() { return 0; }` stays
     // omitted, exactly as it was before returns were charted at all.
-    if (steps.some((step) => step.kind !== "exit")) {
+    if (steps.some((step) => step.kind !== "exit") || includeExitOnly.has(descriptor.finalId)) {
       flows[descriptor.finalId] = steps;
     }
   }

@@ -1,6 +1,6 @@
 /**
  * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
- * top-level functions and callable-binding consts/properties/default exports (see
+ * top-level and lexically nested functions plus callable-binding consts/properties/default exports (see
  * `resolveCallableBinding` — inline callables, possibly under `memo`/`forwardRef`), object-literal
  * consts -> methods, and namespaces (recursed). Emission is top-down so a child's parent
  * descriptor always already exists.
@@ -86,21 +86,24 @@ function emitNamespace(node: ModuleDeclaration, parent: NodeDescriptor, enclosin
 }
 
 function emitFunction(node: FunctionDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
-  context.emit(
+  const name = node.getName() ?? "default";
+  const self = context.emit(
     memberDescriptor(context, {
-      kind: "function", localName: node.getName() ?? "default", enclosingNames, parent,
+      kind: "function", localName: name, enclosingNames, parent,
       declarationNode: node, callableNode: bodyOf(node), signatureSource: node, emitTelemetry: true,
     }),
   );
+  emitNestedCallables(bodyOf(node), self, [...enclosingNames, name], context);
 }
 
 function emitCallable(node: CallableMember, name: string, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
-  context.emit(
+  const self = context.emit(
     memberDescriptor(context, {
       kind: "method", localName: name, enclosingNames, parent,
       declarationNode: node, callableNode: bodyOf(node), signatureSource: node, emitTelemetry: true,
     }),
   );
+  emitNestedCallables(bodyOf(node), self, [...enclosingNames, name], context);
 }
 
 // `export default () => …` / `export default memo(() => …)`: an anonymous default export whose
@@ -173,7 +176,7 @@ function emitBinding(
   context: EmitContext,
 ): void {
   const callable = binding.kind === "body" ? binding.callable : null;
-  context.emit(
+  const self = context.emit(
     memberDescriptor(context, {
       kind, localName, enclosingNames, parent,
       declarationNode,
@@ -183,6 +186,56 @@ function emitBinding(
       emitTelemetry: true,
     }),
   );
+  emitNestedCallables(callable, self, [...enclosingNames, localName], context);
+}
+
+/**
+ * Emit lexically named callables that live inside another callable. These helpers are real graph
+ * participants: calls inside them execute under their own identity, and calls to them are the
+ * causal bridge between an enclosing callback and the work it schedules. Anonymous callbacks
+ * remain flow steps on their nearest named owner, but we deliberately walk through them so a
+ * declaration such as `events.on("ready", () => { const synchronize = () => ... })` is retained.
+ *
+ * A named callable owns its own recursive scan; skipping its subtree here prevents duplicate
+ * descriptors. Class/module boundaries are independent declaration containers and must not be
+ * re-parented beneath the surrounding function.
+ */
+function emitNestedCallables(
+  callable: Node | null,
+  parent: NodeDescriptor,
+  enclosingNames: string[],
+  context: EmitContext,
+): void {
+  if (!callable) return;
+
+  const visit = (node: Node): void => {
+    for (const child of node.getChildren()) {
+      if (Node.isFunctionDeclaration(child)) {
+        emitFunction(child, parent, enclosingNames, context);
+        continue;
+      }
+
+      if (Node.isVariableDeclaration(child) && Node.isIdentifier(child.getNameNode())) {
+        const binding = resolveCallableBinding(child.getInitializer());
+        if (binding) {
+          emitBinding(binding, "function", child.getName(), child, parent, enclosingNames, context);
+          continue;
+        }
+      }
+
+      if (
+        Node.isClassDeclaration(child) ||
+        Node.isInterfaceDeclaration(child) ||
+        Node.isModuleDeclaration(child)
+      ) {
+        continue;
+      }
+
+      visit(child);
+    }
+  };
+
+  visit(callable);
 }
 
 function container(kind: "class" | "interface" | "namespace" | "object", localName: string, enclosingNames: string[], parent: NodeDescriptor, declarationNode: Node) {

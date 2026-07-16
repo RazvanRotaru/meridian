@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import {
   colorForDistance,
+  channelInfoFromId,
   deriveCompositionGraph,
   sizeFor,
   HEALTH_AMBER,
@@ -35,6 +36,20 @@ function edge(source: string, target: string, kind = "calls"): GraphEdge {
 function dataWith(smells: Smell[]): CompNodeData {
   return { unitId: "u", kind: "class", label: "U", metrics: { smells } as UnitMetrics, members: [] };
 }
+
+describe("channelInfoFromId", () => {
+  it("decodes injective qualified channel ids", () => {
+    expect(channelInfoFromId("ipc:postmessage/lane=window-message/channel=type%3Adelegate-ready"))
+      .toEqual({ protocol: "postmessage", channel: "type:delegate-ready" });
+    expect(channelInfoFromId("ipc:http/channel=GET%20%2Fapi%2Forders"))
+      .toEqual({ protocol: "http", channel: "GET /api/orders" });
+  });
+
+  it("keeps legacy artifacts readable", () => {
+    expect(channelInfoFromId("ipc:http/GET+/api/orders"))
+      .toEqual({ protocol: "http", channel: "GET /api/orders" });
+  });
+});
 
 // The unit scorecard ids, sorted — spec.nodes now also holds cluster frame nodes we filter out here.
 function unitIds(specNodes: ReturnType<typeof deriveCompositionGraph>["nodes"]): string[] {

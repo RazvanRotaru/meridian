@@ -42,7 +42,13 @@ const NO_GITHUB_COMMENTS: readonly PrGitHubComment[] = [];
 
 const rowKey = (path: string, nodeId: string | null): string => nodeId ?? `file:${path}`;
 
-function ReviewFilesSectionImpl() {
+export interface ReviewFilesSectionProps {
+  /** Focus the changed-file checklist by letting it use the review body's full working area. */
+  expanded?: boolean;
+  onExpandedChange?: (expanded: boolean) => void;
+}
+
+function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFilesSectionProps) {
   const allFiles = useBlueprint((state) => state.reviewFiles);
   const sort = useBlueprint((state) => state.reviewFilesSort);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
@@ -104,11 +110,26 @@ function ReviewFilesSectionImpl() {
   }
   const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
   const unmatchedCount = files.filter((file) => file.moduleId === null).length;
+  const listOpen = expanded || open;
+  const toggleList = () => {
+    if (expanded) {
+      // Collapsing a focused list restores the surrounding review context at the same time.
+      setOpen(false);
+      onExpandedChange?.(false);
+      return;
+    }
+    setOpen((value) => !value);
+  };
+  const toggleExpanded = () => {
+    const next = !expanded;
+    if (next) setOpen(true);
+    onExpandedChange?.(next);
+  };
   return (
     <section>
       <div style={{ ...SECTION_HEAD, boxSizing: "border-box", cursor: "default" }}>
-        <button type="button" style={SECTION_TOGGLE} onClick={() => setOpen((value) => !value)}>
-          <span style={CARET}>{open ? "▾" : "▸"}</span>
+        <button type="button" style={SECTION_TOGGLE} aria-expanded={listOpen} onClick={toggleList}>
+          <span style={CARET}>{listOpen ? "▾" : "▸"}</span>
           <span style={SECTION_TITLE}>Files changed</span>
           <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "the graph shows the base branch, added files join it after Extract head graph." : undefined}>
             {unmatchedCount > 0 ? `${files.length} files · ${unmatchedCount} not in this graph` : `${viewed}/${files.length} viewed`}
@@ -123,8 +144,22 @@ function ReviewFilesSectionImpl() {
             Risk
           </button>
         </div>
+        {onExpandedChange ? (
+          <button
+            type="button"
+            style={EXPAND_TOGGLE}
+            aria-label={expanded ? "Restore review overview" : "Expand files list"}
+            aria-pressed={expanded}
+            title={expanded
+              ? "Restore review scope and affected flows"
+              : "Expand the files list to fill the review workspace"}
+            onClick={toggleExpanded}
+          >
+            <span aria-hidden="true">{expanded ? "⤡" : "⤢"}</span>
+          </button>
+        ) : null}
       </div>
-      {open &&
+      {listOpen &&
         files.map((file) => (
           <FileRow
             key={file.path}
@@ -414,6 +449,24 @@ const SORT_TOGGLE: React.CSSProperties = { display: "inline-flex", alignItems: "
 const SORT_DIVIDER: React.CSSProperties = { color: "#3A4452" };
 const SORT_BUTTON: React.CSSProperties = { border: "none", background: "transparent", cursor: "pointer", font: "inherit", fontSize: 9.5, padding: "1px 2px", ...NO_FOCUS_RING };
 const sortButtonStyle = (active: boolean): React.CSSProperties => ({ ...SORT_BUTTON, color: active ? "#E6EDF3" : "#5A6472", fontWeight: active ? 700 : 500 });
+const EXPAND_TOGGLE: React.CSSProperties = {
+  width: 22,
+  height: 22,
+  flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  border: "1px solid #2A3441",
+  borderRadius: 5,
+  background: "transparent",
+  color: "#9AA4B2",
+  cursor: "pointer",
+  font: "inherit",
+  fontSize: 12,
+  lineHeight: 1,
+  padding: 0,
+  ...NO_FOCUS_RING,
+};
 const FILE_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 2, padding: "2px 6px 2px 4px" };
 const CARET_BTN: React.CSSProperties = { display: "inline-flex", alignItems: "center", justifyContent: "center", width: 18, alignSelf: "stretch", border: "none", background: "transparent", cursor: "pointer", padding: 0, flexShrink: 0, ...NO_FOCUS_RING };
 const FILE_MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "5px 2px", textAlign: "left", ...NO_FOCUS_RING };

@@ -26,6 +26,7 @@ import { buildEdges } from "./edge-build";
 import { collapseToDepth } from "./depth-collapse";
 import { buildLogicFlows } from "./flow-pass";
 import { collectPorts } from "./ports-pass";
+import { collectPromiseResources } from "./promise-resource-pass";
 import { buildStats } from "./stats";
 import { deriveImplementedByEdges, implementationMembers } from "./implementation-edges";
 import {
@@ -139,12 +140,25 @@ function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
   const imports = collectImportEdges(loaded, moduleByFilePath, index);
   const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics) : [];
-  const nodes = buildGraphNodes(descriptors);
+  const promiseResources = collectPromiseResources(loaded, index, moduleByFilePath);
+  const nodes = [...buildGraphNodes(descriptors), ...promiseResources.nodes];
   const implementedBy = deriveImplementedByEdges(behavioural, nodes, implementationMembers(descriptors));
-  const built = buildEdges([...behavioural, ...implementedBy, ...imports, ...valueRefs], options);
+  const built = buildEdges([
+    ...behavioural,
+    ...implementedBy,
+    ...imports,
+    ...valueRefs,
+    ...promiseResources.edges,
+  ], options);
   const collapsed = collapseToDepth(nodes, built.edges, options.depth ?? "function");
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
-  const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
+  const flows = buildLogicFlows(
+    descriptors,
+    index,
+    keepIds,
+    moduleSourcesById(loaded, moduleByFilePath),
+    promiseResources.flowIds,
+  );
   const ports = portsWithin(collectPorts(loaded, index, moduleByFilePath), keepIds, moduleIdsByRelPath(loaded, moduleByFilePath));
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({

@@ -14,7 +14,7 @@ import type { RelationKind } from "./relationCatalog";
 describe("RELATION_CATALOG", () => {
   it("covers every built-in kind exactly once in stable display order", () => {
     expect(Object.keys(RELATION_CATALOG)).toEqual(RELATION_KIND_ORDER);
-    expect(RELATION_KIND_ORDER).toHaveLength(17);
+    expect(RELATION_KIND_ORDER).toHaveLength(22);
   });
 
   it("classifies composition without confusing construction with ownership", () => {
@@ -35,7 +35,14 @@ describe("RELATION_CATALOG", () => {
 
   it("keeps structural, behavioral, dependency, messaging, and UI families distinct", () => {
     expect(relationKindsForFamily("inheritance")).toEqual(["extends", "implements", "implementedBy"]);
-    expect(relationKindsForFamily("behavior")).toEqual(["calls"]);
+    expect(relationKindsForFamily("behavior")).toEqual([
+      "calls",
+      "createsPromise",
+      "returnsPromise",
+      "awaitsPromise",
+      "resolvesPromise",
+      "rejectsPromise",
+    ]);
     expect(relationKindsForFamily("dependency")).toEqual(["references", "imports"]);
     expect(relationKindsForFamily("messaging")).toEqual(["sends", "handles", "ipc"]);
     expect(relationKindsForFamily("ui")).toEqual(["renders"]);

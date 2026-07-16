@@ -36,6 +36,7 @@ import { collectImportEdges } from "./import-pass";
 import { collectValueRefEdges } from "./value-ref-pass";
 import { collapseToDepth } from "./depth-collapse";
 import { collectPorts } from "./ports-pass";
+import { collectPromiseResources } from "./promise-resource-pass";
 import { loadUnitProject } from "./project-loader";
 import { buildResolutionIndex } from "./resolution-index";
 import { buildStats } from "./stats";
@@ -138,12 +139,19 @@ function extractUnit(
   const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics, resolver);
   const imports = collectImportEdges(loaded, moduleByFilePath, index, resolver);
   const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics, resolver) : [];
+  const promiseResources = collectPromiseResources(loaded, index, moduleByFilePath, resolver);
   const keepIds = survivorIdsAtDepth(descriptors, depth);
-  const flows = buildLogicFlows(descriptors, index, keepIds, moduleSourcesById(loaded, moduleByFilePath));
+  const flows = buildLogicFlows(
+    descriptors,
+    index,
+    keepIds,
+    moduleSourcesById(loaded, moduleByFilePath),
+    promiseResources.flowIds,
+  );
   const moduleIds = moduleIdsByRelPath(loaded, moduleByFilePath);
   return {
-    nodes: buildGraphNodes(descriptors),
-    rawEdges: [...behavioural, ...imports, ...valueRefs],
+    nodes: [...buildGraphNodes(descriptors), ...promiseResources.nodes],
+    rawEdges: [...behavioural, ...imports, ...valueRefs, ...promiseResources.edges],
     implementationMembers: implementationMembers(descriptors),
     flows,
     ports: collectPorts(loaded, index, moduleByFilePath),

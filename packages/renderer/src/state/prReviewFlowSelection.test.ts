@@ -356,6 +356,24 @@ describe("PR-review logic-flow selection", () => {
     expect(store.getState().flowPaneRfEdges).toEqual([]);
   });
 
+  it("opens an explicit sequence without overwriting saved review preferences", async () => {
+    const store = await activeReviewStore("blocks", false);
+
+    store.getState().openReviewFlow(FLOW_SELECTION, "timeline");
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().flowSelection).toEqual(FLOW_SELECTION);
+    expect(store.getState().reviewFlowExplicitView).toBe("timeline");
+    expect(store.getState().reviewFlowSplitView).toBe("blocks");
+    expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(false);
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+
+    store.getState().selectFlowEntry(null);
+    expect(store.getState().reviewFlowExplicitView).toBeNull();
+    expect(store.getState().reviewFlowSplitView).toBe("blocks");
+    expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(false);
+  });
+
   it("does not let an in-flight Graph layout repopulate a disabled split", async () => {
     const store = await activeReviewStore("graph", false);
     store.getState().selectFlowEntry(FLOW_SELECTION);

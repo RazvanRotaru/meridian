@@ -58,6 +58,9 @@ import {
   useNodeDiffPreview,
   type CodePreviewTarget,
 } from "../review/useNodeDiffPreview";
+import { sequenceTimelineFor } from "../../derive/sequenceTimelineExtension";
+import { causalSequenceTimelineFor } from "../../derive/causalSequenceTimeline";
+import type { SequenceTimelineModel } from "../../derive/sequenceTimelineModel";
 
 const EMPTY_INPUT_OVERRIDES: readonly SyntheticInputOverride[] = [];
 const EMPTY_FIELD_WATCHERS: readonly SyntheticFieldWatcher[] = [];
@@ -80,6 +83,7 @@ export function FlowPane() {
   const reviewActive = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const reviewFlowSplitView = useBlueprint((state) => state.reviewFlowSplitView);
   const reviewOpenFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
+  const reviewFlowExplicitView = useBlueprint((state) => state.reviewFlowExplicitView);
   const flows = useLogicFlows();
   const environment = useBlueprint((state) => state.environment);
   const logicSelected = useBlueprint((state) => state.logicSelected);
@@ -104,7 +108,8 @@ export function FlowPane() {
   const requestOpen = origin === "request" && requestTrace !== null;
   const syntheticOpen = origin === "synthetic" && syntheticExecution !== null && selection !== null;
   const executionOpen = requestOpen || syntheticOpen;
-  if (!executionOpen && (selection === null || !flowPaneShouldRender(reviewActive, reviewOpenFlowSplitOnSelect))) {
+  const reviewSplitOpen = reviewOpenFlowSplitOnSelect || reviewFlowExplicitView !== null;
+  if (!executionOpen && (selection === null || !flowPaneShouldRender(reviewActive, reviewSplitOpen))) {
     return null;
   }
   const rootLabel = requestOpen
@@ -115,7 +120,9 @@ export function FlowPane() {
   const crumbs = executionOpen ? [] : blockBreadcrumbs(flows, selection!);
   const requestContext = requestOpen ? requestFlowContext(requestTrace, environment) : null;
   const syntheticContext = syntheticOpen ? requestFlowContext(syntheticExecution.trace, null) : null;
-  const presentation = executionOpen ? "graph" : flowPanePresentation(reviewActive, reviewFlowSplitView);
+  const presentation = executionOpen
+    ? "graph"
+    : flowPanePresentation(reviewActive, reviewFlowExplicitView ?? reviewFlowSplitView);
   const reviewChanges = reviewActive && selection !== null
     ? reviewFlowChanges(selection.rootId, stepsAt(flows, selection) ?? [], index)
     : [];
@@ -511,6 +518,7 @@ function FlowPaneProjection(props: {
   flows: LogicFlows;
   focusRequest: FlowPaneFocusRequest | null;
 }) {
+  const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
   const logicSelected = useBlueprint((state) => state.logicSelected);
   const { selectFlowPaneTarget } = useBlueprintActions();
@@ -519,6 +527,24 @@ function FlowPaneProjection(props: {
     () => stepsAt(props.flows, props.selection) ?? [],
     [props.flows, props.selection],
   );
+  const sequenceModel = props.selection.blockPath.length === 0
+    ? sequenceTimelineFor(artifact, props.selection.rootId)
+      ?? causalSequenceTimelineFor(artifact, props.selection.rootId, index)
+    : null;
+  const selectedFlowKey = selectionKey(props.selection);
+
+  // Review selections reuse the drawer. A new sequence/blocks flow should begin at its entry,
+  // rather than inheriting the vertical position of the flow that was inspected before it.
+  useEffect(() => {
+    if (props.mode === "metro") return;
+    const frame = requestAnimationFrame(() => {
+      if (scrollRef.current !== null) {
+        scrollRef.current.scrollTop = 0;
+        scrollRef.current.scrollLeft = 0;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [props.mode, selectedFlowKey]);
 
   // Metro's main line sits midway down its full transit-map canvas. On the short review drawer,
   // center that line initially while leaving upper and lower branch lanes reachable by scrolling.
@@ -551,7 +577,7 @@ function FlowPaneProjection(props: {
     return () => cancelAnimationFrame(frame);
   }, [logicSelected, props.focusRequest]);
 
-  if (steps.length === 0) {
+  if (steps.length === 0 && !(props.mode === "timeline" && sequenceModel !== null)) {
     return (
       <div style={SURFACE_FILL} data-flow-pane-view={props.mode}>
         <PaneMessage mark="∅" text="This block has no charted call flow." />
@@ -578,7 +604,12 @@ function FlowPaneProjection(props: {
       data-flow-pane-view={props.mode}
       onClick={() => selectFlowPaneTarget(null)}
     >
-      <AlternateProjection mode={props.mode} viewProps={viewProps} />
+      <AlternateProjection
+        key={`${props.mode}:${selectedFlowKey}`}
+        mode={props.mode}
+        viewProps={viewProps}
+        sequenceModel={sequenceModel}
+      />
     </div>
   );
 }
@@ -645,10 +676,22 @@ function RequestContext({
 
 /** Exhaustive alternate-view dispatch: adding a Logic mode fails type-checking until it has a real
  * split renderer, so a preference can never silently fall back to the execution graph. */
-function AlternateProjection(props: { mode: AlternateFlowPaneMode; viewProps: FlowViewProps }) {
+function AlternateProjection(props: {
+  mode: AlternateFlowPaneMode;
+  viewProps: FlowViewProps;
+  sequenceModel: SequenceTimelineModel | null;
+}) {
   switch (props.mode) {
     case "timeline":
-      return <TimelineView {...props.viewProps} density="compact" drillEnabled={false} />;
+      return (
+        <TimelineView
+          {...props.viewProps}
+          density="compact"
+          drillEnabled={false}
+          showZoomControls
+          modelOverride={props.sequenceModel}
+        />
+      );
     case "metro":
       return <MetroView {...props.viewProps} density="compact" drillEnabled={false} />;
     case "blocks":

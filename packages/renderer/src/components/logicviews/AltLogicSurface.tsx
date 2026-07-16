@@ -1,12 +1,12 @@
 /**
- * The host for the ALTERNATE Logic-flow projections (metro / blocks / timeline). One shared base,
+ * The host for the ALTERNATE Logic-flow projections (metro / blocks / sequence). One shared base,
  * different views: it reads the SAME flow tree and navigation state the exec graph uses — the
  * charted root, the drill trail, the by-target selection — assembles the shared `FlowViewProps`,
  * and mounts the picked projection in a scrollable dark surface with the breadcrumb floating above.
  * Switching sub-views never re-derives or resets anything; it is a pure presentation switch.
  */
 
-import { Fragment, useMemo } from "react";
+import { Fragment, useEffect, useMemo, useRef } from "react";
 import type { FlowPath, FlowStep, LogicFlows, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { FlowViewProps, LogicViewMode } from "../../derive/flowViewModel";
@@ -15,6 +15,9 @@ import { MetroView } from "./MetroView";
 import { BlocksView } from "./BlocksView";
 import { TimelineView } from "./TimelineView";
 import { RequestTraceView } from "./RequestTraceView";
+import { sequenceTimelineFor } from "../../derive/sequenceTimelineExtension";
+import { causalSequenceTimelineFor } from "../../derive/causalSequenceTimeline";
+import type { SequenceTimelineModel } from "../../derive/sequenceTimelineModel";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -25,13 +28,32 @@ export function AltLogicSurface(props: { rootId: NodeId; mode: Exclude<LogicView
   const logicFocus = useBlueprint((state) => state.logicFocus);
   const logicSelected = useBlueprint((state) => state.logicSelected);
   const { drillLogicFlow, logicFlowTo, logicFocusTo, selectLogicTarget } = useBlueprintActions();
+  const scrollRef = useRef<HTMLDivElement | null>(null);
 
   const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
   const steps = useMemo(
     () => focusedSteps(flows[props.rootId] ?? [], logicFocus),
     [flows, props.rootId, logicFocus],
   );
-  const viewProps: FlowViewProps = {
+  // Causal models describe the whole related lifecycle. A source-container dive intentionally
+  // falls back to the ordinary intraprocedural projection rather than slicing that model falsely.
+  const sequenceModel = logicFocus.length === 0
+    ? sequenceTimelineFor(artifact, props.rootId) ?? causalSequenceTimelineFor(artifact, props.rootId, index)
+    : null;
+  const focusKey = logicFocus.map((entry) => entry.id).join("/");
+
+  // A drill can replace a tall diagram with another while this surface stays mounted. Start the
+  // new flow at its actor headers instead of preserving the previous flow's deep scroll offset.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      if (scrollRef.current !== null) {
+        scrollRef.current.scrollTop = 0;
+        scrollRef.current.scrollLeft = 0;
+      }
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [focusKey, props.mode, props.rootId]);
+  const viewProps: AlternateViewProps = {
     rootId: props.rootId,
     steps,
     flows,
@@ -39,19 +61,20 @@ export function AltLogicSurface(props: { rootId: NodeId; mode: Exclude<LogicView
     selected: logicSelected,
     onSelect: (target) => selectLogicTarget(target === logicSelected ? null : target),
     onDrill: (target) => drillLogicFlow(target),
+    sequenceModel,
   };
 
   return (
     <div style={SURFACE}>
-      <div style={SCROLL} onClick={() => selectLogicTarget(null)}>
-        {steps.length === 0 && props.mode !== "request" ? (
+      <div ref={scrollRef} style={SCROLL} onClick={() => selectLogicTarget(null)}>
+        {steps.length === 0 && props.mode !== "request" && !(props.mode === "timeline" && sequenceModel !== null) ? (
           <div style={EMPTY}>this callable has no calls or control flow of its own</div>
         ) : (
           // The floating Toolbar panel owns the top-left corner; the canvas-like projections start
           // drawing at x≈0, so they get left headroom or their entry/first lane hides beneath it.
           // Blocks centers its own column and needs none.
           <div style={props.mode === "blocks" ? undefined : CANVAS_HEADROOM}>
-            <View mode={props.mode} viewProps={viewProps} />
+            <View key={`${props.mode}:${props.rootId}:${focusKey}`} mode={props.mode} viewProps={viewProps} />
           </div>
         )}
       </div>
@@ -77,7 +100,9 @@ function focusedSteps(rootSteps: FlowStep[], focus: Array<{ label: string; bodie
   return [{ kind: "branch", label: dive.label, paths: dive.bodies }];
 }
 
-function View({ mode, viewProps }: { mode: Exclude<LogicViewMode, "graph">; viewProps: FlowViewProps }) {
+type AlternateViewProps = FlowViewProps & { sequenceModel: SequenceTimelineModel | null };
+
+function View({ mode, viewProps }: { mode: Exclude<LogicViewMode, "graph">; viewProps: AlternateViewProps }) {
   if (mode === "request") {
     return <RequestTraceView {...viewProps} />;
   }
@@ -87,7 +112,7 @@ function View({ mode, viewProps }: { mode: Exclude<LogicViewMode, "graph">; view
   if (mode === "blocks") {
     return <BlocksView {...viewProps} />;
   }
-  return <TimelineView {...viewProps} />;
+  return <TimelineView {...viewProps} modelOverride={viewProps.sequenceModel} />;
 }
 
 /** The same trail the exec graph shows — the callable drill stack PLUS any container dives — with
