@@ -346,10 +346,10 @@ describe("change groups in PR review", () => {
     });
   });
 
-  it("automatically focuses a rolled file's owning container before centering the file", async () => {
+  it("keeps the file paint seed while focusing its changed units so module ghosts remain visible", async () => {
     const { store, outerNodes, outerEdges } = await rolledReviewStore();
     const file = store.getState().reviewFiles.find((candidate) => candidate.path === "src/a.ts")!;
-    const expectedLit = new Set(file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [FILE_A]);
+    const expectedLit = new Set([FILE_A, ...file.units.map((unit) => unit.nodeId)]);
 
     store.getState().focusReviewFile("src/a.ts");
 
