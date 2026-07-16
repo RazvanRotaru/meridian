@@ -38,6 +38,7 @@ const EXISTING_COMMENT_LINE = LOYALTY_RETURN_LINE;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
 const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
 const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
+const EXECUTION_GALLERY_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/showcase/executionGraphGallery.ts" });
 const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
 const LOYALTY_TIER_FUNCTION_ID = buildNodeId({
   lang: "ts",
@@ -161,6 +162,20 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // 4c — both added languages' files are immediately in the prepared HEAD graph with reviewable
     // units. The deeply nested Python callable opens the actual head source.
     const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
+    const paletteAddition = extractedReviewSurface.locator(
+      `.react-flow__node:not(.react-flow__node-ghost)[data-id="${EXECUTION_GALLERY_MODULE_ID}"]`,
+    );
+    expect(await paletteAddition.count()).toBe(0);
+    await page.keyboard.press("Control+P");
+    const palette = page.getByRole("dialog", { name: "Reveal or add a node in the current view" });
+    await palette.waitFor();
+    await palette.locator("input").fill("executionGraphGallery.ts");
+    await palette.getByRole("button", { name: "Add executionGraphGallery.ts to the current view" }).click();
+    await paletteAddition.waitFor({ timeout: 30_000 });
+    expect(await palette.isVisible()).toBe(true);
+    await page.keyboard.press("Control+P");
+    await palette.waitFor({ state: "detached" });
+
     const pythonRiskNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
     await pythonRiskNode.waitFor();
     let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
