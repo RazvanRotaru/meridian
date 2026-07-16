@@ -118,7 +118,7 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
     const graphId = graphIdFrom(options);
     const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
     return {
-      version: 2,
+      version: 3,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: graphSummary(artifact),
@@ -168,6 +168,10 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
     const projection = this.cachedReviews.get(key);
     if (projection !== undefined) this.activeKey = key;
     return projection;
+  }
+
+  searchSymbols(): Promise<never> {
+    return Promise.reject(new Error("symbol search is not exercised by this projection source"));
   }
 }
 

@@ -83,7 +83,7 @@ describe("createBlueprintServer", () => {
     const manifestResponse = await fetch(`${base}/api/graph/manifest`);
     expect(manifestResponse.headers.get("cache-control")).toBe("no-store");
     expect(await manifestResponse.json()).toMatchObject({
-      version: 2,
+      version: 3,
       graphId: expect.stringMatching(/^standalone-[0-9a-f]{64}$/),
       contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
       graphSummary: { nodeCount: 1, edgeCount: 0 },
@@ -111,10 +111,40 @@ describe("createBlueprintServer", () => {
       artifact: { nodes: [{ id: artifact.nodes[0]!.id }], edges: [] },
     });
 
+    const searchResponse = await fetch(`${base}/api/graph/search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, query: "CREATE", mode: "map", scope: "public" }),
+    });
+    expect(searchResponse.headers.get("server-timing")).toMatch(/symbol_search.*symbol_serialize/);
+    expect(await searchResponse.json()).toMatchObject({
+      version: 1,
+      graphId: expect.stringMatching(/^standalone-[0-9a-f]{64}$/),
+      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
+      mode: "map",
+      scope: "public",
+      scopeCounts: { public: 1, all: 1, private: 0 },
+      results: [{
+        id: artifact.nodes[0]!.id,
+        displayName: "handleCreateOrder",
+        qualifiedName: "OrderRoutes.handleCreateOrder",
+        file: "src/api/orderRoutes.ts",
+        kind: "method",
+        isPrivateMethod: false,
+        stepCount: null,
+      }],
+    });
+
     expect((await fetch(`${base}/api/graph`)).status).toBe(404);
     expect((await fetch(`${base}/api/graph/projection`)).status).toBe(405);
+    expect((await fetch(`${base}/api/graph/search`)).status).toBe(405);
     expect((await fetch(`${base}/api/graph/manifest`, { method: "POST" })).status).toBe(405);
     expect((await fetch(`${base}/api/graph/manifest?legacy=1`)).status).toBe(400);
+    expect((await fetch(`${base}/api/graph/search?legacy=1`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, query: "", mode: "map", scope: "public" }),
+    })).status).toBe(400);
   });
 
   it("rejects malformed, cross-origin, and non-JSON projection requests", async () => {
@@ -139,6 +169,14 @@ describe("createBlueprintServer", () => {
     });
     expect(unknownField.status).toBe(400);
     expect(await unknownField.json()).toMatchObject({ error: expect.stringContaining("unknown") });
+
+    const malformedSearch = await fetch(`${base}/api/graph/search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 0, query: "", mode: "map", scope: "public", legacyGraph: true }),
+    });
+    expect(malformedSearch.status).toBe(400);
+    expect(await malformedSearch.json()).toMatchObject({ error: expect.stringContaining("unknown") });
   });
 
   it("serves explicit-source mock overlays without a source-less compatibility path", { timeout: 15_000 }, async () => {

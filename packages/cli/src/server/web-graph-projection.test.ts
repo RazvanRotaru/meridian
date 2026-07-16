@@ -8,7 +8,7 @@ import type { GraphArtifact } from "@meridian/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GRAPH_PROJECTION_DIRECTORY, writeGraphProjectionBundle } from "./graph-projection-bundle";
 import { graphSummaryFor } from "./inspection-snapshot-store";
-import { handleGraphProjection, sendProjectionManifest } from "./web-graph";
+import { handleGraphProjection, handleGraphSymbolSearch, sendProjectionManifest } from "./web-graph";
 import type { Context } from "./web-server";
 
 const temporary: string[] = [];
@@ -24,7 +24,7 @@ describe("web graph projection routes", () => {
     sendProjectionManifest(ctx, manifestResponse.value, id);
 
     expect(responseJson<{ version: number; graphId: string }>(manifestResponse)).toMatchObject({
-      version: 2,
+      version: 3,
       graphId: id,
     });
 
@@ -57,6 +57,60 @@ describe("web graph projection routes", () => {
 
     expect(response.writeHead).toHaveBeenCalledWith(404, expect.any(Object));
   });
+
+  it("searches the immutable catalog of a persisted generated snapshot", async () => {
+    const { ctx, id, contentId } = snapshotContext();
+    const response = capturedResponse();
+
+    await handleGraphSymbolSearch(
+      ctx,
+      jsonRequest({ version: 1, query: "HID", mode: "map", scope: "public" }),
+      response.value,
+      new URLSearchParams({ id }),
+    );
+
+    expect(responseJson(response)).toMatchObject({
+      version: 1,
+      graphId: id,
+      contentId,
+      mode: "map",
+      scope: "public",
+      scopeCounts: { public: 3, all: 3, private: 0 },
+      results: [{
+        id: "hidden",
+        displayName: "hidden",
+        qualifiedName: "hidden",
+        file: "src/a.ts",
+        kind: "method",
+        isPrivateMethod: false,
+        stepCount: 0,
+      }],
+    });
+    expect(response.writeHead).toHaveBeenCalledWith(200, expect.objectContaining({
+      "cache-control": "no-store",
+      "server-timing": expect.stringMatching(/symbol_search;dur=.*symbol_serialize;dur=/),
+    }));
+  });
+
+  it("strictly rejects missing, duplicate, and unknown graph search query parameters", async () => {
+    const { ctx } = context();
+    const body = { version: 1, query: "", mode: "map", scope: "public" };
+
+    await expect(handleGraphSymbolSearch(ctx, jsonRequest(body), capturedResponse().value, new URLSearchParams()))
+      .rejects.toMatchObject({ status: 400 });
+    await expect(handleGraphSymbolSearch(
+      ctx,
+      jsonRequest(body),
+      capturedResponse().value,
+      new URLSearchParams("id=one&id=two"),
+    )).rejects.toMatchObject({ status: 400 });
+    await expect(handleGraphSymbolSearch(
+      ctx,
+      jsonRequest(body),
+      capturedResponse().value,
+      new URLSearchParams("id=local-projection&legacy=1"),
+    )).rejects.toMatchObject({ status: 400 });
+  });
 });
 
 function context(): { ctx: Context; id: string } {
@@ -76,6 +130,27 @@ function context(): { ctx: Context; id: string } {
   };
 }
 
+function snapshotContext(): { ctx: Context; id: string; contentId: string } {
+  const root = mkdtempSync(join(tmpdir(), "meridian-web-projection-snapshot-"));
+  temporary.push(root);
+  const artifact = fixture();
+  const artifactPath = join(root, "artifact.json");
+  writeFileSync(artifactPath, JSON.stringify(artifact));
+  mkdirSync(join(root, GRAPH_PROJECTION_DIRECTORY));
+  const manifest = writeGraphProjectionBundle(join(root, GRAPH_PROJECTION_DIRECTORY), artifact);
+  const id = "generated-projection";
+  return {
+    id,
+    contentId: manifest.contentId,
+    ctx: {
+      localGraphFiles: new Map(),
+      inspectionSnapshots: {
+        resolveArtifact: (candidate: string) => candidate === id ? { path: artifactPath } : null,
+      },
+    } as unknown as Context,
+  };
+}
+
 function fixture(): GraphArtifact {
   return {
     schemaVersion: "1.1.0",
@@ -88,6 +163,7 @@ function fixture(): GraphArtifact {
       { id: "hidden", kind: "method", qualifiedName: "hidden", displayName: "hidden", parentId: "file", location: { file: "src/a.ts", startLine: 2 } },
     ],
     edges: [],
+    extensions: { logicFlow: { hidden: [] } },
   };
 }
 

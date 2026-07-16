@@ -2472,6 +2472,10 @@ class TestProjectionSource implements GraphProjectionDataSource {
     if (projection !== undefined) this.activeKey = key;
     return projection;
   }
+
+  searchSymbols(): Promise<never> {
+    return Promise.reject(new Error("symbol search is not configured by this projection source"));
+  }
 }
 
 const testProjectionSources = new WeakMap<object, TestProjectionSource>();
@@ -2483,7 +2487,7 @@ function graphIdFromOptions(options: GraphProjectionActivateOptions): string {
 
 function testManifest(graphId: string): GraphProjectionManifest {
   return {
-    version: 2,
+    version: 3,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {
@@ -3676,6 +3680,57 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewed).toBe(7);
     // Source reads route only through the prepared immutable descriptor.
     expect(store.getState().prPreparedHead?.sourceUrl).toBe("/api/source?id=pr-head-1");
+  });
+
+  it("atomically admits an out-of-projection palette pick on HEAD only and evicts its durable id on removal", async () => {
+    const galleryFile = "ts:src/executionGraphGallery.ts";
+    const galleryClass = `${galleryFile}#ExecutionGraphGallery`;
+    const galleryMethod = `${galleryClass}.render`;
+    const repositoryHead: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      nodes: [
+        ...HEAD_ARTIFACT.nodes,
+        node(galleryFile, "module", "src/executionGraphGallery.ts", PACKAGE_ID),
+        node(galleryClass, "class", "src/executionGraphGallery.ts", galleryFile),
+        node(galleryMethod, "method", "src/executionGraphGallery.ts", galleryClass),
+      ],
+    };
+    const { store } = await swappedReviewStore(projectionOverrides(() => repositoryHead));
+    const source = testProjectionSources.get(store);
+    if (source === undefined) throw new Error("missing projection source fixture");
+
+    // Model the actual bounded review slice: the repository catalog knows the symbol, while the
+    // currently decoded HEAD projection contains only the changed path.
+    const current = store.getState();
+    const remoteIds = new Set([galleryFile, galleryClass, galleryMethod]);
+    const boundedArtifact = {
+      ...current.artifact,
+      nodes: current.artifact.nodes.filter((candidate) => !remoteIds.has(candidate.id)),
+      edges: current.artifact.edges.filter((edge) => !remoteIds.has(edge.source) && !remoteIds.has(edge.target)),
+    };
+    const boundedIndex = buildGraphIndex(boundedArtifact);
+    applyChangedIds(boundedIndex, [...current.index.changedIds].filter((id) => boundedIndex.nodesById.has(id)));
+    store.setState({ artifact: boundedArtifact, index: boundedIndex });
+    source.activationCalls.length = 0;
+
+    await store.getState().addToView(galleryMethod, current.activeProjectionGraphId);
+
+    expect(source.activationCalls).toHaveLength(2);
+    const [headRead, mergeBaseRead] = source.activationCalls;
+    expect(headRead?.request.view).toBe("review");
+    expect(headRead?.request.extraIds).toContain(galleryMethod);
+    expect(mergeBaseRead?.request.view).toBe("review");
+    expect(mergeBaseRead?.request.extraIds).not.toContain(galleryMethod);
+    expect(mergeBaseRead?.options.endpoints?.manifestUrl).toContain("-base");
+    expect(store.getState().index.nodesById.has(galleryMethod)).toBe(true);
+    expect(store.getState().minimalMemberIds).toContain(galleryFile);
+    expect(store.getState().minimalProjectionExtraIds).toEqual(new Set([galleryMethod]));
+    expect(store.getState().minimalCodebaseProjectionPending).toBe(false);
+
+    store.setState({ moduleSelected: new Set([galleryFile]) });
+    store.getState().removeSelectionFromView();
+    expect(store.getState().minimalMemberIds).not.toContain(galleryFile);
+    expect(store.getState().minimalProjectionExtraIds).toEqual(new Set());
   });
 
   it("refreshes a stale prepared review onto the new prepared head without losing drafts", async () => {

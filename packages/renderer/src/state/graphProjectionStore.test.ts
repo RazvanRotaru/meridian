@@ -127,7 +127,7 @@ class RecordingProjectionSource implements GraphProjectionDataSource {
 
   async loadManifest(): Promise<GraphProjectionManifest> {
     return {
-      version: 2,
+      version: 3,
       graphId: "graph-1",
       contentId: "0".repeat(64),
       graphSummary: {
@@ -175,6 +175,10 @@ class RecordingProjectionSource implements GraphProjectionDataSource {
 
   activateCachedReview(): LoadedReviewProjection | undefined {
     return undefined;
+  }
+
+  searchSymbols(): Promise<never> {
+    return Promise.reject(new Error("symbol search is not exercised by this projection source"));
   }
 
   resolveLatest(): void {

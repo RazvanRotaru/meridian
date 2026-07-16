@@ -171,7 +171,7 @@ function projectionEnvelope(init: RequestInit | undefined, projectionId: string)
 
 function manifest() {
   return {
-    version: 2,
+    version: 3,
     graphId: "graph-1",
     contentId: "0".repeat(64),
     graphSummary: {

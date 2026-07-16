@@ -61,7 +61,7 @@ function freshStore(telemetry?: {
   const projectionDataSource: GraphProjectionDataSource = {
     activeKey: initialProjection.key,
     loadManifest: async () => ({
-      version: 2,
+      version: 3,
       graphId: "artifact-1",
       contentId: "0".repeat(64),
       graphSummary: {
@@ -76,6 +76,7 @@ function freshStore(telemetry?: {
     activateCached: (key) => key === initialProjection.key ? initialProjection : undefined,
     activateReviewPair: async () => { throw new Error("review pair is not loaded during URL exit"); },
     activateCachedReview: (): LoadedReviewProjection | undefined => undefined,
+    searchSymbols: async () => { throw new Error("symbol search is not loaded during URL exit"); },
   };
   return createBlueprintStore({
     artifact: BOOT_ARTIFACT,

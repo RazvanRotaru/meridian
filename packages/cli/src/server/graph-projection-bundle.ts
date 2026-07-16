@@ -30,12 +30,14 @@ import {
 import { graphSummaryFor, type InspectionGraphSummary } from "./inspection-snapshot-store";
 
 export const GRAPH_PROJECTION_DIRECTORY = "graph-projections";
-export const GRAPH_PROJECTION_FORMAT_VERSION = 2;
+export const GRAPH_PROJECTION_FORMAT_VERSION = 3;
+export const GRAPH_SYMBOL_SEARCH_VERSION = 1;
 const MANIFEST_FILE = "manifest.json";
 const SHARD_COUNT = 256;
 const NODE_PAGE_ENTRIES = 192;
 const ID_PAGE_ENTRIES = 512;
 const EDGE_PAGE_ENTRIES = 128;
+const SYMBOL_PAGE_ENTRIES = 256;
 const DEFAULT_CACHE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_CACHE_ENTRIES = 96;
 const DEFAULT_MAX_NODES = 5_000;
@@ -49,6 +51,9 @@ const MAX_FILE_PATHS = 512;
 const MAX_FILE_PATH_BYTES = 2_048;
 const MAX_FILE_PATHS_BYTES = 48 * 1024;
 const MAX_EXTENSION_LABEL_BYTES = 2_048;
+const MAX_SYMBOL_FIELD_BYTES = 2_048;
+const MAX_SYMBOL_QUERY_BYTES = 256;
+const MAX_SYMBOL_SEARCH_RESULTS = 40;
 const GRAPH_PROJECTION_REQUEST_KEYS = new Set([
   "view",
   "focusIds",
@@ -62,6 +67,9 @@ const GRAPH_PROJECTION_REQUEST_KEYS = new Set([
   "maxEdges",
   "maxResponseBytes",
 ]);
+const GRAPH_SYMBOL_SEARCH_REQUEST_KEYS = new Set(["version", "query", "mode", "scope"]);
+const MAP_SYMBOL_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
+const LOGIC_SYMBOL_KINDS = new Set(["function", "method", "module"]);
 
 export type GraphProjectionView =
   | "modules"
@@ -111,6 +119,49 @@ interface PagedIds {
   refs: SliceRef[];
 }
 
+export type GraphSymbolSearchMode = "map" | "logic";
+export type GraphSymbolSearchScope = "public" | "all" | "private";
+
+export interface GraphSymbolEntry {
+  id: string;
+  displayName: string;
+  qualifiedName: string;
+  file: string;
+  kind: string;
+  isPrivateMethod: boolean;
+  stepCount: number | null;
+}
+
+export interface GraphSymbolSearchScopeCounts {
+  public: number;
+  all: number;
+  private: number;
+}
+
+export interface GraphSymbolSearchRequest {
+  version: typeof GRAPH_SYMBOL_SEARCH_VERSION;
+  query: string;
+  mode: GraphSymbolSearchMode;
+  scope: GraphSymbolSearchScope;
+}
+
+export interface CanonicalGraphSymbolSearchRequest extends GraphSymbolSearchRequest {
+  query: string;
+}
+
+export interface GraphSymbolSearchResult {
+  version: typeof GRAPH_SYMBOL_SEARCH_VERSION;
+  contentId: string;
+  mode: GraphSymbolSearchMode;
+  scope: GraphSymbolSearchScope;
+  scopeCounts: GraphSymbolSearchScopeCounts;
+  results: GraphSymbolEntry[];
+}
+
+interface GraphSymbolCatalogManifest extends PagedIds {
+  scopeCounts: GraphSymbolSearchScopeCounts;
+}
+
 interface GraphHeader {
   schemaVersion: string;
   generatedAt: string;
@@ -127,6 +178,7 @@ export interface GraphProjectionManifest {
   shardCount: typeof SHARD_COUNT;
   roots: PagedIds;
   changed: PagedIds;
+  symbols: Record<GraphSymbolSearchMode, GraphSymbolCatalogManifest>;
   filePathCount: number;
   extensions: {
     entryModuleCount: number;
@@ -305,6 +357,7 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
   const changedMetaBytes = writeJson(join(root, "changed-meta.json"), changedSince.meta);
   const rootPages = writeListPages(root, "roots.ndjson", roots);
   const changedPages = writeListPages(root, "changed.ndjson", changed);
+  const symbols = writeSymbolCatalogs(root, artifact.nodes, logicFlows);
 
   const header: GraphHeader = {
     schemaVersion: artifact.schemaVersion,
@@ -321,6 +374,7 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     shardCount: SHARD_COUNT,
     roots: { count: roots.length, refs: rootPages },
     changed: { count: changed.length, refs: changedPages },
+    symbols,
     filePathCount: indexedFilePaths.size,
     extensions: { entryModuleCount, changedPathCount, changedMetaBytes, flowCount },
   };
@@ -342,6 +396,7 @@ export function readGraphProjectionManifest(bundleRoot: string): GraphProjection
       || !isHeader(value.header)
       || !isPagedIds(value.roots)
       || !isPagedIds(value.changed)
+      || !isSymbolCatalogs(value.symbols)
       || !isNonNegativeInteger(value.filePathCount)
       || !isExtensionManifest(value.extensions)) return null;
     return value as GraphProjectionManifest;
@@ -390,7 +445,7 @@ export class GraphProjectionBundle {
   query(input: GraphProjectionRequest): GraphProjectionResult {
     const request = canonicalizeGraphProjectionRequest(input);
     const projectionId = createHash("sha256")
-      .update(`projection-v2\0${this.manifest.contentId}\0${JSON.stringify(request)}`)
+      .update(`projection-v3\0${this.manifest.contentId}\0${JSON.stringify(request)}`)
       .digest("hex");
     const reasons = new Set<string>();
     let omittedNodes = 0;
@@ -637,6 +692,64 @@ export class GraphProjectionBundle {
     return result;
   }
 
+  /** Search the extraction-authored compact catalog without hydrating graph nodes or indexes. Catalog
+   * pages share the projection reader's byte/entry-bounded LRU; yielding between page batches lets a
+   * disconnected HTTP subscriber cancel a worst-case rare substring scan. */
+  async search(
+    input: GraphSymbolSearchRequest,
+    signal?: AbortSignal,
+  ): Promise<GraphSymbolSearchResult> {
+    const request = canonicalizeGraphSymbolSearchRequest(input);
+    const catalog = this.manifest.symbols[request.mode];
+    const needle = request.query.toLowerCase();
+    const results: GraphSymbolEntry[] = [];
+    for (let pageIndex = 0; pageIndex < catalog.refs.length; pageIndex += 1) {
+      signal?.throwIfAborted();
+      if (pageIndex > 0 && pageIndex % 8 === 0) {
+        await new Promise<void>((resolveYield) => setImmediate(resolveYield));
+        signal?.throwIfAborted();
+      }
+      const page = this.readPage<unknown>(
+        `symbols-${request.mode}.ndjson`,
+        catalog.refs[pageIndex]!,
+      );
+      if (!Array.isArray(page) || !page.every(isGraphSymbolEntry)) {
+        throw new Error(`graph symbol catalog page ${pageIndex} is unavailable or invalid`);
+      }
+      for (const entry of page) {
+        if (!isSymbolInScope(entry, request.scope)) continue;
+        if (needle.length === 0) {
+          if (request.mode === "logic" && entry.stepCount === null) continue;
+        } else if (
+          !entry.displayName.toLowerCase().includes(needle)
+          && !entry.qualifiedName.toLowerCase().includes(needle)
+        ) {
+          continue;
+        }
+        results.push(entry);
+        if (results.length === MAX_SYMBOL_SEARCH_RESULTS) {
+          return {
+            version: GRAPH_SYMBOL_SEARCH_VERSION,
+            contentId: this.manifest.contentId,
+            mode: request.mode,
+            scope: request.scope,
+            scopeCounts: catalog.scopeCounts,
+            results,
+          };
+        }
+      }
+    }
+    signal?.throwIfAborted();
+    return {
+      version: GRAPH_SYMBOL_SEARCH_VERSION,
+      contentId: this.manifest.contentId,
+      mode: request.mode,
+      scope: request.scope,
+      scopeCounts: catalog.scopeCounts,
+      results,
+    };
+  }
+
   private node(id: string): GraphNode | null {
     const shard = shardName(id);
     const index = this.readJson<NodeShardIndex>(join("nodes", `${shard}.index.json`));
@@ -797,10 +910,46 @@ export function canonicalizeGraphProjectionRequest(input: GraphProjectionRequest
   };
 }
 
+export function canonicalizeGraphSymbolSearchRequest(
+  input: GraphSymbolSearchRequest,
+): CanonicalGraphSymbolSearchRequest {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
+    throw new GraphSymbolSearchRequestError(400, "graph symbol search request must be an object");
+  }
+  const unknownKey = Object.keys(input).find((key) => !GRAPH_SYMBOL_SEARCH_REQUEST_KEYS.has(key));
+  if (unknownKey !== undefined) {
+    throw new GraphSymbolSearchRequestError(400, `unknown graph symbol search request field: ${unknownKey}`);
+  }
+  if (input.version !== GRAPH_SYMBOL_SEARCH_VERSION) {
+    throw new GraphSymbolSearchRequestError(400, `graph symbol search version must be ${GRAPH_SYMBOL_SEARCH_VERSION}`);
+  }
+  if (typeof input.query !== "string" || input.query.includes("\0")) {
+    throw new GraphSymbolSearchRequestError(400, "graph symbol search query must be a string without null bytes");
+  }
+  const query = input.query.trim();
+  if (Buffer.byteLength(query, "utf8") > MAX_SYMBOL_QUERY_BYTES) {
+    throw new GraphSymbolSearchRequestError(413, `graph symbol search query exceeds ${MAX_SYMBOL_QUERY_BYTES} bytes`);
+  }
+  if (input.mode !== "map" && input.mode !== "logic") {
+    throw new GraphSymbolSearchRequestError(400, "graph symbol search mode must be 'map' or 'logic'");
+  }
+  if (input.scope !== "public" && input.scope !== "all" && input.scope !== "private") {
+    throw new GraphSymbolSearchRequestError(400, "unknown graph symbol search scope");
+  }
+  return { version: GRAPH_SYMBOL_SEARCH_VERSION, query, mode: input.mode, scope: input.scope };
+}
+
 export class GraphProjectionRequestError extends Error {
   constructor(readonly status: 400 | 413, message: string) {
     super(message);
     this.name = "GraphProjectionRequestError";
+  }
+}
+
+export class GraphSymbolSearchRequestError extends Error {
+  constructor(readonly status: 400 | 413, message: string) {
+    super(message);
+    this.name = "GraphSymbolSearchRequestError";
   }
 }
 
@@ -912,6 +1061,96 @@ function writeListPages(root: string, filename: string, ids: string[]): SliceRef
     closeSync(writer.descriptor);
   }
   return refs;
+}
+
+function writeSymbolCatalogs(
+  root: string,
+  nodes: readonly GraphNode[],
+  flows: LogicFlows,
+): Record<GraphSymbolSearchMode, GraphSymbolCatalogManifest> {
+  const map: GraphSymbolEntry[] = [];
+  const logic: GraphSymbolEntry[] = [];
+  for (const node of nodes) {
+    if (!MAP_SYMBOL_KINDS.has(node.kind)) continue;
+    const entry = graphSymbolEntry(node, flows[node.id]);
+    map.push(entry);
+    if (LOGIC_SYMBOL_KINDS.has(node.kind)) logic.push(entry);
+  }
+  map.sort((left, right) => left.displayName.localeCompare(right.displayName));
+  logic.sort((left, right) => {
+    const flowRank = Number(right.stepCount !== null) - Number(left.stepCount !== null);
+    return flowRank || left.displayName.localeCompare(right.displayName);
+  });
+  return {
+    map: writeSymbolCatalog(root, "map", map),
+    logic: writeSymbolCatalog(root, "logic", logic),
+  };
+}
+
+function writeSymbolCatalog(
+  root: string,
+  mode: GraphSymbolSearchMode,
+  entries: readonly GraphSymbolEntry[],
+): GraphSymbolCatalogManifest {
+  const refs = writeRecordPages(root, `symbols-${mode}.ndjson`, entries, SYMBOL_PAGE_ENTRIES);
+  const privateCount = entries.reduce((count, entry) => count + Number(entry.isPrivateMethod), 0);
+  return {
+    count: entries.length,
+    refs,
+    scopeCounts: {
+      public: entries.length - privateCount,
+      all: entries.length,
+      private: privateCount,
+    },
+  };
+}
+
+function writeRecordPages<Value>(
+  root: string,
+  filename: string,
+  values: readonly Value[],
+  pageEntries: number,
+): SliceRef[] {
+  if (values.length === 0) {
+    writeFileSync(join(root, filename), "", { mode: 0o600 });
+    return [];
+  }
+  const writer = openLineWriter(join(root, filename));
+  const refs: SliceRef[] = [];
+  try {
+    for (let offset = 0; offset < values.length; offset += pageEntries) {
+      refs.push(appendJsonLine(writer, values.slice(offset, offset + pageEntries)));
+    }
+  } finally {
+    closeSync(writer.descriptor);
+  }
+  return refs;
+}
+
+function graphSymbolEntry(node: GraphNode, flow: LogicFlows[string] | undefined): GraphSymbolEntry {
+  const file = node.location?.file ?? "";
+  for (const [label, value] of [
+    ["id", node.id],
+    ["displayName", node.displayName],
+    ["qualifiedName", node.qualifiedName],
+    ["file", file],
+    ["kind", node.kind],
+  ] as const) {
+    if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_SYMBOL_FIELD_BYTES) {
+      throw new TypeError(`cannot publish graph symbol catalog: ${label} is invalid or exceeds ${MAX_SYMBOL_FIELD_BYTES} bytes`);
+    }
+  }
+  return {
+    id: node.id,
+    displayName: node.displayName,
+    qualifiedName: node.qualifiedName,
+    file,
+    kind: node.kind,
+    isPrivateMethod: node.kind === "method" && node.displayName.startsWith("__"),
+    stepCount: Array.isArray(flow)
+      ? flow.filter((step) => (step as { kind?: unknown }).kind !== "exit").length
+      : null,
+  };
 }
 
 interface LineWriter {
@@ -1334,6 +1573,49 @@ function isExtensionManifest(value: unknown): value is GraphProjectionManifest["
     && isNonNegativeInteger(extension.changedPathCount)
     && isNonNegativeInteger(extension.changedMetaBytes)
     && isNonNegativeInteger(extension.flowCount);
+}
+
+function isSymbolCatalogs(value: unknown): value is GraphProjectionManifest["symbols"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const catalogs = value as Partial<GraphProjectionManifest["symbols"]>;
+  return isSymbolCatalogManifest(catalogs.map) && isSymbolCatalogManifest(catalogs.logic);
+}
+
+function isSymbolCatalogManifest(value: unknown): value is GraphSymbolCatalogManifest {
+  if (!isPagedIds(value)) return false;
+  const scopeCounts = (value as Partial<GraphSymbolCatalogManifest>).scopeCounts;
+  return isGraphSymbolScopeCounts(scopeCounts) && scopeCounts.all === value.count
+    && scopeCounts.public + scopeCounts.private === scopeCounts.all;
+}
+
+function isGraphSymbolScopeCounts(value: unknown): value is GraphSymbolSearchScopeCounts {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const counts = value as Partial<GraphSymbolSearchScopeCounts>;
+  return isNonNegativeInteger(counts.public)
+    && isNonNegativeInteger(counts.all)
+    && isNonNegativeInteger(counts.private);
+}
+
+function isGraphSymbolEntry(value: unknown): value is GraphSymbolEntry {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const entry = value as Partial<GraphSymbolEntry>;
+  return boundedSymbolField(entry.id)
+    && boundedSymbolField(entry.displayName)
+    && boundedSymbolField(entry.qualifiedName)
+    && boundedSymbolField(entry.file)
+    && boundedSymbolField(entry.kind)
+    && typeof entry.isPrivateMethod === "boolean"
+    && (entry.stepCount === null || isNonNegativeInteger(entry.stepCount));
+}
+
+function boundedSymbolField(value: unknown): value is string {
+  return typeof value === "string" && !value.includes("\0")
+    && Buffer.byteLength(value, "utf8") <= MAX_SYMBOL_FIELD_BYTES;
+}
+
+function isSymbolInScope(entry: GraphSymbolEntry, scope: GraphSymbolSearchScope): boolean {
+  if (scope === "all") return true;
+  return scope === "private" ? entry.isPrivateMethod : !entry.isPrivateMethod;
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

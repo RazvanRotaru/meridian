@@ -26,7 +26,7 @@ describe("createStandaloneViewSession", () => {
     expect(session).not.toHaveProperty("artifact");
     expect(session.graphSummary).toMatchObject({ nodeCount: 2, edgeCount: 0 });
     expect(readGraphProjectionManifest(session.projectionDirectory)).toMatchObject({
-      formatVersion: 2,
+      formatVersion: 3,
       graphSummary: session.graphSummary,
     });
     expect(readSyntheticCapabilitySidecar(session.syntheticCapabilityPath)).toMatchObject({

@@ -360,7 +360,7 @@ function projectionBundleWriter(): string {
       const projectionDirectory = join(dirname(artifactPath), "graph-projections");
       mkdirSync(projectionDirectory, { recursive: true });
       writeFileSync(join(projectionDirectory, "manifest.json"), JSON.stringify({
-        formatVersion: 2,
+        formatVersion: 3,
         contentId: "0".repeat(64),
         graphSummary: {
           schemaVersion: ${JSON.stringify(SCHEMA_VERSION)},
@@ -377,6 +377,10 @@ function projectionBundleWriter(): string {
         shardCount: 256,
         roots: { count: 0, refs: [] },
         changed: { count: 0, refs: [] },
+        symbols: {
+          map: { count: 0, refs: [], scopeCounts: { public: 0, all: 0, private: 0 } },
+          logic: { count: 0, refs: [], scopeCounts: { public: 0, all: 0, private: 0 } },
+        },
         filePathCount: 0,
         extensions: { entryModuleCount: 0, changedPathCount: 0, changedMetaBytes: 0, flowCount: 0 },
       }));

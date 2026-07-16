@@ -17,7 +17,9 @@ import { injectBootScript } from "./boot-script";
 import {
   GraphProjectionBundle,
   GraphProjectionRequestError,
+  GraphSymbolSearchRequestError,
   type GraphProjectionRequest,
+  type GraphSymbolSearchRequest,
 } from "./graph-projection-bundle";
 import type { OverlaySource } from "./overlay-source";
 import { sendMeta, sendOverlay, sendTraces } from "./api";
@@ -150,6 +152,14 @@ async function route(
     await sendProjection(state, request, response);
     return;
   }
+  if (url.pathname === "/api/graph/search") {
+    if (!requireMethod(response, method, "POST")) return;
+    rejectQuery(url, "graph symbol search");
+    assertSameOrigin(request);
+    assertJsonContentType(request);
+    await sendSymbolSearch(state, request, response);
+    return;
+  }
   if (url.pathname === "/api/meta") {
     if (!requireMethod(response, method, "GET")) return;
     sendMeta(
@@ -255,6 +265,36 @@ async function sendProjection(
   } catch (error) {
     if (error instanceof GraphProjectionRequestError) throw new WebError(error.status, error.message);
     throw error;
+  }
+}
+
+async function sendSymbolSearch(
+  state: ServerState,
+  request: IncomingMessage,
+  response: ServerResponse,
+): Promise<void> {
+  const body = await readJsonBody(request);
+  const cancellation = cancelWhenClientLeaves(request, response);
+  try {
+    const queryStarted = performance.now();
+    const result = await state.projection.search(body as GraphSymbolSearchRequest, cancellation.signal);
+    cancellation.signal.throwIfAborted();
+    const queryMs = performance.now() - queryStarted;
+    const serializationStarted = performance.now();
+    const serialized = JSON.stringify({ ...result, graphId: state.graphId });
+    const serializationMs = performance.now() - serializationStarted;
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "content-length": Buffer.byteLength(serialized),
+      "server-timing": `symbol_search;dur=${queryMs.toFixed(2)}, symbol_serialize;dur=${serializationMs.toFixed(2)}`,
+    });
+    response.end(serialized);
+  } catch (error) {
+    if (error instanceof GraphSymbolSearchRequestError) throw new WebError(error.status, error.message);
+    throw error;
+  } finally {
+    cancellation.dispose();
   }
 }
 

@@ -7,6 +7,7 @@ import {
   type GraphProjectionRequest,
 } from "./graphProjectionClient";
 import { RecentAllocationBudget } from "../state/recentViewProjectionCache";
+import type { GraphSymbolSearchRequest } from "./graphSymbolSearch";
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.1.0",
@@ -385,10 +386,10 @@ describe("GraphProjectionClient", () => {
     const unsupported = new GraphProjectionClient("/manifest", "/projection", {
       fetch: async () => jsonResponse({ version: 1, graphId: "old" }),
     });
-    await expect(unsupported.activate(REQUEST)).rejects.toThrow("expected version 2");
+    await expect(unsupported.activate(REQUEST)).rejects.toThrow("expected version 3");
 
     const skeletal = new GraphProjectionClient("/manifest", "/projection", {
-      fetch: async () => jsonResponse({ version: 2, graphId: "skeletal" }),
+      fetch: async () => jsonResponse({ version: 3, graphId: "skeletal" }),
     });
     await expect(skeletal.activate(REQUEST)).rejects.toThrow("contentId must be a 64-character hex digest");
 
@@ -418,6 +419,66 @@ describe("GraphProjectionClient", () => {
     });
     await expect(bounded.activate({ ...REQUEST, maxResponseBytes: 65_536 }))
       .rejects.toThrow("exceeds the 65536-byte view limit");
+  });
+
+  it("searches the immutable graph catalog through the projection endpoint's strict v1 sibling", async () => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      if (url.pathname.endsWith("/manifest")) return jsonResponse(manifest("graph-1"));
+      expect(url.pathname).toBe("/api/graph/search");
+      expect(url.searchParams.get("id")).toBe("graph-1");
+      expect(JSON.parse(String(init?.body))).toEqual({
+        version: 1,
+        query: "src",
+        mode: "map",
+        scope: "public",
+      });
+      return jsonResponse(symbolSearchResponse("graph-1"));
+    });
+    const client = new GraphProjectionClient(
+      "/api/graph/manifest?id=graph-1",
+      "/api/graph/projection?id=graph-1",
+      { fetch: fetchMock },
+    );
+    const request = {
+      version: 1,
+      query: "src",
+      mode: "map",
+      scope: "public",
+      legacyLimit: 500,
+    } as unknown as GraphSymbolSearchRequest;
+
+    await expect(client.searchSymbols(request)).resolves.toMatchObject({
+      version: 1,
+      graphId: "graph-1",
+      contentId: "0".repeat(64),
+      results: [{ id: "ts:src", displayName: "src" }],
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects NUL search queries before transport and unknown response fields after transport", async () => {
+    const neverFetch = vi.fn<typeof fetch>();
+    const client = new GraphProjectionClient("/manifest", "/projection", { fetch: neverFetch });
+    await expect(client.searchSymbols({
+      version: 1,
+      query: "src\0hidden",
+      mode: "map",
+      scope: "public",
+    })).rejects.toThrow("query exceeds 256 UTF-8 bytes");
+    expect(neverFetch).not.toHaveBeenCalled();
+
+    const strictClient = new GraphProjectionClient("/manifest", "/projection", {
+      fetch: async (input) => String(input).includes("manifest")
+        ? jsonResponse(manifest("graph-1"))
+        : jsonResponse({ ...symbolSearchResponse("graph-1"), legacyGraphId: "graph-1" }),
+    });
+    await expect(strictClient.searchSymbols({
+      version: 1,
+      query: "src",
+      mode: "map",
+      scope: "public",
+    })).rejects.toThrow("fields do not match the v1 contract");
   });
 
   it("never commits a projection if its navigation signal aborts while the body is decoding", async () => {
@@ -560,9 +621,29 @@ function graphEndpoints(graphId: string) {
   };
 }
 
+function symbolSearchResponse(graphId: string) {
+  return {
+    version: 1,
+    graphId,
+    contentId: "0".repeat(64),
+    mode: "map",
+    scope: "public",
+    scopeCounts: { public: 1, all: 1, private: 0 },
+    results: [{
+      id: "ts:src",
+      displayName: "src",
+      qualifiedName: "src",
+      file: "src",
+      kind: "package",
+      isPrivateMethod: false,
+      stepCount: null,
+    }],
+  };
+}
+
 function manifest(graphId: string) {
   return {
-    version: 2,
+    version: 3,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {

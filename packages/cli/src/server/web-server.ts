@@ -29,6 +29,7 @@ import {
 import {
   handleGenerate,
   handleGraphProjection,
+  handleGraphSymbolSearch,
   resolveSyntheticCapability,
   sendMeta,
   sendProjectionManifest,
@@ -86,6 +87,7 @@ const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 const API_METHODS = new Map<string, readonly ("GET" | "POST")[]>([
   ["/api/generate", ["POST"]],
   ["/api/graph/projection", ["POST"]],
+  ["/api/graph/search", ["POST"]],
   ["/api/pr/prepare", ["POST"]],
   ["/api/synthetic-executions", ["POST"]],
   ["/api/auth/device", ["POST"]],
@@ -397,6 +399,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   }
   if (pathname === "/api/graph/projection") {
     await handleGraphProjection(ctx, request, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/graph/search") {
+    await handleGraphSymbolSearch(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/pr/prepare") {

@@ -51,6 +51,11 @@ import type {
   LoadedGraphProjection,
   LoadedReviewProjection,
 } from "../graph/graphProjectionClient";
+import {
+  localSymbolSearch,
+  type GraphSymbolSearchRequest,
+  type GraphSymbolSearchResult,
+} from "../graph/graphSymbolSearch";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
@@ -240,6 +245,7 @@ import {
  * risk, since the walk is bounded by the callers that exist, not by this number.
  */
 export const GHOST_DEPTH_ALL = 99;
+const MAX_MINIMAL_PROJECTION_EXTRA_IDS = 128;
 
 export type LayoutStatus = "idle" | "laying-out" | "ready" | "error";
 export type FlowPaneOrigin = "explorer" | "request" | "synthetic";
@@ -555,6 +561,9 @@ export interface BlueprintState {
    * to it; removing a member drops from it. Ghosts are the members' on-map 1-hop ring, derived (not
    * stored). Reset restores it to the origin. */
   minimalMemberIds: string[];
+  /** Explicit palette additions whose graph bodies may sit outside the semantic review slice.
+   * Identity-only, capped by the projection contract, and captured with lightweight history. */
+  minimalProjectionExtraIds: Set<string>;
   /** Original rolled package → changed file modules. The package stays a stable member while its
    * ordinary Map chevron discloses the canonical contained subtree through `moduleExpanded`. */
   minimalRollups: Record<string, string[]>;
@@ -858,11 +867,14 @@ export interface BlueprintState {
   revealServiceGhost(nodeId: string): void;
   /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
    * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
-  revealInView(rawId: string): void;
+  revealInView(rawId: string, expectedGraphId?: string | null): Promise<void>;
   /** ⌘P palette "+": add a picked symbol to the graph which is actually on screen. A minimal
    * graph owns its member list; otherwise the current map lens pins the owning unit/file as an
    * extra card. Inert outside those module surfaces. */
-  addToView(rawId: string): void;
+  addToView(rawId: string, expectedGraphId?: string | null): Promise<void>;
+  openPaletteLogicFlow(rawId: string, expectedGraphId?: string | null): Promise<void>;
+  /** Repository-wide in server sessions; bounded-current-projection only for local embedders. */
+  searchSymbols(request: GraphSymbolSearchRequest, signal?: AbortSignal): Promise<GraphSymbolSearchResult>;
   /** The shared ghost "+" action. On the Map/Service/UI canvas it pins the ghost's home FILE(s)
    * into `mapExtra`; while the minimal overlay is open it adds the home member to that overlay and
    * preserves the clicked card's position. Both destinations open the target's containment path. */
@@ -1097,6 +1109,7 @@ export function projectionRequestForState(state: Pick<
   | "mapExtra"
   | "moduleGhostInspection"
   | "minimalMemberIds"
+  | "minimalProjectionExtraIds"
   | "moduleRadius"
   | "logicRoot"
   | "logicStack"
@@ -1136,7 +1149,7 @@ export function projectionRequestForState(state: Pick<
     ...state.moduleSelected,
     ...state.mapExtra,
     ...(state.moduleGhostInspection?.visitedIds ?? []),
-    ...(reviewView ? [] : state.minimalMemberIds),
+    ...(reviewView ? state.minimalProjectionExtraIds : state.minimalMemberIds),
     state.logicSelected,
     state.compSelectedId,
     state.flowSelection?.rootId ?? null,
@@ -2145,7 +2158,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       minimalCodebaseProjectionActivitySeq += 1;
       minimalCodebaseProjectionBaseline = null;
       clearMinimalSceneNavigation();
-      set({ minimalCodebaseProjectionPending: false });
+      set({
+        minimalCodebaseProjectionPending: false,
+        minimalProjectionExtraIds: new Set<string>(),
+      });
     };
     const restoreCurrentMinimalScene = async (
       activity: LayoutActivity = { label: "Restoring extracted graph…" },
@@ -2319,6 +2335,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
         minimalCodebaseProjectionPending: false,
+        minimalProjectionExtraIds: new Set<string>(),
         reviewSelectedId: reveal?.selectedId ?? null,
         reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
         flowSelection: null,
@@ -2625,6 +2642,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewFocusedSubgraph,
         minimalSeedIds: effectiveMinimalSeedIds,
         minimalMemberIds: effectiveMinimalMemberIds,
+        minimalProjectionExtraIds: new Set([...frame.minimalProjectionExtraIds].filter(keep)),
         ...(filteredFlow && projectedFlowBaseline !== null
           ? {
               minimalBasePositions: projectedFlowBaseline.minimalBasePositions,
@@ -2792,6 +2810,123 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ? computeCoverage(presentation.artifact.nodes, presentation.artifact.edges)
           : null,
       });
+    };
+
+    /** Resolve a repository-wide palette identity into the active bounded graph before an action
+     * touches it. Review additions widen HEAD only; merge-base remains path-addressed and the pair
+     * is published atomically through the same installer as Codebase navigation. */
+    const ensurePaletteSymbolProjection = async (
+      rawId: string,
+      expectedGraphId?: string | null,
+    ): Promise<void> => {
+      let state = get();
+      if (projectionDataSource === null) {
+        if (!state.index.nodesById.has(rawId)) throw new Error("This symbol is outside the local projection.");
+        return;
+      }
+      if (expectedGraphId !== undefined && expectedGraphId !== null
+        && expectedGraphId !== state.activeProjectionGraphId) {
+        throw new Error("The graph changed while the symbol palette was open. Search again.");
+      }
+      if (state.index.nodesById.has(rawId)) return;
+      if (state.activeProjectionGraphId === null || state.activeProjectionRequest === null
+        || state.activeProjectionEndpoints === null) {
+        throw new Error("The active graph cannot load this symbol.");
+      }
+      if (minimalCodebaseProjectionBaseline !== null && !await ensureExtractedReviewProjection()) {
+        throw new Error("Could not restore the extracted graph before adding this symbol.");
+      }
+      state = get();
+      const activeProjectionGraphId = state.activeProjectionGraphId;
+      const activeProjectionRequest = state.activeProjectionRequest;
+      const activeProjectionEndpoints = state.activeProjectionEndpoints;
+      if (activeProjectionGraphId === null || activeProjectionRequest === null
+        || activeProjectionEndpoints === null) {
+        throw new Error("The active graph cannot load this symbol.");
+      }
+      projectionRequestController?.abort();
+      const controller = new AbortController();
+      projectionRequestController = controller;
+      const sequence = ++projectionRequestSeq;
+      const activity = ++minimalCodebaseProjectionActivitySeq;
+      set({ minimalCodebaseProjectionPending: true });
+      try {
+        if (state.prPreparedArtifactCurrent) {
+          const baseline = captureMinimalCodebaseProjectionBaseline(state);
+          if (baseline === null || state.prReviewComparison === null) {
+            throw new Error("Prepared review comparison is unavailable.");
+          }
+          const extras = new Set([...state.minimalProjectionExtraIds, rawId]);
+          if (extras.size > MAX_MINIMAL_PROJECTION_EXTRA_IDS) {
+            throw new Error("This extracted graph has reached its palette-addition limit.");
+          }
+          // Rebuild from durable renderer state instead of widening the last transport request.
+          // The latter may still contain a transient reveal/logic admission that has since been
+          // replaced by its semantic focus, and unioning it would turn navigation into a leak.
+          const semanticRequest = projectionRequestForState(state);
+          const headRequest = snapshotProjectionRequest({
+            ...semanticRequest,
+            extraIds: [...new Set([...semanticRequest.extraIds, ...extras])],
+          });
+          const mergeBaseRequest = mergeBaseProjectionRequest(headRequest);
+          const pair = await projectionDataSource.activateReviewPair({
+            head: { request: headRequest, endpoints: baseline.headEndpoints },
+            mergeBase: { request: mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
+            signal: controller.signal,
+          });
+          const current = get();
+          if (controller.signal.aborted || projectionRequestSeq !== sequence
+            || current.activeProjectionGraphId !== baseline.headGraphId
+            || current.prReviewed !== baseline.reviewNumber) {
+            throw new DOMException("Symbol projection was superseded", "AbortError");
+          }
+          installMinimalCodebaseReviewPair(pair, baseline, headRequest, mergeBaseRequest);
+          if (!get().index.nodesById.has(rawId)) throw new Error("The symbol is unavailable in the current revision.");
+          set({ minimalProjectionExtraIds: extras });
+          return;
+        }
+
+        const currentRequest = projectionRequestForState(state);
+        const request = snapshotProjectionRequest({
+          ...currentRequest,
+          extraIds: [...new Set([...currentRequest.extraIds, rawId])],
+        });
+        const projection = await projectionDataSource.activate(request, {
+          endpoints: activeProjectionEndpoints,
+          signal: controller.signal,
+        });
+        if (controller.signal.aborted || projectionRequestSeq !== sequence
+          || get().activeProjectionGraphId !== activeProjectionGraphId) {
+          throw new DOMException("Symbol projection was superseded", "AbortError");
+        }
+        invalidateArtifactCaches();
+        set({
+          artifact: projection.artifact,
+          index: projection.index,
+          activeProjectionGraphId: projection.graphId,
+          activeProjectionRequest: projection.request,
+          activeProjectionKey: projection.key,
+          activeProjectionId: projection.projectionId,
+          coverage: get().coverageMode ? computeCoverage(projection.artifact.nodes, projection.artifact.edges) : null,
+        });
+        if (!projection.index.nodesById.has(rawId)) throw new Error("The symbol is unavailable in the current projection.");
+      } finally {
+        if (projectionRequestController === controller) projectionRequestController = null;
+        if (minimalCodebaseProjectionActivitySeq === activity) {
+          set({ minimalCodebaseProjectionPending: false });
+        }
+      }
+    };
+
+    /** A repository search hit is a transport admission, not durable graph state. Once the action
+     * has installed its real semantic anchor (focus/pin/logic root), release that transient id.
+     * Minimal Graph additions are the sole exception and deliberately retain their bounded ids. */
+    const releasePaletteProjectionExtra = (rawId: string): void => {
+      const extras = get().minimalProjectionExtraIds;
+      if (!extras.has(rawId)) return;
+      const next = new Set(extras);
+      next.delete(rawId);
+      set({ minimalProjectionExtraIds: next });
     };
 
     /** Activate one metadata-only history coordinate. Fetching is allowed after LRU eviction, but
@@ -3326,6 +3461,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     serviceGroupingLabelMode: DEFAULT_SERVICE_GROUPING_LABEL_MODE,
     minimalSeedIds: [],
     minimalMemberIds: [],
+    minimalProjectionExtraIds: new Set<string>(),
     minimalRollups: {},
     minimalBasePositions: {},
     minimalArrange: false,
@@ -4948,11 +5084,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // to its real definition (revealModule: refocus + expand its file/unit chain + select it). The
     // Service lens has no folder focus, so it pins the symbol's owning card onto the canvas and
     // selects it. Inert elsewhere — the palette opens a logic flow in logic itself.
-    revealInView(rawId) {
-      const viewMode = get().viewMode;
+    revealInView(rawId, expectedGraphId) {
+      const initial = get();
+      if (projectionDataSource !== null && expectedGraphId !== undefined && expectedGraphId !== null
+        && expectedGraphId !== initial.activeProjectionGraphId) {
+        return Promise.reject(new Error("The graph changed while the symbol palette was open. Search again."));
+      }
+      if (!initial.index.nodesById.has(rawId)) {
+        return ensurePaletteSymbolProjection(rawId, expectedGraphId)
+          .then(() => get().revealInView(rawId, get().activeProjectionGraphId));
+      }
+      const viewMode = initial.viewMode;
       if (viewMode === "modules" || viewMode === "ui") {
         get().revealModule(rawId);
-        return;
+        releasePaletteProjectionExtra(rawId);
+        return Promise.resolve();
       }
       if (viewMode === "call") {
         const state = get();
@@ -4965,18 +5111,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         });
         void get().moduleRelayout(nodeLayoutActivity(state, "Revealing", card));
       }
+      releasePaletteProjectionExtra(rawId);
+      return Promise.resolve();
     },
 
     // ⌘P palette "+": add a picked symbol to the graph the reader can actually see. Minimal Graph
     // covers its source Map and owns a separate ordered member list, so it must win as the destination
     // just like the shared ghost "+" action below. Otherwise pin the owning card into the current map
     // lens as a scratch-card union for its next relayout. All ordinary module lenses share `mapExtra`.
-    addToView(rawId) {
-      const state = get();
+    addToView(rawId, expectedGraphId) {
+      const initial = get();
+      if (projectionDataSource !== null && expectedGraphId !== undefined && expectedGraphId !== null
+        && expectedGraphId !== initial.activeProjectionGraphId) {
+        return Promise.reject(new Error("The graph changed while the symbol palette was open. Search again."));
+      }
+      if (!initial.index.nodesById.has(rawId)) {
+        return ensurePaletteSymbolProjection(rawId, expectedGraphId)
+          .then(() => get().addToView(rawId, get().activeProjectionGraphId));
+      }
+      const state = initial;
       const viewMode = state.viewMode;
       const minimalOpen = state.minimalSeedIds.length > 0;
       if (!minimalOpen && moduleSurfaceSpec(viewMode) === null) {
-        return;
+        releasePaletteProjectionExtra(rawId);
+        return Promise.resolve();
       }
       const revealPrivate = !state.showPrivate && state.index.privateIds.has(rawId);
       if (minimalOpen) {
@@ -4984,7 +5142,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           set({ showPrivate: true });
         }
         get().promoteGhost(rawId);
-        return;
+        return Promise.resolve();
       }
 
       const card = resolveCard(rawId, state.index);
@@ -4998,6 +5156,42 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // The card is already laid out; exposing its explicitly requested private member is paint-only.
         set({ showPrivate: true });
       }
+      releasePaletteProjectionExtra(rawId);
+      return Promise.resolve();
+    },
+
+    openPaletteLogicFlow(rawId, expectedGraphId) {
+      const state = get();
+      if (projectionDataSource !== null && expectedGraphId !== undefined && expectedGraphId !== null
+        && expectedGraphId !== state.activeProjectionGraphId) {
+        return Promise.reject(new Error("The graph changed while the symbol palette was open. Search again."));
+      }
+      if (!state.index.nodesById.has(rawId)) {
+        return ensurePaletteSymbolProjection(rawId, expectedGraphId)
+          .then(() => get().openPaletteLogicFlow(rawId, get().activeProjectionGraphId));
+      }
+      get().openLogicFlow(rawId);
+      releasePaletteProjectionExtra(rawId);
+      return Promise.resolve();
+    },
+
+    searchSymbols(request, signal) {
+      const state = get();
+      if (projectionDataSource === null) {
+        return Promise.resolve(localSymbolSearch(
+          state.artifact,
+          state.index.nodesById,
+          request,
+          state.activeProjectionGraphId ?? "local",
+        ));
+      }
+      if (state.activeProjectionEndpoints === null) {
+        return Promise.reject(new Error("Repository symbol search is unavailable for this graph."));
+      }
+      return projectionDataSource.searchSymbols(request, {
+        endpoints: state.activeProjectionEndpoints,
+        signal,
+      });
     },
 
     // The one ghost "+" action used by every module canvas. First resolve the same containment
@@ -5071,7 +5265,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
         const removed = new Set(memberIds);
-        set({ minimalMemberIds: state.minimalMemberIds.filter((id) => !removed.has(id)) });
+        set({
+          minimalMemberIds: state.minimalMemberIds.filter((id) => !removed.has(id)),
+          minimalProjectionExtraIds: new Set(
+            [...state.minimalProjectionExtraIds].filter((id) => {
+              const member = ghostMemberId(state.index, id);
+              return member === null || !removed.has(member);
+            }),
+          ),
+        });
         void requestMinimalRelayout(nodeLayoutActivity(state, "Removing", memberIds[0] ?? null));
         return;
       }
@@ -5434,6 +5636,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         minimalSeedIds: [...origin],
         minimalMemberIds: [...origin],
+        minimalProjectionExtraIds: new Set<string>(),
         minimalRollups: {},
         minimalBasePositions,
         minimalArrange: false,
@@ -5645,6 +5848,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : {}),
         minimalSeedIds: [],
         minimalMemberIds: [],
+        minimalProjectionExtraIds: new Set<string>(),
         minimalRollups: {},
         minimalBasePositions: {},
         minimalArrange: false,
@@ -5733,7 +5937,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset the overlay to its base: restore the working set to the origin selection, collapse any
     // opened review rollups, and drop re-arrangement (back to the captured map-mirror).
     resetMinimalGraph() {
-      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange, moduleExpanded } = get();
+      const {
+        minimalSeedIds,
+        minimalMemberIds,
+        minimalProjectionExtraIds,
+        minimalRollups,
+        minimalArrange,
+        moduleExpanded,
+      } = get();
       // An all-test review with Tests hidden retains a seed-only sentinel so the empty review panel
       // stays mounted. It is not a real origin/member and Reset must never promote it into view.
       if (minimalMemberIds.length === 0) {
@@ -5747,6 +5958,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (
         sameMembers(minimalMemberIds, origin)
         && sameMembers(minimalSeedIds, origin)
+        && minimalProjectionExtraIds.size === 0
         && !minimalArrange
         && !hasOpenRollup
       ) {
@@ -5757,6 +5969,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({
         minimalSeedIds: origin,
         minimalMemberIds: [...origin],
+        minimalProjectionExtraIds: new Set<string>(),
         moduleExpanded: collapsed,
         minimalArrange: false,
       });
@@ -6203,6 +6416,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
         minimalCodebaseProjectionPending: false,
+        minimalProjectionExtraIds: new Set<string>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -6274,6 +6488,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalCodebaseTargetIds: [],
         minimalCodebaseRetainedExpandedIds: new Set<string>(),
         minimalCodebaseProjectionPending: false,
+        minimalProjectionExtraIds: new Set<string>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -8905,6 +9120,9 @@ function applyPrReviewToMap(
     minimalCodebaseTargetIds: [],
     minimalCodebaseRetainedExpandedIds: new Set<string>(),
     minimalCodebaseProjectionPending: false,
+    minimalProjectionExtraIds: options.reprojecting
+      ? new Set(currentSelection.minimalProjectionExtraIds)
+      : new Set<string>(),
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,

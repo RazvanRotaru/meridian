@@ -25,8 +25,10 @@ import {
   GRAPH_PROJECTION_DIRECTORY,
   GraphProjectionBundle,
   GraphProjectionRequestError,
+  GraphSymbolSearchRequestError,
   readGraphProjectionManifest,
   type GraphProjectionRequest,
+  type GraphSymbolSearchRequest,
 } from "./graph-projection-bundle";
 import {
   inspectSyntheticCapabilitySidecar,
@@ -166,7 +168,7 @@ function cancelWhenClientLeaves(
       controller.abort(reason);
       return;
     }
-    const disconnect = new Error("The client closed the generation request");
+    const disconnect = new Error("The client closed the request");
     disconnect.name = "AbortError";
     controller.abort(disconnect);
   };
@@ -180,6 +182,7 @@ function cancelWhenClientLeaves(
     if (!response.writableEnded) abort();
   };
   responseEvents.once?.("close", onClose);
+  if (request.aborted || response.destroyed) abort();
   return {
     signal: controller.signal,
     abort,
@@ -400,6 +403,57 @@ export async function handleGraphProjection(
     if (error instanceof GraphProjectionRequestError) throw new WebError(error.status, error.message);
     throw error;
   }
+}
+
+/** Query the immutable lightweight symbol catalog for one exact graph identity. */
+export async function handleGraphSymbolSearch(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  searchParams: URLSearchParams,
+): Promise<void> {
+  const id = requiredGraphSearchId(searchParams);
+  const bundleRoot = projectionBundleRoot(ctx, id);
+  if (!bundleRoot) throw new WebError(404, "graph symbol search is unavailable");
+  const body = await readJsonBody(request);
+  const cancellation = cancelWhenClientLeaves(request, response);
+  try {
+    const queryStarted = performance.now();
+    const result = await projectionRegistry(ctx).get(id, bundleRoot).search(
+      body as GraphSymbolSearchRequest,
+      cancellation.signal,
+    );
+    cancellation.signal.throwIfAborted();
+    const queryMs = performance.now() - queryStarted;
+    const serializationStarted = performance.now();
+    const serialized = JSON.stringify({ ...result, graphId: id });
+    const serializationMs = performance.now() - serializationStarted;
+    response.writeHead(200, {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "content-length": Buffer.byteLength(serialized),
+      "server-timing": `symbol_search;dur=${queryMs.toFixed(2)}, symbol_serialize;dur=${serializationMs.toFixed(2)}`,
+    });
+    response.end(serialized);
+  } catch (error) {
+    if (error instanceof GraphSymbolSearchRequestError) throw new WebError(error.status, error.message);
+    throw error;
+  } finally {
+    cancellation.dispose();
+  }
+}
+
+function requiredGraphSearchId(searchParams: URLSearchParams): string {
+  const keys = [...searchParams.keys()];
+  const ids = searchParams.getAll("id");
+  if (keys.length !== 1 || keys[0] !== "id" || ids.length !== 1) {
+    throw new WebError(400, "graph symbol search requires exactly one id query parameter");
+  }
+  const id = ids[0] ?? "";
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
+    throw new WebError(400, "graph symbol search id is invalid");
+  }
+  return id;
 }
 
 function projectionBundleRoot(ctx: Context, id: string | null): string | null {

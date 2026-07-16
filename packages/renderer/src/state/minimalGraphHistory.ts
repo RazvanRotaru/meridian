@@ -18,6 +18,7 @@ export interface MinimalGraphHistoryEntry {
   moduleExpanded: BlueprintState["moduleExpanded"];
   minimalSeedIds: BlueprintState["minimalSeedIds"];
   minimalMemberIds: BlueprintState["minimalMemberIds"];
+  minimalProjectionExtraIds: BlueprintState["minimalProjectionExtraIds"];
   minimalRollups: BlueprintState["minimalRollups"];
   minimalArrange: BlueprintState["minimalArrange"];
   minimalView: BlueprintState["minimalView"];
@@ -82,6 +83,7 @@ export function captureMinimalGraphHistory(
     moduleExpanded: new Set(state.moduleExpanded),
     minimalSeedIds: [...state.minimalSeedIds],
     minimalMemberIds: [...state.minimalMemberIds],
+    minimalProjectionExtraIds: new Set(state.minimalProjectionExtraIds),
     minimalRollups: cloneRollups(state.minimalRollups),
     minimalArrange: state.minimalArrange,
     minimalView: state.minimalView,
@@ -141,6 +143,7 @@ export function restoreMinimalGraphHistory(parent: MinimalGraphHistoryEntry): Pa
     moduleExpanded: new Set(parent.moduleExpanded),
     minimalSeedIds: [...parent.minimalSeedIds],
     minimalMemberIds: [...parent.minimalMemberIds],
+    minimalProjectionExtraIds: new Set(parent.minimalProjectionExtraIds),
     minimalRollups: cloneRollups(parent.minimalRollups),
     minimalArrange: parent.minimalArrange,
     minimalView: parent.minimalView,

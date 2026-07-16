@@ -287,7 +287,7 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
     const graphId = graphIdForOptions(options);
     const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
     return {
-      version: 2,
+      version: 3,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: {
@@ -342,6 +342,10 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
     const review = this.reviews.get(key);
     if (review !== undefined) this.activeKey = review.key;
     return review;
+  }
+
+  searchSymbols(): Promise<never> {
+    return Promise.reject(new Error("symbol search is not exercised by this projection source"));
   }
 }
 

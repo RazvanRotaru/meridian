@@ -16,9 +16,16 @@ import {
   type RecentViewProjectionCacheLimits,
 } from "../state/recentViewProjectionCache";
 import { PERFORMANCE, startPerformanceSpan } from "../boot/performanceMarks";
+import {
+  GRAPH_SYMBOL_SEARCH_VERSION,
+  MAX_GRAPH_SYMBOL_RESULTS,
+  type GraphSymbolEntry,
+  type GraphSymbolSearchRequest,
+  type GraphSymbolSearchResult,
+} from "./graphSymbolSearch";
 
 const SUPPORTED_SCHEMA_MAJOR = 1;
-const PROJECTION_TRANSPORT_VERSION = 2;
+const PROJECTION_TRANSPORT_VERSION = 3;
 const DEFAULT_RESIDENT_EXPANSION_FACTOR = 3;
 const MAX_MANIFEST_CACHE_ENTRIES = 16;
 const MAX_IN_FLIGHT_MANIFESTS = 16;
@@ -34,6 +41,8 @@ const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_EDGES = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
+const MAX_SYMBOL_SEARCH_QUERY_BYTES = 256;
+const MAX_SYMBOL_SEARCH_RESPONSE_BYTES = 512 * 1024;
 
 export type GraphProjectionView =
   | "modules"
@@ -125,6 +134,10 @@ export interface GraphProjectionDataSource {
   activateReviewPair(options: GraphProjectionReviewPairOptions): Promise<LoadedReviewProjection>;
   activateCached(key: string): LoadedGraphProjection | undefined;
   activateCachedReview(key: string): LoadedReviewProjection | undefined;
+  searchSymbols(
+    request: GraphSymbolSearchRequest,
+    options?: GraphProjectionActivateOptions,
+  ): Promise<GraphSymbolSearchResult>;
 }
 
 export interface GraphProjectionClientOptions {
@@ -310,6 +323,30 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
 
   activateCachedReview(key: string): LoadedReviewProjection | undefined {
     return this.cache.peek(key)?.kind === "review" ? this.activateReviewEntry(key) : undefined;
+  }
+
+  async searchSymbols(
+    request: GraphSymbolSearchRequest,
+    options: GraphProjectionActivateOptions = {},
+  ): Promise<GraphSymbolSearchResult> {
+    const canonical = canonicalizeSymbolSearchRequest(request);
+    const manifest = await this.loadManifest(options);
+    throwIfAborted(options.signal);
+    const projectionEndpoint = options.endpoints?.projectionUrl ?? this.projectionUrl;
+    const endpoint = graphSearchEndpoint(projectionEndpoint);
+    const response = await this.fetchImpl(endpoint, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "content-type": "application/json", accept: "application/json" },
+      body: JSON.stringify(canonical),
+      signal: options.signal,
+    });
+    if (!response.ok) {
+      throw new Error(`graph symbol search failed (${response.status}) from ${response.url || endpoint}`);
+    }
+    const bytes = await readBoundedResponse(response, MAX_SYMBOL_SEARCH_RESPONSE_BYTES);
+    throwIfAborted(options.signal);
+    return parseSymbolSearchResponse(bytes, canonical, manifest);
   }
 
   private activateSingleEntry(key: string): LoadedGraphProjection {
@@ -678,6 +715,166 @@ function manifestStringArray(value: unknown, label: string): string[] {
     throw new Error(`invalid graph projection request in manifest: ${label}`);
   }
   return value as string[];
+}
+
+function canonicalizeSymbolSearchRequest(request: GraphSymbolSearchRequest): GraphSymbolSearchRequest {
+  if (typeof request !== "object" || request === null || Array.isArray(request)) {
+    throw new TypeError("graph symbol search request must be an object");
+  }
+  if (request.version !== GRAPH_SYMBOL_SEARCH_VERSION) {
+    throw new TypeError(`graph symbol search requires version ${GRAPH_SYMBOL_SEARCH_VERSION}`);
+  }
+  if (typeof request.query !== "string" || request.query.includes("\0")
+    || utf8Bytes(request.query) > MAX_SYMBOL_SEARCH_QUERY_BYTES) {
+    throw new RangeError(`graph symbol search query exceeds ${MAX_SYMBOL_SEARCH_QUERY_BYTES} UTF-8 bytes`);
+  }
+  if (request.mode !== "map" && request.mode !== "logic") {
+    throw new TypeError("graph symbol search mode is invalid");
+  }
+  if (request.scope !== "public" && request.scope !== "all" && request.scope !== "private") {
+    throw new TypeError("graph symbol search scope is invalid");
+  }
+  return {
+    version: GRAPH_SYMBOL_SEARCH_VERSION,
+    query: request.query,
+    mode: request.mode,
+    scope: request.scope,
+  };
+}
+
+function graphSearchEndpoint(projectionEndpoint: string): string {
+  const absolute = /^[A-Za-z][A-Za-z\d+.-]*:/.test(projectionEndpoint);
+  const url = new URL(projectionEndpoint, "http://meridian.local");
+  if (!url.pathname.endsWith("/projection")) {
+    throw new Error("graph projection endpoint cannot derive its symbol search sibling");
+  }
+  url.pathname = `${url.pathname.slice(0, -"projection".length)}search`;
+  return absolute ? url.href : `${url.pathname}${url.search}${url.hash}`;
+}
+
+function parseSymbolSearchResponse(
+  bytes: ArrayBuffer,
+  expected: GraphSymbolSearchRequest,
+  manifest: GraphProjectionManifest,
+): GraphSymbolSearchResult {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("invalid graph symbol search response: expected JSON");
+  }
+  const record = exactRecord(raw, [
+    "version",
+    "graphId",
+    "contentId",
+    "mode",
+    "scope",
+    "scopeCounts",
+    "results",
+  ], "graph symbol search response");
+  if (record.version !== GRAPH_SYMBOL_SEARCH_VERSION
+    || record.graphId !== manifest.graphId
+    || record.contentId !== manifest.contentId
+    || record.mode !== expected.mode
+    || record.scope !== expected.scope) {
+    throw new Error("invalid graph symbol search response: identity does not match the active manifest");
+  }
+  const counts = exactRecord(record.scopeCounts, ["public", "all", "private"], "graph symbol scope counts");
+  const scopeCounts = {
+    public: nonNegativeSafeInteger(counts.public, "scopeCounts.public"),
+    all: nonNegativeSafeInteger(counts.all, "scopeCounts.all"),
+    private: nonNegativeSafeInteger(counts.private, "scopeCounts.private"),
+  };
+  if (scopeCounts.all !== scopeCounts.public + scopeCounts.private) {
+    throw new Error("invalid graph symbol search response: scope counts do not partition all symbols");
+  }
+  if (!Array.isArray(record.results) || record.results.length > MAX_GRAPH_SYMBOL_RESULTS) {
+    throw new Error(`invalid graph symbol search response: results exceed ${MAX_GRAPH_SYMBOL_RESULTS}`);
+  }
+  const seen = new Set<string>();
+  const results = record.results.map((value, index) => {
+    const entry = parseSymbolEntry(value, index, expected);
+    if (seen.has(entry.id)) throw new Error("invalid graph symbol search response: duplicate result id");
+    seen.add(entry.id);
+    return entry;
+  });
+  return {
+    version: GRAPH_SYMBOL_SEARCH_VERSION,
+    graphId: manifest.graphId,
+    contentId: manifest.contentId,
+    mode: expected.mode,
+    scope: expected.scope,
+    scopeCounts,
+    results,
+  };
+}
+
+function parseSymbolEntry(
+  value: unknown,
+  index: number,
+  request: GraphSymbolSearchRequest,
+): GraphSymbolEntry {
+  const record = exactRecord(value, [
+    "id",
+    "displayName",
+    "qualifiedName",
+    "file",
+    "kind",
+    "isPrivateMethod",
+    "stepCount",
+  ], `graph symbol result ${index}`);
+  const id = boundedString(record.id, MAX_ID_BYTES, `results[${index}].id`, false);
+  const displayName = boundedString(record.displayName, MAX_ID_BYTES, `results[${index}].displayName`, false);
+  const qualifiedName = boundedString(record.qualifiedName, MAX_ID_BYTES, `results[${index}].qualifiedName`, true);
+  const file = boundedString(record.file, MAX_ID_BYTES, `results[${index}].file`, true);
+  const kind = boundedString(record.kind, 64, `results[${index}].kind`, false);
+  const mapKinds = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
+  const logicKinds = new Set(["function", "method", "module"]);
+  if (!(request.mode === "map" ? mapKinds : logicKinds).has(kind)) {
+    throw new Error(`invalid graph symbol search response: results[${index}].kind is not searchable`);
+  }
+  if (typeof record.isPrivateMethod !== "boolean") {
+    throw new Error(`invalid graph symbol search response: results[${index}].isPrivateMethod is invalid`);
+  }
+  const isPrivateMethod = record.isPrivateMethod;
+  if (isPrivateMethod !== (kind === "method" && displayName.startsWith("__"))) {
+    throw new Error(`invalid graph symbol search response: results[${index}] private classification is inconsistent`);
+  }
+  if ((request.scope === "public" && isPrivateMethod) || (request.scope === "private" && !isPrivateMethod)) {
+    throw new Error(`invalid graph symbol search response: results[${index}] violates the requested scope`);
+  }
+  const stepCount = record.stepCount === null
+    ? null
+    : nonNegativeSafeInteger(record.stepCount, `results[${index}].stepCount`);
+  return { id, displayName, qualifiedName, file, kind, isPrivateMethod, stepCount };
+}
+
+function exactRecord(value: unknown, keys: readonly string[], label: string): Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`invalid ${label}: expected an object`);
+  }
+  const record = value as Record<string, unknown>;
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`invalid ${label}: fields do not match the v1 contract`);
+  }
+  return record;
+}
+
+function nonNegativeSafeInteger(value: unknown, label: string): number {
+  if (!Number.isSafeInteger(value) || Number(value) < 0) {
+    throw new Error(`invalid graph symbol search response: ${label} is invalid`);
+  }
+  return Number(value);
+}
+
+function boundedString(value: unknown, maxBytes: number, label: string, allowEmpty: boolean): string {
+  if (typeof value !== "string" || (!allowEmpty && value.length === 0)
+    || value.includes("\0") || utf8Bytes(value) > maxBytes) {
+    throw new Error(`invalid graph symbol search response: ${label} is invalid`);
+  }
+  return value;
 }
 
 function decodeProjectionResponse(

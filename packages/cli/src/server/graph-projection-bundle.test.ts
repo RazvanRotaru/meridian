@@ -1,12 +1,15 @@
-import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import {
   canonicalizeGraphProjectionRequest,
+  canonicalizeGraphSymbolSearchRequest,
   GraphProjectionBundle,
   GraphProjectionRequestError,
+  GraphSymbolSearchRequestError,
   readGraphProjectionManifest,
   writeGraphProjectionBundle,
 } from "./graph-projection-bundle";
@@ -27,7 +30,105 @@ describe("GraphProjectionBundle", () => {
     expect(result.childCounts).toMatchObject({ root: 2, "file-a": 1, "file-b": 2 });
     expect(result.completeness.complete).toBe(true);
     expect(readGraphProjectionManifest(root)?.graphSummary.nodeCount).toBe(7);
-    expect(readGraphProjectionManifest(root)).toMatchObject({ formatVersion: 2, filePathCount: 3 });
+    expect(readGraphProjectionManifest(root)).toMatchObject({
+      formatVersion: 3,
+      filePathCount: 3,
+      symbols: {
+        map: { count: 7, scopeCounts: { public: 7, all: 7, private: 0 } },
+        logic: { count: 5, scopeCounts: { public: 5, all: 5, private: 0 } },
+      },
+    });
+  });
+
+  it("searches compact mode-sorted symbol pages with exact palette scope semantics", async () => {
+    const input = artifact();
+    input.nodes.push({
+      id: "private-method",
+      kind: "method",
+      qualifiedName: "Example.__private",
+      displayName: "__private",
+      parentId: "file-a",
+      location: { file: "src/a.ts", startLine: 9 },
+    });
+    input.extensions = {
+      ...input.extensions,
+      logicFlow: {
+        ...(input.extensions?.logicFlow as object),
+        "private-method": [{ kind: "exit", label: "exit" }],
+      },
+    };
+    const { bundle, root } = createBundle(input);
+
+    await expect(bundle.search({ version: 1, query: "", mode: "logic", scope: "public" })).resolves.toMatchObject({
+      version: 1,
+      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
+      mode: "logic",
+      scope: "public",
+      scopeCounts: { public: 5, all: 6, private: 1 },
+      results: [
+        { id: "method-a", stepCount: 1 },
+        { id: "method-b", stepCount: 0 },
+      ],
+    });
+    await expect(bundle.search({ version: 1, query: "  EXAMPLE.__PR  ", mode: "logic", scope: "all" }))
+      .resolves.toMatchObject({
+        scopeCounts: { public: 5, all: 6, private: 1 },
+        results: [{ id: "private-method", displayName: "__private", isPrivateMethod: true, stepCount: 0 }],
+      });
+    await expect(bundle.search({ version: 1, query: "private", mode: "map", scope: "public" }))
+      .resolves.toMatchObject({ results: [] });
+    await expect(bundle.search({ version: 1, query: "private", mode: "map", scope: "private" }))
+      .resolves.toMatchObject({
+        scopeCounts: { public: 7, all: 8, private: 1 },
+        results: [{ id: "private-method" }],
+      });
+
+    expect(readFileSync(join(root, "symbols-map.ndjson"), "utf8")).not.toContain("WHOLE_GRAPH_SENTINEL");
+  });
+
+  it("caps symbol search at 40 rows and participates in the reader's bounded page cache", async () => {
+    const input = artifact();
+    for (let index = 0; index < 600; index += 1) {
+      input.nodes.push({
+        id: `search-${index}`,
+        kind: "function",
+        qualifiedName: `Search.symbol${String(index).padStart(3, "0")}`,
+        displayName: `symbol${String(index).padStart(3, "0")}`,
+        parentId: "file-a",
+        location: { file: "src/a.ts", startLine: 10 + index },
+      });
+    }
+    const { root } = createBundle(input);
+    const bundle = new GraphProjectionBundle(root, { maxCacheBytes: 32_000, maxCacheEntries: 1 });
+
+    const result = await bundle.search({ version: 1, query: "symbol", mode: "map", scope: "all" });
+
+    expect(result.results).toHaveLength(40);
+    expect(result.results[0]?.displayName).toBe("symbol000");
+    expect(bundle.cacheStats().entries).toBeLessThanOrEqual(1);
+    expect(bundle.cacheStats().bytes).toBeLessThanOrEqual(32_000);
+  });
+
+  it("strictly validates the versioned symbol search envelope before reading catalog pages", () => {
+    expect(() => canonicalizeGraphSymbolSearchRequest({
+      version: 1,
+      query: "method",
+      mode: "map",
+      scope: "public",
+      legacyGraph: true,
+    } as never)).toThrow(GraphSymbolSearchRequestError);
+    expect(() => canonicalizeGraphSymbolSearchRequest({
+      version: 0,
+      query: "method",
+      mode: "map",
+      scope: "public",
+    } as never)).toThrow(/version must be 1/);
+    expect(() => canonicalizeGraphSymbolSearchRequest({
+      version: 1,
+      query: "x".repeat(257),
+      mode: "logic",
+      scope: "all",
+    })).toThrow(/256 bytes/);
   });
 
   it("hydrates an expanded branch while retaining ancestors and never emits dangling edges", () => {
@@ -153,11 +254,25 @@ describe("GraphProjectionBundle", () => {
 
     expect(first.request).toEqual(second.request);
     expect(first.projectionId).toBe(second.projectionId);
+    expect(first.projectionId).toBe(createHash("sha256")
+      .update(`projection-v3\0${bundle.manifest.contentId}\0${JSON.stringify(first.request)}`)
+      .digest("hex"));
 
     const reviewFirst = bundle.query({ view: "review", filePaths: ["src/b.ts", "src/a.ts", "src/a.ts"] });
     const reviewSecond = bundle.query({ view: "review", filePaths: ["src/a.ts", "src/b.ts"] });
     expect(reviewFirst.request.filePaths).toEqual(["src/a.ts", "src/b.ts"]);
     expect(reviewFirst.projectionId).toBe(reviewSecond.projectionId);
+  });
+
+  it("rejects the incompatible v2 bundle manifest without a compatibility reader", () => {
+    const { root } = createBundle();
+    const manifestPath = join(root, "manifest.json");
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Record<string, unknown>;
+    manifest.formatVersion = 2;
+    writeFileSync(manifestPath, JSON.stringify(manifest));
+
+    expect(readGraphProjectionManifest(root)).toBeNull();
+    expect(() => new GraphProjectionBundle(root)).toThrow(/manifest is unavailable or invalid/);
   });
 
   it("reports truncation explicitly and retains a structurally closed subset", () => {
