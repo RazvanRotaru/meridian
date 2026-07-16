@@ -1191,7 +1191,7 @@ html&gt;body{padding:0}&lt;/style&gt;
       &lt;div class=&quot;card viz-stat&quot;&gt;
         &lt;div class=&quot;text-muted&quot;&gt;Delivery status&lt;/div&gt;
         &lt;div class=&quot;viz-stat-value&quot;&gt;Ready for draft PR&lt;/div&gt;
-        &lt;div class=&quot;text-small&quot;&gt;Reconciled onto &lt;code&gt;b01ec28&lt;/code&gt;; the full v3 validation gate is green and delivery remains PR-only&lt;/div&gt;
+        &lt;div class=&quot;text-small&quot;&gt;Reconciled onto &lt;code&gt;9fad1e1&lt;/code&gt;; the full v3 validation gate is green and delivery remains PR-only&lt;/div&gt;
       &lt;/div&gt;
     &lt;/div&gt;
 
@@ -1214,7 +1214,7 @@ html&gt;body{padding:0}&lt;/style&gt;
         &lt;/div&gt;
         &lt;div class=&quot;status-note&quot; data-finalize=&quot;latest-main-reconciliation&quot;&gt;
           &lt;span class=&quot;swatch disk&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
-          &lt;p&gt;&lt;strong&gt;Reconciled onto current main &lt;code&gt;b01ec28&lt;/code&gt;&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;#234 private palette scopes, #235 review state and exact reviewed SHA, #236 &lt;code&gt;commit_id&lt;/code&gt; anchoring, #238 viewed-state propagation, #239 file-level ghost visibility, #240 source-comment diff filtering, #241 causal-flow exploration, #242 palette admission into Minimal Graph, and #243 Python impacted logic-flow extraction with coverage warnings all remain explicit release invariants.&lt;/span&gt;&lt;/p&gt;
+          &lt;p&gt;&lt;strong&gt;Reconciled onto current main &lt;code&gt;9fad1e1&lt;/code&gt;&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;#234 private palette scopes, #235 review state and exact reviewed SHA, #236 &lt;code&gt;commit_id&lt;/code&gt; anchoring, #238 viewed-state propagation, #239 file-level ghost visibility, #240 source-comment diff filtering, #241 causal-flow exploration, #242 palette admission into Minimal Graph, #243 Python impacted logic-flow extraction with coverage warnings, and #244 Python syntax highlighting all remain explicit release invariants.&lt;/span&gt;&lt;/p&gt;
         &lt;/div&gt;
         &lt;div class=&quot;status-note&quot;&gt;
           &lt;span class=&quot;swatch identity&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
@@ -1222,7 +1222,7 @@ html&gt;body{padding:0}&lt;/style&gt;
         &lt;/div&gt;
         &lt;div class=&quot;status-note&quot; data-finalize=&quot;full-suite-validation&quot;&gt;
           &lt;span class=&quot;swatch worker&quot; aria-hidden=&quot;true&quot;&gt;&lt;/span&gt;
-          &lt;p&gt;&lt;strong&gt;Full validation green on the rebased v3 head&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;All six package typechecks; 340 unit-test files with 3,055 passed and 1 skipped: core 183, design metrics 31, Python extractor 39, TypeScript extractor 186, renderer 2,115, CLI 501 passed / 1 skipped. Production build passed with the existing Vite chunk warning only. Chromium diff-parity 4/4 and PR-review 1/1 both passed, including #242 out-of-view palette admission; focused #243 Python impacted-flow coverage is green.&lt;/span&gt;&lt;/p&gt;
+          &lt;p&gt;&lt;strong&gt;Full validation green on the rebased v3 head&lt;/strong&gt;&lt;br&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;All six package typechecks; 340 unit-test files with 3,057 passed and 1 skipped: core 183, design metrics 31, Python extractor 39, TypeScript extractor 186, renderer 2,117, CLI 501 passed / 1 skipped. Production build passed with the existing Vite chunk warning only. Chromium diff-parity 4/4 and PR-review 1/1 both passed, including #242 out-of-view palette admission; focused #243 impacted-flow and #244 syntax-highlighting coverage is green.&lt;/span&gt;&lt;/p&gt;
         &lt;/div&gt;
       &lt;/div&gt;
 
@@ -1527,9 +1527,9 @@ html&gt;body{padding:0}&lt;/style&gt;
           &lt;/tr&gt;
           &lt;tr&gt;
             &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;Latest-main feature parity&lt;/strong&gt;&lt;/td&gt;
-            &lt;td data-label=&quot;Failure mode&quot;&gt;An older boot, extractor, or store contract could drop private palette scopes, review state, commit anchoring, viewed-state propagation, file-level ghosts, source-comment diff filtering, causal-flow exploration, repository-wide palette admission, or Python impacted-flow coverage warnings.&lt;/td&gt;
-            &lt;td data-label=&quot;Decision&quot;&gt;Preserve #234 closed-shell/private scopes, #235 complete review state and exact reviewed commit, #236 &lt;code&gt;commit_id&lt;/code&gt; HEAD anchoring, #238 viewed-state propagation, #239 file-level ghost visibility, #240 source-comment diff filtering, #241 bounded causal-flow exploration, #242 repo-wide palette behavior, and #243 Python impacted logic-flow extraction.&lt;/td&gt;
-            &lt;td data-label=&quot;Reasoning&quot;&gt;The cutover changes ownership and transport, not product semantics. Causal selections remain explicit projection inputs; palette discovery uses bounded disk search and transient HEAD IDs; reviewed files, ghosts, and comments retain their exact comparison meaning; Python coverage gaps remain visible as warnings.&lt;/td&gt;
+            &lt;td data-label=&quot;Failure mode&quot;&gt;An older boot, extractor, or store contract could drop private palette scopes, review state, commit anchoring, viewed-state propagation, file-level ghosts, source-comment diff filtering, causal-flow exploration, repository-wide palette admission, Python impacted-flow coverage warnings, or Python syntax highlighting.&lt;/td&gt;
+            &lt;td data-label=&quot;Decision&quot;&gt;Preserve #234 closed-shell/private scopes, #235 complete review state and exact reviewed commit, #236 &lt;code&gt;commit_id&lt;/code&gt; HEAD anchoring, #238 viewed-state propagation, #239 file-level ghost visibility, #240 source-comment diff filtering, #241 bounded causal-flow exploration, #242 repo-wide palette behavior, #243 Python impacted logic-flow extraction, and #244 syntax highlighting in source and diff views.&lt;/td&gt;
+            &lt;td data-label=&quot;Reasoning&quot;&gt;The cutover changes ownership and transport, not product semantics. Causal selections remain explicit projection inputs; palette discovery uses bounded disk search and transient HEAD IDs; reviewed files, ghosts, comments, coverage warnings, and Python source rendering retain their exact meaning.&lt;/td&gt;
           &lt;/tr&gt;
           &lt;tr&gt;
             &lt;td data-label=&quot;Requirement&quot;&gt;&lt;strong&gt;One coherent product&lt;/strong&gt;&lt;/td&gt;
@@ -1688,7 +1688,7 @@ Content-Type: application/json
 
     &lt;section class=&quot;panel section-stack&quot; id=&quot;mpr-implementation&quot; role=&quot;tabpanel&quot; aria-labelledby=&quot;mpr-tab-implementation&quot; hidden&gt;
       &lt;h2&gt;Implementation and rollout plan&lt;/h2&gt;
-      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;Current checkpoint:&lt;/strong&gt; the canonical branch is reconciled onto &lt;code&gt;b01ec28&lt;/code&gt;, explicitly preserves #234–#243, and is green across all six package typechecks, 340 unit-test files (3,055 passed, 1 skipped), production build, and five Chromium E2Es. Projection bundle/transport v3 restores #242 repo-wide palette behavior without whole-graph hydration, while #243 Python impacted-flow extraction and coverage warnings remain intact. The branch is ready to open as the first draft PR; delivery remains strictly PR-only and follows the order below.&lt;/p&gt;
+      &lt;p class=&quot;decision-callout&quot;&gt;&lt;strong&gt;Current checkpoint:&lt;/strong&gt; the canonical branch is reconciled onto &lt;code&gt;9fad1e1&lt;/code&gt;, explicitly preserves #234–#244, and is green across all six package typechecks, 340 unit-test files (3,057 passed, 1 skipped), production build, and five Chromium E2Es. Projection bundle/transport v3 restores #242 repo-wide palette behavior without whole-graph hydration, while #243 Python impacted-flow extraction and #244 syntax highlighting remain intact. The branch is ready to open as the first draft PR; delivery remains strictly PR-only and follows the order below.&lt;/p&gt;
 
       &lt;ol class=&quot;roadmap&quot; aria-label=&quot;Implementation phases&quot;&gt;
         &lt;li&gt;
@@ -1709,11 +1709,11 @@ Content-Type: application/json
         &lt;/li&gt;
         &lt;li data-finalize=&quot;latest-main-reconciliation&quot;&gt;
           &lt;h3&gt;✓ Reconcile main&lt;/h3&gt;
-          &lt;p class=&quot;text-small text-muted&quot;&gt;#234–#243 plus synthetic/two-sided behavior on b01ec28&lt;/p&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;#234–#244 plus synthetic/two-sided behavior on 9fad1e1&lt;/p&gt;
         &lt;/li&gt;
         &lt;li data-finalize=&quot;full-suite-validation&quot;&gt;
           &lt;h3&gt;✓ Final gate&lt;/h3&gt;
-          &lt;p class=&quot;text-small text-muted&quot;&gt;6 typechecks · 3,055 passed · 1 skipped · build · 5 Chromium E2Es&lt;/p&gt;
+          &lt;p class=&quot;text-small text-muted&quot;&gt;6 typechecks · 3,057 passed · 1 skipped · build · 5 Chromium E2Es&lt;/p&gt;
         &lt;/li&gt;
       &lt;/ol&gt;
 
@@ -1743,13 +1743,13 @@ Content-Type: application/json
           &lt;/tr&gt;
           &lt;tr data-finalize=&quot;latest-main-reconciliation&quot;&gt;
             &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch disk&quot;&gt;&lt;/span&gt;4 · Done&lt;/span&gt;&lt;/td&gt;
-            &lt;td data-label=&quot;Deliverables&quot;&gt;Reconciliation onto &lt;code&gt;b01ec28&lt;/code&gt;; #234 private scopes, #235 review state, #236 &lt;code&gt;commit_id&lt;/code&gt; anchoring, #238 viewed-state propagation, #239 file ghosts, #240 source-comment filtering, #241 causal flows, #242 repo-wide palette behavior, and #243 Python impacted logic-flow extraction with coverage warnings; bounded synthetic sidecar; canonical two-sided comparison; no feature fallbacks.&lt;/td&gt;
-            &lt;td data-label=&quot;Exit criteria&quot;&gt;The closed palette retains neither graph subscription nor results; causal-flow inputs remain explicit and bounded; review/viewed/ghost/comment/exact-commit semantics survive; synthetic provenance remains bounded; deleted, renamed, and base-ghost behavior passes focused tests; Python impacted-flow gaps remain visible.&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;Reconciliation onto &lt;code&gt;9fad1e1&lt;/code&gt;; #234 private scopes, #235 review state, #236 &lt;code&gt;commit_id&lt;/code&gt; anchoring, #238 viewed-state propagation, #239 file ghosts, #240 source-comment filtering, #241 causal flows, #242 repo-wide palette behavior, #243 Python impacted logic-flow extraction with coverage warnings, and #244 Python syntax highlighting; bounded synthetic sidecar; canonical two-sided comparison; no feature fallbacks.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;The closed palette retains neither graph subscription nor results; causal-flow inputs remain explicit and bounded; review/viewed/ghost/comment/exact-commit semantics survive; synthetic provenance remains bounded; deleted, renamed, and base-ghost behavior passes focused tests; Python impacted-flow gaps and source rendering remain correct.&lt;/td&gt;
           &lt;/tr&gt;
           &lt;tr data-finalize=&quot;full-suite-validation&quot;&gt;
             &lt;td data-label=&quot;Phase&quot;&gt;&lt;span class=&quot;priority-cell&quot;&gt;&lt;span class=&quot;swatch worker&quot;&gt;&lt;/span&gt;5 · Done&lt;/span&gt;&lt;/td&gt;
-            &lt;td data-label=&quot;Deliverables&quot;&gt;All six package typechecks; 340 unit-test files with 3,055 passed / 1 skipped; production build; Chromium diff-parity 4/4 and PR-review 1/1. Focused v3 coverage includes strict search identity, bounded catalog reads, HEAD-only palette admission, removal/reset, #242 out-of-view navigation, and #243 Python impacted logic flows.&lt;/td&gt;
-            &lt;td data-label=&quot;Exit criteria&quot;&gt;Green on the exact &lt;code&gt;b01ec28&lt;/code&gt;-based v3 head with #241 causal-flow, #242 out-of-view palette, and #243 Python impacted-flow scenarios intact. The canonical draft PR may now open; rollout begins at concurrency 1 and advances to 2 only where admission budgets hold.&lt;/td&gt;
+            &lt;td data-label=&quot;Deliverables&quot;&gt;All six package typechecks; 340 unit-test files with 3,057 passed / 1 skipped; production build; Chromium diff-parity 4/4 and PR-review 1/1. Focused v3 coverage includes strict search identity, bounded catalog reads, HEAD-only palette admission, removal/reset, #242 out-of-view navigation, #243 Python impacted logic flows, and #244 Python syntax highlighting.&lt;/td&gt;
+            &lt;td data-label=&quot;Exit criteria&quot;&gt;Green on the exact &lt;code&gt;9fad1e1&lt;/code&gt;-based v3 head with #241 causal-flow, #242 out-of-view palette, #243 Python impacted-flow, and #244 syntax-highlighting scenarios intact. The canonical draft PR may now open; rollout begins at concurrency 1 and advances to 2 only where admission budgets hold.&lt;/td&gt;
           &lt;/tr&gt;
         &lt;/tbody&gt;
       &lt;/table&gt;
@@ -1806,8 +1806,8 @@ Content-Type: application/json
           &lt;/tr&gt;
           &lt;tr&gt;
             &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Latest-main feature regression&lt;/strong&gt;&lt;/td&gt;
-            &lt;td data-label=&quot;Mitigation&quot;&gt;The &lt;code&gt;b01ec28&lt;/code&gt; reconciliation covers Git diff/extract, boot, cache, graph, and store areas. Preserve #234–#243 with focused coverage, including explicit #241 causal inputs, bounded #242 repository discovery, and #243 Python impacted-flow extraction, before claiming the final gate.&lt;/td&gt;
-            &lt;td data-label=&quot;Release evidence&quot;&gt;The green 3,055-pass v3 gate preserves private scopes, review/viewed state, ghosts, comments, causal flows, palette discovery, Python impacted-flow warnings, synthetic provenance, exact reviewed commit, and every canonical change status.&lt;/td&gt;
+            &lt;td data-label=&quot;Mitigation&quot;&gt;The &lt;code&gt;9fad1e1&lt;/code&gt; reconciliation covers Git diff/extract, boot, cache, graph, store, and source rendering areas. Preserve #234–#244 with focused coverage, including explicit #241 causal inputs, bounded #242 repository discovery, #243 Python impacted-flow extraction, and #244 Python syntax highlighting, before claiming the final gate.&lt;/td&gt;
+            &lt;td data-label=&quot;Release evidence&quot;&gt;The green 3,057-pass v3 gate preserves private scopes, review/viewed state, ghosts, comments, causal flows, palette discovery, Python impacted-flow warnings and highlighting, synthetic provenance, exact reviewed commit, and every canonical change status.&lt;/td&gt;
           &lt;/tr&gt;
           &lt;tr&gt;
             &lt;td data-label=&quot;Risk&quot;&gt;&lt;strong&gt;Cross-node assumptions leak in&lt;/strong&gt;&lt;/td&gt;
@@ -1880,12 +1880,12 @@ Content-Type: application/json
           &lt;tr&gt;
             &lt;td data-label=&quot;Scenario&quot;&gt;Product-state preservation&lt;/td&gt;
             &lt;td data-label=&quot;What it proves&quot;&gt;Latest-main behavior survives without graph residency&lt;/td&gt;
-            &lt;td data-label=&quot;Pass condition&quot;&gt;HEAD sidecar preserves consent/fingerprint/trust/provenance; #234 private scopes/closed shell, #235 review state/exact reviewed SHA, #236 &lt;code&gt;commit_id&lt;/code&gt;, #238 viewed state, #239 file ghosts, #240 comment filtering, #241 causal-flow exploration, #242 bounded repo-wide palette search, and #243 Python impacted logic-flow extraction all pass without parent full-artifact decode.&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;HEAD sidecar preserves consent/fingerprint/trust/provenance; #234 private scopes/closed shell, #235 review state/exact reviewed SHA, #236 &lt;code&gt;commit_id&lt;/code&gt;, #238 viewed state, #239 file ghosts, #240 comment filtering, #241 causal-flow exploration, #242 bounded repo-wide palette search, #243 Python impacted logic-flow extraction, and #244 Python syntax highlighting all pass without parent full-artifact decode.&lt;/td&gt;
           &lt;/tr&gt;
           &lt;tr data-finalize=&quot;full-suite-validation&quot;&gt;
             &lt;td data-label=&quot;Scenario&quot;&gt;Final reconciled suite and E2E ✓&lt;/td&gt;
             &lt;td data-label=&quot;What it proves&quot;&gt;The v3 cutover is releasable as one system&lt;/td&gt;
-            &lt;td data-label=&quot;Pass condition&quot;&gt;Passed on the &lt;code&gt;b01ec28&lt;/code&gt;-based v3 head: six package typechecks; 340 unit-test files, 3,055 passed / 1 skipped; production build with only the existing Vite chunk warning; Chromium diff-parity 4/4 and PR-review 1/1.&lt;/td&gt;
+            &lt;td data-label=&quot;Pass condition&quot;&gt;Passed on the &lt;code&gt;9fad1e1&lt;/code&gt;-based v3 head: six package typechecks; 340 unit-test files, 3,057 passed / 1 skipped; production build with only the existing Vite chunk warning; Chromium diff-parity 4/4 and PR-review 1/1.&lt;/td&gt;
           &lt;/tr&gt;
         &lt;/tbody&gt;
       &lt;/table&gt;
