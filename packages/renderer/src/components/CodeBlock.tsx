@@ -84,6 +84,7 @@ export function CodeBlock({
   changedLineKinds,
   evidenceLines,
   focusLines,
+  hiddenSourceLines,
   onLineClick,
   commentableLines,
   lineComposer,
@@ -112,6 +113,8 @@ export function CodeBlock({
   evidenceLines?: ReadonlySet<number>;
   /** Absolute rows for a presentation-only structural focus. Never treated as a PR change. */
   focusLines?: ReadonlySet<number>;
+  /** Source-code rows omitted from the listing. Review discussions anchored to those rows remain. */
+  hiddenSourceLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
   onLineClick?: (line: number) => void;
   /** Absolute HEAD-side lines allowed to open a review draft. GitHub-safe rows submit inline;
@@ -317,6 +320,7 @@ export function CodeBlock({
             const changed = diffLines === undefined && (changedLines?.has(lineNo) ?? false);
             const evidence = evidenceLines?.has(lineNo) ?? false;
             const focused = focusLines?.has(lineNo) ?? false;
+            const sourceHidden = hiddenSourceLines?.has(lineNo) ?? false;
             const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
             const composerOpen = lineComposer?.line === lineNo;
             const lineComments = existingCommentsByLine.get(lineNo) ?? EMPTY_EXISTING_COMMENTS;
@@ -335,7 +339,7 @@ export function CodeBlock({
                     })}
                   />
                 ) : null}
-                <tr
+                {!sourceHidden ? <tr
                   data-source-line={lineNo}
                   data-diff-origin={canonicalRow?.kind === "added" ? "add" : canonicalRow?.kind === "deleted" ? "delete" : undefined}
                   data-old-line={canonicalRow?.kind === "deleted" ? canonicalRow.oldLine ?? undefined : undefined}
@@ -396,8 +400,8 @@ export function CodeBlock({
                   >
                     {line.length > 0 ? line : " "}
                   </td>
-                </tr>
-                {canonicalRow?.noNewline ? (
+                </tr> : null}
+                {!sourceHidden && canonicalRow?.noNewline ? (
                   <NoNewlineMarkerRow side={canonicalRow.kind === "added" ? "new" : "old"} showGutter={gutterVisible} />
                 ) : null}
                 {lineComments.length > 0 ? (

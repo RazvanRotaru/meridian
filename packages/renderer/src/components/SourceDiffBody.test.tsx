@@ -284,17 +284,19 @@ describe("githubLineCommentScopeNote", () => {
 });
 
 describe("SourceDiffBody source-comment preference", () => {
-  it("keeps added source comments visible but removes their diff treatment when preferred", () => {
+  it("omits ordinary, documentation, and directive comments while keeping mixed lines in the diff", () => {
     const code = [
       "export function reviewTarget() {",
+      "  /** Public API documentation. */",
+      "  // @ts-expect-error intentional fixture",
       "  // Explain the behavior that follows.",
       "  return run(); // This mixed line remains code.",
       "}",
     ].join("\n");
     const view: CodeView = {
-      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 4 } },
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 6 } },
       code,
-      lineCount: 4,
+      lineCount: 6,
       loading: false,
       error: null,
       mode: "inline",
@@ -316,15 +318,18 @@ describe("SourceDiffBody source-comment preference", () => {
     });
 
     expect(sourceRowOpeningTag(ordinary, 2)).toContain('data-diff-origin="add"');
-    expect(ordinary).toContain('data-source-summary-added="4"');
-    expect(focused).toContain("Explain the behavior that follows.");
-    expect(sourceRowOpeningTag(focused, 2)).not.toContain("data-diff-origin");
-    expect(sourceRowOpeningTag(focused, 2)).toContain('data-review-comment-line="2"');
-    expect(sourceRowOpeningTag(focused, 3)).toContain('data-diff-origin="add"');
+    expect(ordinary).toContain('data-source-summary-added="6"');
+    expect(focused).not.toContain("Public API documentation.");
+    expect(focused).not.toContain("@ts-expect-error intentional fixture");
+    expect(focused).not.toContain("Explain the behavior that follows.");
+    expect(sourceRowOpeningTag(focused, 2)).toBe("");
+    expect(sourceRowOpeningTag(focused, 3)).toBe("");
+    expect(sourceRowOpeningTag(focused, 4)).toBe("");
+    expect(sourceRowOpeningTag(focused, 5)).toContain('data-diff-origin="add"');
     expect(focused).toContain('data-source-summary-added="3"');
   });
 
-  it("neutralizes and keeps a replacement's full explanatory comment block expanded", () => {
+  it("omits a replacement's full explanatory source-comment block", () => {
     const source = Array.from({ length: 30 }, (_value, index) => `line ${index + 1}`);
     source.splice(
       9,
@@ -361,8 +366,8 @@ describe("SourceDiffBody source-comment preference", () => {
     const html = renderBody(view, 340, { reviewHideAddedSourceCommentDiffs: true });
 
     for (const line of [10, 11, 12, 13, 14]) {
-      expect(html).toContain(`data-source-line="${line}"`);
-      expect(sourceRowOpeningTag(html, line)).not.toContain("data-diff-origin");
+      expect(sourceRowOpeningTag(html, line)).toBe("");
+      expect(html).not.toContain(`Explain the replacement, part ${line - 9}.`);
     }
     expect(sourceRowOpeningTag(html, 15)).toContain('data-diff-origin="add"');
     expect(html).toContain('data-source-summary-added="1"');

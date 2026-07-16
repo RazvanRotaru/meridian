@@ -54,8 +54,8 @@ describe("ReviewPreferencesPane", () => {
     expect(markup.match(/type="checkbox"/g)).toHaveLength(4);
     expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(2);
     expect(markup).toContain("Source diff display");
-    expect(markup).toContain("Hide diff on source comments");
-    expect(markup).toContain("Show comment-only additions as neutral source context");
+    expect(markup).toContain("Hide source comments in diffs");
+    expect(markup).toContain("Hide comment-only source additions from code diffs");
     expect(markup).toContain("Code and lines that mix code with comments stay highlighted");
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
     expect(markup).toContain("Code preview behavior");

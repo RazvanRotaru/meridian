@@ -257,20 +257,19 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyPreview.getByRole("button", { name: "Close code preview" }).click();
     await loyaltyPreview.waitFor({ state: "detached" });
 
-    // Agent-authored source explanations can stay readable without dominating the code diff. The
-    // preference removes only the added marker from a full-line source comment: its text remains,
-    // and the changed code that follows it stays marked as added.
+    // Agent-authored source explanations can be removed from the review surface. The preference
+    // omits a full-line source comment while the changed code that follows stays marked as added.
     const preferencesButton = page.getByRole("button", { name: "Review preferences" });
     await preferencesButton.click();
     const preferencesPane = page.getByRole("region", { name: "Review preferences" });
-    const hideSourceCommentDiff = preferencesPane.getByRole("checkbox", { name: /^Hide diff on source comments/ });
+    const hideSourceCommentDiff = preferencesPane.getByRole("checkbox", { name: /^Hide source comments in diffs/ });
     expect(await hideSourceCommentDiff.isChecked()).toBe(false);
     await hideSourceCommentDiff.check();
     await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
     await loyaltyTierNode.hover();
     await loyaltyPreview.waitFor();
-    await sourceCommentRow.getByText(SOURCE_COMMENT_TEXT, { exact: true }).waitFor();
-    expect(await sourceCommentRow.getAttribute("data-diff-origin")).toBeNull();
+    await sourceCommentRow.waitFor({ state: "detached" });
+    expect(await loyaltyPreview.getByText(SOURCE_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
     // Readers can independently switch previews from hover dwell to click-to-pin. Restore the
