@@ -62,5 +62,6 @@ function bootJson(
     preselectedEnv,
     defaultEnv: null,
     githubSource: null,
+    preparedReviewUrl: null,
   });
 }

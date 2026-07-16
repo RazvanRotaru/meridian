@@ -28,6 +28,7 @@ describe("injectBootScript", () => {
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
     expect(html).toContain('"githubSource":null');
+    expect(html).toContain('"preparedReviewUrl":null');
   });
 
   it("advertises an explicit custom mock environment without turning suggestions into an allowlist", () => {
