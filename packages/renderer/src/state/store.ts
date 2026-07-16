@@ -183,6 +183,7 @@ import {
   applyFilesToggle,
   applyFileToggle,
   applyUnitTick,
+  applyUnitsToggle,
   isReviewTestPath,
   type ReviewFileRow,
   type ReviewUnitRow,
@@ -883,6 +884,7 @@ export interface BlueprintState {
   /** Reveal a changed file, focusing its owning rollup first, then select/light/center its frame. */
   focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
+  toggleReviewUnitsViewed(nodeIds: readonly string[]): void;
   toggleReviewFileViewed(path: string): void;
   toggleReviewFilesViewed(paths: readonly string[]): void;
   addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
@@ -5283,6 +5285,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       set({ reviewUnitTicks: applyUnitTick(reviewUnitTicks, unit, new Date().toISOString()) });
+      persistReviewProgress(get());
+    },
+
+    // Structural cards derive their progress from the directly changed leaves they contain.
+    toggleReviewUnitsViewed(nodeIds) {
+      const { reviewFiles, reviewUnitTicks } = get();
+      const selectedIds = new Set(nodeIds);
+      const units = reviewFiles.flatMap((file) => file.units)
+        .filter((unit) => selectedIds.has(unit.nodeId));
+      if (units.length === 0) {
+        return;
+      }
+      set({ reviewUnitTicks: applyUnitsToggle(units, reviewUnitTicks, new Date().toISOString()) });
       persistReviewProgress(get());
     },
 
