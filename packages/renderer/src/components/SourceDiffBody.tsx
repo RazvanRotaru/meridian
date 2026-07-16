@@ -52,8 +52,11 @@ export interface SourceDiffModel {
   summary: SourceDiffSummary | null;
   existingComments: ReturnType<typeof useCodeReviewComments>;
   pendingComments: ReturnType<typeof usePendingCodeReviewComments>;
+  /** Visible HEAD rows GitHub can anchor inline; every other draftable row attaches to the file. */
+  inlineCommentableLines: ReadonlySet<number>;
+  /** Every visible HEAD row on which Meridian can preserve a draft. */
   commentableLines: ReadonlySet<number>;
-  /** Explains a partial/empty GitHub inline-comment range instead of leaving rows mysteriously inert. */
+  /** Explains which drafts become inline comments versus file-level review comments. */
   reviewCommentScopeNote: string | null;
   removedRows: ReadonlyMap<number, string[]>;
   removedTruncated: boolean;
@@ -67,6 +70,8 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const review = useBlueprint((state) => state.review);
   const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const prReviewed = useBlueprint((state) => state.prReviewed);
+  const forceFileComments = useBlueprint((state) => state.prReviewStale
+    && (state.prReviewRevision?.headSha ?? null) === null);
   const prReviewRefreshing = useBlueprint((state) => state.prReviewRefreshing);
   const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
   const prReviewFiles = useBlueprint((state) => state.prReviewSource?.files ?? null);
@@ -173,20 +178,29 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     && !prReviewRefreshing
     && prReviewStatus !== "preparing";
   const textualDiffNotice = review === null ? null : nonTextualDiffNotice(file, prReviewFiles);
-  const commentableLines = useMemo(() => {
+  const inlineCommentableLines = useMemo(() => {
     if (review === null || sourceSide === "base") return EMPTY_COMMENTABLE_LINES;
+    if (prReviewed !== null && forceFileComments) return EMPTY_COMMENTABLE_LINES;
     if (prReviewed !== null) return githubCommentableLines;
     if (anchorableHunks(file, review.context).length === 0) return EMPTY_COMMENTABLE_LINES;
-    // Artifact-only reviews have no GitHub comment range. Offer only actual shown HEAD additions.
+    // Artifact-only reviews have no GitHub patch headers. These tight raw changed rows remain the
+    // inline-safe set even when source-comment-only additions are hidden from the visual diff; all
+    // other visible HEAD rows can still attach to the file.
     return rawChangedLineKinds.size > 0
       ? new Set([...rawChangedLineKinds].filter(([, kind]) => kind === "added" || kind === "modified").map(([line]) => line))
       : new Set(rawChangedLines);
-  }, [file, githubCommentableLines, prReviewed, rawChangedLineKinds, rawChangedLines, review, sourceSide]);
+  }, [file, forceFileComments, githubCommentableLines, prReviewed, rawChangedLineKinds, rawChangedLines, review, sourceSide]);
+  const commentableLines = useMemo(
+    () => review === null || sourceSide === "base" || codeView.code === null || sourceLineCount <= 0
+      ? EMPTY_COMMENTABLE_LINES
+      : visibleSourceLines(baseLine, sourceLineCount),
+    [baseLine, codeView.code, review, sourceLineCount, sourceSide],
+  );
   const reviewCommentScopeNote = useMemo(
-    () => githubCommentingReady && sourceSide === "head" && textualDiffNotice === null
-      ? githubLineCommentScopeNote(githubCommentableLines, sourceLineCount)
+    () => githubCommentingReady && sourceSide === "head"
+      ? githubLineCommentScopeNote(inlineCommentableLines, sourceLineCount)
       : null,
-    [githubCommentableLines, githubCommentingReady, sourceLineCount, sourceSide, textualDiffNotice],
+    [githubCommentingReady, inlineCommentableLines, sourceLineCount, sourceSide],
   );
 
   return {
@@ -203,6 +217,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     summary,
     existingComments,
     pendingComments,
+    inlineCommentableLines,
     commentableLines,
     reviewCommentScopeNote,
     removedRows,
@@ -269,8 +284,8 @@ export function SourceDiffBody({
       {model.reviewCommentScopeNote ? (
         <div
           role="note"
-          data-review-comment-scope={model.commentableLines.size === 0 ? "none" : "partial"}
-          title="GitHub's public review API currently accepts Meridian inline comments only on lines included in the pull request diff."
+          data-review-comment-scope={model.inlineCommentableLines.size === 0 ? "file-only" : "inline-and-file"}
+          title="GitHub accepts inline review comments only on pull-request diff rows; comments on other HEAD lines attach to the file."
           style={COMMENT_SCOPE_NOTE_STYLE}
         >
           {model.reviewCommentScopeNote}
@@ -343,16 +358,24 @@ export function sourceDiffInstanceKey(model: {
   return [model.view.node.id, model.file, model.baseLine, model.shownEnd, model.sourceSide, oldScope].join(":");
 }
 
-/** Compact the visible GitHub-safe rows into an exact explanation for partial source snippets. */
+/** Compact the visible GitHub-safe rows into an exact inline-versus-file explanation. */
 export function githubLineCommentScopeNote(
   commentableLines: ReadonlySet<number>,
   visibleLineCount: number,
 ): string | null {
   if (visibleLineCount <= 0 || commentableLines.size >= visibleLineCount) return null;
   if (commentableLines.size === 0) {
-    return "No inline-commentable PR diff lines in this preview";
+    return "Comments in this preview will attach to the file";
   }
-  return `Hover ${formatLineRanges(commentableLines)} to add a comment · use GitHub for other lines`;
+  return `${formatLineRanges(commentableLines)} can be inline · comments on other lines attach to the file`;
+}
+
+function visibleSourceLines(baseLine: number, lineCount: number): ReadonlySet<number> {
+  const lines = new Set<number>();
+  for (let offset = 0; offset < lineCount; offset += 1) {
+    lines.add(baseLine + offset);
+  }
+  return lines;
 }
 
 function formatLineRanges(lines: ReadonlySet<number>): string {

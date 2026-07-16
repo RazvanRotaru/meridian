@@ -137,6 +137,33 @@ function attachDeletedNestedUnit(store: ReturnType<typeof reviewedStore>, source
 
 const MIXED_PR = [{ path: "src/a.ts" }, { path: "src/b.ts" }, { path: "packages/c.ts" }];
 
+async function rolledReviewStore() {
+  const store = reviewedStore(MIXED_PR);
+  await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+  const outerNodes = [
+    { id: FS_ID, position: { x: 12, y: 34 }, data: {} },
+    { id: FILE_C, position: { x: 420, y: 34 }, data: {} },
+  ];
+  const outerEdges = [{ id: "outer-rollup-edge", source: FS_ID, target: FILE_C }];
+  store.setState({
+    minimalSeedIds: [FS_ID, FILE_C],
+    minimalMemberIds: [FS_ID, FILE_C],
+    minimalRollups: { [FS_ID]: [FILE_A, FILE_B] },
+    minimalRfNodes: outerNodes,
+    minimalRfEdges: outerEdges,
+    minimalLayoutStatus: "ready",
+    minimalLayoutActivity: null,
+    minimalGraphHistory: [],
+    moduleExpanded: new Set([PACKAGE_ID, FILE_C]),
+    moduleSelected: new Set(),
+    reviewFocusedSubgraph: null,
+    reviewSelectedId: null,
+    reviewLitNodeIds: null,
+    recenterSeq: 0,
+  });
+  return { store, outerNodes, outerEdges };
+}
+
 describe("change groups in PR review", () => {
   it("partitions the reviewed PR into disjoint groups and starts on All", () => {
     const store = reviewedStore(MIXED_PR);
@@ -317,6 +344,76 @@ describe("change groups in PR review", () => {
       syntheticFieldWatchers: [outerWatcher],
       syntheticEditorRequest: { rootId: FN_A, host: "flow-pane" },
     });
+  });
+
+  it("automatically focuses a rolled file's owning container before centering the file", async () => {
+    const { store, outerNodes, outerEdges } = await rolledReviewStore();
+    const file = store.getState().reviewFiles.find((candidate) => candidate.path === "src/a.ts")!;
+    const expectedLit = new Set(file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [FILE_A]);
+
+    store.getState().focusReviewFile("src/a.ts");
+
+    expect(store.getState().reviewFocusedSubgraph).toMatchObject({
+      rootId: FS_ID,
+      filePaths: ["src/a.ts", "src/b.ts"],
+      moduleIds: [FILE_A, FILE_B],
+    });
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalRollups).toEqual({});
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().moduleSelected).toEqual(new Set([FILE_A]));
+    expect(store.getState().reviewSelectedId).toBe(FILE_A);
+    expect(store.getState().reviewLitNodeIds).toEqual(expectedLit);
+    expect(store.getState().recenterSeq).toBe(0);
+
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().recenterSeq).toBe(1);
+    });
+    expect(store.getState().minimalRfNodes.some((node) => node.id === FILE_A)).toBe(true);
+
+    store.getState().closeReviewSubgraph();
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FS_ID, FILE_C]);
+    expect(store.getState().minimalRollups).toEqual({ [FS_ID]: [FILE_A, FILE_B] });
+    expect(store.getState().minimalRfNodes).toBe(outerNodes);
+    expect(store.getState().minimalRfEdges).toBe(outerEdges);
+    expect(store.getState().reviewSelectedId).toBeNull();
+  });
+
+  it("automatically focuses a rolled unit's owning container and reveals the exact unit", async () => {
+    const { store } = await rolledReviewStore();
+
+    store.getState().selectReviewNode(FN_A);
+
+    expect(store.getState().reviewFocusedSubgraph?.rootId).toBe(FS_ID);
+    expect(store.getState().moduleSelected).toEqual(new Set([FN_A]));
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_A]));
+    expect(store.getState().reviewSelectedId).toBe(FN_A);
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([FN_A]));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().recenterSeq).toBe(0);
+
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().recenterSeq).toBe(1);
+    });
+    expect(store.getState().minimalRfNodes.some((node) => node.id === FN_A)).toBe(true);
+
+    // The focused child keeps its other exact files collapsed. Revealing a unit in one of them
+    // opens that file locally instead of nesting another focused-subgraph history entry.
+    store.getState().selectReviewNode(FN_B);
+    expect(store.getState().reviewFocusedSubgraph?.rootId).toBe(FS_ID);
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_A, FILE_B]));
+    expect(store.getState().reviewSelectedId).toBe(FN_B);
+    expect(store.getState().recenterSeq).toBe(1);
+
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().recenterSeq).toBe(2);
+    });
+    expect(store.getState().minimalRfNodes.some((node) => node.id === FN_B)).toBe(true);
   });
 
   it("lays out an exact-file child graph across columns on its first open", async () => {

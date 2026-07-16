@@ -587,6 +587,8 @@ export interface BlueprintState {
   reviewCommentsVisible: boolean;
   reviewSubmitStatus: "idle" | "submitting";
   reviewSubmitError: string | null;
+  /** Non-error placement detail for the last successful review submission. */
+  reviewSubmitNotice: string | null;
   /** One existing GitHub comment edit/reply at a time; separate from draft-review submission. */
   prCommentMutationStatus: "idle" | "submitting";
   prCommentMutationId: number | null;
@@ -865,6 +867,7 @@ export interface BlueprintState {
   minimalRelayout(activity?: LayoutActivity): Promise<void>;
   setReviewLit(ids: Set<string> | null): void;
   setReviewFilesSort(sort: "path" | "risk"): void;
+  /** Reveal a review unit, focusing its owning rollup first when the unit is not in the current scene. */
   selectReviewNode(id: string | null): void;
   /** Isolate one change group on the Map (null = "All groups"): re-seed the minimal overlay with only
    * that group's module ids and relayout. A no-op outside a review or when already active. */
@@ -877,7 +880,7 @@ export interface BlueprintState {
   closeReviewSubgraph(): void;
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
-  /** Reveal a changed file on the review graph: select its frame, light its units, center on it. */
+  /** Reveal a changed file, focusing its owning rollup first, then select/light/center its frame. */
   focusReviewFile(path: string): void;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewFileViewed(path: string): void;
@@ -1852,6 +1855,229 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return false;
     };
 
+    type ReviewSubgraphReveal = {
+      selectedId: string;
+      litNodeIds: ReadonlySet<string>;
+    };
+
+    const isRealMinimalNode = (state: BlueprintState, id: string): boolean =>
+      state.minimalRfNodes.some((node) => node.id === id && node.type !== "ghost");
+
+    const reviewTargetModuleId = (state: BlueprintState, targetId: string): string | null => {
+      const reviewFile = state.reviewFiles.find((file) =>
+        file.moduleId === targetId || file.units.some((unit) => unit.nodeId === targetId),
+      );
+      return reviewFile?.moduleId ?? nearestModuleIds([targetId], state.index)[0] ?? null;
+    };
+
+    // A review sidebar target can be absent from the laid scene because a large review substituted
+    // its file seed with an owning package rollup. Resolve only that case: ordinary collapsed code
+    // still follows the existing paint-only selection path, while a target already on the canvas is
+    // centered without changing review scope.
+    const hiddenReviewRollupFor = (state: BlueprintState, targetId: string): string | null => {
+      if (
+        state.review === null
+        || state.minimalSeedIds.length === 0
+        || state.minimalLayoutStatus !== "ready"
+        || state.flowSelection !== null
+        || state.reviewFlowBaseline !== null
+        || state.syntheticExecutionStatus === "running"
+        || isRealMinimalNode(state, targetId)
+      ) {
+        return null;
+      }
+      const moduleId = reviewTargetModuleId(state, targetId);
+      if (moduleId === null) {
+        return null;
+      }
+      const members = new Set(state.minimalMemberIds);
+      for (const ancestor of [...state.index.ancestorsOf(moduleId)].reverse()) {
+        const fileIds = state.minimalRollups[ancestor.id];
+        if (
+          members.has(ancestor.id)
+          && fileIds?.includes(moduleId)
+          && (ancestor.kind === "package" || ancestor.kind === "directory")
+          && state.index.isContainer(ancestor.id)
+          && state.reviewFocusedSubgraph?.rootId !== ancestor.id
+        ) {
+          return ancestor.id;
+        }
+      }
+      return null;
+    };
+
+    // Shared implementation for an explicit package double-click and an automatic sidebar reveal.
+    // The latter carries its original selection into the exact-file child scene and waits for that
+    // scene's layout before signaling the camera, so useRecenter can never fall back to fitting the
+    // whole graph because the requested id is still hidden behind the rollup.
+    const focusReviewSubgraph = (
+      rootId: string,
+      reveal: ReviewSubgraphReveal | null,
+      retry: () => void,
+    ): boolean => {
+      const state = get();
+      const root = state.index.nodesById.get(rootId);
+      if (
+        state.review === null
+        || state.minimalSeedIds.length === 0
+        || state.minimalLayoutStatus !== "ready"
+        || state.flowSelection !== null
+        || state.reviewFlowBaseline !== null
+        || state.syntheticExecutionStatus === "running"
+        || root === undefined
+        || (root.kind !== "package" && root.kind !== "directory")
+        || !state.index.isContainer(rootId)
+        || state.reviewFocusedSubgraph?.rootId === rootId
+      ) {
+        return false;
+      }
+      const activeGroup = state.reviewActiveGroupId === null
+        ? null
+        : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
+      const groupFiles = activeGroup === null ? null : new Set(activeGroup.files);
+      const candidates = state.reviewFiles.filter((file) =>
+        file.moduleId !== null
+        && (groupFiles === null || groupFiles.has(file.path))
+        && isReviewPathInScope(file.path, state.reviewPathScope)
+        && state.index.isWithinFocus(rootId, file.moduleId),
+      );
+      const matched = matchAffectedFiles(state.index, candidates.map((file) => file.path)).matched
+        .filter((match) => state.index.isWithinFocus(rootId, match.moduleId));
+      const seeds = [...new Set(matched.map((match) => match.moduleId))].sort();
+      if (seeds.length === 0) {
+        return false;
+      }
+      if (!guardReviewLineComposerTransition(retry)) {
+        return false;
+      }
+      // Treat the focused root as a rollup boundary only for expansion calculation: every file and
+      // declaration below it starts collapsed, while the exact file modules remain the graph seeds.
+      const expansionBoundary = new Map<string, string[]>([[rootId, seeds]]);
+      const baseExpansion = reviewExpansionForMatches(state.index, matched, expansionBoundary);
+      const moduleExpanded = reveal === null
+        ? baseExpansion
+        : expandedCodePaths(baseExpansion, new Set([reveal.selectedId]), state.index);
+      const activity = { label: `Opening ${root.displayName || "container"} subgraph…` };
+      syntheticExecutionSeq += 1;
+      flowPaneLayoutSeq += 1;
+      invalidateMinimalLayout();
+      set({
+        reviewFocusedSubgraph: {
+          rootId,
+          label: root.displayName || rootId,
+          filePaths: [...new Set(matched.map((match) => match.path))].sort(),
+          moduleIds: seeds,
+        },
+        minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
+        minimalView: "graph",
+        minimalShowGhostNodes: true,
+        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        reviewSelectedId: reveal?.selectedId ?? null,
+        reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
+        flowSelection: null,
+        flowPaneOrigin: null,
+        requestFlowTraceId: null,
+        requestFlowExpansionOverrides: new Set<string>(),
+        flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
+        logicSelected: null,
+        flowPaneRfNodes: [] as LogicRfNode[],
+        flowPaneRfEdges: [] as LogicRfEdge[],
+        flowPaneLayoutStatus: "idle" as const,
+        reviewFlowBaseline: null,
+        ...syntheticExecutionReset(),
+        syntheticExperimentRootId: null,
+        syntheticInputOverrides: [],
+        syntheticFieldWatchers: [],
+        syntheticEditorRequest: null,
+        moduleSelected: reveal === null ? new Set<string>() : new Set([reveal.selectedId]),
+        moduleExpanded,
+        minimalSeedIds: seeds,
+        minimalMemberIds: [...seeds],
+        minimalRollups: {},
+        minimalBasePositions: {},
+        minimalArrange: false,
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: "laying-out",
+        minimalLayoutActivity: activity,
+      });
+      void requestMinimalRelayout(activity).then(() => {
+        const current = get();
+        if (
+          reveal !== null
+          && current.minimalLayoutStatus === "ready"
+          && current.reviewFocusedSubgraph?.rootId === rootId
+          && current.reviewSelectedId === reveal.selectedId
+          && isRealMinimalNode(current, reveal.selectedId)
+        ) {
+          set({ recenterSeq: current.recenterSeq + 1 });
+        }
+      });
+      return true;
+    };
+
+    // Once a container is already focused there is no rollup left to open. A unit in another exact
+    // file can still be behind that file/class's disclosure gates, so reveal it in the current child
+    // scene without pushing a duplicate history frame.
+    const revealWithinFocusedReviewSubgraph = (
+      state: BlueprintState,
+      reveal: ReviewSubgraphReveal,
+      retry: () => void,
+    ): boolean => {
+      const focused = state.reviewFocusedSubgraph;
+      const moduleId = reviewTargetModuleId(state, reveal.selectedId);
+      if (
+        focused === null
+        || moduleId === null
+        || !focused.moduleIds.includes(moduleId)
+        || state.minimalLayoutStatus !== "ready"
+        || state.flowSelection !== null
+        || state.reviewFlowBaseline !== null
+        || state.syntheticExecutionStatus === "running"
+        || isRealMinimalNode(state, reveal.selectedId)
+      ) {
+        return false;
+      }
+      const moduleExpanded = expandedCodePaths(
+        state.moduleExpanded,
+        new Set([reveal.selectedId]),
+        state.index,
+      );
+      if (sameStringSet(moduleExpanded, state.moduleExpanded)) {
+        return false;
+      }
+      if (!guardReviewLineComposerTransition(retry)) {
+        return true;
+      }
+      set({
+        moduleSelected: new Set([reveal.selectedId]),
+        moduleExpanded,
+        reviewSelectedId: reveal.selectedId,
+        reviewLitNodeIds: new Set(reveal.litNodeIds),
+        flowSelection: null,
+        flowPaneExpansionOverrides: new Set<string>(),
+        flowPaneCollapsedEdges: new Set<string>(),
+        logicSelected: null,
+        flowPaneRfNodes: [],
+        flowPaneRfEdges: [],
+        flowPaneLayoutStatus: "idle",
+        reviewFlowBaseline: null,
+      });
+      void requestMinimalRelayout({ label: "Revealing changed node…" }).then(() => {
+        const current = get();
+        if (
+          current.minimalLayoutStatus === "ready"
+          && current.reviewFocusedSubgraph?.rootId === focused.rootId
+          && current.reviewSelectedId === reveal.selectedId
+          && isRealMinimalNode(current, reveal.selectedId)
+        ) {
+          set({ recenterSeq: current.recenterSeq + 1 });
+        }
+      });
+      return true;
+    };
+
     const reprojectArtifactReview = (showTests: boolean): void => {
       const state = get();
       if (state.prReviewed !== null || artifactReview === null || state.review === null) {
@@ -2304,6 +2530,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewCommentsVisible: true,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
+    reviewSubmitNotice: null,
     prCommentMutationStatus: "idle",
     prCommentMutationId: null,
     prCommentMutationError: null,
@@ -4767,11 +4994,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewFilesSort: sort });
     },
 
-    // Select a review block (from the panel); also lights it and CENTERS the graph on it — a panel
-    // click must always end with the target visible, not selected somewhere off-screen.
+    // Select a review block (from the panel); if a rollup hides it, focus that owning container,
+    // then light and CENTER the exact target once the child scene has laid out.
     selectReviewNode(id) {
       const before = get();
       const flowBaseline = before.reviewFlowBaseline;
+      if (flowBaseline === null && id !== null) {
+        const rootId = hiddenReviewRollupFor(before, id);
+        if (rootId !== null) {
+          focusReviewSubgraph(rootId, { selectedId: id, litNodeIds: new Set([id]) }, () => get().selectReviewNode(id));
+          return;
+        }
+        if (revealWithinFocusedReviewSubgraph(
+          before,
+          { selectedId: id, litNodeIds: new Set([id]) },
+          () => get().selectReviewNode(id),
+        )) {
+          return;
+        }
+      }
       const moduleSelected = id === null ? new Set<string>() : new Set([id]);
       set({
         ...(flowBaseline ?? {}),
@@ -4795,15 +5036,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (flowBaseline !== null) {
-        void requestMinimalRelayout({ label: "Returning to changed node review…" }).then(recenter);
-      } else {
-        recenter();
+        // Restore the exact pre-flow review first. If that scene rolls the requested unit into a
+        // package, replaying the selection below will focus that now-settled owning container.
+        void requestMinimalRelayout({ label: "Returning to changed node review…" }).then(() => {
+          if (id !== null && get().reviewSelectedId === id) {
+            get().selectReviewNode(id);
+          }
+        });
+        return;
       }
+      recenter();
     },
 
-    // The file row's click: select the file's frame on the review graph (the emphasize ring), light
-    // its touched units amber-strong, and center the viewport on the frame. Inert for files with no
-    // module on the graph (the "not in graph" tail).
+    // The file row's click: focus an owning rollup when necessary, select the exact file frame, light
+    // its touched units amber-strong, and center the viewport. Inert for files with no graph module.
     focusReviewFile(path) {
       const state = get();
       const file = state.reviewFiles.find((candidate) => candidate.path === path);
@@ -4812,6 +5058,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const flowBaseline = state.reviewFlowBaseline;
       const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      if (flowBaseline === null) {
+        const rootId = hiddenReviewRollupFor(state, file.moduleId);
+        if (rootId !== null) {
+          focusReviewSubgraph(
+            rootId,
+            { selectedId: file.moduleId, litNodeIds: new Set(lit) },
+            () => get().focusReviewFile(path),
+          );
+          return;
+        }
+        if (revealWithinFocusedReviewSubgraph(
+          state,
+          { selectedId: file.moduleId, litNodeIds: new Set(lit) },
+          () => get().focusReviewFile(path),
+        )) {
+          return;
+        }
+      }
       const moduleSelected = new Set([file.moduleId]);
       set({
         ...(flowBaseline ?? {}),
@@ -4833,10 +5097,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (flowBaseline !== null) {
-        void requestMinimalRelayout({ label: "Returning to changed file review…" }).then(recenter);
-      } else {
-        recenter();
+        // As with a unit click, settle the pre-flow graph before deciding whether its owning rollup
+        // must become an exact-file focused subgraph.
+        void requestMinimalRelayout({ label: "Returning to changed file review…" }).then(() => {
+          if (get().reviewSelectedId === file.moduleId) {
+            get().focusReviewFile(path);
+          }
+        });
+        return;
       }
+      recenter();
     },
 
     // Isolate one change group on the Map: re-seed the minimal overlay with ONLY that group's module
@@ -4972,89 +5242,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // files rather than reproducing the same summary card. Every open pushes the immediate scene,
     // so package focus and ordinary selection extraction share unlimited stepwise Back navigation.
     openReviewSubgraph(rootId) {
-      const state = get();
-      const root = state.index.nodesById.get(rootId);
-      if (
-        state.review === null
-        || state.minimalSeedIds.length === 0
-        || state.minimalLayoutStatus !== "ready"
-        || state.flowSelection !== null
-        || state.reviewFlowBaseline !== null
-        || state.syntheticExecutionStatus === "running"
-        || root === undefined
-        || (root.kind !== "package" && root.kind !== "directory")
-        || !state.index.isContainer(rootId)
-        || state.reviewFocusedSubgraph?.rootId === rootId
-      ) {
-        return;
-      }
-      const activeGroup = state.reviewActiveGroupId === null
-        ? null
-        : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
-      const groupFiles = activeGroup === null ? null : new Set(activeGroup.files);
-      const candidates = state.reviewFiles.filter((file) =>
-        file.moduleId !== null
-        && (groupFiles === null || groupFiles.has(file.path))
-        && isReviewPathInScope(file.path, state.reviewPathScope)
-        && state.index.isWithinFocus(rootId, file.moduleId),
-      );
-      const matched = matchAffectedFiles(state.index, candidates.map((file) => file.path)).matched
-        .filter((match) => state.index.isWithinFocus(rootId, match.moduleId));
-      const seeds = [...new Set(matched.map((match) => match.moduleId))].sort();
-      if (seeds.length === 0) {
-        return;
-      }
-      if (!guardReviewLineComposerTransition(() => get().openReviewSubgraph(rootId))) {
-        return;
-      }
-      // Treat the focused root as a rollup boundary only for expansion calculation: every file and
-      // declaration below it starts collapsed, while the exact file modules remain the graph seeds.
-      const expansionBoundary = new Map<string, string[]>([[rootId, seeds]]);
-      syntheticExecutionSeq += 1;
-      flowPaneLayoutSeq += 1;
-      invalidateMinimalLayout();
-      set({
-        reviewFocusedSubgraph: {
-          rootId,
-          label: root.displayName || rootId,
-          filePaths: [...new Set(matched.map((match) => match.path))].sort(),
-          moduleIds: seeds,
-        },
-        minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
-        minimalView: "graph",
-        minimalShowGhostNodes: true,
-        minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
-        reviewSelectedId: null,
-        reviewLitNodeIds: null,
-        flowSelection: null,
-        flowPaneOrigin: null,
-        requestFlowTraceId: null,
-        requestFlowExpansionOverrides: new Set<string>(),
-        flowPaneExpansionOverrides: new Set<string>(),
-        flowPaneCollapsedEdges: new Set<string>(),
-        logicSelected: null,
-        flowPaneRfNodes: [] as LogicRfNode[],
-        flowPaneRfEdges: [] as LogicRfEdge[],
-        flowPaneLayoutStatus: "idle" as const,
-        reviewFlowBaseline: null,
-        ...syntheticExecutionReset(),
-        syntheticExperimentRootId: null,
-        syntheticInputOverrides: [],
-        syntheticFieldWatchers: [],
-        syntheticEditorRequest: null,
-        moduleSelected: new Set<string>(),
-        moduleExpanded: reviewExpansionForMatches(state.index, matched, expansionBoundary),
-        minimalSeedIds: seeds,
-        minimalMemberIds: [...seeds],
-        minimalRollups: {},
-        minimalBasePositions: {},
-        minimalArrange: false,
-        minimalRfNodes: [],
-        minimalRfEdges: [],
-        minimalLayoutStatus: "laying-out",
-        minimalLayoutActivity: { label: `Opening ${root.displayName || "container"} subgraph…` },
-      });
-      void get().minimalRelayout({ label: `Opening ${root.displayName || "container"} subgraph…` });
+      focusReviewSubgraph(rootId, null, () => get().openReviewSubgraph(rootId));
     },
 
     // Back from a focused container is intentionally synchronous: reuse the already-laid outer
@@ -5211,7 +5399,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         at: new Date().toISOString(),
       };
       // A fresh draft supersedes the last submit's outcome banners (link and error alike).
-      set({ reviewComments: [...reviewComments, comment], reviewSubmittedUrl: null, reviewSubmitError: null });
+      set({ reviewComments: [...reviewComments, comment], reviewSubmittedUrl: null, reviewSubmitError: null, reviewSubmitNotice: null });
       persistReviewProgress(get());
     },
 
@@ -5227,6 +5415,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewComments: state.reviewComments.map((comment) => comment.id === id ? { ...comment, body: trimmed } : comment),
         reviewSubmittedUrl: null,
         reviewSubmitError: null,
+        reviewSubmitNotice: null,
       });
       persistReviewProgress(get());
     },
@@ -5235,7 +5424,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!get().review) {
         return;
       }
-      set({ reviewComments: get().reviewComments.filter((comment) => comment.id !== id), reviewSubmittedUrl: null, reviewSubmitError: null });
+      set({ reviewComments: get().reviewComments.filter((comment) => comment.id !== id), reviewSubmittedUrl: null, reviewSubmitError: null, reviewSubmitNotice: null });
       persistReviewProgress(get());
     },
 
@@ -5374,8 +5563,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       await get().submitReview("COMMENT");
     },
 
-    // Submit a GitHub review decision together with every visible draft as an inline comment. If
-    // any draft cannot be anchored, reject the whole review instead of silently dropping context.
+    // Submit one GitHub review containing every visible draft. Diff-safe drafts stay inline;
+    // drafts without a valid line anchor become real file-level review comments. A stale review
+    // with a known SHA remains pinned to that reviewed commit. Without a SHA, force file comments
+    // so GitHub can never attach old coordinates to its implicit latest commit.
     // Only the drafts snapshotted here are cleared; comments added while the POST is in flight stay.
     async submitReview(event, body = "") {
       const {
@@ -5402,7 +5593,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || (event === "COMMENT" && visibleComments.length === 0)
         || (event === "REQUEST_CHANGES" && reviewBody.length === 0)
         || reviewSubmitStatus === "submitting"
-        || prReviewStale
+        || (prReviewStale && event !== "COMMENT")
         || prReviewRefreshing
         || prReviewStatus === "preparing"
       ) {
@@ -5410,21 +5601,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // Hidden test drafts remain persisted and reappear when Tests is restored; they must neither
       // submit invisibly nor block the visible draft set while their rows are absent.
-      const submission = buildReviewSubmission(visibleComments, reviewFiles, review.context, reviewCommentRangesByFile);
-      if (submission.blocked.length > 0) {
-        const count = submission.blocked.length;
-        const blockedLabel = count === 1
-          ? "1 draft cannot be posted as an inline GitHub comment"
-          : `${count} drafts cannot be posted as inline GitHub comments`;
-        set({
-          reviewSubmitStatus: "idle",
-          reviewSubmitError: `${blockedLabel}. Delete ${count === 1 ? "it" : "them"} or add ${count === 1 ? "a replacement" : "replacements"} on lines shown in the current pull request diff. Nothing was submitted.`,
-        });
-        return false;
-      }
+      const forceFileComments = event === "COMMENT"
+        && prReviewStale
+        && submittedRevision?.headSha == null;
+      const submission = buildReviewSubmission(
+        visibleComments,
+        reviewFiles,
+        review.context,
+        reviewCommentRangesByFile,
+        { forceFileComments },
+      );
       const submittedIds = new Set(visibleComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;
-      set({ reviewSubmitStatus: "submitting", reviewSubmitError: null });
+      set({ reviewSubmitStatus: "submitting", reviewSubmitError: null, reviewSubmitNotice: null });
       try {
         const response = await fetch(prReviewUrl, {
           method: "POST",
@@ -5434,6 +5623,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             number: prNumber,
             event,
             comments: submission.comments,
+            fileComments: submission.fileComments,
+            ...(submittedRevision?.headSha ? { commitId: submittedRevision.headSha } : {}),
             ...(event !== "COMMENT" && reviewBody ? { body: reviewBody } : {}),
           }),
         });
@@ -5441,7 +5632,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           set({ reviewSubmitStatus: "idle", reviewSubmitError: await submitErrorMessage(response) });
           return false;
         }
-        const data = (await response.json()) as { url?: string | null };
+        const data = (await response.json()) as { url?: string | null; forced?: boolean; pendingMerged?: boolean };
+        const reviewSubmitDetails = [
+          data.pendingMerged ? "An existing GitHub draft review was submitted first." : null,
+          data.forced
+            ? "GitHub could not anchor the inline batch, so those comments were submitted as file-level review comments."
+            : submission.fileComments.length > 0
+              ? `${submission.fileComments.length} ${submission.fileComments.length === 1 ? "comment was" : "comments were"} submitted as ${submission.fileComments.length === 1 ? "a file-level review comment" : "file-level review comments"}.`
+              : null,
+        ].filter((detail): detail is string => detail !== null);
+        const reviewSubmitNotice = reviewSubmitDetails.length > 0 ? reviewSubmitDetails.join(" ") : null;
         // The review may have moved to another PR while awaiting; drop the SUBMITTED drafts from
         // the submitted key's storage either way, but only touch live state on the same review.
         // "" marks submitted-without-a-link, so the footer still confirms the submit happened.
@@ -5451,6 +5651,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewSubmitStatus: "idle",
             reviewComments: get().reviewComments.filter((comment) => !submittedIds.has(comment.id)),
             reviewSubmittedUrl: data.url ?? "",
+            reviewSubmitNotice,
           });
           // Any submitted inline drafts are now existing GitHub comments. Refresh that read model
           // so a successful canvas submission does not make them disappear until the next reload.
@@ -7301,6 +7502,7 @@ function applyPrReviewToMap(
     // duplicate-submit guard or erase its outcome banners; fresh review entry still resets them.
     reviewSubmitStatus: options.reprojecting ? currentSelection.reviewSubmitStatus : "idle",
     reviewSubmitError: options.reprojecting ? currentSelection.reviewSubmitError : null,
+    reviewSubmitNotice: options.reprojecting ? currentSelection.reviewSubmitNotice : null,
     reviewSubmittedUrl: options.reprojecting ? currentSelection.reviewSubmittedUrl : null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
     reviewDiffOnly: options.reprojecting || options.preserveReviewDiffOnly
@@ -7538,9 +7740,9 @@ function normalizeReviewFilePath(path: string): string {
 }
 
 /** A line number belongs to one immutable HEAD revision. On refresh OR a later restored session,
- * preserve draft text/labels but permanently disarm anchors without matching provenance. Legacy
- * drafts have no provenance and are therefore blocked from submission until replaced. File/unit
- * drafts use semantic heuristics at submit time and can continue to re-anchor safely. */
+ * preserve draft text/labels but permanently disarm inline anchors without matching provenance.
+ * Those drafts submit as file-level comments instead of being retargeted. File/unit drafts use
+ * semantic heuristics at submit time and can continue to re-anchor safely. */
 function reconcileReviewLineAnchors(comments: ReviewComment[], revision: PrReviewRevision | null): ReviewComment[] {
   const currentRevision = prReviewRevisionKey(revision);
   if (currentRevision === null) {

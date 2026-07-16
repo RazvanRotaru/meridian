@@ -29,8 +29,8 @@ export interface ReviewComment {
   nodeId: string | null;
   /** Explicit HEAD-side line selected in the code panel; null == use the file/unit heuristic. */
   line: number | null;
-  /** The PR revision changed after this line was selected. Keep the draft, but block submission
-   * until it is replaced on a current diff line rather than retargeting it silently. */
+  /** The PR revision changed after this line was selected. Keep the draft, but disarm its inline
+   * anchor so it submits as a file-level comment rather than retargeting unrelated code. */
   lineStale?: boolean;
   /** Immutable PR revision identity captured with a fresh line draft. Missing provenance on a live
    * PR is treated conservatively as stale when the draft is restored. */

@@ -40,68 +40,90 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
   const review = useBlueprint((state) => state.review);
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const commentRanges = useBlueprint((state) => state.reviewCommentRangesByFile);
+  const forceFileComments = useBlueprint((state) => state.prReviewStale
+    && (state.prReviewRevision?.headSha ?? null) === null);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const blockedIds = useMemo(() => {
+  const fileCommentIds = useMemo(() => {
     if (!livePrReview || review === null) {
-      return EMPTY_BLOCKED_IDS;
+      return EMPTY_FILE_COMMENT_IDS;
     }
-    return new Set(buildReviewSubmission(props.comments, reviewFiles, review.context, commentRanges).blocked.map((comment) => comment.id));
-  }, [commentRanges, livePrReview, props.comments, review, reviewFiles]);
+    const fileComments = new Set<string>();
+    // File comments intentionally do not carry local draft ids in the transport contract. Classify each
+    // draft independently so duplicate bodies/paths cannot cause the wrong row to be labelled.
+    for (const comment of props.comments) {
+      const submission = buildReviewSubmission(
+        [comment],
+        reviewFiles,
+        review.context,
+        commentRanges,
+        { forceFileComments },
+      );
+      if (submission.fileComments.length > 0) {
+        fileComments.add(comment.id);
+      }
+    }
+    return fileComments;
+  }, [commentRanges, forceFileComments, livePrReview, props.comments, review, reviewFiles]);
   if (props.comments.length === 0) {
     return null;
   }
   const inCode = props.placement === "code";
   return (
     <div style={inCode ? CODE_LIST : LIST} data-pending-review-comments={inCode ? "true" : undefined}>
-      {props.comments.map((comment) => (
-        <div
-          key={comment.id}
-          style={blockedIds.has(comment.id) ? { ...DRAFT, ...DRAFT_BLOCKED } : DRAFT}
-          data-pending-review-comment-id={comment.id}
-          data-review-comment-blocked={blockedIds.has(comment.id) ? "true" : undefined}
-        >
-          {comment.line !== null ? (
-            <span
-              style={blockedIds.has(comment.id) ? { ...LINE_CHIP, ...LINE_CHIP_STALE } : LINE_CHIP}
-              title={blockedIds.has(comment.id) ? "This line is not available in GitHub's current pull request diff" : undefined}
-            >
-              {`L${comment.line}${comment.lineStale ? " · previous revision" : ""}`}
-            </span>
-          ) : null}
-          {inCode ? <span style={PENDING_CHIP}>Pending</span> : null}
-          {blockedIds.has(comment.id) ? (
-            <span style={BLOCKED_CHIP} title="Delete this draft and add it again on a line shown in the current GitHub diff">
-              Needs diff line
-            </span>
-          ) : null}
-          <div style={DRAFT_CONTENT}>
-            {editingId === comment.id ? (
-              <CommentComposer
-                key={`edit-${comment.id}`}
-                placeholder="Edit comment…"
-                initialBody={comment.body}
-                submitLabel="Save changes"
-                compact
-                stopEscape={inCode}
-                onAdd={(body) => {
-                  updateReviewComment(comment.id, body);
-                }}
-                onCancel={() => setEditingId(null)}
-              />
-            ) : (
-              <div style={DRAFT_BODY}>{comment.body}</div>
-            )}
-          </div>
-          {editingId !== comment.id ? (
-            <button type="button" style={DRAFT_ACTION} title="Edit draft" onClick={() => setEditingId(comment.id)}>
-              Edit
+      {props.comments.map((comment) => {
+        const fileComment = fileCommentIds.has(comment.id);
+        return (
+          <div
+            key={comment.id}
+            style={DRAFT}
+            data-pending-review-comment-id={comment.id}
+            data-review-comment-file={fileComment ? "true" : undefined}
+          >
+            {comment.line !== null ? (
+              <span
+                style={comment.lineStale ? { ...LINE_CHIP, ...LINE_CHIP_STALE } : LINE_CHIP}
+                title={fileComment
+                  ? "GitHub will attach this review comment to the file because its line cannot be anchored inline"
+                  : undefined}
+              >
+                {`L${comment.line}${comment.lineStale ? " · previous revision" : ""}`}
+              </span>
+            ) : null}
+            {inCode ? <span style={PENDING_CHIP}>Pending</span> : null}
+            {fileComment ? (
+              <span style={FILE_COMMENT_CHIP} title="Submitted as a real GitHub file-level review comment">
+                File comment
+              </span>
+            ) : null}
+            <div style={DRAFT_CONTENT}>
+              {editingId === comment.id ? (
+                <CommentComposer
+                  key={`edit-${comment.id}`}
+                  placeholder="Edit comment…"
+                  initialBody={comment.body}
+                  submitLabel="Save changes"
+                  compact
+                  stopEscape={inCode}
+                  onAdd={(body) => {
+                    updateReviewComment(comment.id, body);
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              ) : (
+                <div style={DRAFT_BODY}>{comment.body}</div>
+              )}
+            </div>
+            {editingId !== comment.id ? (
+              <button type="button" style={DRAFT_ACTION} title="Edit draft" onClick={() => setEditingId(comment.id)}>
+                Edit
+              </button>
+            ) : null}
+            <button type="button" style={DRAFT_DELETE} title="Delete draft" onClick={() => deleteReviewComment(comment.id)}>
+              ✕
             </button>
-          ) : null}
-          <button type="button" style={DRAFT_DELETE} title="Delete draft" onClick={() => deleteReviewComment(comment.id)}>
-            ✕
-          </button>
-        </div>
-      ))}
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -231,12 +253,11 @@ const COMMENT_COUNT: React.CSSProperties = { fontSize: 10, fontWeight: 700 };
 const LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 4, padding: "2px 6px 4px 26px" };
 const CODE_LIST: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5 };
 const DRAFT: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 6, border: "1px solid #253041", background: "rgba(56,139,253,0.07)", borderRadius: 7, padding: "6px 8px" };
-const DRAFT_BLOCKED: React.CSSProperties = { borderColor: "rgba(210,153,34,0.52)", background: "rgba(210,153,34,0.07)" };
 const DRAFT_CONTENT: React.CSSProperties = { flex: 1, minWidth: 0 };
 const LINE_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.35)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace", fontSize: 9.5, fontWeight: 700, lineHeight: "14px" };
 const LINE_CHIP_STALE: React.CSSProperties = { color: "#D29922", borderColor: "rgba(210,153,34,0.42)", background: "rgba(210,153,34,0.10)" };
 const PENDING_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(210,153,34,0.42)", borderRadius: 4, padding: "0 4px", color: "#D29922", background: "rgba(210,153,34,0.08)", fontSize: 9, fontWeight: 700, lineHeight: "14px", textTransform: "uppercase", letterSpacing: "0.03em" };
-const BLOCKED_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(210,153,34,0.52)", borderRadius: 4, padding: "0 4px", color: "#E3B341", background: "rgba(210,153,34,0.12)", fontSize: 9, fontWeight: 700, lineHeight: "14px", whiteSpace: "nowrap" };
+const FILE_COMMENT_CHIP: React.CSSProperties = { flexShrink: 0, border: "1px solid rgba(125,211,252,0.38)", borderRadius: 4, padding: "0 4px", color: "#7DD3FC", background: "rgba(56,139,253,0.09)", fontSize: 9, fontWeight: 700, lineHeight: "14px", whiteSpace: "nowrap" };
 const DRAFT_BODY: React.CSSProperties = { flex: 1, minWidth: 0, fontSize: 11.5, lineHeight: "15px", color: "#C9D1D9", whiteSpace: "pre-wrap", overflowWrap: "anywhere" };
 const DRAFT_ACTION: React.CSSProperties = { border: "none", background: "transparent", cursor: "pointer", color: "#7DD3FC", font: "inherit", fontSize: 10.5, padding: "1px 2px", flexShrink: 0, ...NO_FOCUS_RING };
 const DRAFT_DELETE: React.CSSProperties = { border: "none", background: "transparent", cursor: "pointer", color: "#5A6472", fontSize: 10, padding: 2, flexShrink: 0 , ...NO_FOCUS_RING };
@@ -250,4 +271,4 @@ const DISCARD_PROMPT: React.CSSProperties = { color: "#E6EDF3", fontSize: 11.5 }
 const ADD_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2F5C3B", background: "rgba(86,194,113,0.16)", color: "#6BE38A", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", ...NO_FOCUS_RING };
 const CANCEL_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 10px", fontSize: 11.5, cursor: "pointer", ...NO_FOCUS_RING };
 const DISCARD_BTN: React.CSSProperties = { ...CANCEL_BTN, borderColor: "rgba(240,120,124,0.48)", background: "rgba(240,120,124,0.12)", color: "#F0787C" };
-const EMPTY_BLOCKED_IDS: ReadonlySet<string> = new Set<string>();
+const EMPTY_FILE_COMMENT_IDS: ReadonlySet<string> = new Set<string>();
