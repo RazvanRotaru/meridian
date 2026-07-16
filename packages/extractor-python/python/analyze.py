@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from definitions import collect_nodes
 from discovery import DiscoveredModule, discover_modules, module_aliases
 from edge_collector import collect_edges
+from flow_collector import collect_flows
 from project import ProjectIndex
 from symbols import SymbolTable
 
@@ -81,13 +82,15 @@ def parse_file(module: DiscoveredModule, diagnostics: list[str]) -> ast.Module |
 def analyze_module(module: ParsedModule, project: ProjectIndex, value_refs: bool) -> dict:
     table = SymbolTable(module.discovered.module_path, project)
     table.scan(module.tree)
+    edges = collect_edges(module.tree, table, value_refs)
     return {
         "modulePath": module.discovered.module_path,
         "file": module.discovered.file,
         "isPackage": module.discovered.is_package,
         "endLine": module_end_line(module.tree),
         "nodes": collect_nodes(module.tree),
-        "edges": collect_edges(module.tree, table, value_refs),
+        "edges": edges,
+        "flows": collect_flows(module.tree, edges),
     }
 
 

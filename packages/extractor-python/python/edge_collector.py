@@ -6,6 +6,7 @@ import ast
 
 from bindings import bound_names
 from definitions import FUNCTIONS, qualify
+from inference import parameter_names
 from project import resolve_from_module_path
 from resolve import external, resolve_base, resolve_callee, resolved
 from scope import ScopeBindings, bind_local, clone_scope
@@ -213,7 +214,13 @@ class EdgeCollector:
         class_name: str | None,
         scope: ScopeBindings,
     ) -> None:
-        if isinstance(node, (*FUNCTIONS, ast.ClassDef, ast.Lambda)):
+        if isinstance(node, (*FUNCTIONS, ast.ClassDef)):
+            return
+        if isinstance(node, ast.Lambda):
+            nested = clone_scope(scope)
+            for name in parameter_names(node.args):
+                bind_local(name, None, nested)
+            self.collect_calls(node.body, source, class_name, nested)
             return
         if isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp, ast.DictComp)):
             self.collect_comprehension(node, source, class_name, scope)

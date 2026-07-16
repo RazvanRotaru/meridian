@@ -41,6 +41,41 @@ export interface AnalyzeModule {
   endLine: number;
   nodes: AnalyzeNode[];
   edges: AnalyzeEdge[];
+  flows: AnalyzeFlow[];
+}
+
+export interface AnalyzeFlowSource {
+  line: number;
+  col: number;
+  endLine: number;
+  endCol: number;
+}
+
+export interface AnalyzeFlowPath {
+  label: string;
+  role: "then" | "else" | "case" | "default" | "try" | "catch" | "finally";
+  pathId: string;
+  source?: AnalyzeFlowSource;
+  body: AnalyzeFlowStep[];
+}
+
+export type AnalyzeFlowStep =
+  | (AnalyzeFlowSource & { kind: "call"; label: string; target: AnalyzeTarget; awaited?: boolean })
+  | (AnalyzeFlowSource & { kind: "await"; label: string; mode: "single"; inputs: Array<{ label: string }> })
+  | (AnalyzeFlowSource & { kind: "loop"; label: string; body: AnalyzeFlowStep[] })
+  | (AnalyzeFlowSource & { kind: "callback"; label: string; body: AnalyzeFlowStep[] })
+  | (AnalyzeFlowSource & {
+      kind: "branch";
+      label: string;
+      branchKind: "if" | "switch" | "try";
+      paths: AnalyzeFlowPath[];
+    })
+  | (AnalyzeFlowSource & { kind: "exit"; variant: "return" | "throw"; label: string | null });
+
+export interface AnalyzeFlow {
+  sourceQualname: string | null;
+  sourceLine: number | null;
+  steps: AnalyzeFlowStep[];
 }
 
 export interface AnalyzeOutput {

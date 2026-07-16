@@ -86,6 +86,47 @@ describe("deriveReviewProjection", () => {
     expect(projection.excludedTestFileCount).toBe(0);
   });
 
+  it("warns when changed code belongs to a language absent from the flow inventory", () => {
+    const pythonFile = "src/backend/service.py";
+    const pythonModule = "py:backend.service";
+    const pythonFunction = `${pythonModule}#run`;
+    const artifact = {
+      ...ARTIFACT,
+      target: { ...ARTIFACT.target, language: "mixed" },
+      nodes: [
+        ...ARTIFACT.nodes,
+        node(pythonModule, "module", pythonFile, null),
+        node(pythonFunction, "function", pythonFile, pythonModule, { start: 5, end: 10 }),
+      ],
+    } as unknown as GraphArtifact;
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [{ path: pythonFile, status: "modified", hunks: [{ start: 7, end: 7 }] }],
+    };
+
+    const projection = deriveReviewProjection(context, artifact, buildGraphIndex(artifact), {
+      baseIndex: null,
+      showTests: true,
+    });
+
+    expect(projection.review.context.warnings).toEqual([
+      "No Python logic flows were extracted; affected logic flows may be incomplete.",
+    ]);
+
+    const coveredArtifact = {
+      ...artifact,
+      extensions: {
+        ...artifact.extensions,
+        logicFlow: { ...(artifact.extensions?.logicFlow as Record<string, unknown>), [pythonFunction]: [] },
+      },
+    } as unknown as GraphArtifact;
+    const covered = deriveReviewProjection(context, coveredArtifact, buildGraphIndex(coveredArtifact), {
+      baseIndex: null,
+      showTests: true,
+    });
+    expect(covered.review.context.warnings).toEqual([]);
+  });
+
   it("derives impacted flows from exact changed blocks, not their unchanged file siblings", () => {
     const cartFile = "src/cartService.ts";
     const cartModuleId = "ts:src/cartService.ts";
