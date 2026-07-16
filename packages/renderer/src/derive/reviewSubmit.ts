@@ -1,11 +1,10 @@
 /**
  * Turn the panel's draft comments into the ONE GitHub review submission. GitHub's public review API
  * only supports inline creation inside the unified diff's context-padded hunk ranges. Keep an
- * explicit line inline when it is in that API-safe context; otherwise report it as blocked instead
- * of silently changing a per-line draft into an aggregate review-body note. Row-level comments
- * still derive a tight changed-line anchor. Deleted/unparsed files and vanished/drifted units are
- * blocked too, NEVER guessed anchors. The caller rejects the whole submission when any draft is
- * blocked, so every successfully submitted draft remains an individual inline GitHub comment.
+ * explicit line inline when it is in that API-safe context; otherwise preserve it as a real
+ * file-level review comment. Row-level comments still derive a tight changed-line anchor.
+ * Deleted/unparsed files and vanished/drifted units become file comments too, NEVER guessed
+ * anchors. This keeps the whole draft set submittable without attaching prose to unrelated code.
  */
 
 import { rangesOverlap, type LineRange, type ReviewContext } from "@meridian/core";
@@ -15,10 +14,15 @@ import { normalizePath } from "./matchAffectedFiles";
 
 export interface ReviewSubmission {
   comments: { path: string; line: number; body: string }[];
-  blocked: ReviewComment[];
+  fileComments: { path: string; label: string | null; body: string }[];
 }
 
 export type ReviewCommentRanges = Readonly<Record<string, readonly LineRange[]>>;
+
+export interface ReviewSubmissionOptions {
+  /** File-level comments are revision-independent; use when no immutable reviewed SHA is known. */
+  forceFileComments?: boolean;
+}
 
 /** Build the submission payload. Pure; preserves draft order within each list. */
 export function buildReviewSubmission(
@@ -26,14 +30,26 @@ export function buildReviewSubmission(
   files: readonly ReviewFileRow[],
   context: ReviewContext,
   commentRangesByFile: ReviewCommentRanges = EMPTY_COMMENT_RANGES,
+  options: ReviewSubmissionOptions = {},
 ): ReviewSubmission {
-  const submission: ReviewSubmission = { comments: [], blocked: [] };
+  const submission: ReviewSubmission = { comments: [], fileComments: [] };
   for (const draft of drafts) {
-    const anchor = reviewAnchor(draft, files, context, commentRangesByFile);
+    const path = resolveReviewPath(draft.path, files, context);
+    const anchor = options.forceFileComments || path === null
+      ? null
+      : reviewAnchor(draft, path, files, context, commentRangesByFile);
     if (anchor !== null) {
       submission.comments.push({ path: anchor.path, line: anchor.line, body: draft.body });
     } else {
-      submission.blocked.push(draft);
+      submission.fileComments.push({
+        // Keep the exact draft path only when the current PR cannot resolve one safe canonical
+        // identity. Retaining that location is safer than guessing a different file.
+        path: path ?? draft.path,
+        label: draft.line === null
+          ? draft.anchorLabel
+          : `L${draft.line}${draft.lineStale === true ? " · previous revision" : ""}`,
+        body: draft.body,
+      });
     }
   }
   return submission;
@@ -45,17 +61,14 @@ interface ReviewAnchor {
   line: number;
 }
 
-/** The canonical PR path + new-side diff line a draft anchors to; null ⇒ block submission. */
+/** The canonical PR path + new-side diff line a draft anchors to; null ⇒ attach it to the file. */
 function reviewAnchor(
   draft: ReviewComment,
+  path: string,
   files: readonly ReviewFileRow[],
   context: ReviewContext,
   commentRangesByFile: ReviewCommentRanges,
 ): ReviewAnchor | null {
-  const path = resolveReviewPath(draft.path, files, context);
-  if (path === null) {
-    return null;
-  }
   const hunks = anchorableHunks(path, context);
   if (hunks.length === 0) {
     return null;
@@ -84,7 +97,8 @@ function reviewAnchor(
     return { path, line: hunks[0].start };
   }
   const overlap = unit && hunks.find((hunk) => rangesOverlap(unit.startLine, unit.endLine, hunk));
-  // A vanished unit — or one that drifted off every hunk after a push — blocks; never guess a line.
+  // A vanished unit — or one that drifted off every hunk after a push — becomes a file comment;
+  // never guess a line.
   return overlap ? { path, line: Math.max(overlap.start, unit.startLine) } : null;
 }
 

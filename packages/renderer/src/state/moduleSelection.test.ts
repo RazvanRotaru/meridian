@@ -822,7 +822,7 @@ describe("minimal-graph overlay (extract selection)", () => {
   it("recenters panel selection without replacing the graph scene", async () => {
     const store = freshStore();
     const minimalRelayout = vi.fn(async () => undefined);
-    const nodes = [{ id: "settled", position: { x: 0, y: 0 }, data: {} }];
+    const nodes = [{ id: BUILD_ORDERS, position: { x: 0, y: 0 }, data: {} }];
     const edges = [{ id: "settled-edge", source: "settled", target: "peer" }];
     store.setState({
       minimalSeedIds: ["ts:src/a.ts"],

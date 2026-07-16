@@ -16,6 +16,7 @@ export function ReviewSubmissionFooter() {
   const refreshing = useBlueprint((state) => state.prReviewRefreshing);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const error = useBlueprint((state) => state.reviewSubmitError);
+  const notice = useBlueprint((state) => state.reviewSubmitNotice);
   const submittedUrl = useBlueprint((state) => state.reviewSubmittedUrl);
   const { submitReview } = useBlueprintActions();
   const [summary, setSummary] = useState("");
@@ -26,9 +27,11 @@ export function ReviewSubmissionFooter() {
     return count > 0 ? <div style={LOCAL_FOOTER}>{count} {count === 1 ? "comment" : "comments"} (local notes)</div> : null;
   }
 
-  const blocked = status === "submitting" || stale || refreshing || preparing;
+  const submitting = status === "submitting";
+  const busy = submitting || refreshing || preparing;
+  const blocked = (event: PrReviewSubmissionEvent) => reviewSubmissionBlocked(event, submitting, stale, refreshing, preparing);
   const submit = async (event: PrReviewSubmissionEvent) => {
-    if (blocked || reviewActionDisabled(event, count, summary)) return;
+    if (blocked(event) || reviewActionDisabled(event, count, summary)) return;
     setSubmittingEvent(event);
     const succeeded = await submitReview(event, event === "COMMENT" ? "" : summary);
     setSubmittingEvent(null);
@@ -50,23 +53,28 @@ export function ReviewSubmissionFooter() {
         maxLength={SUMMARY_LIMIT}
         placeholder="Review summary (required for request changes)"
         value={summary}
-        disabled={blocked}
+        disabled={busy}
         onChange={(event) => {
           setSummary(event.target.value);
           setSubmittedEvent(null);
         }}
       />
       <div style={ACTIONS}>
-        <ReviewButton event="COMMENT" label="Submit comments" tone="neutral" count={count} summary={summary} blocked={blocked} submittingEvent={submittingEvent} onSubmit={submit} />
-        <ReviewButton event="APPROVE" label="Approve" tone="approve" count={count} summary={summary} blocked={blocked} submittingEvent={submittingEvent} onSubmit={submit} />
-        <ReviewButton event="REQUEST_CHANGES" label="Request changes" tone="changes" count={count} summary={summary} blocked={blocked} submittingEvent={submittingEvent} onSubmit={submit} />
+        <ReviewButton event="COMMENT" label="Submit comments" tone="neutral" count={count} summary={summary} blocked={blocked("COMMENT")} submittingEvent={submittingEvent} onSubmit={submit} />
+        <ReviewButton event="APPROVE" label="Approve" tone="approve" count={count} summary={summary} blocked={blocked("APPROVE")} submittingEvent={submittingEvent} onSubmit={submit} />
+        <ReviewButton event="REQUEST_CHANGES" label="Request changes" tone="changes" count={count} summary={summary} blocked={blocked("REQUEST_CHANGES")} submittingEvent={submittingEvent} onSubmit={submit} />
       </div>
-      {stale && !refreshing ? <div style={WARNING}>Refresh new changes before submitting this review.</div> : null}
+      {stale && !refreshing ? (
+        <div style={WARNING}>Comments can still be submitted against the reviewed revision. Refresh before approving or requesting changes.</div>
+      ) : null}
       {error ? <div style={ERROR}>{error}</div> : null}
       {submittedEvent !== null && submittedUrl !== null ? (
         <div style={DONE}>
-          {reviewSuccessLabel(submittedEvent)}
-          {submittedUrl ? <> · <a style={LINK} href={submittedUrl} target="_blank" rel="noreferrer">view on GitHub</a></> : null}
+          <div>
+            {reviewSuccessLabel(submittedEvent)}
+            {submittedUrl ? <> · <a style={LINK} href={submittedUrl} target="_blank" rel="noreferrer">view on GitHub</a></> : null}
+          </div>
+          {notice ? <div style={DONE_DETAIL}>{notice}</div> : null}
         </div>
       ) : null}
     </div>
@@ -100,6 +108,17 @@ export function reviewActionDisabled(event: PrReviewSubmissionEvent, count: numb
   return event === "COMMENT" ? count === 0 : event === "REQUEST_CHANGES" ? summary.trim().length === 0 : false;
 }
 
+/** New prose may target the reviewed revision; decisions must describe the latest known head. */
+export function reviewSubmissionBlocked(
+  event: PrReviewSubmissionEvent,
+  submitting: boolean,
+  stale: boolean,
+  refreshing: boolean,
+  preparing: boolean,
+): boolean {
+  return submitting || refreshing || preparing || (stale && event !== "COMMENT");
+}
+
 export function reviewSuccessLabel(event: PrReviewSubmissionEvent): string {
   return event === "APPROVE" ? "Pull request approved" : event === "REQUEST_CHANGES" ? "Changes requested" : "Comments submitted";
 }
@@ -120,5 +139,6 @@ const BUTTON_TONES = {
 const DISABLED: React.CSSProperties = { cursor: "not-allowed", opacity: 0.48 };
 const WARNING: React.CSSProperties = { color: "#D29922", fontSize: 11 };
 const ERROR: React.CSSProperties = { color: "#F85149", background: "rgba(248,81,73,0.08)", borderRadius: 5, padding: "4px 8px", fontSize: 11 };
-const DONE: React.CSSProperties = { color: "#6BE38A", fontSize: 11.5 };
+const DONE: React.CSSProperties = { color: "#6BE38A", fontSize: 11.5, display: "flex", flexDirection: "column", gap: 3 };
+const DONE_DETAIL: React.CSSProperties = { color: "#9AA4B2", fontSize: 10.5, lineHeight: "14px" };
 const LINK: React.CSSProperties = { color: "#7DD3FC" };

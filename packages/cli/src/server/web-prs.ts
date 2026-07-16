@@ -9,7 +9,12 @@ import {
   listPullRequests,
   replyToPullRequestComment,
 } from "./github";
-import { submitPullRequestReview, type PullRequestReviewEvent, type ReviewCommentInput } from "./github-review";
+import {
+  submitPullRequestReview,
+  type PullRequestReviewEvent,
+  type ReviewCommentInput,
+  type ReviewFileCommentInput,
+} from "./github-review";
 import { sendJson } from "./http-response";
 import { githubTokenFor, githubUserFor } from "./web-auth";
 import { WebError } from "./web-error";
@@ -383,8 +388,9 @@ function positiveBodyInteger(value: unknown, name: string): number {
 
 /**
  * POST /api/prs/review — submit a comment, approval, or changes-requested review. This GitHub write:
- * it requires a resolved token (401 otherwise, never an anonymous call). Every entry becomes an
- * individual inline diff comment; requesting changes also requires a review-level summary.
+ * it requires a resolved token (401 otherwise, never an anonymous call). API-safe entries become
+ * inline diff comments; structured file comments become real GitHub FILE-subject review threads.
+ * Requesting changes still requires an explicit review-level summary.
  */
 export async function handleSubmitReview(
   ctx: Context,
@@ -403,13 +409,19 @@ export async function handleSubmitReview(
     throw new WebError(401, "submitting a review requires a GitHub sign-in");
   }
   const comments = body.comments.map((comment) => ({ ...comment, path: restoreExtractionSubdir(comment.path, source.subdir) }));
+  const fileComments = body.fileComments.map((comment) => ({
+    ...comment,
+    path: restoreExtractionSubdir(comment.path, source.subdir),
+  }));
   const result = await submitPullRequestReview({
     owner: source.owner,
     repo: source.repo,
     prNumber: body.number,
     comments,
+    fileComments,
     event: body.event,
     body: body.body,
+    commitId: body.commitId,
     token,
   });
   sendJson(response, 200, result);
@@ -418,8 +430,10 @@ export async function handleSubmitReview(
 interface SubmitReviewBody {
   number: number;
   comments: ReviewCommentInput[];
+  fileComments: ReviewFileCommentInput[];
   event: PullRequestReviewEvent;
   body?: string;
+  commitId?: string;
 }
 
 function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
@@ -430,22 +444,21 @@ function parseSubmitReviewBody(raw: unknown): SubmitReviewBody {
   if (typeof record.number !== "number" || !Number.isSafeInteger(record.number) || record.number <= 0) {
     throw new WebError(400, "number must be a positive integer");
   }
-  if (record.notes !== undefined) {
-    throw new WebError(400, "review notes are not supported; each comment needs an inline path and line");
-  }
   const event = parseReviewEvent(record.event);
   const body = optionalReviewBody(record.body);
   const comments = boundedArray(record.comments, "comments").map(parseComment);
-  if (event === "COMMENT" && comments.length === 0) {
-    throw new WebError(400, "a comment review needs at least one inline comment");
+  if (record.notes !== undefined) {
+    throw new WebError(400, "notes are not supported; use fileComments for file-level review threads");
   }
-  if (event === "COMMENT" && body !== undefined) {
-    throw new WebError(400, "comment reviews do not accept a review summary");
+  const fileComments = boundedArray(record.fileComments, "fileComments").map(parseFileComment);
+  const commitId = optionalCommitId(record.commitId);
+  if (event === "COMMENT" && comments.length === 0 && fileComments.length === 0 && body === undefined) {
+    throw new WebError(400, "a comment review needs at least one inline comment, file comment, or body");
   }
   if (event === "REQUEST_CHANGES" && body === undefined) {
     throw new WebError(400, "requesting changes requires a review summary");
   }
-  return { number: record.number, comments, event, body };
+  return { number: record.number, comments, fileComments, event, body, commitId };
 }
 
 function parseReviewEvent(value: unknown): PullRequestReviewEvent {
@@ -458,6 +471,16 @@ function optionalReviewBody(value: unknown): string | undefined {
   if (value === undefined || value === null || value === "") return undefined;
   if (typeof value !== "string" || value.trim().length === 0 || value.length > MAX_REVIEW_BODY_LENGTH) {
     throw new WebError(400, `body must be a non-empty string of at most ${MAX_REVIEW_BODY_LENGTH} characters`);
+  }
+  return value.trim();
+}
+
+function optionalCommitId(value: unknown): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string" || !HEAD_SHA.test(value.trim())) {
+    throw new WebError(400, "commitId must be a 7 to 40 character hexadecimal commit id");
   }
   return value.trim();
 }
@@ -480,6 +503,19 @@ function parseComment(entry: unknown): ReviewCommentInput {
     throw new WebError(400, "each comment needs a path, a positive line, and a non-empty body");
   }
   return { path, line: line as number, body };
+}
+
+function parseFileComment(entry: unknown): ReviewFileCommentInput {
+  const comment = asRecord(entry);
+  const { path, label, body } = comment;
+  if (
+    !isFilledString(path)
+    || (label !== undefined && label !== null && !isFilledString(label))
+    || !isFilledString(body)
+  ) {
+    throw new WebError(400, "each file comment needs a path, optional label, and non-empty body");
+  }
+  return { path, label: label === undefined ? null : label, body };
 }
 
 function asRecord(entry: unknown): Record<string, unknown> {

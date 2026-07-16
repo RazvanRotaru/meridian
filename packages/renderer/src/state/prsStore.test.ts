@@ -863,6 +863,12 @@ describe("PR store slice", () => {
 
     const path = store.getState().reviewFiles[0].path;
     submittedPath = path;
+    store.setState({
+      prReviewRevision: {
+        ...store.getState().prReviewRevision!,
+        headSha: "abcdef1234567890abcdef1234567890abcdef12",
+      },
+    });
     store.getState().addReviewComment(path, null, "Keep this in the review draft");
 
     expect(store.getState().reviewComments).toHaveLength(1);
@@ -877,6 +883,8 @@ describe("PR store slice", () => {
       number: 7,
       event: "COMMENT",
       comments: [{ path, line: 1, body: "Keep this in the review draft" }],
+      fileComments: [],
+      commitId: "abcdef1234567890abcdef1234567890abcdef12",
     });
     expect(fetchMock.mock.calls[1][0].toString()).toBe("http://meridian.local/api/prs/comments?id=artifact-1&n=7");
     expect(store.getState().reviewComments).toEqual([]);
@@ -914,14 +922,27 @@ describe("PR store slice", () => {
     expect(await store.getState().submitReview("REQUEST_CHANGES", "  Please fix the blocker.  ")).toBe(true);
 
     expect(submissions).toEqual([
-      { number: 7, event: "APPROVE", comments: [] },
-      { number: 7, event: "COMMENT", comments: [{ path, line: 1, body: "Inline note" }] },
-      { number: 7, event: "REQUEST_CHANGES", comments: [], body: "Please fix the blocker." },
+      { number: 7, event: "APPROVE", comments: [], fileComments: [] },
+      { number: 7, event: "COMMENT", comments: [{ path, line: 1, body: "Inline note" }], fileComments: [] },
+      { number: 7, event: "REQUEST_CHANGES", comments: [], fileComments: [], body: "Please fix the blocker." },
     ]);
   });
 
-  it("blocks the whole submission instead of aggregating an unanchorable draft into the review body", async () => {
-    const fetchMock = vi.fn();
+  it("preserves an unanchorable draft as a file-level review comment while keeping valid drafts inline", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/review")) {
+        return Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#review" }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 1 },
+          hasMore: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     store.setState(selectedPrState(7));
@@ -929,17 +950,20 @@ describe("PR store slice", () => {
     const path = store.getState().reviewFiles[0].path;
     store.getState().addReviewComment(path, null, "Valid inline draft");
     store.getState().addReviewComment(path, null, "Outside diff context", 11);
-    const drafts = store.getState().reviewComments;
-
     await store.getState().submitReviewComments();
 
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(store.getState().reviewComments).toBe(drafts);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      event: "COMMENT",
+      comments: [{ path, line: 1, body: "Valid inline draft" }],
+      fileComments: [{ path, label: "L11", body: "Outside diff context" }],
+    });
+    expect(store.getState().reviewComments).toEqual([]);
     expect(store.getState().reviewSubmitStatus).toBe("idle");
-    expect(store.getState().reviewSubmittedUrl).toBeNull();
-    expect(store.getState().reviewSubmitError).toBe(
-      "1 draft cannot be posted as an inline GitHub comment. Delete it or add a replacement on lines shown in the current pull request diff. Nothing was submitted.",
-    );
+    expect(store.getState().reviewSubmittedUrl).toBe("https://github.com/o/r/pull/7#review");
+    expect(store.getState().reviewSubmitError).toBeNull();
+    expect(store.getState().reviewSubmitNotice).toBe("1 comment was submitted as a file-level review comment.");
   });
 
   it("edits a persisted local draft without changing its anchor or provenance", async () => {
@@ -1196,23 +1220,91 @@ describe("PR store slice", () => {
     expect(hidden).not.toContain("https://github.com/o/r/pull/7#discussion_r3");
   });
 
-  it("does not submit review comments programmatically while the review is stale or refreshing", async () => {
+  it("submits stale review comments against the reviewed SHA while keeping decisions blocked", async () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    const reviewedHeadSha = "abcdef1234567890abcdef1234567890abcdef12";
+    store.setState({
+      prReviewStale: true,
+      prReviewRefreshing: false,
+      prReviewRevision: { ...store.getState().prReviewRevision!, headSha: reviewedHeadSha },
+    });
+    store.getState().addReviewComment(path, null, "Comment on the reviewed revision");
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => input.toString().includes("/api/prs/review")
+      ? Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#review" }))
+      : Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 1 },
+          hasMore: false,
+        })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await store.getState().submitReview("APPROVE")).toBe(false);
+    expect(await store.getState().submitReview("REQUEST_CHANGES", "Blocking issue")).toBe(false);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await store.getState().submitReview("COMMENT")).toBe(true);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      event: "COMMENT",
+      comments: [{ path, line: 1, body: "Comment on the reviewed revision" }],
+      fileComments: [],
+      commitId: reviewedHeadSha,
+    });
+    expect(store.getState().reviewComments).toEqual([]);
+  });
+
+  it("forces stale comments to file-level threads when the reviewed SHA is unavailable", async () => {
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.setState({
+      prReviewStale: true,
+      prReviewRevision: { ...store.getState().prReviewRevision!, headSha: null },
+    });
+    store.getState().addReviewComment(path, null, "Normally anchored to the first hunk");
+    store.getState().addReviewComment(path, null, "Normally inline on L1", 1);
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => input.toString().includes("/api/prs/review")
+      ? Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#review" }))
+      : Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 1 },
+          hasMore: false,
+        })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    expect(await store.getState().submitReview("COMMENT")).toBe(true);
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      event: "COMMENT",
+      comments: [],
+      fileComments: [
+        { path, label: null, body: "Normally anchored to the first hunk" },
+        { path, label: "L1", body: "Normally inline on L1" },
+      ],
+    });
+  });
+
+  it("does not submit comments while the reviewed revision is refreshing or preparing", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     store.setState(selectedPrState(7));
     await store.getState().reviewPrInGraph();
-    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Wait for current contents");
+    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Wait for stable review state");
     const drafts = store.getState().reviewComments;
 
-    store.setState({ prReviewStale: true, prReviewRefreshing: false });
-    await store.getState().submitReviewComments();
-    store.setState({ prReviewStale: false, prReviewRefreshing: true });
-    await store.getState().submitReviewComments();
+    store.setState({ prReviewRefreshing: true });
+    expect(await store.getState().submitReview("COMMENT")).toBe(false);
+    store.setState({ prReviewRefreshing: false, prReviewStatus: "preparing" });
+    expect(await store.getState().submitReview("COMMENT")).toBe(false);
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(store.getState().reviewComments).toBe(drafts);
-    expect(store.getState().reviewSubmitStatus).toBe("idle");
   });
 
   it("does not refresh or duplicate-submit while a review POST is already in flight", async () => {
@@ -1323,8 +1415,6 @@ describe("PR store slice", () => {
     store.getState().toggleShowTests();
     expect(store.getState().prReviewStale).toBe(true);
     expect(store.getState().prReviewRevision).toBe(staleRevision);
-    store.getState().addReviewComment(store.getState().reviewFiles[0].path, null, "Do not submit stale review contents");
-    await store.getState().submitReviewComments();
     expect(fetchMock.mock.calls.map(([input]) => input.toString())).toEqual([
       "http://meridian.local/api/prs/one?id=artifact-1&n=7",
       "http://meridian.local/api/prs/one?id=artifact-1&n=7",

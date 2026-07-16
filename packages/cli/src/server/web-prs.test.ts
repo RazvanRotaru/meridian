@@ -608,7 +608,11 @@ describe("handleSubmitReview", () => {
       bodyRequest(VALID_BODY),
     );
     expect(captured.status()).toBe(200);
-    expect(JSON.parse(captured.body())).toEqual({ url: "https://github.com/org/repo/pull/7#pullrequestreview-1" });
+    expect(JSON.parse(captured.body())).toEqual({
+      url: "https://github.com/org/repo/pull/7#pullrequestreview-1",
+      forced: false,
+      pendingMerged: false,
+    });
     expect(calls[0].url).toBe("https://api.github.com/repos/org/repo/pulls/7/reviews");
     expect(calls[0].init?.method).toBe("POST");
     expect(JSON.parse(String(calls[0].init?.body))).toEqual({
@@ -635,6 +639,109 @@ describe("handleSubmitReview", () => {
         { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
       ],
     });
+  });
+
+  it("creates a pinned file-only pending review, attaches a FILE thread, then submits it", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({ data: { addPullRequestReviewThread: { thread: { id: "PRRT_file" } } } }), { status: 200 });
+      }
+      if (String(url).endsWith("/events")) {
+        return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#review" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 51, node_id: "PRR_node_51" }), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        event: "COMMENT",
+        body: "General review context.",
+        comments: [],
+        fileComments: [{ path: "src/a.ts", label: null, body: "This still needs attention." }],
+        commitId: "ABCDEF1234567",
+      }),
+    );
+
+    expect(JSON.parse(captured.body())).toEqual({
+      url: "https://github.com/org/repo/pull/7#review",
+      forced: false,
+      pendingMerged: false,
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/org/repo/pulls/7/reviews",
+      "https://api.github.com/graphql",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews/51/events",
+    ]);
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      commit_id: "ABCDEF1234567",
+      comments: [],
+      body: "General review context.",
+    });
+    const graphql = JSON.parse(String(calls[1].init?.body));
+    expect(graphql.query).toContain("subjectType: FILE");
+    expect(graphql.variables).toEqual({
+      reviewId: "PRR_node_51",
+      path: "packages/cli/src/a.ts",
+      body: "**Meridian location:** review commit `ABCDEF1`\n\nThis still needs attention.",
+    });
+    expect(graphql.variables).not.toHaveProperty("line");
+    expect(graphql.variables).not.toHaveProperty("side");
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ event: "COMMENT" });
+  });
+
+  it("keeps valid inline comments in a mixed pending review and adds labeled FILE threads", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({ data: { addPullRequestReviewThread: { thread: { id: "PRRT_mixed" } } } }), { status: 200 });
+      }
+      if (String(url).endsWith("/events")) {
+        return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#mixed" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ id: 52, node_id: "PRR_node_52" }), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        event: "REQUEST_CHANGES",
+        body: "Please address both issues.",
+        comments: [{ path: "src/a.ts", line: 25, body: "Inline issue" }],
+        fileComments: [{ path: "src/b.ts", label: "L70 · previous revision", body: "File issue" }],
+        commitId: "abcdef1234567890",
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      url: "https://github.com/org/repo/pull/7#mixed",
+      forced: false,
+      pendingMerged: false,
+    });
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({
+      commit_id: "abcdef1234567890",
+      body: "Please address both issues.",
+      comments: [{
+        path: "packages/cli/src/a.ts",
+        line: 25,
+        side: "RIGHT",
+        body: "Inline issue",
+      }],
+    });
+    expect(JSON.parse(String(calls[1].init?.body)).variables).toEqual({
+      reviewId: "PRR_node_52",
+      path: "packages/cli/src/b.ts",
+      body: "**Meridian location:** `L70 · previous revision` · review commit `abcdef1`\n\nFile issue",
+    });
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ event: "REQUEST_CHANGES" });
   });
 
   it("posts approval and request-changes decisions with optional inline comments", async () => {
@@ -665,40 +772,302 @@ describe("handleSubmitReview", () => {
     ]);
   });
 
-  it("400s on malformed comments, legacy notes, and an empty submission before any GitHub call", async () => {
+  it("400s on malformed comments/fileComments, legacy notes, invalid commits, and an empty submission", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     vi.stubGlobal("fetch", vi.fn());
     const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
     const noLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", body: "x" }] }));
     const zeroLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", line: 0, body: "x" }] }));
+    const malformedFileComments = await invokePost(ctx, bodyRequest({
+      number: 7,
+      comments: [{ path: "a.ts", line: 2, body: "inline" }],
+      fileComments: [{ path: "a.ts", label: "", body: "missing label" }],
+    }));
     const legacyNotes = await invokePost(ctx, bodyRequest({
       number: 7,
       comments: [{ path: "a.ts", line: 2, body: "inline" }],
-      notes: [{ path: "a.ts", label: "L1", body: "legacy summary" }],
+      notes: [{ path: "a.ts", label: "L2", body: "legacy" }],
     }));
     const empty = await invokePost(ctx, bodyRequest({ number: 7, comments: [] }));
     const badEvent = await invokePost(ctx, bodyRequest({ number: 7, event: "MERGE", comments: [] }));
     const changesWithoutSummary = await invokePost(ctx, bodyRequest({ number: 7, event: "REQUEST_CHANGES", comments: [] }));
+    const badCommit = await invokePost(ctx, bodyRequest({ ...VALID_BODY, commitId: "not-a-sha" }));
     const badNumber = await invokePost(ctx, bodyRequest({ ...VALID_BODY, number: 0 }));
     expect([
       noLine.status(),
       zeroLine.status(),
+      malformedFileComments.status(),
       legacyNotes.status(),
       empty.status(),
       badEvent.status(),
       changesWithoutSummary.status(),
+      badCommit.status(),
       badNumber.status(),
-    ]).toEqual([400, 400, 400, 400, 400, 400, 400]);
-    expect(JSON.parse(legacyNotes.body()).error).toMatch(/inline path and line/);
+    ]).toEqual([400, 400, 400, 400, 400, 400, 400, 400, 400]);
+    expect(JSON.parse(malformedFileComments.body()).error).toMatch(/path, optional label/);
+    expect(JSON.parse(legacyNotes.body()).error).toMatch(/use fileComments/);
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("surfaces GitHub's 422 as the anchor hint", async () => {
+  it("retries an inline-anchor 422 once with every inline draft converted to FILE threads", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
-    vi.stubGlobal("fetch", (async () => new Response("{}", { status: 422 })) as typeof fetch);
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+            message: "Validation Failed",
+            errors: [{ message: "Pull request review thread line must be part of the diff" }],
+          }), { status: 422 });
+      }
+      if (calls.length === 2) {
+        return new Response(JSON.stringify({ id: 61, node_id: "PRR_node_61" }), { status: 200 });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({
+          data: { addPullRequestReviewThread: { thread: { id: `PRRT_${calls.length}` } } },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#forced" }), { status: 200 });
+    }));
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        ...VALID_BODY,
+        fileComments: [{ path: "src/c.ts", label: "File", body: "Existing file note" }],
+        commitId: "abcdef1234567",
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      url: "https://github.com/org/repo/pull/7#forced",
+      forced: true,
+      pendingMerged: false,
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/org/repo/pulls/7/reviews",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews",
+      "https://api.github.com/graphql",
+      "https://api.github.com/graphql",
+      "https://api.github.com/graphql",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews/61/events",
+    ]);
+    expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({
+      commit_id: "abcdef1234567",
+      comments: [
+        { path: "src/a.ts", line: 25, side: "RIGHT", body: "check" },
+        { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
+      ],
+    });
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({
+      commit_id: "abcdef1234567",
+      comments: [],
+    });
+    expect(calls.slice(2, 5).map((call) => JSON.parse(String(call.init?.body)).variables)).toEqual([
+      {
+        reviewId: "PRR_node_61",
+        path: "src/c.ts",
+        body: "**Meridian location:** `File` · review commit `abcdef1`\n\nExisting file note",
+      },
+      {
+        reviewId: "PRR_node_61",
+        path: "src/a.ts",
+        body: "**Meridian location:** `L25` · review commit `abcdef1`\n\ncheck",
+      },
+      {
+        reviewId: "PRR_node_61",
+        path: "src/b.ts",
+        body: "**Meridian location:** `L41` · review commit `abcdef1`\n\ncheck this too",
+      },
+    ]);
+    expect(JSON.parse(String(calls[5].init?.body))).toEqual({ event: "COMMENT" });
+  });
+
+  it("retries an inline 422 only once and surfaces the second rejection", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      message: "Validation Failed",
+      errors: [{ message: "Pull request review thread line must be part of the diff" }],
+    }), { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
     const captured = await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+
     expect(captured.status()).toBe(422);
-    expect(JSON.parse(captured.body()).error).toMatch(/anchor/);
+    expect(JSON.parse(captured.body()).error).toMatch(/line must be part/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not force-retry an unclassified GitHub 422", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({
+      message: "Validation Failed",
+      errors: [{ resource: "PullRequestReview", code: "custom" }],
+    }), { status: 422 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+
+    expect(captured.status()).toBe(422);
+    expect(JSON.parse(captured.body()).error).toBe("GitHub rejected the review (validation failed)");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("rolls back only the newly-created pending review when a FILE-thread mutation fails", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({ id: 71, node_id: "PRR_node_71" }), { status: 200 });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({ errors: [{ message: "thread failed" }] }), { status: 200 });
+      }
+      return new Response(null, { status: 204 });
+    }));
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        comments: [],
+        fileComments: [{ path: "src/a.ts", label: "L20", body: "Keep this" }],
+      }),
+    );
+
+    expect(captured.status()).toBe(502);
+    expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
+      ["https://api.github.com/repos/org/repo/pulls/7/reviews", "POST"],
+      ["https://api.github.com/graphql", "POST"],
+      ["https://api.github.com/repos/org/repo/pulls/7/reviews/71", "DELETE"],
+    ]);
+  });
+
+  it("rolls back the newly-created pending review when final event submission fails", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({ id: 72, node_id: "PRR_node_72" }), { status: 200 });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({ data: { addPullRequestReviewThread: { thread: { id: "PRRT_72" } } } }), { status: 200 });
+      }
+      if (String(url).endsWith("/events")) {
+        return new Response(JSON.stringify({ message: "boom" }), { status: 500 });
+      }
+      return new Response(null, { status: 204 });
+    }));
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        comments: [],
+        fileComments: [{ path: "src/a.ts", label: null, body: "Keep this too" }],
+      }),
+    );
+
+    expect(captured.status()).toBe(502);
+    expect(calls.map((call) => [call.url, call.init?.method])).toEqual([
+      ["https://api.github.com/repos/org/repo/pulls/7/reviews", "POST"],
+      ["https://api.github.com/graphql", "POST"],
+      ["https://api.github.com/repos/org/repo/pulls/7/reviews/72/events", "POST"],
+      ["https://api.github.com/repos/org/repo/pulls/7/reviews/72", "DELETE"],
+    ]);
+  });
+
+  it("submits a unique existing pending review as COMMENT, then retries the requested review once", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ url: String(url), init });
+      if (calls.length === 1) {
+        return new Response(JSON.stringify({
+          message: "Validation Failed",
+          errors: ["User can only have one pending review per pull request"],
+        }), { status: 422 });
+      }
+      if (calls.length === 2) {
+        return new Response(JSON.stringify([
+          { id: 80, state: "COMMENTED", body: "An older submitted review" },
+          { id: 91, state: "PENDING", body: "Existing pending review body." },
+        ]), { status: 200 });
+      }
+      if (calls.length === 3) {
+        return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#pending-91" }), { status: 200 });
+      }
+      if (calls.length === 4) {
+        return new Response(JSON.stringify({ id: 99, node_id: "PRR_node_99" }), { status: 200 });
+      }
+      if (String(url).endsWith("/graphql")) {
+        return new Response(JSON.stringify({ data: { addPullRequestReviewThread: { thread: { id: "PRRT_99" } } } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ html_url: "https://github.com/org/repo/pull/7#new-99" }), { status: 200 });
+    }));
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        ...VALID_BODY,
+        event: "REQUEST_CHANGES",
+        body: "Current review summary.",
+        fileComments: [{ path: "src/c.ts", label: "File", body: "Already classified as a file comment." }],
+        commitId: "abcdef1234567",
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      url: "https://github.com/org/repo/pull/7#new-99",
+      forced: false,
+      pendingMerged: true,
+    });
+    expect(calls.map((call) => call.url)).toEqual([
+      "https://api.github.com/repos/org/repo/pulls/7/reviews",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews?per_page=100&page=1",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews/91/events",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews",
+      "https://api.github.com/graphql",
+      "https://api.github.com/repos/org/repo/pulls/7/reviews/99/events",
+    ]);
+    expect(calls[1].init?.method).toBeUndefined();
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({
+      event: "COMMENT",
+    });
+    expect(JSON.parse(String(calls[3].init?.body))).toEqual({
+      commit_id: "abcdef1234567",
+      body: "Current review summary.",
+      comments: [
+        { path: "packages/cli/src/a.ts", line: 25, side: "RIGHT", body: "check" },
+        { path: "packages/cli/src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
+      ],
+    });
+    expect(JSON.parse(String(calls[4].init?.body)).variables).toEqual({
+      reviewId: "PRR_node_99",
+      path: "packages/cli/src/c.ts",
+      body: "**Meridian location:** `File` · review commit `abcdef1`\n\nAlready classified as a file comment.",
+    });
+    expect(JSON.parse(String(calls[5].init?.body))).toEqual({ event: "REQUEST_CHANGES" });
+  });
+
+  it("surfaces the exact pending-review conflict when no unique pending review is visible", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async () => fetchMock.mock.calls.length === 1
+      ? new Response(JSON.stringify({
+          message: "Validation Failed",
+          errors: [{ message: "User can only have one pending review per pull request" }],
+        }), { status: 422 })
+      : new Response(JSON.stringify([]), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invokePost(ctxWithSource({ kind: "github", owner: "org", repo: "repo" }), bodyRequest(VALID_BODY));
+
+    expect(captured.status()).toBe(422);
+    expect(JSON.parse(captured.body()).error).toContain("User can only have one pending review per pull request");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 

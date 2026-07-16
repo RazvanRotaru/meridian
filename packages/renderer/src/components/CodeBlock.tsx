@@ -114,7 +114,8 @@ export function CodeBlock({
   focusLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
   onLineClick?: (line: number) => void;
-  /** Absolute HEAD-side lines allowed to host a RIGHT-side review comment. */
+  /** Absolute HEAD-side lines allowed to open a review draft. GitHub-safe rows submit inline;
+   * other rows become file-level review comments through the submission projection. */
   commentableLines?: ReadonlySet<number>;
   /** The panel-owned composer shown immediately below its absolute source row. */
   lineComposer?: {
@@ -388,7 +389,7 @@ export function CodeBlock({
                     onClick={commentable ? (event) => {
                       // A compact hover preview should not require finding a 15px gutter target.
                       // Preserve ordinary code selection and modified clicks, but make a direct
-                      // primary click on any GitHub-commentable line open the same composer.
+                      // primary click on any draftable HEAD line open the same composer.
                       if (!shouldOpenLineComposerFromCodeCell(event)) return;
                       onLineClick(lineNo);
                     } : undefined}

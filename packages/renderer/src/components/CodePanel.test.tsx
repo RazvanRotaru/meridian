@@ -73,6 +73,8 @@ function sourceModal(options: {
   pendingComments?: ReviewComment[];
   commentsVisible?: boolean;
   reviewPathAlias?: string;
+  stale?: boolean;
+  reviewedHeadSha?: string | null;
 }) {
   const status = options.status ?? "modified";
   const store = createBlueprintStore({
@@ -103,6 +105,16 @@ function sourceModal(options: {
       flows: {},
     },
     prReviewed: options.live ? 77 : null,
+    prReviewStale: options.stale ?? false,
+    ...(options.live && options.stale ? {
+      prReviewRevision: {
+        number: 77,
+        headRef: "feature",
+        baseRef: "main",
+        headSha: options.reviewedHeadSha ?? null,
+        updatedAt: "2026-07-12T00:00:00.000Z",
+      },
+    } : {}),
     prDiscussion: {
       comments: options.comments ?? [],
       reviews: { approved: [], changesRequested: [], commented: 0 },
@@ -137,6 +149,7 @@ function sourceModal(options: {
       mode: "modal",
       baseLine: 17,
       wholeFile: options.wholeFile,
+      sourceSide: status === "deleted" ? "base" : "head",
       changedLineKinds: new Map([[19, "modified"]]),
       changedLines: new Set([19]),
     },
@@ -164,16 +177,15 @@ describe("CodePanel review comments", () => {
     expect(markup).not.toContain('style="width:100%;max-width:none;height:100%');
   });
 
-  it("offers line drafts only on the visible GitHub diff/context rows", () => {
+  it("offers drafts on every visible HEAD row and explains the inline subset", () => {
     const markup = sourceModal({ live: true });
 
-    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(3);
-    for (const line of [17, 18, 19]) {
+    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
+    for (const line of [17, 18, 19, 20]) {
       expect(markup).toContain(`aria-label="Comment on line ${line}"`);
     }
-    expect(markup).not.toContain('aria-label="Comment on line 20"');
-    expect(markup).toContain('data-review-comment-scope="partial"');
-    expect(markup).toContain("Hover L17–L19 to add a comment");
+    expect(markup).toContain('data-review-comment-scope="inline-and-file"');
+    expect(markup).toContain("L17–L19 can be inline · comments on other lines attach to the file");
   });
 
   it("does not add a scope note when every visible line is in the PR diff", () => {
@@ -183,11 +195,13 @@ describe("CodePanel review comments", () => {
     expect(markup).not.toContain("data-review-comment-scope");
   });
 
-  it("keeps artifact-only reviews limited to their anchorable changed rows", () => {
+  it("keeps every artifact-only HEAD row draftable as a durable local note", () => {
     const markup = sourceModal({ live: false });
 
-    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(1);
-    expect(markup).toContain('aria-label="Comment on line 19"');
+    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
+    for (const line of [17, 18, 19, 20]) {
+      expect(markup).toContain(`aria-label="Comment on line ${line}"`);
+    }
   });
 
   it("does not offer HEAD-line drafts for a file removed by the PR", () => {
@@ -196,15 +210,30 @@ describe("CodePanel review comments", () => {
     expect(markup).not.toContain('aria-label="Comment on line ');
   });
 
-  it("marks a restored draft outside GitHub's diff context instead of treating it as submittable", () => {
+  it("labels a restored draft outside GitHub's diff context as a file-level review comment", () => {
     const markup = sourceModal({
       live: true,
       pendingComments: [pendingComment("Keep this exact line", 20)],
     });
 
-    expect(markup).toContain('data-review-comment-blocked="true"');
-    expect(markup).toContain("Needs diff line");
-    expect(markup).not.toContain('aria-label="Comment on line 20"');
+    expect(markup).toContain('data-review-comment-file="true"');
+    expect(markup).toContain("File comment");
+    expect(markup).not.toContain('data-review-comment-blocked="true"');
+    expect(markup).not.toContain("Needs diff line");
+    expect(markup).toContain('aria-label="Comment on line 20"');
+  });
+
+  it("labels an otherwise-inline draft as a file comment when a stale review has no SHA", () => {
+    const markup = sourceModal({
+      live: true,
+      stale: true,
+      reviewedHeadSha: null,
+      pendingComments: [pendingComment("Keep this on the reviewed file", 19)],
+    });
+
+    expect(markup).toContain('data-review-comment-scope="file-only"');
+    expect(markup).toContain('data-review-comment-file="true"');
+    expect(markup).toContain("File comment");
   });
 
   it("renders only visible RIGHT-side GitHub comments in the source modal", () => {
@@ -236,7 +265,7 @@ describe("CodePanel review comments", () => {
 
     expect(markup).not.toContain("data-existing-review-comments-line");
     expect(markup).not.toContain("Hidden modal comment");
-    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(3);
+    expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
   });
 
   it("renders only fresh local line drafts in the visible source slice", () => {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { PrGitHubComment } from "../../state/prTypes";
 import { reviewCommentThreadOrder } from "./ExistingReviewComments";
 import { CommentComposer } from "./ReviewComments";
-import { reviewActionDisabled, reviewSuccessLabel } from "./ReviewSubmissionFooter";
+import { reviewActionDisabled, reviewSubmissionBlocked, reviewSuccessLabel } from "./ReviewSubmissionFooter";
 
 describe("CommentComposer", () => {
   it("prefills an edit and names its save action", () => {
@@ -80,6 +80,15 @@ describe("review submission decisions", () => {
     expect(reviewActionDisabled("APPROVE", 0, "")).toBe(false);
     expect(reviewActionDisabled("REQUEST_CHANGES", 2, "  ")).toBe(true);
     expect(reviewActionDisabled("REQUEST_CHANGES", 0, "Blocking issue")).toBe(false);
+  });
+
+  it("allows stale comments while keeping decisions and active revision replacement blocked", () => {
+    expect(reviewSubmissionBlocked("COMMENT", false, true, false, false)).toBe(false);
+    expect(reviewSubmissionBlocked("APPROVE", false, true, false, false)).toBe(true);
+    expect(reviewSubmissionBlocked("REQUEST_CHANGES", false, true, false, false)).toBe(true);
+    expect(reviewSubmissionBlocked("COMMENT", false, false, true, false)).toBe(true);
+    expect(reviewSubmissionBlocked("COMMENT", false, false, false, true)).toBe(true);
+    expect(reviewSubmissionBlocked("COMMENT", true, false, false, false)).toBe(true);
   });
 
   it("names the submitted decision", () => {
