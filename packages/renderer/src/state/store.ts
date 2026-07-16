@@ -5059,20 +5059,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const flowBaseline = state.reviewFlowBaseline;
-      const lit = file.units.length > 0 ? file.units.map((unit) => unit.nodeId) : [file.moduleId];
+      // A file click owns both levels of its dependency story. Touched units light their exact
+      // callable/type relationships, while the module seed retains relationships the extractor
+      // honestly attributes to top-level syntax (for example `new Service()` in a default
+      // parameter, top-level initializers, and interface-field type references). Replacing
+      // the module with only its touched units makes those valid boundary ghosts disappear in the
+      // shared paint pruner even though the file card remains the literal selection.
+      const lit = new Set([file.moduleId, ...file.units.map((unit) => unit.nodeId)]);
       if (flowBaseline === null) {
         const rootId = hiddenReviewRollupFor(state, file.moduleId);
         if (rootId !== null) {
           focusReviewSubgraph(
             rootId,
-            { selectedId: file.moduleId, litNodeIds: new Set(lit) },
+            { selectedId: file.moduleId, litNodeIds: lit },
             () => get().focusReviewFile(path),
           );
           return;
         }
         if (revealWithinFocusedReviewSubgraph(
           state,
-          { selectedId: file.moduleId, litNodeIds: new Set(lit) },
+          { selectedId: file.moduleId, litNodeIds: lit },
           () => get().focusReviewFile(path),
         )) {
           return;
@@ -5083,7 +5089,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ...(flowBaseline ?? {}),
         moduleSelected,
         reviewSelectedId: file.moduleId,
-        reviewLitNodeIds: new Set(lit),
+        reviewLitNodeIds: lit,
         flowSelection: null,
         flowPaneExpansionOverrides: new Set<string>(),
         flowPaneCollapsedEdges: new Set<string>(),
