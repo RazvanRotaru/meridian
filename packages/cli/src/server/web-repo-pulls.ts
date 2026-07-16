@@ -37,7 +37,13 @@ export async function handleRepoPullRequests(
   }
 
   const token = githubTokenFor(ctx, request);
-  sendJson(response, 200, await ctx.github.listPullRequests({ ...slug, state, page, token }));
+  sendJson(response, 200, await ctx.github.listPullRequests({
+    ...slug,
+    state,
+    page,
+    token,
+    includeViewerStatus: true,
+  }));
 }
 
 function parseLiteralRepoSlug(repository: string): { owner: string; repo: string } | null {

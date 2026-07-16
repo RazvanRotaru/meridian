@@ -95,6 +95,24 @@ export async function postGraphql(
   body: unknown,
   token: string,
 ): Promise<unknown> {
+  return graphqlRequest(fetchImpl, body, token, "GitHub could not attach a file-level review comment");
+}
+
+/** Read-only GraphQL query for data REST list responses do not expose. */
+export async function queryGraphql(
+  fetchImpl: typeof fetch,
+  body: unknown,
+  token: string,
+): Promise<unknown> {
+  return graphqlRequest(fetchImpl, body, token, "GitHub could not load personalized pull request status");
+}
+
+async function graphqlRequest(
+  fetchImpl: typeof fetch,
+  body: unknown,
+  token: string,
+  errorMessage: string,
+): Promise<unknown> {
   const response = await apiRequest(fetchImpl, `${API_ROOT}/graphql`, token, {
     method: "POST",
     body: JSON.stringify(body),
@@ -107,7 +125,7 @@ export async function postGraphql(
     ? (json as Record<string, unknown>).errors
     : undefined;
   if (Array.isArray(errors) && errors.length > 0) {
-    throw new WebError(502, "GitHub could not attach a file-level review comment");
+    throw new WebError(502, errorMessage);
   }
   return json;
 }

@@ -52,7 +52,14 @@ describe("handleRepoPullRequests", () => {
     expect(captured.status()).toBe(200);
     expect(JSON.parse(captured.body())).toEqual(RESULT);
     expect(seen).toEqual([
-      { owner: "meridian-app", repo: "meridian", state: "open", page: 2, token: undefined },
+      {
+        owner: "meridian-app",
+        repo: "meridian",
+        state: "open",
+        page: 2,
+        token: undefined,
+        includeViewerStatus: true,
+      },
     ]);
   });
 
@@ -75,6 +82,7 @@ describe("handleRepoPullRequests", () => {
       state: "closed",
       page: 1,
       token: "ghp_environment",
+      includeViewerStatus: true,
     });
   });
 

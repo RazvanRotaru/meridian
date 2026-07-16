@@ -205,7 +205,7 @@ describe("listPullRequests", () => {
   it("returns hasMore when GitHub gives a full PR page", async () => {
     const seenUrls: string[] = [];
     const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages([prPage(30, 0)], seenUrls) });
-    const result = await client.listPullRequests({ owner: "org", repo: "repo", state: "open", page: 2, token: "token" });
+    const result = await client.listPullRequests({ owner: "org", repo: "repo", state: "open", page: 2 });
     expect(result.hasMore).toBe(true);
     expect(result.prs).toHaveLength(30);
     expect(seenUrls[0]).toContain("/repos/org/repo/pulls?");
@@ -218,6 +218,71 @@ describe("listPullRequests", () => {
     const seenUrls: string[] = [];
     const client = createGitHubClient({ clientId: "Iv1.test", fetchImpl: fetchReturningPages([prPage(2, 0)], seenUrls) });
     await expect(client.listPullRequests({ owner: "org", repo: "repo", state: "closed", page: 1 })).resolves.toMatchObject({ hasMore: false });
+  });
+
+  it("enriches an authenticated page with the viewer's review relationship", async () => {
+    const calls: Array<{ url: string; body?: unknown }> = [];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : undefined });
+        if (String(url).endsWith("/graphql")) {
+          return new Response(JSON.stringify({
+            data: {
+              viewer: { login: "astrid" },
+              repository: {
+                pr_1: {
+                  reviewRequests: { nodes: [{ requestedReviewer: { login: "astrid" } }] },
+                  latestReviews: { nodes: [] },
+                },
+              },
+            },
+          }), { status: 200 });
+        }
+        return new Response(JSON.stringify(prPage(1, 0)), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const result = await client.listPullRequests({
+      owner: "org",
+      repo: "repo",
+      state: "open",
+      page: 1,
+      token: "secret",
+      includeViewerStatus: true,
+    });
+
+    expect(result.viewerLogin).toBe("astrid");
+    expect(result.prs[0].viewerStatus).toEqual({ reviewRequested: true, review: null });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].url).toBe("https://api.github.com/graphql");
+    expect(calls[1].body).toMatchObject({ variables: { owner: "org", repo: "repo" } });
+  });
+
+  it("keeps the REST list usable when personalized status cannot load", async () => {
+    let calls = 0;
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async () => {
+        calls++;
+        return calls === 1
+          ? new Response(JSON.stringify(prPage(1, 0)), { status: 200 })
+          : new Response(JSON.stringify({ errors: [{ message: "forbidden" }] }), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const result = await client.listPullRequests({
+      owner: "org",
+      repo: "repo",
+      state: "open",
+      page: 1,
+      token: "secret",
+      includeViewerStatus: true,
+    });
+
+    expect(result.prs).toHaveLength(1);
+    expect(result.prs[0].viewerStatus).toBeUndefined();
+    expect(result.viewerLogin).toBeUndefined();
   });
 });
 
