@@ -816,8 +816,9 @@ export interface BlueprintState {
   /** ⌘P palette navigate: reveal a picked symbol in the CURRENT map lens — the Map goes to its
    * definition (revealModule), the Service lens pins + selects it. Inert outside the map lenses. */
   revealInView(rawId: string): void;
-  /** ⌘P palette "+": pin a picked symbol INTO the current map lens (its owning unit/file) as an extra
-   * card, without navigating. Inert outside the map lenses. */
+  /** ⌘P palette "+": add a picked symbol to the graph which is actually on screen. A minimal
+   * graph owns its member list; otherwise the current map lens pins the owning unit/file as an
+   * extra card. Inert outside those module surfaces. */
   addToView(rawId: string): void;
   /** The shared ghost "+" action. On the Map/Service/UI canvas it pins the ghost's home FILE(s)
    * into `mapExtra`; while the minimal overlay is open it adds the home member to that overlay and
@@ -4093,17 +4094,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // ⌘P palette "+": pin a picked symbol's owning card (unit/file) INTO the current map lens WITHOUT
-    // navigating — a scratch card unioned into the next relayout. A no-op when already pinned or off a
-    // map lens. All module lenses share `mapExtra`, so the same pin surfaces in each.
+    // ⌘P palette "+": add a picked symbol to the graph the reader can actually see. Minimal Graph
+    // covers its source Map and owns a separate ordered member list, so it must win as the destination
+    // just like the shared ghost "+" action below. Otherwise pin the owning card into the current map
+    // lens as a scratch-card union for its next relayout. All ordinary module lenses share `mapExtra`.
     addToView(rawId) {
       const state = get();
       const viewMode = state.viewMode;
-      if (moduleSurfaceSpec(viewMode) === null) {
+      const minimalOpen = state.minimalSeedIds.length > 0;
+      if (!minimalOpen && moduleSurfaceSpec(viewMode) === null) {
         return;
       }
-      const card = resolveCard(rawId);
       const revealPrivate = !state.showPrivate && state.index.privateIds.has(rawId);
+      if (minimalOpen) {
+        if (revealPrivate) {
+          set({ showPrivate: true });
+        }
+        get().promoteGhost(rawId);
+        return;
+      }
+
+      const card = resolveCard(rawId);
       if (!state.mapExtra.has(card)) {
         set({
           mapExtra: new Set(state.mapExtra).add(card),

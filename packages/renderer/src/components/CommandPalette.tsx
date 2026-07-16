@@ -4,8 +4,9 @@
  *
  *   - The MAP lenses (Map = "modules", Service = "call", UI = "ui") REVEAL the pick — Map/UI go to
  *     its definition, the Service lens pins + selects it — via `revealInView`, and every row carries
- *     a "+" that instead ADDS the node into the current lens (`addToView`) without navigating,
- *     grafting an out-of-scope symbol onto the canvas. ⌘/Ctrl+↵ adds from the keyboard; the palette
+ *     a "+" that instead ADDS the node into the visible graph (`addToView`) without navigating,
+ *     grafting an out-of-scope symbol onto the canvas (including an open Minimal Graph).
+ *     ⌘/Ctrl+↵ adds from the keyboard; the palette
  *     stays open so several nodes can be added in a row.
  *   - The Logic view opens the pick's intra-procedural logic flow (`openLogicFlow`); no "+" there.
  *
@@ -130,7 +131,7 @@ export function CommandPalette() {
     }
     close();
   };
-  // The "+" (map lenses only): pin the node into the current lens WITHOUT navigating. Stay open so a
+  // The "+" (map lenses only): add the node to the visible graph WITHOUT navigating. Stay open so a
   // reader can add several nodes before dismissing to see the result on the canvas.
   const addPick = (id: NodeId) => {
     addToView(id);

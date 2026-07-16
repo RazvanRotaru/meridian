@@ -1118,6 +1118,25 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(store.getState().minimalMemberIds.filter((id) => id === "ts:src/a.ts")).toHaveLength(1);
   });
 
+  it.each([
+    { viewMode: "modules", lens: "Map" },
+    { viewMode: "call", lens: "Service" },
+    { viewMode: "ui", lens: "UI" },
+  ] as const)("routes the command-palette + to a minimal graph opened from $lens", ({ viewMode }) => {
+    const store = freshStore();
+    store.setState({ viewMode });
+    store.getState().toggleModuleSelect("ts:src/a.ts");
+    store.getState().toggleModuleSelect("ts:src/b.ts");
+    store.getState().buildMinimalGraph();
+
+    store.getState().addToView(ROUTES_METHOD);
+
+    expect(store.getState().minimalMemberIds).toContain(ROUTES_FILE);
+    expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts", "ts:src/b.ts"]);
+    expect(store.getState().mapExtra).toEqual(new Set());
+    expect(store.getState().moduleExpanded).toEqual(new Set([ROUTES_FILE, ROUTES_UNIT]));
+  });
+
   it("uses the open overlay as the authoritative destination and captures the clicked position", () => {
     const store = withBuiltGraph();
     // Model a transient lens switch directly: while the overlay is open, its state wins over the

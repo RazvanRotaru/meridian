@@ -131,4 +131,20 @@ describe("module-map expansion actions", () => {
     expect(store.getState().mapExtra).toEqual(new Set([UNIT_ID]));
     expect(moduleRelayout).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { viewMode: "modules", lens: "Map" },
+    { viewMode: "call", lens: "Service" },
+    { viewMode: "ui", lens: "UI" },
+  ] as const)("keeps the command-palette + working on the plain $lens lens", ({ viewMode }) => {
+    const store = freshStore();
+    const moduleRelayout = vi.fn(async () => {});
+    store.setState({ viewMode, moduleRelayout });
+
+    store.getState().addToView(METHOD_ID);
+
+    expect(store.getState().mapExtra).toEqual(new Set([UNIT_ID]));
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(moduleRelayout).toHaveBeenCalledOnce();
+  });
 });
