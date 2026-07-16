@@ -131,8 +131,8 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
         <button type="button" style={SECTION_TOGGLE} aria-expanded={listOpen} onClick={toggleList}>
           <span style={CARET}>{listOpen ? "▾" : "▸"}</span>
           <span style={SECTION_TITLE}>Files changed</span>
-          <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "the graph shows the base branch, added files join it after Extract head graph." : undefined}>
-            {unmatchedCount > 0 ? `${files.length} files · ${unmatchedCount} not in this graph` : `${viewed}/${files.length} viewed`}
+          <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "The extractor produced no graph node for these files; their changed source remains available." : undefined}>
+            {unmatchedCount > 0 ? `${files.length} files · ${unmatchedCount} not extracted` : `${viewed}/${files.length} viewed`}
           </span>
         </button>
         <div style={SORT_TOGGLE} role="group" aria-label="Sort changed files">
@@ -193,7 +193,6 @@ function FileRow(props: {
 }) {
   const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer, defaultExpanded } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
-  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode, showReviewFile } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
@@ -269,11 +268,9 @@ function FileRow(props: {
           {file.moduleId === null && file.deletedImpact === null && (
             <span
               style={NOT_IN_GRAPH}
-              title={file.status === "added" && !preparedArtifactCurrent
-                ? "This file is new in the PR, so the base graph cannot contain it. Click to view its source."
-                : "The extractor produced no graph node for this file. Click to view its source."}
+              title="The extractor produced no graph node for this file. Click to view its source."
             >
-              {file.status === "added" && !preparedArtifactCurrent ? "new file · view source" : "not extracted · view source"}
+              not extracted · view source
             </span>
           )}
         </button>

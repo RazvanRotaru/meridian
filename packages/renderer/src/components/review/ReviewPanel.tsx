@@ -1,7 +1,7 @@
 /**
  * The PR-review side panel. Files first: every changed file with its touched code units and a
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content). Change groups and
- * impacted causal flows stay pinned above that file scroller, and a footer submits review decisions
+ * affected causal flows stay pinned above that file scroller, and a footer submits review decisions
  * together with any draft comments. The header tracks viewed-files progress, states the exact
  * prepared revision, and offers Reset (ticks only — never drafts) and Hide; a hidden panel folds
  * into a narrow reopen rail. Self-hides when there is no review.
