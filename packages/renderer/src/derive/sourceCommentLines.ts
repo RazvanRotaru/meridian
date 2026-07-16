@@ -8,18 +8,12 @@ const PYTHON_EXTENSIONS = new Set([".py", ".pyi"]);
 interface LineFlags {
   code: boolean;
   comment: boolean;
-  protectedComment: boolean;
-}
-
-interface BlockComment {
-  lines: number[];
-  protected: boolean;
 }
 
 /**
- * Return absolute source lines that are provably ordinary, comment-only rows. This deliberately
- * fails open: documentation comments, compiler/linter directives, strings, mixed code/comment
- * rows, and languages we do not parse stay in the diff.
+ * Return absolute source lines that are provably comment-only rows. Documentation comments and
+ * compiler/linter directives are comments too; strings, mixed code/comment rows, and languages we
+ * do not parse stay in the diff.
  */
 export function sourceCommentOnlyLines(
   file: string,
@@ -32,7 +26,7 @@ export function sourceCommentOnlyLines(
   return new Set<number>();
 }
 
-/** Remove diff treatment from added rows that are provably ordinary source comments. */
+/** Remove added comment-only rows from the canonical diff projection. */
 export function withoutAddedSourceCommentDiffLines(
   lines: readonly ChangedDiffLine[],
   commentOnlyLines: ReadonlySet<number>,
@@ -50,23 +44,19 @@ export function withoutAddedSourceCommentDiffLines(
 
 function javascriptCommentOnlyLines(code: string, startLine: number): ReadonlySet<number> {
   const lines = sourceLines(code);
-  const flags: LineFlags[] = lines.map(() => ({ code: false, comment: false, protectedComment: false }));
+  const flags: LineFlags[] = lines.map(() => ({ code: false, comment: false }));
   let quote: "'" | '"' | "`" | null = null;
-  let block: BlockComment | null = null;
+  let inBlock = false;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
     const line = lines[lineIndex];
     let index = 0;
-    while (index < line.length || block !== null) {
-      if (block !== null) {
+    while (index < line.length || inBlock) {
+      if (inBlock) {
         flags[lineIndex].comment = true;
-        if (block.lines.at(-1) !== lineIndex) block.lines.push(lineIndex);
         const close = line.indexOf("*/", index);
-        const commentText = close < 0 ? line.slice(index) : line.slice(index, close);
-        if (isJavaScriptDirective(commentText)) block.protected = true;
         if (close < 0) break;
-        if (block.protected) markProtected(flags, block.lines);
-        block = null;
+        inBlock = false;
         index = close + 2;
         continue;
       }
@@ -87,15 +77,10 @@ function javascriptCommentOnlyLines(code: string, startLine: number): ReadonlySe
       }
       if (char === "/" && line[index + 1] === "/") {
         flags[lineIndex].comment = true;
-        if (isJavaScriptDirective(line.slice(index + 2), true)) flags[lineIndex].protectedComment = true;
         break;
       }
       if (char === "/" && line[index + 1] === "*") {
-        const body = line.slice(index + 2);
-        block = {
-          lines: [],
-          protected: line[index + 2] === "*" || line[index + 2] === "!" || isJavaScriptDirective(body),
-        };
+        inBlock = true;
         index += 2;
         continue;
       }
@@ -110,14 +95,12 @@ function javascriptCommentOnlyLines(code: string, startLine: number): ReadonlySe
     }
   }
 
-  // Unterminated blocks are ambiguous source, so retain their complete diff treatment.
-  markUnterminatedBlockProtected(flags, block);
   return collectCommentOnlyLines(flags, startLine);
 }
 
 function pythonCommentOnlyLines(code: string, startLine: number): ReadonlySet<number> {
   const lines = sourceLines(code);
-  const flags: LineFlags[] = lines.map(() => ({ code: false, comment: false, protectedComment: false }));
+  const flags: LineFlags[] = lines.map(() => ({ code: false, comment: false }));
   let quote: "'" | '"' | "'''" | '"""' | null = null;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
@@ -140,10 +123,6 @@ function pythonCommentOnlyLines(code: string, startLine: number): ReadonlySet<nu
       }
       if (char === "#") {
         flags[lineIndex].comment = true;
-        const absoluteLine = startLine + lineIndex;
-        if (isPythonDirective(line.slice(index + 1), absoluteLine)) {
-          flags[lineIndex].protectedComment = true;
-        }
         break;
       }
       if (char === "'" || char === '"') {
@@ -181,34 +160,13 @@ function consumeQuoted(
   return { next: line.length, closed: false };
 }
 
-function isJavaScriptDirective(raw: string, lineComment = false): boolean {
-  const text = raw.trim().replace(/^\*+\s*/, "");
-  if ((lineComment && text.startsWith("/")) || text.startsWith("!")) return true;
-  return /^(?:@?(?:ts-(?:ignore|expect-error|nocheck|check)|jsx(?:ImportSource|Runtime)?|flow|license|preserve|copyright|generated)|[#@]__PURE__|eslint(?:-|\s)|prettier-ignore|biome-ignore|deno-lint-ignore|istanbul\s+ignore|c8\s+ignore|v8\s+ignore|webpack\w*|rollup\w*|sourceMappingURL=|sourceURL=|global\s|exported\s|jshint\s)/i.test(text);
-}
-
-function isPythonDirective(raw: string, absoluteLine: number): boolean {
-  const text = raw.trim();
-  if (absoluteLine === 1 && text.startsWith("!")) return true;
-  if (absoluteLine <= 2 && /(?:^|[-*])\s*coding\s*[:=]/i.test(text)) return true;
-  return /^(?:type\s*:|noqa\b|fmt\s*:|isort\s*:|pylint\s*:|pyright\s*:|mypy\s*:|pyre\s*:|ruff\s*:|pragma\s*:|nosec\b|coverage\s*:|cython\s*:|flake8\s*:|region\b|endregion\b|%%|<editor-fold\b|@?generated\b)/i.test(text);
-}
-
 function collectCommentOnlyLines(flags: readonly LineFlags[], startLine: number): ReadonlySet<number> {
   const result = new Set<number>();
   for (let index = 0; index < flags.length; index += 1) {
     const line = flags[index];
-    if (line.comment && !line.code && !line.protectedComment) result.add(startLine + index);
+    if (line.comment && !line.code) result.add(startLine + index);
   }
   return result;
-}
-
-function markProtected(flags: LineFlags[], lines: readonly number[]): void {
-  for (const line of lines) flags[line].protectedComment = true;
-}
-
-function markUnterminatedBlockProtected(flags: LineFlags[], block: BlockComment | null): void {
-  if (block !== null) markProtected(flags, block.lines);
 }
 
 function sourceLines(code: string): string[] {

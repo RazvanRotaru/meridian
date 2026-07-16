@@ -136,9 +136,9 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
             onChange={(event) => props.onHideAddedSourceCommentDiffsChange(event.currentTarget.checked)}
           />
           <span style={OPTION_COPY}>
-            <span style={OPTION_TITLE}>Hide diff on source comments</span>
+            <span style={OPTION_TITLE}>Hide source comments in diffs</span>
             <span id={ADDED_SOURCE_COMMENTS_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
-              Show comment-only additions as neutral source context. Code and lines that mix code with comments stay highlighted.
+              Hide comment-only source additions from code diffs. Code and lines that mix code with comments stay highlighted.
             </span>
           </span>
         </label>

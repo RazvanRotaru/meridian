@@ -17,7 +17,7 @@ describe("sourceCommentOnlyLines", () => {
     expect([...sourceCommentOnlyLines("src/review.tsx", code, 10)]).toEqual([11, 12, 13, 14]);
   });
 
-  it("preserves JSDoc, directives, pure annotations, and multiline templates", () => {
+  it("finds JSDoc and directives while preserving mixed annotations and multiline templates", () => {
     const code = [
       "/** Public API documentation. */",
       "/// <reference types=\"node\" />",
@@ -30,10 +30,10 @@ describe("sourceCommentOnlyLines", () => {
       "`;",
     ].join("\n");
 
-    expect(sourceCommentOnlyLines("src/review.ts", code).size).toBe(0);
+    expect([...sourceCommentOnlyLines("src/review.ts", code)]).toEqual([1, 2, 3, 4]);
   });
 
-  it("preserves an entire multiline directive block", () => {
+  it("finds every row in a multiline directive block", () => {
     const code = [
       "/*",
       " * @license Example license",
@@ -41,10 +41,10 @@ describe("sourceCommentOnlyLines", () => {
       "// Ordinary explanation.",
     ].join("\n");
 
-    expect([...sourceCommentOnlyLines("src/review.js", code)]).toEqual([4]);
+    expect([...sourceCommentOnlyLines("src/review.js", code)]).toEqual([1, 2, 3, 4]);
   });
 
-  it("finds Python comments while preserving strings, docstrings, and directives", () => {
+  it("finds Python comments and directives while preserving strings and docstrings", () => {
     const code = [
       "#!/usr/bin/env python3",
       "# coding: utf-8",
@@ -59,7 +59,13 @@ describe("sourceCommentOnlyLines", () => {
       "# Another ordinary explanation.",
     ].join("\n");
 
-    expect([...sourceCommentOnlyLines("tools/review.py", code)]).toEqual([3, 11]);
+    expect([...sourceCommentOnlyLines("tools/review.py", code)]).toEqual([1, 2, 3, 9, 10, 11]);
+  });
+
+  it("finds all rows in an unterminated block comment", () => {
+    const code = "/* generated explanation\n * continued";
+
+    expect([...sourceCommentOnlyLines("src/review.ts", code, 20)]).toEqual([20, 21]);
   });
 
   it("fails open for unsupported source languages", () => {

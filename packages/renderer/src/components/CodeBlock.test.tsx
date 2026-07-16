@@ -385,6 +385,21 @@ describe("CodeBlock review comments", () => {
     expect(html.match(/title="Edit comment"/g)).toHaveLength(1);
   });
 
+  it("hides source-code rows without hiding review discussions anchored to them", () => {
+    const html = renderWithStore(createElement(CodeBlock, {
+      code: "first\n// source explanation\nthird",
+      startLine: 40,
+      showGutter: true,
+      hiddenSourceLines: new Set([41]),
+      existingComments: [existingComment("Reviewer discussion stays visible", 41)],
+    }));
+
+    expect(html).not.toContain('data-source-line="41"');
+    expect(html).not.toContain("source explanation");
+    expect(html).toContain('data-existing-review-comments-line="41"');
+    expect(html).toContain("Reviewer discussion stays visible");
+  });
+
   it("keeps local pending comments visible at their exact source line beside existing comments", () => {
     const html = renderWithStore(createElement(CodeBlock, {
       code: "first\nsecond\nthird",

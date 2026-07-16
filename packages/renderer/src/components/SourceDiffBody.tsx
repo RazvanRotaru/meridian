@@ -49,6 +49,8 @@ export interface SourceDiffModel {
   diffLines: readonly CodeDiffLine[] | undefined;
   changedLines: ReadonlySet<number>;
   changedLineKinds: ReadonlyMap<number, ChangedLineKind>;
+  /** Added source-code comment rows omitted by the reader's review preference. */
+  hiddenSourceLines: ReadonlySet<number>;
   summary: SourceDiffSummary | null;
   existingComments: ReturnType<typeof useCodeReviewComments>;
   pendingComments: ReturnType<typeof usePendingCodeReviewComments>;
@@ -97,7 +99,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       : diffLinesWithinSlice(canonicalDiffLines, sourceSide, baseLine, shownEnd, diffOldSpan),
     [baseLine, canonicalDiffLines, diffOldSpan, shownEnd, sourceSide],
   );
-  const neutralizedSourceCommentLines = useMemo(() => {
+  const hiddenSourceCommentLines = useMemo(() => {
     if (
       canonicalDiffLines === undefined
       || review === null
@@ -105,7 +107,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       || sourceSide !== "head"
       || codeView.code === null
     ) {
-      return EMPTY_NEUTRALIZED_LINES;
+      return EMPTY_HIDDEN_SOURCE_LINES;
     }
     const commentLines = sourceCommentOnlyLines(file, codeView.code, baseLine);
     return new Set(canonicalDiffLines.flatMap((line) => (
@@ -119,8 +121,8 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const displayCanonicalDiffLines = useMemo(
     () => canonicalDiffLines === undefined
       ? undefined
-      : withoutAddedSourceCommentDiffLines(canonicalDiffLines, neutralizedSourceCommentLines),
-    [canonicalDiffLines, neutralizedSourceCommentLines],
+      : withoutAddedSourceCommentDiffLines(canonicalDiffLines, hiddenSourceCommentLines),
+    [canonicalDiffLines, hiddenSourceCommentLines],
   );
   const diffLines = useMemo(
     () => displayCanonicalDiffLines === undefined
@@ -138,10 +140,10 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       const visibleChangedLines = canonicalKinds === null
       ? codeView.changedLines ?? hookChangedLines
         : new Set(canonicalKinds.keys());
-      if (neutralizedSourceCommentLines.size === 0) return visibleChangedLines;
-      return new Set([...visibleChangedLines, ...neutralizedSourceCommentLines]);
+      if (hiddenSourceCommentLines.size === 0) return visibleChangedLines;
+      return new Set([...visibleChangedLines, ...hiddenSourceCommentLines]);
     },
-    [canonicalKinds, codeView.changedLines, hookChangedLines, neutralizedSourceCommentLines],
+    [canonicalKinds, codeView.changedLines, hiddenSourceCommentLines, hookChangedLines],
   );
   const rawCanonicalKinds = useMemo(
     () => rawDiffLines === undefined ? null : canonicalKindsWithinSlice(rawDiffLines, sourceSide),
@@ -214,6 +216,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     diffLines,
     changedLines,
     changedLineKinds,
+    hiddenSourceLines: hiddenSourceCommentLines,
     summary,
     existingComments,
     pendingComments,
@@ -303,6 +306,7 @@ export function SourceDiffBody({
           changedLineKinds={model.changedLineKinds}
           evidenceLines={evidenceLines}
           focusLines={focusLines}
+          hiddenSourceLines={model.hiddenSourceLines}
           commentableLines={model.commentableLines}
           onLineClick={model.commentableLines.size > 0 ? (line) => {
             // Pin synchronously. Waiting for the controlled composer render is late enough for a
@@ -458,7 +462,7 @@ function summarizeDiffLines(lines: readonly CodeDiffLine[]): SourceDiffSummary |
 
 const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
-const EMPTY_NEUTRALIZED_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_HIDDEN_SOURCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_FOCUS_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 const EMPTY_REMOVED_ROWS: ReadonlyMap<number, string[]> = new Map<number, string[]>();
