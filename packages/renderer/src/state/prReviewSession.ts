@@ -19,7 +19,11 @@ import type {
   SyntheticScenarioDescriptor,
 } from "@meridian/core";
 import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
-import type { GraphProjectionRequest, LoadedReviewProjection } from "../graph/graphProjectionClient";
+import type {
+  GraphProjectionEndpoints,
+  GraphProjectionRequest,
+  LoadedReviewProjection,
+} from "../graph/graphProjectionClient";
 import type { BlueprintState } from "./store";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
 
@@ -44,6 +48,7 @@ export interface PrReviewBaseline {
   projectionKey: string;
   projectionId: string;
   request: GraphProjectionRequest;
+  endpoints: GraphProjectionEndpoints;
   syntheticExecutionUrl: string | null;
   syntheticScenarios: SyntheticScenarioDescriptor[];
   syntheticExecutionTrust: SyntheticExecutionTrust | null;
@@ -74,6 +79,7 @@ export function swapToPreparedReviewProjection(
   prepared: LoadedReviewProjection,
   invalidateArtifactCaches: () => void,
   capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
+  headEndpoints: GraphProjectionEndpoints = conventionalProjectionEndpoints(prepared.head.graphId),
 ): void {
   const state = get();
   const baseline = state.prReviewBaseline ?? activeBaseline(state);
@@ -86,6 +92,7 @@ export function swapToPreparedReviewProjection(
     activeProjectionRequest: head.request,
     activeProjectionKey: prepared.key,
     activeProjectionId: prepared.projectionId,
+    activeProjectionEndpoints: headEndpoints,
     prReviewComparison: prepared.mergeBase,
     prReviewBaseline: baseline,
     prPreparedArtifactCurrent: true,
@@ -319,8 +326,8 @@ async function readPreparedSyntheticCapability(
   const trust = parsePreparedTrust(candidate.syntheticExecutionTrust);
   if (syntheticExecutionUrl === null) {
     if (trust !== null || scenarios.length > 0) invalidPreparedCapability("disabled execution metadata");
-  } else if (trust === null) {
-    invalidPreparedCapability("syntheticExecutionTrust");
+  } else if (trust === null || scenarios.length === 0) {
+    invalidPreparedCapability(trust === null ? "syntheticExecutionTrust" : "syntheticScenarios");
   }
   return { syntheticExecutionUrl, syntheticScenarios: scenarios, syntheticExecutionTrust: trust };
 }
@@ -369,6 +376,7 @@ function activeBaseline(state: BlueprintState): PrReviewBaseline {
     || state.activeProjectionRequest === null
     || state.activeProjectionKey === null
     || state.activeProjectionId === null
+    || state.activeProjectionEndpoints === null
   ) {
     throw new Error("cannot prepare a PR without an active graph projection identity");
   }
@@ -377,8 +385,17 @@ function activeBaseline(state: BlueprintState): PrReviewBaseline {
     request: state.activeProjectionRequest,
     projectionKey: state.activeProjectionKey,
     projectionId: state.activeProjectionId,
+    endpoints: state.activeProjectionEndpoints,
     syntheticExecutionUrl: state.syntheticExecutionUrl,
     syntheticScenarios: [...state.syntheticScenarios],
     syntheticExecutionTrust: state.syntheticExecutionTrust,
+  };
+}
+
+function conventionalProjectionEndpoints(graphId: string): GraphProjectionEndpoints {
+  const id = encodeURIComponent(graphId);
+  return {
+    manifestUrl: `/api/graph/manifest?id=${id}`,
+    projectionUrl: `/api/graph/projection?id=${id}`,
   };
 }

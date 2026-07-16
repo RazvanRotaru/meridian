@@ -42,6 +42,8 @@ export interface BootConfig {
   syntheticScenarios: SyntheticScenarioDescriptor[];
   /** Exact GitHub session source; null for local/plain-view artifacts. */
   githubSource: PrSessionSource | null;
+  /** Immutable v1 review handoff for a server-validated shared review URL; null otherwise. */
+  preparedReviewUrl: string | null;
   defaultEnv: null;
 }
 
@@ -63,7 +65,7 @@ export interface PrApiUrls {
   prepareUrl: string;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "graphSource" | "defaultEnv" | "githubSource" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+interface InjectedConfig extends Omit<BootConfig, "graphSource" | "defaultEnv" | "githubSource" | "preparedReviewUrl" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
   /** Every server-rendered session uses the current, strict transport contract. */
   traceUrl: unknown;
   telemetrySources: unknown;
@@ -75,6 +77,7 @@ interface InjectedConfig extends Omit<BootConfig, "graphSource" | "defaultEnv" |
   syntheticExecutionTrust: unknown;
   syntheticScenarios: unknown;
   githubSource: unknown;
+  preparedReviewUrl: unknown;
   defaultEnv: unknown;
 }
 
@@ -112,6 +115,7 @@ const DEV_FALLBACK: BootConfig = {
   syntheticExecutionTrust: null,
   syntheticScenarios: [],
   githubSource: null,
+  preparedReviewUrl: null,
   defaultEnv: null,
 };
 
@@ -146,6 +150,10 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
   const githubSource = parseGithubSource(injected.githubSource);
+  const preparedReviewUrl = parsePreparedReviewUrl(injected.preparedReviewUrl);
+  if (preparedReviewUrl !== null && githubSource === null) {
+    throw new Error("boot contract violation: preparedReviewUrl requires githubSource");
+  }
   const traceUrl = requiredNonEmptyString(injected.traceUrl, "traceUrl");
   const telemetrySources = normalizeTelemetrySources(injected.telemetrySources);
   const syntheticExecutionUrl = nonEmptyString(injected.syntheticExecutionUrl);
@@ -191,6 +199,7 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     syntheticExecutionTrust,
     syntheticScenarios,
     githubSource,
+    preparedReviewUrl,
     defaultEnv: null,
   };
 }
@@ -206,11 +215,33 @@ function requireCurrentInjectedFields(injected: InjectedConfig): void {
     "syntheticExecutionTrust",
     "syntheticScenarios",
     "githubSource",
+    "preparedReviewUrl",
   ] as const) {
     if (!Object.prototype.hasOwnProperty.call(injected, field)) {
       throw new Error(`boot contract violation: missing current field ${field}`);
     }
   }
+}
+
+function parsePreparedReviewUrl(value: unknown): string | null {
+  if (value === null) return null;
+  const raw = requiredNonEmptyString(value, "preparedReviewUrl");
+  if (!raw.startsWith("/")) {
+    throw new Error("boot contract violation: preparedReviewUrl must be same-origin");
+  }
+  const parsed = new URL(raw, "http://meridian.local");
+  const keys = [...parsed.searchParams.keys()];
+  if (
+    parsed.origin !== "http://meridian.local"
+    || parsed.pathname !== "/api/pr/prepared"
+    || parsed.hash.length > 0
+    || keys.length !== 1
+    || keys[0] !== "id"
+    || (parsed.searchParams.get("id")?.length ?? 0) === 0
+  ) {
+    throw new Error("boot contract violation: preparedReviewUrl is malformed");
+  }
+  return `${parsed.pathname}${parsed.search}`;
 }
 
 function nonEmptyString(value: unknown): string | null {

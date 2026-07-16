@@ -17,6 +17,7 @@ import type {
   LoadedReviewProjection,
 } from "../graph/graphProjectionClient";
 import { restorePrReviewBaseline, swapToPreparedReviewProjection } from "./prReviewSession";
+import { RecentAllocationBudget } from "./recentViewProjectionCache";
 import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
 import { StoreProvider } from "./StoreContext";
 import type { PrChangedFile, PrGitHubComment, PrSummary } from "./prTypes";
@@ -168,8 +169,9 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
     prepareUrl: "/api/pr/prepare",
     ...extra,
   });
-  if (extra?.projectionDataSource === undefined) {
-    testProjectionSources.set(store, projectionDataSource);
+  const activeProjectionSource = extra?.projectionDataSource ?? projectionDataSource;
+  if (activeProjectionSource instanceof TestProjectionSource) {
+    testProjectionSources.set(store, activeProjectionSource);
   }
   return store;
 }
@@ -528,21 +530,70 @@ describe("PR store slice", () => {
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     store.getState().toggleReviewDiffOnly();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    store.getState().setMinimalView("codebase");
+    await store.getState().setMinimalView("codebase");
+
+    // The hidden extracted scene is an evictable allocation, never a second full graph pinned in
+    // Zustand while Codebase is current.
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
 
     // Codebase keeps structural siblings visible even though the Graph projection hides them.
     store.getState().selectModule(UNCHANGED_METHOD_ID);
-    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    store.getState().buildMinimalGraph();
+    await store.getState().buildMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
     expect(store.getState().minimalSeedIds).toEqual([UNCHANGED_METHOD_ID]);
     expect(store.getState().reviewDiffOnly).toBe(false);
     expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: UNCHANGED_METHOD_ID }));
 
-    store.getState().backMinimalGraph();
+    await store.getState().backMinimalGraph();
     expect(store.getState().reviewDiffOnly).toBe(true);
     expect(store.getState().minimalView).toBe("codebase");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
+  });
+
+  it("keeps deep Back coordinates after older rendered scenes are evicted", async () => {
+    const budget = new RecentAllocationBudget({
+      maxRecentEntries: 1,
+      maxRecentBytes: 48 * 1024 * 1024,
+    });
+    const store = freshStore({ recentAllocationBudget: budget });
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
+    });
+    await enterPreparedReview(store);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().selectModule(METHOD_ID);
+    await store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().selectModule(METHOD_ID);
+    await store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalGraphHistory).toHaveLength(2);
+    expect(budget.inactiveEntryCount).toBe(1);
+
+    const realRelayout = store.getState().minimalRelayout;
+    const relayout = vi.fn((activity?: { label: string; detail?: string }) => realRelayout(activity));
+    store.setState({ minimalRelayout: relayout });
+
+    // The newest parent is the one retained scene: Back is an exact cache hit with no ELK pass.
+    await store.getState().backMinimalGraph();
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(relayout).not.toHaveBeenCalled();
+
+    // The older scene was evicted, but its lightweight coordinate remains and reconstructs once.
+    await store.getState().backMinimalGraph();
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(relayout).toHaveBeenCalledTimes(1);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: FILE_ID }));
   });
 
   it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
@@ -940,9 +991,22 @@ describe("PR store slice", () => {
     expect(await store.getState().submitReview("REQUEST_CHANGES", "  Please fix the blocker.  ")).toBe(true);
 
     expect(submissions).toEqual([
-      { number: 7, event: "APPROVE", comments: [], fileComments: [] },
-      { number: 7, event: "COMMENT", comments: [{ path, line: 1, body: "Inline note" }], fileComments: [] },
-      { number: 7, event: "REQUEST_CHANGES", comments: [], fileComments: [], body: "Please fix the blocker." },
+      { number: 7, event: "APPROVE", comments: [], fileComments: [], commitId: INITIAL_HEAD_SHA },
+      {
+        number: 7,
+        event: "COMMENT",
+        comments: [{ path, line: 1, body: "Inline note" }],
+        fileComments: [],
+        commitId: INITIAL_HEAD_SHA,
+      },
+      {
+        number: 7,
+        event: "REQUEST_CHANGES",
+        comments: [],
+        fileComments: [],
+        body: "Please fix the blocker.",
+        commitId: INITIAL_HEAD_SHA,
+      },
     ]);
   });
 
@@ -976,6 +1040,7 @@ describe("PR store slice", () => {
       event: "COMMENT",
       comments: [{ path, line: 1, body: "Valid inline draft" }],
       fileComments: [{ path, label: "L11", body: "Outside diff context" }],
+      commitId: INITIAL_HEAD_SHA,
     });
     expect(store.getState().reviewComments).toEqual([]);
     expect(store.getState().reviewSubmitStatus).toBe("idle");
@@ -2321,6 +2386,10 @@ const BASE_PROJECTION_REQUEST: GraphProjectionRequest = {
 
 class TestProjectionSource implements GraphProjectionDataSource {
   activeKey: string | undefined;
+  readonly activationCalls: Array<{
+    request: GraphProjectionRequest;
+    options: GraphProjectionActivateOptions;
+  }> = [];
   private readonly cached = new Map<string, LoadedGraphProjection>();
   private readonly cachedReviews = new Map<string, LoadedReviewProjection>();
 
@@ -2340,6 +2409,12 @@ class TestProjectionSource implements GraphProjectionDataSource {
     this.activeKey = projection.key;
   }
 
+  clearCache(): void {
+    this.cached.clear();
+    this.cachedReviews.clear();
+    this.activeKey = undefined;
+  }
+
   async loadManifest(options: GraphProjectionActivateOptions = {}): Promise<GraphProjectionManifest> {
     return testManifest(graphIdFromOptions(options));
   }
@@ -2348,6 +2423,7 @@ class TestProjectionSource implements GraphProjectionDataSource {
     request: GraphProjectionRequest,
     options: GraphProjectionActivateOptions = {},
   ): Promise<LoadedGraphProjection> {
+    this.activationCalls.push({ request, options });
     options.signal?.throwIfAborted();
     const graphId = graphIdFromOptions(options);
     const artifact = graphId === "artifact-1"
@@ -2478,10 +2554,11 @@ function projectionOverrides(
 function routedFetch(options?: { graphId?: string; headSha?: string }) {
   const graphId = options?.graphId ?? "pr-head-1";
   const headSha = options?.headSha ?? INITIAL_HEAD_SHA;
-  return vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+  return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = input.toString();
     if (url.includes("/api/pr/prepare")) {
-      return Promise.resolve(ndjsonResponse(prepareLines(graphId, headSha)));
+      const request = JSON.parse(String(init?.body)) as { prNumber?: number };
+      return Promise.resolve(ndjsonResponse(prepareLines(graphId, headSha, request.prNumber ?? 7)));
     }
     if (url.includes("/api/meta")) {
       return Promise.resolve(Response.json(preparedSyntheticMeta(graphId, headSha)));
@@ -2516,7 +2593,14 @@ function preparedRefreshFetch(options: { prepareError?: string; invalidMeta?: bo
     }
     if (url.includes("/api/meta")) {
       return Promise.resolve(Response.json(options.meta ?? (options.invalidMeta
-        ? { syntheticExecutionUrl: "/api/synthetic-executions", syntheticScenarios: [], syntheticExecutionTrust: { mode: "sandboxed-pr" } }
+        ? {
+            syntheticExecutionUrl: "/api/synthetic-executions",
+            syntheticScenarios: [],
+            syntheticExecutionTrust: {
+              mode: "sandboxed-pr",
+              provenance: { repository: "o/r", headSha: REFRESHED_HEAD_SHA },
+            },
+          }
         : preparedSyntheticMeta(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA))));
     }
     return Promise.reject(new Error(`Unexpected request: ${url}`));
@@ -2539,21 +2623,32 @@ function prepareProgress(stage: "resolve" | "git" | "extract-head" | "extract-me
   return { version: 1, type: "progress", stage, elapsedMs };
 }
 
-function prepareLines(graphId: string, headSha: string): object[] {
+function prepareLines(graphId: string, headSha: string, prNumber = 7): object[] {
   return [
     prepareProgress("resolve", 0),
     prepareProgress("git", 1),
     prepareProgress("extract-head", 2),
     prepareProgress("extract-merge-base", 3),
     prepareProgress("publish", 4),
-    prepareDone(graphId, headSha),
+    prepareDone(graphId, headSha, prNumber),
   ];
 }
 
-function prepareDone(graphId: string, headSha = INITIAL_HEAD_SHA) {
+function prepareDone(graphId: string, headSha = INITIAL_HEAD_SHA, prNumber = 7) {
   return {
     version: 1,
     type: "done",
+    ...prepareResult(graphId, headSha),
+    handoff: {
+      id: `handoff-${graphId}`,
+      url: `/api/pr/prepared?id=handoff-${graphId}`,
+      viewUrl: `/view?id=${graphId}&view=modules&prn=${prNumber}&rev=1&prepared=handoff-${graphId}`,
+    },
+  };
+}
+
+function prepareResult(graphId: string, headSha = INITIAL_HEAD_SHA) {
+  return {
     headSha,
     baseSha: "b".repeat(40),
     mergeBaseSha: "c".repeat(40),
@@ -2649,7 +2744,7 @@ async function enterPreparedReview(store: ReturnType<typeof freshStore>): Promis
         ...(file.status === "renamed" ? { previousPath: file.previousPath } : {}),
       }));
       return Promise.resolve(ndjsonResponse([{
-        ...prepareDone(graphId, headSha),
+        ...prepareDone(graphId, headSha, store.getState().prSelected ?? 7),
         changedFiles,
       }]));
     }
@@ -2724,6 +2819,85 @@ async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
 }
 
 describe("PR head preparation (prepareHeadGraph)", () => {
+  it("starts direct preparation from the selected summary while file detail hydrates", async () => {
+    let releaseFiles!: () => void;
+    let filesSettled = false;
+    const filesResponse = new Promise<Response>((resolve) => {
+      releaseFiles = () => {
+        filesSettled = true;
+        resolve(Response.json({
+          files: [
+            {
+              path: "src/a.ts",
+              status: "removed",
+              additions: 4,
+              deletions: 3,
+              hunks: [{ start: 20, end: 21 }],
+              contextHunks: [{ start: 18, end: 23 }],
+              diffComplete: true,
+            },
+            { path: "src/late-extra.ts", status: "added", additions: 1, deletions: 0 },
+          ],
+          truncated: true,
+          totalFiles: 2,
+          outsideCount: 0,
+          suggestedSubdir: "",
+        }));
+      };
+    });
+    let prepareStarted!: () => void;
+    const prepareRequest = new Promise<void>((resolve) => { prepareStarted = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/files")) return filesResponse;
+      if (url.includes("/api/pr/prepare")) {
+        prepareStarted();
+        return Promise.resolve(ndjsonResponse(prepareLines("pr-summary-first", INITIAL_HEAD_SHA)));
+      }
+      if (url.includes("/api/meta")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-summary-first", INITIAL_HEAD_SHA)));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 0 },
+          hasMore: false,
+        }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(PREPARE_DEPS);
+    store.setState({
+      ...headSelectedPrState(7),
+      prFiles: null,
+      prsLoading: true,
+    });
+
+    const review = store.getState().reviewPrInGraph();
+    await prepareRequest;
+    expect(filesSettled).toBe(false);
+    await review;
+
+    expect(filesSettled).toBe(false);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().prFiles?.map((file) => [file.path, file.status])).toEqual([
+      ["src/a.ts", "modified"],
+    ]);
+
+    releaseFiles();
+    await vi.waitFor(() => expect(store.getState().prsLoading).toBe(false));
+    // Late detail enriches the canonical prepare inventory: it cannot add an unprepared path or
+    // replace the prepare status with GitHub's conflicting/truncated response.
+    expect(store.getState().prFiles?.map((file) => [file.path, file.status])).toEqual([
+      ["src/a.ts", "modified"],
+    ]);
+    expect(store.getState().prFiles?.[0]?.contextHunks).toEqual([{ start: 18, end: 23 }]);
+  });
+
   it("keeps the PRs view until the stream and prepared-graph swap complete", async () => {
     let finishPrepare!: () => void;
     const prepareStream = new ReadableStream<Uint8Array>({
@@ -2789,6 +2963,123 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedHead?.graphId).toBe("pr-gated");
+  });
+
+  it("keeps the review entry promise pending until the visible review layout completes", async () => {
+    vi.stubGlobal("fetch", routedFetch());
+    const store = freshStore(PREPARE_DEPS);
+    store.setState(selectedPrState(7));
+    let releaseLayout!: () => void;
+    const layoutGate = new Promise<void>((resolve) => { releaseLayout = resolve; });
+    const minimalRelayout = vi.fn(() => layoutGate);
+    store.setState({ minimalRelayout });
+
+    let completed = false;
+    const review = store.getState().reviewPrInGraph().then(() => { completed = true; });
+    await vi.waitFor(() => {
+      expect(store.getState().viewMode).toBe("modules");
+      expect(minimalRelayout).toHaveBeenCalledWith({ label: "Preparing review graph…" });
+    });
+    await Promise.resolve();
+    expect(completed).toBe(false);
+
+    releaseLayout();
+    await review;
+    expect(completed).toBe(true);
+  });
+
+  it("restores a strict prepared handoff without POSTing or waiting for GitHub file detail", async () => {
+    const summary = { ...pr(7), headSha: INITIAL_HEAD_SHA };
+    let releaseFiles!: () => void;
+    const filesResponse = new Promise<Response>((resolve) => {
+      releaseFiles = () => resolve(Response.json({
+        files: [{
+          path: "src/a.ts",
+          status: "modified",
+          additions: 2,
+          deletions: 1,
+          hunks: [{ start: 1, end: 1 }],
+        }],
+        truncated: false,
+      }));
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepared")) {
+        return Promise.resolve(Response.json({
+          version: 1,
+          request: { owner: "o", repo: "r", prNumber: 7, baseRef: "main", headRef: "feature" },
+          ...prepareResult("artifact-1", INITIAL_HEAD_SHA),
+        }));
+      }
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: summary }));
+      if (url.includes("/api/prs/files")) return filesResponse;
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 } }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null }));
+      }
+      if (url.includes("/api/meta?id=artifact-1")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("artifact-1", INITIAL_HEAD_SHA)));
+      }
+      if (url.includes("/api/pr/prepare") || init?.method === "POST") {
+        return Promise.reject(new Error("prepared restore must not POST"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ preparedReviewUrl: "/api/pr/prepared?id=opaque" });
+    store.setState({ viewMode: "prs" });
+
+    await expect(store.getState().restorePreparedPrReview(7)).resolves.toBe(true);
+
+    expect(store.getState()).toMatchObject({
+      viewMode: "modules",
+      prReviewed: 7,
+      prPreparedHeadSha: INITIAL_HEAD_SHA,
+      prReviewStatus: "idle",
+    });
+    expect(store.getState().prFiles).toEqual([
+      expect.objectContaining({ path: "src/a.ts", status: "modified" }),
+    ]);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+
+    releaseFiles();
+    await vi.waitFor(() => expect(store.getState().prFiles?.[0]?.additions).toBe(2));
+  });
+
+  it("fails a mismatched prepared handoff closed without falling through to POST", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepared")) {
+        return Promise.resolve(Response.json({
+          version: 1,
+          request: { owner: "other", repo: "r", prNumber: 7, baseRef: "main", headRef: "feature" },
+          ...prepareResult("artifact-1", INITIAL_HEAD_SHA),
+        }));
+      }
+      if (url.includes("/api/prs/one")) {
+        return Promise.resolve(Response.json({ pr: { ...pr(7), headSha: INITIAL_HEAD_SHA } }));
+      }
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json({ files: [], truncated: false }));
+      if (url.includes("/api/prs/comments")) return Promise.resolve(Response.json({ comments: [], reviews: {} }));
+      if (url.includes("/api/pr/prepare") || init?.method === "POST") {
+        return Promise.reject(new Error("must not POST after handoff failure"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ preparedReviewUrl: "/api/pr/prepared?id=opaque" });
+    store.setState({ viewMode: "prs" });
+
+    await expect(store.getState().restorePreparedPrReview(7)).resolves.toBe(true);
+
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBeNull();
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("does not match");
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
   it("does not expose the prepared graph before its sandbox capability arrives", async () => {
@@ -3035,6 +3326,29 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       baseLine: 4,
       sourceSide: "base",
     });
+
+    // Context navigation reloads a bounded pure revision pair, then recreates (and later recreates
+    // again on Back) the presentation-only base tombstones. It must never send those base ids to the
+    // HEAD projection endpoint or silently degrade the review to a HEAD-only graph.
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const source = testProjectionSources.get(store)!;
+    const extractedPairKey = store.getState().activeProjectionKey!;
+    source.activationCalls.length = 0;
+    store.getState().setMinimalView("codebase");
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(extractedPairKey));
+    expect(store.getState().index.nodesById.has(deletedFunctionId)).toBe(true);
+    expect(store.getState().reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
+    const headContextRequest = source.activationCalls
+      .find((call) => graphIdFromOptions(call.options) === "pr-head-canonical")!.request;
+    expect(headContextRequest.expandedIds).not.toContain(deletedFileId);
+    expect(headContextRequest.expandedIds).not.toContain(deletedFunctionId);
+
+    source.activationCalls.length = 0;
+    store.getState().setMinimalView("graph");
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).toBe(extractedPairKey));
+    expect(store.getState().index.nodesById.has(deletedFunctionId)).toBe(true);
+    expect(store.getState().reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
+    expect(source.activationCalls).toEqual([]);
   });
 
   it("evaluates the zero-match guard against the prepared graph", async () => {
@@ -3541,7 +3855,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().syntheticScenarios).toEqual(before.syntheticScenarios);
     expect(store.getState().syntheticExecutionTrust).toEqual(before.syntheticExecutionTrust);
     expect(store.getState().prReviewStatus).toBe("error");
-    expect(store.getState().prPrepareError).toContain("syntheticExecutionTrust");
+    expect(store.getState().prPrepareError).toContain("syntheticScenarios");
   });
 
   it("keeps the prior prepared graph and capability when refreshed sandbox provenance is stale", async () => {
@@ -3732,6 +4046,178 @@ describe("PR review artifact swap and restore", () => {
     const { store } = await swappedReviewStore();
     await store.getState().prepareHeadGraph();
     expect(store.getState().prReviewBaseline?.graphId).toBe("artifact-1");
+  });
+
+  it("loads bounded codebase context as a paired projection and restores the extracted pair from cache", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const extractedPairKey = store.getState().activeProjectionKey!;
+    const extractedHeadRequest = store.getState().activeProjectionRequest!;
+    const extractedBaseRequest = store.getState().prReviewComparison!.request;
+    store.getState().index.changedStatus.set(METHOD_ID, "added");
+    source.activationCalls.length = 0;
+
+    store.getState().setMinimalView("codebase");
+
+    expect(store.getState().minimalView).toBe("codebase");
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(extractedPairKey));
+    const contextHead = source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")!;
+    const contextBase = source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1-base")!;
+    expect(contextHead.request).toMatchObject({
+      view: "review",
+      filePaths: extractedHeadRequest.filePaths,
+      expandedIds: expect.arrayContaining([FILE_ID]),
+    });
+    expect(contextBase.request).toMatchObject({
+      view: "review",
+      filePaths: extractedBaseRequest.filePaths,
+      focusIds: [],
+      extraIds: [],
+    });
+    expect(store.getState().index.changedStatus.get(METHOD_ID)).toBe("added");
+
+    const firstContextPairKey = store.getState().activeProjectionKey;
+    source.activationCalls.length = 0;
+    store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, true);
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(firstContextPairKey));
+    expect(source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")?.request.expandedIds)
+      .toContain(CLASS_ID);
+
+    const expandedPairKey = store.getState().activeProjectionKey;
+    source.activationCalls.length = 0;
+    store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, false);
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(expandedPairKey));
+    expect(source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")?.request.expandedIds)
+      .not.toContain(CLASS_ID);
+
+    source.activationCalls.length = 0;
+    store.getState().setMinimalView("graph");
+    await vi.waitFor(() => expect(store.getState().activeProjectionKey).toBe(extractedPairKey));
+
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().activeProjectionRequest).toEqual(extractedHeadRequest);
+    expect(store.getState().prReviewComparison?.request).toEqual(extractedBaseRequest);
+    expect(store.getState().index.changedStatus.get(METHOD_ID)).toBe("added");
+    expect(source.activationCalls).toEqual([]);
+  });
+
+  it("lets a rapid Codebase collapse abort and supersede a slower expansion projection", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    await store.getState().setMinimalView("codebase");
+
+    let releaseExpansion!: (artifact: GraphArtifact) => void;
+    const slowExpansion = new Promise<GraphArtifact>((resolve) => { releaseExpansion = resolve; });
+    let delayNextHead = true;
+    source.setPreparedResolver((graphId) => {
+      if (graphId.endsWith("-base")) return ARTIFACT;
+      if (delayNextHead) {
+        delayNextHead = false;
+        return slowExpansion;
+      }
+      return HEAD_ARTIFACT;
+    });
+    source.activationCalls.length = 0;
+
+    store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, true);
+    await vi.waitFor(() => expect(
+      source.activationCalls.some((call) =>
+        graphIdFromOptions(call.options) === "pr-head-1"
+        && call.request.expandedIds.includes(CLASS_ID)),
+    ).toBe(true));
+    store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, false);
+    await vi.waitFor(() => expect(
+      source.activationCalls.filter((call) => graphIdFromOptions(call.options) === "pr-head-1").length,
+    ).toBeGreaterThanOrEqual(2));
+    await vi.waitFor(() => expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID));
+
+    releaseExpansion(HEAD_ARTIFACT);
+    await Promise.resolve();
+    expect(store.getState().minimalCodebaseExpansionOverrides.get(CLASS_ID)).toBe(false);
+    expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID);
+  });
+
+  it("rejects an old Codebase pair when the same PR receives new revision descriptors", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const extractedPairKey = store.getState().activeProjectionKey;
+
+    let releaseContext!: (artifact: GraphArtifact) => void;
+    const slowContext = new Promise<GraphArtifact>((resolve) => { releaseContext = resolve; });
+    let delayNextHead = true;
+    source.setPreparedResolver((graphId) => {
+      if (graphId.endsWith("-base")) return ARTIFACT;
+      if (delayNextHead) {
+        delayNextHead = false;
+        return slowContext;
+      }
+      return HEAD_ARTIFACT;
+    });
+    source.activationCalls.length = 0;
+
+    const contextNavigation = store.getState().setMinimalView("codebase");
+    await vi.waitFor(() => expect(source.activationCalls.length).toBeGreaterThan(0));
+    store.setState({
+      prPreparedHead: preparedDescriptor("pr-head-2"),
+      prPreparedMergeBase: preparedDescriptor("pr-head-2-base"),
+    });
+    releaseContext(HEAD_ARTIFACT);
+    await contextNavigation;
+
+    expect(store.getState().activeProjectionKey).toBe(extractedPairKey);
+    expect(store.getState().activeProjectionGraphId).toBe("pr-head-1");
+    expect(store.getState().minimalView).toBe("graph");
+    expect(store.getState().minimalRfNodes.length).toBeGreaterThan(0);
+  });
+
+  it("reloads an evicted or oversized baseline by its exact identity before soft-closing", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    const baseline = store.getState().prReviewBaseline!;
+    expect(baseline.request.view).toBe("modules");
+    source.clearCache();
+
+    const close = store.getState().closeMinimalGraph();
+    // A cache miss leaves the review overlay and HEAD identity intact while the exact baseline read
+    // is pending; it never exposes a plain Map backed by HEAD.
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    await close;
+
+    const reload = source.activationCalls.find((call) => call.request.view === "modules")!;
+    expect(reload.request).toEqual(baseline.request);
+    expect(reload.request.view).toBe("modules");
+    expect(reload.options.endpoints).toEqual(baseline.endpoints);
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(10);
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(false);
+    expect(store.getState().activeProjectionGraphId).toBe(baseline.graphId);
+    expect(store.getState().activeProjectionRequest?.view).toBe("modules");
+    expect(store.getState().activeProjectionEndpoints).toEqual(baseline.endpoints);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().prReviewBaseline).toBe(baseline);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
+  it("defers a lens transition until an evicted review baseline is restored", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    source.clearCache();
+
+    store.getState().setViewMode("prs");
+
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    await vi.waitFor(() => expect(store.getState().viewMode).toBe("prs"));
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().activeProjectionRequest?.view).toBe("modules");
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().minimalSeedIds).toEqual([]);
   });
 
   it("soft close keeps the prepared id but routes source to the prior graph until resume re-swaps", async () => {

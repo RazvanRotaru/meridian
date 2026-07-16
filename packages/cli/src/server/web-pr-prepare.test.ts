@@ -29,6 +29,11 @@ import { SessionStore } from "./session";
 import { createGitHubClient } from "./github";
 import type { Context } from "./web-server";
 import { WebError } from "./web-error";
+import {
+  MAX_PREPARED_REVIEW_HANDOFF_BYTES,
+  PreparedReviewHandoffStore,
+  type PreparedReviewHandoffDocument,
+} from "./prepared-review-handoff-store";
 
 vi.mock("./git-exec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./git-exec")>();
@@ -378,6 +383,29 @@ describe("POST /api/pr/prepare transport", () => {
       });
       expect(ctx.inspectionSnapshots.resolveDescriptor(side.graphId as string)).not.toBeNull();
     }
+    const handoff = records[1].handoff as Record<string, string>;
+    expect(handoff).toEqual({
+      id: expect.stringMatching(/^prh-v1-[0-9a-f]{64}$/),
+      url: `/api/pr/prepared?id=${handoff.id}`,
+      viewUrl: expect.stringMatching(
+        new RegExp(`^/view\\?id=pr-head-.+&view=modules&prn=41&rev=1&prepared=${handoff.id}$`),
+      ),
+    });
+    const restarted = new PreparedReviewHandoffStore({ cacheRoot });
+    expect(restarted.resolve(handoff.id)?.document).toMatchObject({
+      version: 1,
+      request: {
+        owner: "org",
+        repo: "repo",
+        prNumber: 41,
+        baseRef: "main",
+        headRef: "feature/x",
+      },
+      headSha: HEAD_ONE,
+      baseSha: BASE_ONE,
+      mergeBaseSha: MERGE_BASE,
+      changedFiles: MANIFEST,
+    });
   });
 
   it("rejects the removed session id field at the strict request boundary", async () => {
@@ -425,23 +453,40 @@ describe("POST /api/pr/prepare transport", () => {
       .toBe((second.mergeBase as Record<string, unknown>).graphId);
   });
 
-  it("emits one bounded error record instead of an oversized done line", async () => {
+  it("checks the exact terminal line before publishing a near-limit handoff", async () => {
     const prepared = standalonePreparation();
-    prepared.changedFiles = Array.from({ length: 30_000 }, (_, index) => ({
-      path: `src/${index}-${"x".repeat(80)}.ts`,
-      status: "modified" as const,
-    }));
     const ctx = handlerContext(new InspectionScheduler({ concurrency: 1, execute: () => prepared }));
-    const captured = capturedResponse();
-    await handlePrPrepare(ctx, requestWith({
+    const requestBody = {
       owner: "org", repo: "repo", prNumber: 41, baseRef: "main", headRef: "feature/x",
-    }), captured.response);
+    };
+    const initial = capturedResponse();
+    await handlePrPrepare(ctx, requestWith(requestBody), initial.response);
+    const initialDone = initial.lines().find((record) => record.type === "done")!;
+    const initialId = (initialDone.handoff as { id: string }).id;
+    const initialDocument = ctx.preparedReviewHandoffs.resolve(initialId)!.document;
+    const { version: _version, ...handoffInput } = initialDocument;
+    const candidate = candidateWithExactTerminalBytes(
+      ctx.preparedReviewHandoffs,
+      handoffInput,
+      MAX_PREPARED_REVIEW_HANDOFF_BYTES,
+    );
+    expect(Buffer.byteLength(candidate.serialized)).toBeLessThanOrEqual(MAX_PREPARED_REVIEW_HANDOFF_BYTES);
+    expect(Buffer.byteLength(terminalJson(candidate))).toBe(MAX_PREPARED_REVIEW_HANDOFF_BYTES);
+    expect(Buffer.byteLength(`${terminalJson(candidate)}\n`)).toBe(MAX_PREPARED_REVIEW_HANDOFF_BYTES + 1);
+    prepared.warnings = candidate.document.warnings;
+
+    const captured = capturedResponse();
+    await handlePrPrepare(ctx, requestWith(requestBody), captured.response);
 
     expect(captured.lines()).toEqual([{
       version: 1,
       type: "error",
       message: "PR preparation result exceeds the 2 MiB NDJSON line limit",
     }]);
+    expect(ctx.preparedReviewHandoffs.resolve(candidate.id)).toBeNull();
+    const retained = ctx.preparedReviewHandoffs.resolve(initialId);
+    expect(retained?.document.warnings).toEqual([]);
+    expect(retained?.size).toBeLessThan(MAX_PREPARED_REVIEW_HANDOFF_BYTES);
   });
 });
 
@@ -637,6 +682,7 @@ function handlerContext(scheduler: Context["prInspectionScheduler"]): Context {
   return {
     prInspectionScheduler: scheduler,
     inspectionSnapshots: new InspectionSnapshotStore({ cacheRoot }),
+    preparedReviewHandoffs: new PreparedReviewHandoffStore({ cacheRoot }),
     repositoryMirrors: {} as RepositoryMirrorStore,
     runExtraction: async () => { throw new Error("unused"); },
     cacheRoot,
@@ -676,6 +722,51 @@ function capturedResponse() {
     contentType: () => contentType,
     lines: () => body.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as Record<string, unknown>),
   };
+}
+
+function candidateWithExactTerminalBytes(
+  store: PreparedReviewHandoffStore,
+  input: Omit<PreparedReviewHandoffDocument, "version">,
+  targetBytes: number,
+) {
+  const prefix = Array.from({ length: 31 }, () => "x".repeat(64 * 1024));
+  let low = 0;
+  let high = 64 * 1024;
+  let candidate = store.prepare({ ...input, warnings: [...prefix, ""] });
+  while (low <= high) {
+    const middle = Math.floor((low + high) / 2);
+    try {
+      const next = store.prepare({ ...input, warnings: [...prefix, "x".repeat(middle)] });
+      const bytes = Buffer.byteLength(terminalJson(next));
+      if (bytes <= targetBytes) {
+        candidate = next;
+        low = middle + 1;
+      } else {
+        high = middle - 1;
+      }
+    } catch {
+      high = middle - 1;
+    }
+  }
+  expect(Buffer.byteLength(terminalJson(candidate))).toBe(targetBytes);
+  return candidate;
+}
+
+function terminalJson(candidate: ReturnType<PreparedReviewHandoffStore["prepare"]>): string {
+  return JSON.stringify({
+    version: 1,
+    type: "done",
+    headSha: candidate.document.headSha,
+    baseSha: candidate.document.baseSha,
+    mergeBaseSha: candidate.document.mergeBaseSha,
+    changedFiles: candidate.document.changedFiles,
+    head: candidate.document.head,
+    mergeBase: candidate.document.mergeBase,
+    cache: candidate.document.cache,
+    timings: candidate.document.timings,
+    warnings: candidate.document.warnings,
+    handoff: candidate.reference,
+  });
 }
 
 function deferred<T>() {

@@ -10,6 +10,8 @@
 import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex, type GraphIndex } from "./graphIndex";
 import {
+  DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
+  type RecentAllocationBudget,
   RecentViewProjectionCache,
   type RecentViewProjectionCacheLimits,
 } from "../state/recentViewProjectionCache";
@@ -19,6 +21,7 @@ const SUPPORTED_SCHEMA_MAJOR = 1;
 const PROJECTION_TRANSPORT_VERSION = 2;
 const DEFAULT_RESIDENT_EXPANSION_FACTOR = 3;
 const MAX_MANIFEST_CACHE_ENTRIES = 16;
+const MAX_IN_FLIGHT_MANIFESTS = 16;
 const MAX_IN_FLIGHT_PROJECTIONS = 32;
 const MAX_FOCUS_IDS = 32;
 const MAX_EXPANDED_IDS = 512;
@@ -31,10 +34,6 @@ const DEFAULT_MAX_NODES = 5_000;
 const DEFAULT_MAX_EDGES = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
-const DEFAULT_RECENT_LIMITS: RecentViewProjectionCacheLimits = {
-  maxRecentEntries: 3,
-  maxRecentBytes: 48 * 1024 * 1024,
-};
 
 export type GraphProjectionView =
   | "modules"
@@ -133,32 +132,44 @@ export interface GraphProjectionClientOptions {
   /** Multiplier from serialized response bytes to decoded artifact + index heap estimate. */
   residentExpansionFactor?: number;
   recentCache?: Partial<RecentViewProjectionCacheLimits>;
+  /** Optional browser-wide coordinator shared with decoded scene/navigation caches. */
+  recentBudget?: RecentAllocationBudget;
 }
 
 export class GraphProjectionClient implements GraphProjectionDataSource {
   private readonly fetchImpl: typeof fetch;
   private readonly residentExpansionFactor: number;
   private readonly cache: RecentViewProjectionCache<string, CachedProjection>;
-  private readonly manifests = new Map<string, Promise<GraphProjectionManifest>>();
+  /** Settled manifests are a small LRU; live reads remain separately bounded and cancellable. */
+  private readonly manifests = new Map<string, GraphProjectionManifest>();
+  private readonly inFlightManifests = new Map<string, SharedProjectionFlight<GraphProjectionManifest>>();
   /** Single and composite reads share side flights, so a concurrent HEAD-only + review-pair read
    * decodes/indexes that HEAD exactly once. Each flight aborts only after its final subscriber. */
   private readonly inFlightSides = new Map<string, SharedProjectionFlight<LoadedGraphProjection>>();
   private readonly inFlightReviews = new Map<string, SharedProjectionFlight<LoadedReviewProjection>>();
+  /** String-only aliases keep a cached review pair as the sole owner of both decoded sides. */
+  private readonly reviewSideAliases = new Map<string, ReviewSideAlias>();
 
   constructor(
     private readonly manifestUrl: string,
     private readonly projectionUrl: string,
     options: GraphProjectionClientOptions = {},
   ) {
-    this.fetchImpl = options.fetch ?? fetch;
+    // Browser-native fetch performs a Web IDL receiver check. Keeping it as an object field and
+    // calling `this.fetchImpl(...)` would otherwise supply the GraphProjectionClient as `this`,
+    // which Chromium rejects with "Illegal invocation". Injected test/custom fetches retain their
+    // own call contract; only the native global needs binding.
+    this.fetchImpl = options.fetch ?? globalThis.fetch.bind(globalThis);
     this.residentExpansionFactor = positiveFinite(
       options.residentExpansionFactor ?? DEFAULT_RESIDENT_EXPANSION_FACTOR,
       "residentExpansionFactor",
     );
     this.cache = new RecentViewProjectionCache({
-      maxRecentEntries: options.recentCache?.maxRecentEntries ?? DEFAULT_RECENT_LIMITS.maxRecentEntries,
-      maxRecentBytes: options.recentCache?.maxRecentBytes ?? DEFAULT_RECENT_LIMITS.maxRecentBytes,
-    });
+      maxRecentEntries: options.recentCache?.maxRecentEntries
+        ?? DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS.maxRecentEntries,
+      maxRecentBytes: options.recentCache?.maxRecentBytes
+        ?? DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS.maxRecentBytes,
+    }, options.recentBudget);
   }
 
   get activeKey(): string | undefined {
@@ -167,25 +178,28 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
 
   async loadManifest(options: GraphProjectionActivateOptions = {}): Promise<GraphProjectionManifest> {
     const url = options.endpoints?.manifestUrl ?? this.manifestUrl;
-    let pending = this.manifests.get(url);
-    if (pending === undefined) {
-      // The fetch is shared. Each subscriber can abandon only its own wait; one canceled caller
-      // must never abort a manifest still needed by another navigation.
-      pending = fetchManifest(this.fetchImpl, url);
-      this.manifests.set(url, pending);
-      evictOldest(this.manifests, MAX_MANIFEST_CACHE_ENTRIES);
-      void pending.catch(() => {
-        if (this.manifests.get(url) === pending) this.manifests.delete(url);
-      });
-    } else {
+    throwIfAborted(options.signal);
+    const cached = this.manifests.get(url);
+    if (cached !== undefined) {
       // Promote a reused graph to the MRU end. Prepared graph ids are unbounded over a long-lived
       // session, so this small LRU must not degrade into a process-lifetime manifest registry.
       this.manifests.delete(url);
-      this.manifests.set(url, pending);
+      this.manifests.set(url, cached);
+      return cached;
     }
-    // Once one caller has started a manifest read, later callers share it without being allowed to
-    // cancel the underlying request. Their own signal still abandons their wait immediately.
-    return awaitWithSignal(pending, options.signal);
+    const loaded = await this.subscribeProjection(
+      this.inFlightManifests,
+      url,
+      (signal) => fetchManifest(this.fetchImpl, url, signal),
+      options.signal,
+      MAX_IN_FLIGHT_MANIFESTS,
+      "too many graph manifests are already in flight",
+    );
+    throwIfAborted(options.signal);
+    this.manifests.delete(url);
+    this.manifests.set(url, loaded);
+    evictOldest(this.manifests, MAX_MANIFEST_CACHE_ENTRIES);
+    return loaded;
   }
 
   async activate(
@@ -196,6 +210,8 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
     const manifest = await this.loadManifest(options);
     throwIfAborted(options.signal);
     const key = canonicalProjectionKey(manifest.graphId, canonical);
+    const aliased = this.activateReviewSideAlias(key);
+    if (aliased !== undefined) return aliased;
     const cached = this.cache.peek(key);
     if (cached?.kind === "single") {
       return this.activateSingleEntry(key);
@@ -208,7 +224,10 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
       options.signal,
     );
     throwIfAborted(options.signal);
+    const publishedReviewSide = this.activateReviewSideAlias(key);
+    if (publishedReviewSide !== undefined) return publishedReviewSide;
     this.cache.setActive(key, { kind: "single", projection }, projection.residentBytes);
+    this.pruneReviewSideAliases();
     return projection;
   }
 
@@ -227,7 +246,10 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
     const mergeBaseKey = canonicalProjectionKey(mergeBaseManifest.graphId, mergeBaseRequest);
     const key = canonicalReviewProjectionKey(headKey, mergeBaseKey);
     const cached = this.cache.peek(key);
-    if (cached?.kind === "review") return this.activateReviewEntry(key);
+    if (cached?.kind === "review") {
+      this.rememberReviewSideAliases(key, headKey, mergeBaseKey);
+      return this.activateReviewEntry(key);
+    }
 
     // Decode/index both sides before publishing either. A malformed or stale merge-base therefore
     // cannot replace a still-usable active projection with a half-loaded review.
@@ -266,12 +288,24 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
       };
     }, options.signal);
     throwIfAborted(options.signal);
-    this.cache.setActive(key, { kind: "review", projection }, projection.residentBytes);
+    const supersededReviews = [
+      this.reviewSideAliases.get(headKey)?.reviewKey,
+      this.reviewSideAliases.get(mergeBaseKey)?.reviewKey,
+    ].filter((candidate): candidate is string => candidate !== undefined && candidate !== key);
+    this.cache.setActiveReplacing(
+      key,
+      { kind: "review", projection },
+      projection.residentBytes,
+      [headKey, mergeBaseKey, ...supersededReviews],
+    );
+    this.rememberReviewSideAliases(key, headKey, mergeBaseKey);
+    this.pruneReviewSideAliases();
     return projection;
   }
 
   activateCached(key: string): LoadedGraphProjection | undefined {
-    return this.cache.peek(key)?.kind === "single" ? this.activateSingleEntry(key) : undefined;
+    return this.activateReviewSideAlias(key)
+      ?? (this.cache.peek(key)?.kind === "single" ? this.activateSingleEntry(key) : undefined);
   }
 
   activateCachedReview(key: string): LoadedReviewProjection | undefined {
@@ -281,13 +315,38 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
   private activateSingleEntry(key: string): LoadedGraphProjection {
     const cached = this.cache.activate(key);
     if (cached?.kind !== "single") throw new Error("graph projection cache kind changed during activation");
+    this.pruneReviewSideAliases();
     return cached.projection;
   }
 
   private activateReviewEntry(key: string): LoadedReviewProjection {
     const cached = this.cache.activate(key);
     if (cached?.kind !== "review") throw new Error("graph projection cache kind changed during activation");
+    this.pruneReviewSideAliases();
     return cached.projection;
+  }
+
+  private activateReviewSideAlias(key: string): LoadedGraphProjection | undefined {
+    const alias = this.reviewSideAliases.get(key);
+    if (alias === undefined) return undefined;
+    const cached = this.cache.peek(alias.reviewKey);
+    if (cached?.kind !== "review") {
+      this.reviewSideAliases.delete(key);
+      return undefined;
+    }
+    const review = this.activateReviewEntry(alias.reviewKey);
+    return alias.side === "head" ? review.head : review.mergeBase;
+  }
+
+  private rememberReviewSideAliases(reviewKey: string, headKey: string, mergeBaseKey: string): void {
+    this.reviewSideAliases.set(headKey, { reviewKey, side: "head" });
+    this.reviewSideAliases.set(mergeBaseKey, { reviewKey, side: "mergeBase" });
+  }
+
+  private pruneReviewSideAliases(): void {
+    for (const [sideKey, alias] of this.reviewSideAliases) {
+      if (this.cache.peek(alias.reviewKey)?.kind !== "review") this.reviewSideAliases.delete(sideKey);
+    }
   }
 
   private subscribeProjection<T>(
@@ -295,11 +354,14 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
     key: string,
     factory: (signal: AbortSignal) => Promise<T>,
     subscriberSignal?: AbortSignal,
+    maxInFlight = MAX_IN_FLIGHT_PROJECTIONS,
+    limitMessage = "too many graph projections are already in flight",
   ): Promise<T> {
+    throwIfAborted(subscriberSignal);
     let flight = map.get(key);
     if (flight === undefined) {
-      if (map.size >= MAX_IN_FLIGHT_PROJECTIONS) {
-        throw new Error("too many graph projections are already in flight");
+      if (map.size >= maxInFlight) {
+        throw new Error(limitMessage);
       }
       const controller = new AbortController();
       flight = {
@@ -316,6 +378,8 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
         () => settleProjectionFlight(map, key, owned),
         () => settleProjectionFlight(map, key, owned),
       );
+    } else if (flight.controller.signal.aborted && !flight.settled) {
+      throw flight.controller.signal.reason ?? new DOMException("Shared projection read is cancelling", "AbortError");
     }
     flight.subscribers += 1;
     let released = false;
@@ -394,6 +458,11 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
 type CachedProjection =
   | { kind: "single"; projection: LoadedGraphProjection }
   | { kind: "review"; projection: LoadedReviewProjection };
+
+interface ReviewSideAlias {
+  reviewKey: string;
+  side: "head" | "mergeBase";
+}
 
 interface SharedProjectionFlight<T> {
   promise: Promise<T>;

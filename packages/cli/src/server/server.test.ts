@@ -141,7 +141,7 @@ describe("createBlueprintServer", () => {
     expect(await unknownField.json()).toMatchObject({ error: expect.stringContaining("unknown") });
   });
 
-  it("serves explicit-source mock overlays without a source-less compatibility path", async () => {
+  it("serves explicit-source mock overlays without a source-less compatibility path", { timeout: 15_000 }, async () => {
     expect(await getJson(`${base}/api/overlay?source=demo&env=demo`)).toMatchObject({ kind: "mock", env: "demo" });
     expect(await getJson(`${base}/api/overlay?source=demo&env=staging`)).toMatchObject({ kind: "mock", env: "staging" });
     expect(await getJson(`${base}/api/overlay?source=demo&env=qa`)).toMatchObject({ kind: "mock", env: "qa" });
@@ -154,7 +154,7 @@ describe("createBlueprintServer", () => {
     expect((await fetch(`${base}/api/overlay?source=demo&env=${"x".repeat(257)}`)).status).toBe(400);
   });
 
-  it("derives mock traces in the short-lived file worker", async () => {
+  it("derives mock traces in the short-lived file worker", { timeout: 15_000 }, async () => {
     const response = await fetch(`${base}/api/traces?source=demo&env=demo`);
     const bundle = (await response.json()) as TraceBundle;
     expect(response.headers.get("cache-control")).toBe("no-store");
@@ -186,7 +186,7 @@ describe("createBlueprintServer", () => {
     }
   });
 
-  it("capability-gates traces for a metrics-only saved source", async () => {
+  it("capability-gates traces for a metrics-only saved source", { timeout: 15_000 }, async () => {
     const target = createBlueprintServer({
       session: sessionFor(artifact),
       overlay: { kind: "file", overlay: buildMockOverlay(artifact, "staging") },

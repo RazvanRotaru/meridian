@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildProgram } from "../program";
+import { runExtractionWorker } from "../server/extraction-worker";
 import { generateGraph } from "../server/web-generation";
 import type { Context } from "../server/web-server";
 import { runGenerate, type GenerateOptions } from "./generate";
@@ -43,7 +44,7 @@ describe("generate canonical repository analysis", () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it("uses workspace discovery even when a root tsconfig exists", async () => {
+  it("uses workspace discovery even when a root tsconfig exists", { timeout: 20_000 }, async () => {
     const discoveredOut = join(root, "discovered.graph.json");
     await runGenerate(root, generateOptions(discoveredOut));
     expect(moduleFiles(discoveredOut)).toEqual([
@@ -55,16 +56,24 @@ describe("generate canonical repository analysis", () => {
       "ts:workspace/packages/alpha/src/index.ts->ts:workspace/packages/beta/src/index.ts",
     );
 
-    const graphs = new Map<string, GraphArtifact>();
+    const localGraphFiles = new Map<string, {
+      artifactPath: string;
+      graphSummary: { schemaVersion: string; generatedAt: string; nodeCount: number; edgeCount: number };
+      projectionDirectory: string;
+    }>();
     const context = {
       cwd: root,
-      graphs,
+      cacheRoot: join(root, ".meridian-test-cache"),
+      localGraphFiles,
       sourceRoots: new Map(),
       sources: new Map(),
       tempCleanups: new Set(),
+      runExtraction: runExtractionWorker,
     } as unknown as Context;
     const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
-    const webArtifact = graphs.get(generated.id);
+    const generatedFile = localGraphFiles.get(generated.id);
+    expect(generatedFile).toBeDefined();
+    const webArtifact = readArtifact(generatedFile!.artifactPath);
     const cliArtifact = readArtifact(discoveredOut);
     expect(cliArtifact.target.language).toBe("mixed");
     expect(cliArtifact.nodes.some((node) => node.id.startsWith("ts:"))).toBe(true);
@@ -72,8 +81,8 @@ describe("generate canonical repository analysis", () => {
       id: "py:backend.orders#calculate_total",
       location: expect.objectContaining({ file: "backend/orders.py" }),
     }));
-    expect(webArtifact?.nodes).toEqual(cliArtifact.nodes);
-    expect(webArtifact?.edges).toEqual(cliArtifact.edges);
+    expect(webArtifact.nodes).toEqual(cliArtifact.nodes);
+    expect(webArtifact.edges).toEqual(cliArtifact.edges);
   });
 
   it("does not expose alternate graph-shaping paths", () => {

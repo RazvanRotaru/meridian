@@ -43,8 +43,10 @@ import type {
   TraceGraphRef,
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
+import { canonicalProjectionKey } from "../graph/graphProjectionClient";
 import type {
   GraphProjectionDataSource,
+  GraphProjectionEndpoints,
   GraphProjectionRequest,
   LoadedGraphProjection,
   LoadedReviewProjection,
@@ -160,9 +162,11 @@ import {
 } from "./reviewNodeStatus";
 import {
   changedFileProjectionPaths,
+  fetchPreparedReviewHandoff,
   streamPrPreparation,
   type PreparedGraphDescriptor,
   type PreparedChangedFile,
+  type PreparedReviewHandoff,
   type PrPrepareStage,
 } from "./prPreparation";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
@@ -213,11 +217,21 @@ import {
   type RelationVisibilityOverrides,
 } from "../graph/relationVisibility";
 import {
+  captureMinimalGraphScene,
   captureMinimalGraphHistory,
+  emptyMinimalGraphScene,
+  minimalGraphSceneResidentBytes,
   restoreMinimalGraphHistory,
+  restoreMinimalGraphScene,
   type MinimalGraphHistoryEntry,
+  type MinimalGraphSceneSnapshot,
 } from "./minimalGraphHistory";
 import { resolveFlowStep } from "../derive/minimalExpansion";
+import {
+  DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
+  RecentViewProjectionCache,
+  type RecentAllocationBudget,
+} from "./recentViewProjectionCache";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -245,6 +259,12 @@ export interface RunSyntheticExecutionArgs {
 export interface LayoutActivity {
   label: string;
   detail?: string;
+}
+
+/** Boot-only observation hook for the first visible PR scene. Preparation/extraction intentionally
+ * happens before this boundary; the callback brackets only the review layout the user will see. */
+export interface ReviewEntryOptions {
+  onVisibleLayoutStart?: () => void;
 }
 
 /** Session-only, read-before-pinning exploration of off-level call neighbours. Exact artifact ids
@@ -331,6 +351,9 @@ export interface BlueprintState {
   activeProjectionId: string | null;
   activeProjectionGraphId: string | null;
   activeProjectionRequest: GraphProjectionRequest | null;
+  /** Exact immutable transport endpoints for the active graph identity. Retained with a review's
+   * lightweight baseline so an evicted decoded projection can be reloaded without guessing URLs. */
+  activeProjectionEndpoints: GraphProjectionEndpoints | null;
   /** Which relationship story is on screen: the call graph, or the React composition tree. */
   viewMode: ViewMode;
   /** Whether test code (nodes tagged/heuristically detected as tests) is drawn at all. */
@@ -553,6 +576,10 @@ export interface BlueprintState {
   minimalShowGhostNodes: boolean;
   /** Codebase presentation's local disclosure overrides, preserved across nested extraction. */
   minimalCodebaseExpansionOverrides: Map<string, boolean>;
+  /** Lightweight ids captured before the extracted ReactFlow scene is released for Codebase view. */
+  minimalCodebaseTargetIds: string[];
+  /** Disclosure gates captured with the target ids; never retains hidden ReactFlow nodes. */
+  minimalCodebaseRetainedExpandedIds: Set<string>;
   /** The parsed PR-review data (affected-flow rows + flow trees); null hides the review surface.
    * Sourced EITHER from a `meridian review` artifact extension, OR built at runtime from a GitHub PR
    * (selectPr → reviewPrInGraph). */
@@ -624,8 +651,8 @@ export interface BlueprintState {
   /** A container's changed files temporarily replacing the outer PR graph. Session-only; its
    * review-panel scope deliberately stays separate from moduleFocus. */
   reviewFocusedSubgraph: ReviewFocusedSubgraph | null;
-  /** Exact parent scenes for nested extraction. The last entry is one Back step away; unbounded
-   * array depth keeps extraction independent of whether the source is Map, PR, or another extract. */
+  /** Lightweight parent coordinates for nested extraction. Rendered scenes live separately in the
+   * shared bounded recent-view cache and may be evicted without removing a Back step. */
   minimalGraphHistory: MinimalGraphHistoryEntry[];
   /** Snapshot of the full seed list at review time — the "All groups" restore target. */
   reviewAllSeedIds: string[];
@@ -769,13 +796,16 @@ export interface BlueprintState {
   collapseAll(): void;
   recenter(): void;
   toggleFlowExplorer(): void;
-  selectFlowEntry(ref: FlowSelectionRef | null): void;
+  /** Select a flow and resolve only after every graph surface changed by that selection has
+   * completed its current layout. Callers handling ordinary clicks may intentionally ignore the
+   * promise; boot restoration awaits it before declaring the restored scene usable. */
+  selectFlowEntry(ref: FlowSelectionRef | null): Promise<void>;
   /** Open one review flow in a requested projection without changing saved review preferences. */
   openReviewFlow(ref: FlowSelectionRef, view: ReviewFlowSplitView): void;
   /** Select one artifact node from the bottom flow pane. Request execution reveals/highlights the
    * exact observed node on the graph; PR review narrows the Map to that node's incident relationships
    * (including on-demand ghosts). Null clears request emphasis or restores the whole review flow. */
-  selectFlowPaneTarget(nodeId: NodeId | null): void;
+  selectFlowPaneTarget(nodeId: NodeId | null): Promise<void>;
   /** Expand/collapse one occurrence (or one namespaced static child) in the request split only. */
   toggleRequestFlowExpand(nodeId: string): void;
   /** Expand/collapse one occurrence in the static explorer/review split only. */
@@ -867,13 +897,13 @@ export interface BlueprintState {
   setServiceGroupingTargetSize(size: ServiceGroupingTargetSize): void;
   /** Switch inferred Service parents between one- and two-concept labels. */
   setServiceGroupingLabelMode(mode: ServiceGroupingLabelMode): void;
-  buildMinimalGraph(): void;
-  setMinimalView(view: "graph" | "codebase"): void;
+  buildMinimalGraph(): Promise<void>;
+  setMinimalView(view: "graph" | "codebase"): Promise<void>;
   setMinimalShowGhostNodes(visible: boolean): void;
   setMinimalCodebaseExpansionOverride(nodeId: string, expanded: boolean): void;
   /** Restore one exact parent extracted graph without closing the overall overlay/review. */
-  backMinimalGraph(): void;
-  closeMinimalGraph(): void;
+  backMinimalGraph(): Promise<void>;
+  closeMinimalGraph(): Promise<void>;
   resetMinimalGraph(): void;
   rearrangeMinimalGraph(): void;
   minimalRelayout(activity?: LayoutActivity): Promise<void>;
@@ -883,11 +913,11 @@ export interface BlueprintState {
   selectReviewNode(id: string | null): void;
   /** Isolate one change group on the Map (null = "All groups"): re-seed the minimal overlay with only
    * that group's module ids and relayout. A no-op outside a review or when already active. */
-  selectReviewGroup(groupId: string | null): void;
+  selectReviewGroup(groupId: string | null): Promise<void>;
   /** Further narrow the active review/group to a repo-relative path prefix. Null restores the group. */
-  selectReviewPathScope(path: string | null): void;
+  selectReviewPathScope(path: string | null): Promise<void>;
   /** Open one review container as an exact-file subgraph, bypassing the large-review rollup. */
-  openReviewSubgraph(rootId: string): void;
+  openReviewSubgraph(rootId: string): Promise<void>;
   /** Restore the exact immediate parent captured before openReviewSubgraph. */
   closeReviewSubgraph(): void;
   toggleReviewTick(flowId: string): void;
@@ -972,16 +1002,19 @@ export interface BlueprintState {
   checkPrReviewFreshness(): Promise<void>;
   /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
   refreshPrReview(): Promise<void>;
-  reviewPrInGraph(): Promise<void>;
+  reviewPrInGraph(options?: ReviewEntryOptions): Promise<void>;
+  /** Consume the immutable handoff injected for a validated shared review URL. Returns false only
+   * when this boot has no handoff; any present-but-invalid handoff fails closed without POSTing. */
+  restorePreparedPrReview(number: number, options?: ReviewEntryOptions): Promise<boolean>;
   /** Prepare both revisions: stream mirror/extraction progress, activate the paired bounded
    * projections, and run the review in head coordinates. On entry failure the PRs page stays put;
    * on refresh failure the prior immutable pair remains active. */
-  prepareHeadGraph(): Promise<void>;
+  prepareHeadGraph(options?: ReviewEntryOptions): Promise<void>;
   /** Re-open a review whose overlay was soft-closed (explicit Close/lens switch) WITHOUT re-running
    * the expensive head prepare: reactivate the already-prepared projection if there was one,
    * repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
    * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
-  resumePrReview(): Promise<void>;
+  resumePrReview(options?: ReviewEntryOptions): Promise<void>;
   /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
   cancelPrReviewPreparation(): void;
   /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
@@ -994,8 +1027,13 @@ export interface StoreDependencies {
   index: GraphIndex;
   /** Required for server sessions; omitted only by isolated local/test embedders. */
   projectionDataSource?: GraphProjectionDataSource | null;
+  /** Browser-wide inactive-memory coordinator shared by projections and navigation scenes. */
+  recentAllocationBudget?: RecentAllocationBudget;
   /** The overview projection already activated during boot (avoids retaining a second pair). */
   initialProjection?: LoadedGraphProjection | null;
+  /** Exact endpoints that produced initialProjection. Required by server boot; tests/local
+   * embedders may omit it and use the conventional graph-id routes. */
+  projectionEndpoints?: GraphProjectionEndpoints | null;
   provider: TelemetryProvider | null;
   telemetrySources?: TelemetrySourceRegistration[];
   telemetrySourceId?: string | null;
@@ -1016,11 +1054,33 @@ export interface StoreDependencies {
   prFileUrl?: string;
   /** Direct POST endpoint for PR preparation. Null only for non-GitHub/dev embedders. */
   prepareUrl?: string | null;
+  /** Strict GET endpoint injected only for a server-validated shared review URL. */
+  preparedReviewUrl?: string | null;
   /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
   prReviewUrl: string;
 }
 
 export type BlueprintStore = StoreApi<BlueprintState>;
+
+/** Metadata-only return coordinate for the ordinary extracted-review projection while its
+ * codebase-context sibling is active. Decoded artifacts remain owned exclusively by the bounded
+ * projection transport cache. */
+interface MinimalCodebaseProjectionBaseline {
+  reviewNumber: number;
+  headGraphId: string;
+  mergeBaseGraphId: string;
+  key: string;
+  headRequest: GraphProjectionRequest;
+  mergeBaseRequest: GraphProjectionRequest;
+  headEndpoints: GraphProjectionEndpoints;
+  mergeBaseEndpoints: GraphProjectionEndpoints;
+}
+
+/** Projection coordinates are metadata only; decoded pairs remain in the shared bounded cache. */
+interface MinimalGraphProjectionFrame {
+  active: MinimalCodebaseProjectionBaseline | null;
+  codebaseBaseline: MinimalCodebaseProjectionBaseline | null;
+}
 
 /** Turn renderer navigation into the bounded, canonical server projection contract. The review
  * view is semantic: the server derives its changed-node rollups, so a repository-wide PR never
@@ -1050,7 +1110,10 @@ export function projectionRequestForState(state: Pick<
   | "prPreparedFilePaths"
   | "prFiles"
 >): GraphProjectionRequest {
-  const reviewView = state.prPreparedArtifactCurrent || state.prReviewed !== null;
+  // A parked review keeps its lightweight payload/chip but is back on the ordinary baseline graph.
+  // Only an actually-active prepared artifact may request the semantic review projection; deriving
+  // it from prReviewed would silently reload HEAD again during baseline soft-close/navigation.
+  const reviewView = state.prPreparedArtifactCurrent;
   const view = reviewView
     ? "review" as const
     : state.viewMode === "prs"
@@ -1116,11 +1179,16 @@ function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
   return state.syntheticExecutionUrl;
 }
 
-function graphProjectionEndpoints(descriptor: PreparedGraphDescriptor): {
-  manifestUrl: string;
-  projectionUrl: string;
-} {
+function graphProjectionEndpoints(descriptor: PreparedGraphDescriptor): GraphProjectionEndpoints {
   return { manifestUrl: descriptor.manifestUrl, projectionUrl: descriptor.projectionUrl };
+}
+
+function conventionalProjectionEndpoints(graphId: string): GraphProjectionEndpoints {
+  const id = encodeURIComponent(graphId);
+  return {
+    manifestUrl: `/api/graph/manifest?id=${id}`,
+    projectionUrl: `/api/graph/projection?id=${id}`,
+  };
 }
 
 async function activatePreparedReviewProjection(
@@ -1155,6 +1223,58 @@ function mergeBaseProjectionRequest(headRequest: GraphProjectionRequest): GraphP
     depth: 1,
     radius: 0,
   };
+}
+
+function snapshotProjectionRequest(request: GraphProjectionRequest): GraphProjectionRequest {
+  return {
+    ...request,
+    filePaths: [...request.filePaths],
+    focusIds: [...request.focusIds],
+    expandedIds: [...request.expandedIds],
+    extraIds: [...request.extraIds],
+  };
+}
+
+function projectionWithContextGates(
+  request: GraphProjectionRequest,
+  expansionIds: Iterable<string>,
+): GraphProjectionRequest {
+  return {
+    ...snapshotProjectionRequest(request),
+    expandedIds: [...new Set([...request.expandedIds, ...expansionIds])].sort(),
+  };
+}
+
+/** Map a required HEAD disclosure gate to a comparison-side gate only through a unique semantic
+ * source path. A coincidentally equal graph id is never treated as cross-revision evidence. */
+function pathDerivedComparisonGates(
+  headIndex: GraphIndex,
+  comparisonIndex: GraphIndex,
+  headExpansionIds: Iterable<string>,
+): string[] {
+  const comparisonByPath = new Map<string, string[]>();
+  for (const node of comparisonIndex.nodesById.values()) {
+    const key = contextGatePathKey(node);
+    if (key === null) continue;
+    const matches = comparisonByPath.get(key);
+    if (matches === undefined) comparisonByPath.set(key, [node.id]);
+    else matches.push(node.id);
+  }
+  const resolved = new Set<string>();
+  for (const headId of headExpansionIds) {
+    const headNode = headIndex.nodesById.get(headId);
+    const key = headNode === undefined ? null : contextGatePathKey(headNode);
+    if (key === null) continue;
+    const matches = comparisonByPath.get(key);
+    if (matches?.length === 1) resolved.add(matches[0]);
+  }
+  return [...resolved].sort();
+}
+
+function contextGatePathKey(node: GraphNode): string | null {
+  const path = node.location?.file;
+  if (typeof path !== "string" || path.length === 0) return null;
+  return `${node.kind}\u0000${path}\u0000${node.qualifiedName}`;
 }
 
 /** `/api/source` URL for a node slice (or the whole file). */
@@ -1745,8 +1865,20 @@ function sourceDescriptor(source: TelemetrySourceRegistration): TelemetrySourceD
 
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   const projectionDataSource = dependencies.projectionDataSource ?? null;
+  const initialProjectionEndpoints = dependencies.projectionEndpoints
+    ?? (dependencies.initialProjection === null || dependencies.initialProjection === undefined
+      ? null
+      : conventionalProjectionEndpoints(dependencies.initialProjection.graphId));
   let projectionRequestSeq = 0;
   let projectionRequestController: AbortController | null = null;
+  let minimalCodebaseProjectionBaseline: MinimalCodebaseProjectionBaseline | null = null;
+  const minimalSceneCache = new RecentViewProjectionCache<string, MinimalGraphSceneSnapshot>(
+    DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
+    dependencies.recentAllocationBudget,
+  );
+  const minimalProjectionFrames = new Map<string, MinimalGraphProjectionFrame>();
+  let minimalSceneSequence = 0;
+  let currentMinimalSceneKey: string | null = null;
   const sourceRegistrations = telemetryRegistrations(dependencies);
   const telemetrySourceCatalog = new Map(sourceRegistrations.map((source) => [source.id, source]));
   const initialTelemetrySourceId = initialSourceId(dependencies, telemetrySourceCatalog);
@@ -1777,6 +1909,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const requestCodebaseContextFor = (
     state: BlueprintState,
     targetIds: readonly string[],
+    options: {
+      minimalRollups?: Readonly<Record<string, readonly string[]>>;
+      expandedIds?: ReadonlySet<string>;
+    } = {},
   ): MinimalCodebaseContext | null => {
     const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
     return deriveMinimalCodebaseContext({
@@ -1785,7 +1921,52 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       blockDeps: (blockDeps ??= buildBlockDeps(state.index)),
       flows,
       minimalMemberIds: targetIds,
+      minimalRollups: options.minimalRollups,
+      expandedIds: options.expandedIds,
       hiddenIds: state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds,
+      demoteCommons: false,
+    });
+  };
+  const minimalCodebaseInputsForState = (state: BlueprintState): {
+    targetIds: string[];
+    retainedExpandedIds: Set<string>;
+  } => {
+    const currentMinimalNodes = state.minimalLayoutStatus === "ready" ? state.minimalRfNodes : [];
+    const derivedTargetIds = [...new Set([
+      ...state.minimalMemberIds,
+      ...state.moduleSelected,
+      ...currentMinimalNodes
+        .filter((node) => node.type !== "ghost" && state.index.nodesById.has(node.id))
+        .map((node) => node.id),
+    ])];
+    const derivedExpandedIds = new Set([
+      ...[...state.moduleExpanded].filter((id) => id.startsWith("step:")),
+      ...currentMinimalNodes
+        .filter((node) => (node.data as { isExpanded?: unknown }).isExpanded === true)
+        .map((node) => node.id),
+    ]);
+    return state.minimalView === "codebase" && state.minimalCodebaseTargetIds.length > 0
+      ? {
+          targetIds: [...new Set([...state.minimalCodebaseTargetIds, ...state.moduleSelected])],
+          retainedExpandedIds: new Set(state.minimalCodebaseRetainedExpandedIds),
+        }
+      : { targetIds: derivedTargetIds, retainedExpandedIds: derivedExpandedIds };
+  };
+  /** The codebase-context projection is derived from exactly what the extracted graph already
+   * disclosed. Its canonical ancestor gates are transport selectors only: the hidden graph's
+   * moduleExpanded/minimal RF state is never mutated. */
+  const minimalCodebaseContextForState = (state: BlueprintState): MinimalCodebaseContext | null => {
+    const { targetIds, retainedExpandedIds } = minimalCodebaseInputsForState(state);
+    const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+    return deriveMinimalCodebaseContext({
+      index: state.index,
+      moduleGraph: (moduleGraph ??= buildModuleGraph(state.index)),
+      blockDeps: (blockDeps ??= buildBlockDeps(state.index)),
+      flows,
+      minimalMemberIds: targetIds,
+      minimalRollups: state.minimalRollups,
+      hiddenIds: state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds,
+      expandedIds: retainedExpandedIds,
       demoteCommons: false,
     });
   };
@@ -1808,6 +1989,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prsListSeq = 0;
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
+  const prSummaryRequests = new Map<number, Promise<void>>();
   // Every discussion read (selection, refresh, or post-submit) shares one last-started-wins lane.
   let prDiscussionSeq = 0;
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
@@ -1821,6 +2003,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // starting a newer run invalidates the prior child-process response without touching telemetry.
   let syntheticExecutionSeq = 0;
   let prPrepareCancellation: { sequence: number; resolve: () => void; controller: AbortController } | null = null;
+  let preparedReviewRestoreController: AbortController | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
@@ -1899,8 +2082,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
   const prepareUrl = prSessionSource === null ? null : dependencies.prepareUrl ?? null;
+  const preparedReviewUrl = prSessionSource === null ? null : dependencies.preparedReviewUrl ?? null;
   if (prepareUrl !== null && projectionDataSource === null) {
     throw new Error("PR preparation requires graph projection transport");
+  }
+  if (preparedReviewUrl !== null && projectionDataSource === null) {
+    throw new Error("Prepared PR handoff requires graph projection transport");
   }
   const prReviewUrl = dependencies.prReviewUrl;
   // The composition tab opens on the WHOLE-SYSTEM overview (null root); file-rooting is the explicit
@@ -1913,6 +2100,74 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   return createStore<BlueprintState>((set, get) => {
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
+    const nextMinimalSceneKey = (): string => `minimal-scene:${++minimalSceneSequence}`;
+    const ensureMinimalSceneKey = (): string => {
+      currentMinimalSceneKey ??= nextMinimalSceneKey();
+      return currentMinimalSceneKey;
+    };
+    const publishCurrentMinimalScene = (state: BlueprintState): string => {
+      const key = ensureMinimalSceneKey();
+      if (state.minimalView !== "graph" || state.minimalSeedIds.length === 0) return key;
+      const scene = captureMinimalGraphScene(state);
+      minimalSceneCache.setActive(key, scene, minimalGraphSceneResidentBytes(scene));
+      return key;
+    };
+    /** Offer the current graph scene to the shared inactive budget before hiding/nesting it. */
+    const retainCurrentMinimalScene = (state: BlueprintState): string => {
+      const key = ensureMinimalSceneKey();
+      if (state.minimalView === "graph") {
+        publishCurrentMinimalScene(state);
+        minimalSceneCache.deactivateActive();
+      } else {
+        // The extracted sibling was already released on Codebase entry. A history push is real reuse
+        // and should refresh its global LRU recency when the scene still exists.
+        void minimalSceneCache.get(key);
+      }
+      return key;
+    };
+    const startNewMinimalScene = (): string => {
+      currentMinimalSceneKey = nextMinimalSceneKey();
+      return currentMinimalSceneKey;
+    };
+    const clearMinimalSceneNavigation = (): void => {
+      minimalSceneCache.clear();
+      minimalProjectionFrames.clear();
+      currentMinimalSceneKey = null;
+    };
+    const resetMinimalProjectionNavigationForRevision = (): void => {
+      projectionRequestController?.abort();
+      projectionRequestController = null;
+      projectionRequestSeq += 1;
+      minimalCodebaseProjectionBaseline = null;
+      clearMinimalSceneNavigation();
+    };
+    const restoreCurrentMinimalScene = async (
+      activity: LayoutActivity = { label: "Restoring extracted graph…" },
+    ): Promise<boolean> => {
+      const key = ensureMinimalSceneKey();
+      const scene = minimalSceneCache.activate(key);
+      if (scene !== undefined) {
+        set({
+          ...restoreMinimalGraphScene(scene),
+          minimalCodebaseTargetIds: [],
+          minimalCodebaseRetainedExpandedIds: new Set<string>(),
+        });
+        return true;
+      }
+      const state = get();
+      const needsLayout = state.minimalMemberIds.length > 0;
+      set({
+        minimalBasePositions: {},
+        minimalRfNodes: [],
+        minimalRfEdges: [],
+        minimalLayoutStatus: needsLayout ? "laying-out" : "idle",
+        minimalLayoutActivity: needsLayout ? activity : null,
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
+      });
+      if (needsLayout) await get().minimalRelayout(activity);
+      return false;
+    };
     const guardReviewLineComposerTransition = (transition: () => void): boolean => {
       const current = get().reviewLineComposer;
       const result = requestReviewLineComposerDismissState(current);
@@ -1982,17 +2237,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // The latter carries its original selection into the exact-file child scene and waits for that
     // scene's layout before signaling the camera, so useRecenter can never fall back to fitting the
     // whole graph because the requested id is still hidden behind the rollup.
-    const focusReviewSubgraph = (
+    const focusReviewSubgraph = async (
       rootId: string,
       reveal: ReviewSubgraphReveal | null,
       retry: () => void,
-    ): boolean => {
+    ): Promise<boolean> => {
+      if (
+        get().minimalView === "graph"
+        && minimalCodebaseProjectionBaseline !== null
+        && !await ensureExtractedReviewProjection()
+      ) return false;
       const state = get();
       const root = state.index.nodesById.get(rootId);
       if (
         state.review === null
         || state.minimalSeedIds.length === 0
-        || state.minimalLayoutStatus !== "ready"
+        || (state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
         || state.flowSelection !== null
         || state.reviewFlowBaseline !== null
         || state.syntheticExecutionStatus === "running"
@@ -2033,6 +2293,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       syntheticExecutionSeq += 1;
       flowPaneLayoutSeq += 1;
       invalidateMinimalLayout();
+      const parentFrame = captureMinimalGraphHistoryFrame(state);
+      startNewMinimalScene();
+      minimalCodebaseProjectionBaseline = null;
       set({
         reviewFocusedSubgraph: {
           rootId,
@@ -2040,10 +2303,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           filePaths: [...new Set(matched.map((match) => match.path))].sort(),
           moduleIds: seeds,
         },
-        minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
+        minimalGraphHistory: [...state.minimalGraphHistory, parentFrame],
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
         reviewSelectedId: reveal?.selectedId ?? null,
         reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
         flowSelection: null,
@@ -2225,6 +2490,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return false;
       }
       const frame = captureMinimalGraphHistory(before);
+      const frameScene = captureMinimalGraphScene(before);
       const history = before.minimalGraphHistory;
       const previousGroup = before.reviewActiveGroupId === null
         ? null
@@ -2342,6 +2608,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const restore = restoreMinimalGraphHistory(frame);
       set({
         ...restore,
+        ...restoreMinimalGraphScene(frameScene),
         minimalGraphHistory: history,
         reviewActiveGroupId,
         reviewPathScope,
@@ -2406,6 +2673,325 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return true;
     };
 
+    const captureMinimalCodebaseProjectionBaseline = (
+      state: BlueprintState,
+    ): MinimalCodebaseProjectionBaseline | null => {
+      if (
+        projectionDataSource === null
+        || state.prReviewed === null
+        || !state.prPreparedArtifactCurrent
+        || state.prPreparedHead === null
+        || state.prPreparedMergeBase === null
+        || state.prReviewComparison === null
+        || state.activeProjectionKey === null
+        || state.activeProjectionRequest === null
+        || state.activeProjectionGraphId !== state.prPreparedHead.graphId
+        || state.prReviewComparison.graphId !== state.prPreparedMergeBase.graphId
+      ) {
+        return null;
+      }
+      return {
+        reviewNumber: state.prReviewed,
+        headGraphId: state.prPreparedHead.graphId,
+        mergeBaseGraphId: state.prPreparedMergeBase.graphId,
+        key: state.activeProjectionKey,
+        headRequest: snapshotProjectionRequest(state.activeProjectionRequest),
+        mergeBaseRequest: snapshotProjectionRequest(state.prReviewComparison.request),
+        headEndpoints: graphProjectionEndpoints(state.prPreparedHead),
+        mergeBaseEndpoints: graphProjectionEndpoints(state.prPreparedMergeBase),
+      };
+    };
+
+    const projectionCoordinateMatchesSession = (
+      coordinate: MinimalCodebaseProjectionBaseline,
+      state: BlueprintState,
+    ): boolean => state.prReviewed === coordinate.reviewNumber
+      && state.prPreparedArtifactCurrent
+      && state.prPreparedHead?.graphId === coordinate.headGraphId
+      && state.prPreparedMergeBase?.graphId === coordinate.mergeBaseGraphId;
+
+    const captureMinimalGraphHistoryFrame = (state: BlueprintState): MinimalGraphHistoryEntry => {
+      const sceneKey = retainCurrentMinimalScene(state);
+      minimalProjectionFrames.set(sceneKey, {
+        active: captureMinimalCodebaseProjectionBaseline(state),
+        codebaseBaseline: minimalCodebaseProjectionBaseline,
+      });
+      return captureMinimalGraphHistory(state, sceneKey);
+    };
+
+    const installMinimalCodebaseReviewPair = (
+      pair: LoadedReviewProjection,
+      expected: MinimalCodebaseProjectionBaseline,
+      headRequest: GraphProjectionRequest,
+      mergeBaseRequest: GraphProjectionRequest,
+    ): void => {
+      if (
+        pair.head.graphId !== expected.headGraphId
+        || pair.mergeBase.graphId !== expected.mergeBaseGraphId
+        || canonicalProjectionKey(pair.head.graphId, pair.head.request)
+          !== canonicalProjectionKey(expected.headGraphId, headRequest)
+        || canonicalProjectionKey(pair.mergeBase.graphId, pair.mergeBase.request)
+          !== canonicalProjectionKey(expected.mergeBaseGraphId, mergeBaseRequest)
+      ) {
+        throw new Error("codebase context returned a different review projection");
+      }
+      const state = get();
+      const reviewNumber = state.prReviewed ?? state.prSelected;
+      if (reviewNumber === null || state.prFiles === null) {
+        throw new Error("codebase context requires the canonical prepared review manifest");
+      }
+      const summary = selectedPrSummary(state, reviewNumber);
+      const context = reviewContextFromPrFiles({
+        prNumber: reviewNumber,
+        headRef: summary?.headRef ?? null,
+        baseRef: summary?.baseRef ?? null,
+        scopeId: prFilesUrl,
+        files: state.prFiles,
+      }, { baseSide: false });
+      // Projection transport caches only the pure revision pair. Rebuild the current, presentation-
+      // only two-sided composite on promotion so deleted/renamed base ghosts survive context switches
+      // without retaining another decoded graph outside the bounded LRU.
+      const presentation = deriveDeletedNodeProjection({
+        headArtifact: pair.head.artifact,
+        headIndex: pair.head.index,
+        baseArtifact: pair.mergeBase.artifact,
+        baseIndex: pair.mergeBase.index,
+        context,
+        prFiles: state.prFiles,
+      });
+      const outgoing = get().index;
+      const changedIds = [...outgoing.changedIds].filter((id) => presentation.index.nodesById.has(id));
+      const changedStatus = [...outgoing.changedStatus]
+        .filter(([id]) => presentation.index.nodesById.has(id));
+      applyChangedIds(presentation.index, changedIds);
+      applyChangedStatus(presentation.index, changedStatus);
+      invalidateArtifactCaches();
+      set({
+        artifact: presentation.artifact,
+        index: presentation.index,
+        activeProjectionGraphId: pair.head.graphId,
+        activeProjectionRequest: pair.head.request,
+        activeProjectionKey: pair.key,
+        activeProjectionId: pair.projectionId,
+        activeProjectionEndpoints: expected.headEndpoints,
+        prReviewComparison: pair.mergeBase,
+        reviewBaseNodeIds: presentation.baseSourceNodeIds,
+        reviewDeletedNodeIds: presentation.deletedNodeIds,
+        reviewBaseSpanByHeadId: presentation.baseSpanByHeadId,
+        coverage: get().coverageMode
+          ? computeCoverage(presentation.artifact.nodes, presentation.artifact.edges)
+          : null,
+      });
+    };
+
+    /** Activate one metadata-only history coordinate. Fetching is allowed after LRU eviction, but
+     * a failed or stale restore never mutates the current child frame. */
+    const activateMinimalProjectionCoordinate = (
+      coordinate: MinimalCodebaseProjectionBaseline | null,
+    ): boolean | Promise<boolean> => {
+      if (coordinate === null) return true;
+      if (projectionDataSource === null || !projectionCoordinateMatchesSession(coordinate, get())) return false;
+      projectionRequestController?.abort();
+      const controller = new AbortController();
+      projectionRequestController = controller;
+      const sequence = ++projectionRequestSeq;
+      const finish = (pair: LoadedReviewProjection): boolean => {
+        if (
+          controller.signal.aborted
+          || projectionRequestSeq !== sequence
+          || !projectionCoordinateMatchesSession(coordinate, get())
+        ) return false;
+        installMinimalCodebaseReviewPair(
+          pair,
+          coordinate,
+          coordinate.headRequest,
+          coordinate.mergeBaseRequest,
+        );
+        return true;
+      };
+      const fail = (error: unknown): boolean => {
+        if (!controller.signal.aborted && projectionRequestSeq === sequence) {
+          set({ prPrepareError: `Could not restore recent graph. ${prepareErrorMessage(error)}` });
+        }
+        return false;
+      };
+      const release = (): void => {
+        if (projectionRequestController === controller) projectionRequestController = null;
+      };
+      const cached = projectionDataSource.activateCachedReview(coordinate.key);
+      if (cached !== undefined) {
+        try {
+          return finish(cached);
+        } catch (error) {
+          return fail(error);
+        } finally {
+          release();
+        }
+      }
+      return projectionDataSource.activateReviewPair({
+            head: { request: coordinate.headRequest, endpoints: coordinate.headEndpoints },
+            mergeBase: { request: coordinate.mergeBaseRequest, endpoints: coordinate.mergeBaseEndpoints },
+            signal: controller.signal,
+          })
+        .then(finish, fail)
+        .finally(release);
+    };
+
+    const activateMinimalCodebaseProjection = async (additionalGateIds: readonly string[] = []): Promise<void> => {
+      let baseline: MinimalCodebaseProjectionBaseline | null = null;
+      let controller: AbortController | null = null;
+      let sequence: number | null = null;
+      try {
+        const state = get();
+        const captured = captureMinimalCodebaseProjectionBaseline(state);
+        const existing = minimalCodebaseProjectionBaseline;
+        baseline = existing !== null
+          && existing.reviewNumber === state.prReviewed
+          && existing.headGraphId === state.prPreparedHead?.graphId
+          && existing.mergeBaseGraphId === state.prPreparedMergeBase?.graphId
+            ? existing
+            : captured;
+        if (baseline === null || projectionDataSource === null) return;
+        minimalCodebaseProjectionBaseline = baseline;
+        const context = minimalCodebaseContextForState(state);
+        if (context === null) return;
+        const gates = new Set([
+          ...baseline.headRequest.expandedIds,
+          ...(context.reveal.moduleFocus === null ? [] : [context.reveal.moduleFocus]),
+          ...context.reveal.moduleExpanded,
+          ...[...state.minimalCodebaseExpansionOverrides]
+            .filter(([, expanded]) => expanded)
+            .map(([id]) => id),
+          ...additionalGateIds,
+        ]);
+        if (gates.size > 512) {
+          throw new Error("codebase context exceeds the bounded projection expansion limit");
+        }
+        // Base-only tombstones belong exclusively to the comparison request. Sending their ids to
+        // HEAD would either waste the gate or make a strict projection endpoint reject the request.
+        const headGates = [...gates].filter((id) => !state.reviewBaseNodeIds.has(id));
+        const headRequest = projectionWithContextGates(baseline.headRequest, headGates);
+        // Never copy HEAD ids across revisions. Only a unique kind/path/qualified-name match in the
+        // already path-addressed comparison slice may become a merge-base disclosure gate.
+        const comparisonGates = pathDerivedComparisonGates(
+          state.index,
+          state.prReviewComparison?.index ?? state.index,
+          gates,
+        );
+        const mergeBaseRequest = projectionWithContextGates(baseline.mergeBaseRequest, comparisonGates);
+        projectionRequestController?.abort();
+        controller = new AbortController();
+        projectionRequestController = controller;
+        sequence = ++projectionRequestSeq;
+        const pair = await projectionDataSource.activateReviewPair({
+          head: { request: headRequest, endpoints: baseline.headEndpoints },
+          mergeBase: { request: mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
+          signal: controller.signal,
+        });
+        const current = get();
+        if (
+          controller.signal.aborted
+          || projectionRequestSeq !== sequence
+          || minimalCodebaseProjectionBaseline !== baseline
+          || current.minimalView !== "codebase"
+          || !projectionCoordinateMatchesSession(baseline, current)
+        ) {
+          if (
+            minimalCodebaseProjectionBaseline === baseline
+            && !projectionCoordinateMatchesSession(baseline, current)
+          ) {
+            minimalCodebaseProjectionBaseline = null;
+            if (current.activeProjectionKey === baseline.key) set({ minimalView: "graph" });
+          }
+          return;
+        }
+        installMinimalCodebaseReviewPair(pair, baseline, headRequest, mergeBaseRequest);
+      } catch (error) {
+        if (controller?.signal.aborted || (sequence !== null && projectionRequestSeq !== sequence)) return;
+        const current = get();
+        if (baseline !== null && current.minimalView === "codebase" && current.prReviewed === baseline.reviewNumber) {
+          set({
+            ...(current.activeProjectionKey === baseline.key ? { minimalView: "graph" as const } : {}),
+            prPrepareError: `Could not load codebase context. ${prepareErrorMessage(error)}`,
+          });
+        }
+      } finally {
+        if (controller !== null && projectionRequestController === controller) projectionRequestController = null;
+      }
+    };
+
+    const restoreMinimalCodebaseProjection = async (): Promise<boolean> => {
+      const baseline = minimalCodebaseProjectionBaseline;
+      if (baseline === null) return true;
+      if (projectionDataSource === null) return false;
+      projectionRequestController?.abort();
+      const controller = new AbortController();
+      projectionRequestController = controller;
+      const sequence = ++projectionRequestSeq;
+      try {
+        const pair = projectionDataSource.activateCachedReview(baseline.key)
+          ?? await projectionDataSource.activateReviewPair({
+            head: { request: baseline.headRequest, endpoints: baseline.headEndpoints },
+            mergeBase: { request: baseline.mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
+            signal: controller.signal,
+          });
+        const current = get();
+        if (
+          controller.signal.aborted
+          || projectionRequestSeq !== sequence
+          || minimalCodebaseProjectionBaseline !== baseline
+          || current.minimalView !== "graph"
+          || !projectionCoordinateMatchesSession(baseline, current)
+        ) {
+          if (
+            minimalCodebaseProjectionBaseline === baseline
+            && !projectionCoordinateMatchesSession(baseline, current)
+          ) minimalCodebaseProjectionBaseline = null;
+          return false;
+        }
+        installMinimalCodebaseReviewPair(
+          pair,
+          baseline,
+          baseline.headRequest,
+          baseline.mergeBaseRequest,
+        );
+        minimalCodebaseProjectionBaseline = null;
+        return true;
+      } catch (error) {
+        if (controller.signal.aborted || projectionRequestSeq !== sequence) return false;
+        const current = get();
+        if (current.minimalView === "graph" && current.prReviewed === baseline.reviewNumber) {
+          set({
+            minimalView: "codebase",
+            prPrepareError: `Could not restore extracted review. ${prepareErrorMessage(error)}`,
+          });
+        }
+        return false;
+      } finally {
+        if (projectionRequestController === controller) projectionRequestController = null;
+      }
+    };
+
+    /** Return from a context projection before any action reads, derives, or mutates the extracted
+     * graph. The exact paired coordinate stays live until promotion succeeds; failure leaves the
+     * codebase view mounted and cannot strand graph state on the broader context slice. */
+    const ensureExtractedReviewProjection = async (): Promise<boolean> => {
+      const baseline = minimalCodebaseProjectionBaseline;
+      if (baseline === null) return true;
+      if (!projectionCoordinateMatchesSession(baseline, get())) {
+        minimalCodebaseProjectionBaseline = null;
+        return true;
+      }
+      if (get().minimalView === "codebase") set({ minimalView: "graph" });
+      const restored = await restoreMinimalCodebaseProjection();
+      const current = get();
+      return restored
+        && minimalCodebaseProjectionBaseline === null
+        && current.minimalView === "graph"
+        && current.prReviewed === baseline.reviewNumber
+        && current.activeProjectionKey === baseline.key;
+    };
+
     /** Activate exactly the graph slice named by the current navigation state. Only this method
      * installs decoded projection pairs in Zustand; the transport owns the bounded recent-view LRU.
      * A newer navigation aborts and supersedes an older fetch before either layout starts. */
@@ -2451,6 +3037,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           activeProjectionRequest: projection.request,
           activeProjectionKey: activeKey,
           activeProjectionId: reviewPair?.projectionId ?? projection.projectionId,
+          activeProjectionEndpoints: reviewPair !== null && state.prPreparedHead !== null
+            ? graphProjectionEndpoints(state.prPreparedHead)
+            : initialProjectionEndpoints,
           coverage: get().coverageMode
             ? computeCoverage(projection.artifact.nodes, projection.artifact.edges)
             : null,
@@ -2486,33 +3075,54 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }, signal);
     };
 
-    /** Clear review-owned state and promote the prior projection only when it survived the bounded
-     * recent-view LRU. An evicted baseline is not retained through a side channel: the next layout
-     * requests the appropriate base view from disk-backed projection storage. */
-    const restoreReviewSession = (options: { endSession?: boolean } = {}): boolean => {
+    /** Promote the exact pre-review projection before clearing/parking the review. The decoded pair
+     * may have been evicted (or rejected as oversized) by the bounded browser LRU, so cache miss
+     * reloads the same graph/request through its retained immutable endpoints. */
+    const restoreReviewSession = (
+      options: { endSession?: boolean } = {},
+    ): boolean | Promise<boolean> => {
       const baseline = get().prReviewBaseline;
       if (baseline === null && get().prReviewed !== null && options.endSession === false) {
         resetChangedIdsToArtifact(get().artifact, get().index);
       }
-      const restored = restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
-      if (!restored || baseline === null || projectionDataSource === null) {
-        return restored;
+      if (baseline === null) {
+        return restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
       }
+      if (projectionDataSource === null) {
+        throw new Error("cannot restore an evicted review baseline without graph projection transport");
+      }
+      const reviewed = get().prReviewed;
+      const promote = (projection: LoadedGraphProjection): boolean => {
+        if (
+          projection.graphId !== baseline.graphId
+          || canonicalProjectionKey(projection.graphId, projection.request)
+            !== canonicalProjectionKey(baseline.graphId, baseline.request)
+        ) {
+          throw new Error("review baseline reload returned a different graph projection");
+        }
+        if (get().prReviewBaseline !== baseline || get().prReviewed !== reviewed) {
+          return false;
+        }
+        resetChangedIdsToArtifact(projection.artifact, projection.index);
+        set({
+          artifact: projection.artifact,
+          index: projection.index,
+          activeProjectionGraphId: projection.graphId,
+          activeProjectionRequest: projection.request,
+          activeProjectionKey: projection.key,
+          activeProjectionId: projection.projectionId,
+          activeProjectionEndpoints: baseline.endpoints,
+          coverage: get().coverageMode
+            ? computeCoverage(projection.artifact.nodes, projection.artifact.edges)
+            : null,
+        });
+        return restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
+      };
       const cached = projectionDataSource.activateCached(baseline.projectionKey);
-      if (cached === undefined) {
-        return restored;
+      if (cached !== undefined) {
+        return promote(cached);
       }
-      resetChangedIdsToArtifact(cached.artifact, cached.index);
-      set({
-        artifact: cached.artifact,
-        index: cached.index,
-        activeProjectionGraphId: cached.graphId,
-        activeProjectionRequest: cached.request,
-        activeProjectionKey: cached.key,
-        activeProjectionId: cached.projectionId,
-        coverage: get().coverageMode ? computeCoverage(cached.artifact.nodes, cached.artifact.edges) : null,
-      });
-      return restored;
+      return projectionDataSource.activate(baseline.request, { endpoints: baseline.endpoints }).then(promote);
     };
 
     const mutatePrReviewComment = async (mutation: {
@@ -2605,6 +3215,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     activeProjectionId: dependencies.initialProjection?.projectionId ?? null,
     activeProjectionGraphId: dependencies.initialProjection?.graphId ?? null,
     activeProjectionRequest: dependencies.initialProjection?.request ?? null,
+    activeProjectionEndpoints: initialProjectionEndpoints,
     // A `meridian review` artifact opens straight on the review surface; everything else (plain
     // `view`, or a `web` GitHub session) opens on the Map — the default lens.
     viewMode: "modules",
@@ -2698,6 +3309,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalView: "graph",
     minimalShowGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    minimalCodebaseTargetIds: [],
+    minimalCodebaseRetainedExpandedIds: new Set<string>(),
     review,
     reviewAffectedIds: new Set(initialReviewProjection?.affected.map((node) => node.nodeId) ?? []),
     reviewDiffOnly: false,
@@ -2829,7 +3442,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       get().selectFlowEntry(null);
     },
 
-    selectFlowEntry(ref) {
+    async selectFlowEntry(ref) {
       syntheticExecutionSeq += 1;
       if (ref === null) {
         const state = get();
@@ -2861,7 +3474,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             : {}),
         });
         if (reviewFlowOpen && baseline !== null) {
-          void requestMinimalRelayout({ label: "Closing logic flow review…" });
+          await requestMinimalRelayout({ label: "Closing logic flow review…" });
         }
         return;
       }
@@ -2928,19 +3541,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               }
             : {}),
         });
-        if (needsExecutionGraph) {
-          void get().flowPaneRelayout();
-        }
+        const pendingLayouts: Promise<void>[] = [];
+        if (needsExecutionGraph) pendingLayouts.push(get().flowPaneRelayout());
         const recenterIfCurrent = () => {
           if (get().flowSelection === ref && get().logicSelected === null) {
             set({ recenterSeq: get().recenterSeq + 1 });
           }
         };
         if (needsRelayout) {
-          void requestMinimalRelayout({ label: "Revealing logic flow in review…" }).then(recenterIfCurrent);
+          pendingLayouts.push(
+            requestMinimalRelayout({ label: "Revealing logic flow in review…" }).then(recenterIfCurrent),
+          );
         } else {
           recenterIfCurrent();
         }
+        await Promise.all(pendingLayouts);
         return;
       }
       set({
@@ -2957,6 +3572,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // SHARED module spaces — the phase-C unification retired the ui lens's private expansion.
       // The UI lens routes through its OWN reveal: a null focus means the RENDER ROOT there (not
       // the repo), so the repo-rooted helper could select files the lens never draws.
+      const pendingLayouts: Promise<void>[] = [];
       if (viewMode === "modules" || viewMode === "ui") {
         const reveal =
           viewMode === "ui"
@@ -2969,15 +3585,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             moduleSelected: reveal.moduleSelected,
             moduleGhostInspection: null,
           });
-          void get().moduleRelayout({ label: "Revealing selected flow…" });
+          pendingLayouts.push(get().moduleRelayout({ label: "Revealing selected flow…" }));
         } else {
           set({ moduleSelected: new Set<string>(), moduleGhostInspection: null });
           if (state.moduleGhostInspection !== null) {
-            void get().moduleRelayout({ label: "Closing ghost exploration…" });
+            pendingLayouts.push(get().moduleRelayout({ label: "Closing ghost exploration…" }));
           }
         }
       }
-      void get().flowPaneRelayout();
+      pendingLayouts.push(get().flowPaneRelayout());
+      await Promise.all(pendingLayouts);
     },
 
     revealSelectedTraceInCodebase() {
@@ -3370,7 +3987,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().flowPaneRelayout();
     },
 
-    selectFlowPaneTarget(nodeId) {
+    async selectFlowPaneTarget(nodeId) {
       const state = get();
       const syntheticReview = state.flowPaneOrigin === "synthetic"
         && state.review !== null
@@ -3460,7 +4077,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (!guardReviewLineComposerTransition(() => get().selectFlowPaneTarget(nodeId))) return;
         set(canonicalRequestMapPatch(state, context));
         const subject = executionOrigin === "synthetic" ? "synthetic run" : "request";
-        void get().moduleRelayout({ label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from ${subject}…` }).then(recenterIfCurrent);
+        await get().moduleRelayout({
+          label: `Revealing ${state.index.nodesById.get(graphTarget)?.displayName ?? graphTarget} from ${subject}…`,
+        }).then(recenterIfCurrent);
         return;
       }
       const selection = state.flowSelection;
@@ -3507,7 +4126,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       };
       if (needsRelayout) {
-        void requestMinimalRelayout({ label: nodeId === null ? "Restoring logic flow context…" : "Revealing logic flow node…" }).then(recenterIfCurrent);
+        await requestMinimalRelayout({
+          label: nodeId === null ? "Restoring logic flow context…" : "Revealing logic flow node…",
+        }).then(recenterIfCurrent);
       } else {
         recenterIfCurrent();
       }
@@ -3616,7 +4237,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const state = get();
       moduleLayoutSeq += 1;
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().openLogicFlow(nodeId))) {
+        return;
+      }
       const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
       if (resetSynthetic) {
         syntheticExecutionSeq += 1;
@@ -3646,7 +4269,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const state = get();
       logicLayoutSeq += 1;
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().openComposition(unitId))) {
+        return;
+      }
       const reveal = serviceRevealStateForMany(
         [unitId],
         get().index,
@@ -4621,11 +5246,43 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ moduleSelected: id === null ? new Set<string>() : new Set([id]) });
     },
 
-    setMinimalView(view) {
+    async setMinimalView(view) {
       const state = get();
       if (state.minimalSeedIds.length === 0 || state.minimalView === view) return;
-      if (!guardReviewLineComposerTransition(() => get().setMinimalView(view))) return;
-      set({ minimalView: view });
+      if (!guardReviewLineComposerTransition(() => { void get().setMinimalView(view); })) return;
+      if (view === "codebase") {
+        const { targetIds, retainedExpandedIds } = minimalCodebaseInputsForState(state);
+        retainCurrentMinimalScene(state);
+        set({
+          minimalView: "codebase",
+          minimalCodebaseTargetIds: targetIds,
+          minimalCodebaseRetainedExpandedIds: retainedExpandedIds,
+          // The exact extracted scene is now an inactive, evictable cache allocation. Keeping these
+          // arrays in Zustand would pin the whole hidden graph outside the shared budget.
+          minimalBasePositions: {},
+          minimalRfNodes: [],
+          minimalRfEdges: [],
+          minimalLayoutStatus: "idle",
+          minimalLayoutActivity: null,
+          reviewFlowBaseline: state.reviewFlowBaseline === null
+            ? null
+            : { ...state.reviewFlowBaseline, minimalBasePositions: {} },
+        });
+        if (projectionDataSource !== null && state.prPreparedArtifactCurrent) {
+          await activateMinimalCodebaseProjection();
+          // A preflight failure can safely fall back before changing projections. Rehydrate the
+          // extracted sibling from the bounded cache (or relayout after eviction) in that case.
+          if (get().minimalView === "graph") await restoreCurrentMinimalScene();
+        }
+        return;
+      }
+      set({ minimalView: "graph" });
+      if (
+        projectionDataSource !== null
+        && state.prPreparedArtifactCurrent
+        && !await restoreMinimalCodebaseProjection()
+      ) return;
+      await restoreCurrentMinimalScene();
     },
 
     setMinimalShowGhostNodes(visible) {
@@ -4638,24 +5295,36 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const next = new Map(get().minimalCodebaseExpansionOverrides);
       next.set(nodeId, expanded);
       set({ minimalCodebaseExpansionOverrides: next });
+      const state = get();
+      if (state.minimalView === "codebase" && state.prPreparedArtifactCurrent) {
+        // Both directions are transport changes. A rapid expand→collapse aborts the first request,
+        // and the final request is built from the current override map, so stale expanded pairs can
+        // never install after the disclosure was closed.
+        void activateMinimalCodebaseProjection(expanded ? [nodeId] : []);
+      }
     },
 
     // Extract the current selection into a child graph. The first extraction covers the module
     // surface; every later extraction snapshots the active graph and pushes another frame. An open
     // PR is ambient session context, not an overlay owner, so nested extraction never destroys it.
-    buildMinimalGraph() {
+    async buildMinimalGraph() {
+      if (
+        get().minimalView === "graph"
+        && minimalCodebaseProjectionBaseline !== null
+        && !await ensureExtractedReviewProjection()
+      ) return;
       const state = get();
       const nested = state.minimalSeedIds.length > 0;
       if (
         state.moduleSelected.size === 0
         || (!nested && state.prReviewed !== null)
-        || (nested && state.minimalLayoutStatus !== "ready")
+        || (nested && state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
         || state.flowPaneLayoutStatus === "laying-out"
         || state.syntheticExecutionStatus === "running"
       ) {
         return;
       }
-      if (!guardReviewLineComposerTransition(() => get().buildMinimalGraph())) {
+      if (!guardReviewLineComposerTransition(() => { void get().buildMinimalGraph(); })) {
         return;
       }
       // The active surface's spec decides how a selection seeds the overlay: identity on the Map,
@@ -4708,8 +5377,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const inspectedSource = !nested && state.moduleGhostInspection !== null;
       const minimalBasePositions = captureMapPositions(nested ? state.minimalRfNodes : state.moduleRfNodes);
       const history = nested
-        ? [...state.minimalGraphHistory, captureMinimalGraphHistory(state)]
+        ? [...state.minimalGraphHistory, captureMinimalGraphHistoryFrame(state)]
         : [];
+      if (nested) startNewMinimalScene();
+      // A Codebase-origin child promotes the current context pair into its own extracted coordinate.
+      // The parent's exact context+baseline pair lives in metadata beside its evictable scene.
+      minimalCodebaseProjectionBaseline = null;
       const clearSyntheticFlow = state.flowPaneOrigin === "synthetic"
         ? {
             flowSelection: null,
@@ -4740,6 +5413,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
         reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
         moduleGhostInspection: null,
         ...syntheticExecutionReset(),
@@ -4782,36 +5457,65 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void requestMinimalRelayout({ label: "Extracting selection…" });
     },
 
-    // Navigate exactly one graph outward. Nested parents restore synchronously from their captured
-    // scene; at the root, use the canonical close path so source/PR baselines and URL state receive
-    // the same cleanup as the explicit Close action.
-    backMinimalGraph() {
-      const state = get();
-      const parent = state.minimalGraphHistory.at(-1);
+    // Navigate exactly one graph outward. A recent parent promotes its cached scene synchronously;
+    // an evicted parent reloads only its projection coordinate and relayouts once. At the root, use
+    // the canonical close path so source/PR baselines and URL state receive identical cleanup.
+    async backMinimalGraph() {
+      const initial = get();
+      const parent = initial.minimalGraphHistory.at(-1);
       if (parent === undefined) {
-        get().closeMinimalGraph();
+        await get().closeMinimalGraph();
         return;
       }
-      if (!guardReviewLineComposerTransition(() => get().backMinimalGraph())) {
+      if (!guardReviewLineComposerTransition(() => { void get().backMinimalGraph(); })) {
         return;
       }
+      const projectionFrame = minimalProjectionFrames.get(parent.sceneKey) ?? null;
+      if (projectionFrame?.active !== null && projectionFrame?.active !== undefined) {
+        const activation = activateMinimalProjectionCoordinate(projectionFrame.active);
+        if (activation instanceof Promise ? !await activation : !activation) return;
+      }
+      const state = get();
+      // A competing navigation may have replaced the stack while an evicted projection reloaded.
+      if (state.minimalGraphHistory.at(-1) !== parent) return;
       minimalLayoutSeq += 1;
       flowPaneLayoutSeq += 1;
       requestTargetRevealSeq += 1;
       syntheticExecutionSeq += 1;
+      currentMinimalSceneKey = parent.sceneKey || nextMinimalSceneKey();
+      const cachedScene = parent.minimalView === "graph"
+        ? minimalSceneCache.activate(currentMinimalSceneKey)
+        : undefined;
+      if (parent.minimalView === "codebase") {
+        // Codebase is the current view; its extracted sibling must remain an inactive allocation.
+        minimalSceneCache.deactivateActive();
+        void minimalSceneCache.get(currentMinimalSceneKey);
+      }
+      const sceneState = cachedScene === undefined
+        ? emptyMinimalGraphScene(parent)
+        : restoreMinimalGraphScene(cachedScene);
+      const restoredIndex = get().index;
       const restoredModuleSelected = new Set(
         [...parent.moduleSelected].filter((id) =>
           (state.showExternalGhosts || !id.startsWith("ext:"))
-          && (state.showPrivate || !state.index.privateIds.has(id)),
+          && (state.showPrivate || !restoredIndex.privateIds.has(id)),
         ),
       );
+      minimalCodebaseProjectionBaseline = parent.minimalView === "codebase"
+        && projectionFrame?.codebaseBaseline !== null
+        && projectionFrame?.codebaseBaseline !== undefined
+        && projectionCoordinateMatchesSession(projectionFrame.codebaseBaseline, get())
+          ? projectionFrame.codebaseBaseline
+          : null;
       set({
         ...restoreMinimalGraphHistory(parent),
+        ...sceneState,
         moduleSelected: restoredModuleSelected,
         minimalGraphHistory: state.minimalGraphHistory.slice(0, -1),
       });
-      // The restored RF scene already reflects its captured selection and geometry. Selection is
-      // paint-only, so returning to the parent cannot queue a competing layout over this snapshot.
+      minimalProjectionFrames.delete(parent.sceneKey);
+      // A cache hit restores the exact geometry. A miss keeps only the lightweight coordinate and
+      // rebuilds one current scene; no evicted graph data is resurrected outside the shared budget.
       const showTestsChanged = state.showTests !== parent.showTests;
       if (showTestsChanged) {
         const liveReprojected = reprojectLivePrReview(
@@ -4847,17 +5551,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           void get().flowPaneRelayout();
         }
       }
+      if (
+        cachedScene === undefined
+        && get().minimalView === "graph"
+        && get().minimalMemberIds.length > 0
+        && get().minimalLayoutStatus !== "ready"
+      ) {
+        await get().minimalRelayout({ label: "Restoring extracted graph…" });
+      }
     },
 
     // Close the overlay back to the Module-map level canvas. The selection is kept, so the reader
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
     closeMinimalGraph() {
-      if (!guardReviewLineComposerTransition(() => get().closeMinimalGraph())) {
-        return;
+      if (!guardReviewLineComposerTransition(() => { void get().closeMinimalGraph(); })) {
+        return Promise.resolve();
       }
       const stateBeforeClose = get();
       const closingPrReview = stateBeforeClose.prReviewed;
+      projectionRequestController?.abort();
+      projectionRequestController = null;
+      projectionRequestSeq += 1;
+      minimalCodebaseProjectionBaseline = null;
       // A user close/lens transition wins over a refresh. Invalidate both its data-fetch lane and
       // any streamed head preparation so a late response cannot reopen the overlay they just left.
       if (stateBeforeClose.prReviewRefreshing) {
@@ -4869,16 +5585,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reviewFlowOpen = stateBeforeClose.review !== null
         && stateBeforeClose.flowSelection !== null
         && flowBaseline !== null;
-      // Closing the overlay mid-review must not strand the reader on the swapped PR-head projection
-      // (still amber-marked) under the plain Map — yet the review must stay RESUMABLE. Soft-restore
-      // the prior projection when it is still cached while keeping every review field (the chip +
-      // resumePrReview re-open from them). No-op otherwise.
-      if (get().prReviewed !== null) {
-        restoreReviewSession({ endSession: false });
-      }
+      const finishClose = () => {
       const sourceRestoreSequence = moduleLayoutSeq;
       minimalLayoutSeq += 1;
       flowPaneLayoutSeq += 1;
+      clearMinimalSceneNavigation();
       set({
         ...(reviewFlowOpen && flowBaseline !== null
           ? {
@@ -4901,6 +5612,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
         reviewFocusedSubgraph: null,
         ...(closingPrReview !== null
           ? {
@@ -4945,6 +5658,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           await current.moduleRelayout({ label: "Restoring review map…" });
         })();
       }
+      };
+      // Closing the overlay mid-review must never expose the swapped HEAD as an ordinary Map. A
+      // retained baseline promotes synchronously; an evicted/oversized one reloads first, leaving
+      // the review overlay intact until the exact prior artifact/index are active again.
+      if (get().prReviewed !== null) {
+        try {
+          const restoration = restoreReviewSession({ endSession: false });
+          if (restoration instanceof Promise) {
+            return restoration.then((restored) => {
+              if (restored) finishClose();
+            }, (error) => {
+              set({
+                prReviewStatus: "error",
+                prPrepareError: prepareErrorMessage(error),
+              });
+            });
+          }
+          if (!restoration && stateBeforeClose.prReviewBaseline !== null) return Promise.resolve();
+        } catch (error) {
+          set({ prReviewStatus: "error", prPrepareError: prepareErrorMessage(error) });
+          return Promise.resolve();
+        }
+      }
+      finishClose();
+      return Promise.resolve();
     },
 
     // Reset the overlay to its base: restore the working set to the origin selection, collapse any
@@ -5000,6 +5738,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async minimalRelayout(activity) {
       if (get().minimalMemberIds.length === 0) {
         set({ minimalLayoutStatus: "idle", minimalLayoutActivity: null });
+        if (get().minimalSeedIds.length > 0 && get().minimalView === "graph") {
+          publishCurrentMinimalScene(get());
+        }
         return;
       }
       const sequence = ++minimalLayoutSeq;
@@ -5079,6 +5820,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           minimalLayoutStatus: "ready",
           minimalLayoutActivity: null,
         });
+        publishCurrentMinimalScene(get());
       } catch (error) {
         if (minimalLayoutSeq === sequence) {
           console.error("[meridian] Minimal graph layout failed.", error);
@@ -5130,7 +5872,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => get().openServiceScope())) {
         return;
       }
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().openServiceScope())) {
+        return;
+      }
       if (viewMode === "logic") {
         logicLayoutSeq += 1;
       }
@@ -5242,7 +5986,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (flowBaseline === null && id !== null) {
         const rootId = hiddenReviewRollupFor(before, id);
         if (rootId !== null) {
-          focusReviewSubgraph(rootId, { selectedId: id, litNodeIds: new Set([id]) }, () => get().selectReviewNode(id));
+          void focusReviewSubgraph(
+            rootId,
+            { selectedId: id, litNodeIds: new Set([id]) },
+            () => get().selectReviewNode(id),
+          );
           return;
         }
         if (revealWithinFocusedReviewSubgraph(
@@ -5308,7 +6056,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (flowBaseline === null) {
         const rootId = hiddenReviewRollupFor(state, file.moduleId);
         if (rootId !== null) {
-          focusReviewSubgraph(
+          void focusReviewSubgraph(
             rootId,
             { selectedId: file.moduleId, litNodeIds: lit },
             () => get().focusReviewFile(path),
@@ -5361,26 +6109,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // ids (null restores the full review seed set), then relayout through the shared minimal machinery
     // — a pure seed/member swap, no dimming and no bespoke graph. Mirrors applyPrReviewToMap's reset
     // of the minimal fields exactly so the overlay rebuilds identically.
-    selectReviewGroup(groupId) {
+    async selectReviewGroup(groupId) {
+      const initial = get();
+      if (
+        !initial.review
+        || !initial.reviewGroups
+        || (groupId === initial.reviewActiveGroupId
+          && initial.reviewPathScope === null
+          && initial.reviewFocusedSubgraph === null)
+      ) return;
+      if (
+        minimalCodebaseProjectionBaseline !== null
+        && !await ensureExtractedReviewProjection()
+      ) return;
       const {
         review,
         reviewFiles,
         reviewGroups,
-        reviewActiveGroupId,
-        reviewPathScope,
-        reviewFocusedSubgraph,
         reviewBaseNodeIds,
         reviewDeletedNodeIds,
         index,
       } = get();
-      if (
-        !review
-        || !reviewGroups
-        || (groupId === reviewActiveGroupId && reviewPathScope === null && reviewFocusedSubgraph === null)
-      ) {
-        return;
-      }
-      if (!guardReviewLineComposerTransition(() => get().selectReviewGroup(groupId))) {
+      if (!review || !reviewGroups) return;
+      if (!guardReviewLineComposerTransition(() => { void get().selectReviewGroup(groupId); })) {
         return;
       }
       // An unknown id falls back to "All" — a stale group id can never strand the reader on an empty Map.
@@ -5393,6 +6144,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         deletedNodeIds: reviewDeletedNodeIds,
       });
       invalidateMinimalLayout();
+      clearMinimalSceneNavigation();
+      startNewMinimalScene();
+      minimalCodebaseProjectionBaseline = null;
       set({
         reviewActiveGroupId: group ? group.id : null,
         reviewPathScope: null,
@@ -5401,6 +6155,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -5424,21 +6180,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutStatus: projection.seeds.length > 0 ? "laying-out" : "idle",
         minimalLayoutActivity: projection.seeds.length > 0 ? { label: "Opening review group…" } : null,
       });
-      void requestMinimalRelayout({ label: group ? `Opening ${group.label}…` : "Opening all review groups…" });
+      await requestMinimalRelayout({ label: group ? `Opening ${group.label}…` : "Opening all review groups…" });
     },
 
     // A path scope is an additional, segment-safe filter over the active connectivity group. It
     // reuses the exact group-isolation machinery so graph, files, and flows remain one coherent
     // review lens. Empty/unmatched input cannot close the overlay and strand the review panel.
-    selectReviewPathScope(path) {
-      const state = get();
-      if (state.review === null) {
+    async selectReviewPathScope(path) {
+      const initial = get();
+      if (initial.review === null) {
         return;
       }
       const normalized = path === null ? null : normalizeReviewPathScope(path) || null;
-      if (normalized === state.reviewPathScope && state.reviewFocusedSubgraph === null) {
+      if (normalized === initial.reviewPathScope && initial.reviewFocusedSubgraph === null) {
         return;
       }
+      if (
+        minimalCodebaseProjectionBaseline !== null
+        && !await ensureExtractedReviewProjection()
+      ) return;
+      const state = get();
       const activeGroup = state.reviewActiveGroupId === null
         ? null
         : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
@@ -5450,10 +6211,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (normalized !== null && projection.seeds.length === 0) {
         return;
       }
-      if (!guardReviewLineComposerTransition(() => get().selectReviewPathScope(path))) {
+      if (!guardReviewLineComposerTransition(() => { void get().selectReviewPathScope(path); })) {
         return;
       }
       invalidateMinimalLayout();
+      clearMinimalSceneNavigation();
+      startNewMinimalScene();
+      minimalCodebaseProjectionBaseline = null;
       set({
         reviewPathScope: normalized,
         reviewFocusedSubgraph: null,
@@ -5461,6 +6225,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+        minimalCodebaseTargetIds: [],
+        minimalCodebaseRetainedExpandedIds: new Set<string>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
         moduleSelected: new Set<string>(),
@@ -5484,24 +6250,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutStatus: projection.seeds.length > 0 ? "laying-out" : "idle",
         minimalLayoutActivity: projection.seeds.length > 0 ? { label: "Filtering review path…" } : null,
       });
-      void get().minimalRelayout({ label: normalized === null ? "Opening review group…" : `Opening ${normalized}…` });
+      await get().minimalRelayout({ label: normalized === null ? "Opening review group…" : `Opening ${normalized}…` });
     },
 
     // A review container focus is a child surface of the current PR graph, not a moduleFocus dive.
     // Exact file seeds deliberately bypass rollupSeeds so opening a large `fs` package reveals its
-    // files rather than reproducing the same summary card. Every open pushes the immediate scene,
-    // so package focus and ordinary selection extraction share unlimited stepwise Back navigation.
-    openReviewSubgraph(rootId) {
-      focusReviewSubgraph(rootId, null, () => get().openReviewSubgraph(rootId));
+    // files rather than reproducing the same summary card. Every open pushes lightweight metadata;
+    // exact scenes remain bounded and evictable under the shared navigation-memory budget.
+    async openReviewSubgraph(rootId) {
+      await focusReviewSubgraph(rootId, null, () => { void get().openReviewSubgraph(rootId); });
     },
 
-    // Back from a focused container is intentionally synchronous: reuse the already-laid outer
-    // nodes/edges and its exact curation instead of asking ELK to approximate the old PR graph.
+    // Back reactivates the exact parent scene while it remains resident; an evicted scene keeps its
+    // lightweight navigation frame and pays one relayout instead of retaining unbounded graph data.
     closeReviewSubgraph() {
       if (get().reviewFocusedSubgraph === null) {
         return;
       }
-      get().backMinimalGraph();
+      void get().backMinimalGraph();
     },
 
     // Toggle a flow's reviewed tick and persist the whole record under the reviewKey.
@@ -5790,6 +6556,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     toggleReviewDiffOnly() {
+      if (minimalCodebaseProjectionBaseline !== null) {
+        void ensureExtractedReviewProjection().then((restored) => {
+          if (restored) get().toggleReviewDiffOnly();
+        });
+        return;
+      }
       const state = get();
       if (state.review === null) {
         return;
@@ -6043,7 +6815,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         outgoing.serviceGroupingMode,
         outgoing.serviceGroupingTargetSize,
       );
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().setViewMode(mode))) {
+        return;
+      }
       if (mode === "logic") {
         moduleLayoutSeq += 1;
         const restoreLogicScene = get().logicRoot !== null && get().logicRfNodes.length === 0;
@@ -6129,6 +6903,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Hiding tests while having selected test code would strand the view on nodes that no longer
     // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
+      if (minimalCodebaseProjectionBaseline !== null) {
+        void ensureExtractedReviewProjection().then((restored) => {
+          if (restored) get().toggleShowTests();
+        });
+        return;
+      }
       if (!guardReviewLineComposerTransition(() => get().toggleShowTests())) {
         return;
       }
@@ -6681,21 +7461,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (selectedPrSummary(get(), number) !== null) {
         return;
       }
-      try {
-        const url = new URL(prOneUrl, requestOrigin());
-        url.searchParams.set("n", String(number));
-        const response = await fetch(url, { credentials: "same-origin" });
-        if (!response.ok) {
-          set({ prsError: await errorMessage(response) });
-          return;
+      const inFlight = prSummaryRequests.get(number);
+      if (inFlight !== undefined) {
+        await inFlight;
+        return;
+      }
+      const request = (async () => {
+        try {
+          const url = new URL(prOneUrl, requestOrigin());
+          url.searchParams.set("n", String(number));
+          const response = await fetch(url, { credentials: "same-origin" });
+          if (!response.ok) {
+            set({ prsError: await errorMessage(response) });
+            return;
+          }
+          const { pr } = (await response.json()) as PrOneResponse;
+          set({
+            prExtraSummaries: { ...get().prExtraSummaries, [pr.number]: pr },
+            prsError: null,
+          });
+        } catch {
+          set({ prsError: PRS_UNAVAILABLE_ERROR });
         }
-        const { pr } = (await response.json()) as PrOneResponse;
-        set({
-          prExtraSummaries: { ...get().prExtraSummaries, [pr.number]: pr },
-          prsError: null,
-        });
-      } catch {
-        set({ prsError: PRS_UNAVAILABLE_ERROR });
+      })();
+      prSummaryRequests.set(number, request);
+      try {
+        await request;
+      } finally {
+        if (prSummaryRequests.get(number) === request) prSummaryRequests.delete(number);
       }
     },
 
@@ -6710,7 +7503,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       get().cancelPrReviewPreparation();
       // Browsing another card must not discard a parked review. Only an explicit navigation restore
       // away from review state requests teardown; starting another review owns replacement below.
-      if (options.endReviewSession && restoreSelectedPrReview(get, restoreReviewSession)) {
+      if (options.endReviewSession && await restoreSelectedPrReview(get, restoreReviewSession)) {
         void get().relayout();
       }
       const prepareReset = {
@@ -6774,8 +7567,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (prFilesSeq !== sequence || get().prSelected !== number) {
             return;
           }
+          const current = get();
+          const preparedManifest = current.prReviewed === number
+            && current.prPreparedArtifactCurrent
+            && current.prFiles !== null
+            ? preparedManifestFromCanonicalFiles(current.prFiles)
+            : null;
+          const hydratedFiles = preparedManifest === null
+            ? data.files
+            : canonicalPreparedPrFiles(data.files, preparedManifest, current.artifact);
           set({
-            prFiles: data.files,
+            prFiles: hydratedFiles,
             prFilesTruncated: data.truncated,
             prFilesTotal: data.totalFiles ?? data.files.length,
             prFilesOutside: data.outsideCount ?? 0,
@@ -6783,6 +7585,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             prsLoading: false,
             prsError: null,
           });
+          if (preparedManifest !== null) {
+            // The prepare manifest owns membership/status/rename identity. GitHub detail contributes
+            // patches, comment ranges, and totals only; reproject the current immutable HEAD without
+            // another server preparation or replacing the canonical inventory.
+            if (await ensureExtractedReviewProjection()) {
+              if (get().minimalGraphHistory.length > 0) {
+                reprojectLivePrReview("Updating review details…", true);
+              } else {
+                applyPrReviewToMap(
+                  get,
+                  set,
+                  prFilesUrl,
+                  invalidateMinimalLayout,
+                  invalidateModuleLayout,
+                  invalidateArtifactCaches,
+                  { reprojecting: true, preserveReviewSelection: true, preserveReviewDiffOnly: true },
+                );
+              }
+            }
+          }
           // Discussion and checks are deliberately secondary to the changed-file load: the detail
           // panel is usable as soon as files land, while these two independent lanes fill in quietly.
           const discussionSequence = ++prDiscussionSeq;
@@ -6980,30 +7802,249 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Once the selected PR's files are ready, a review-capable web session PREPARES first while the
-    // PRs page remains visible. Only the swapped PR-head projection is allowed to enter the Map.
-    async reviewPrInGraph() {
+    async restorePreparedPrReview(number, options) {
+      if (preparedReviewUrl === null) {
+        return false;
+      }
+      // A server-injected handoff is authoritative for this URL. Abort/supersede any older restore,
+      // but never fall through to POST when this immutable GET is malformed or stale.
+      preparedReviewRestoreController?.abort();
+      const controller = new AbortController();
+      preparedReviewRestoreController = controller;
+      const sequence = ++prPrepareSeq;
+      const fileSequence = ++prFilesSeq;
+      const discussionSequence = ++prDiscussionSeq;
+      const activeBeforeEntry = () => prPrepareSeq === sequence
+        && !controller.signal.aborted
+        && get().viewMode === "prs"
+        && get().prSelected === number
+        && get().prReviewed === null;
+      set({
+        prSelected: number,
+        prFiles: null,
+        prDiscussion: null,
+        prChecks: null,
+        prFilesTruncated: false,
+        prFilesTotal: 0,
+        prFilesOutside: 0,
+        prFilesSuggestedSubdir: "",
+        prReviewBlocked: null,
+        prsLoading: true,
+        prsError: null,
+        prReviewStatus: "preparing",
+        prPrepareStage: "resolve",
+        prPrepareElapsedMs: 0,
+        prPrepareError: null,
+      });
+
+      const files = fetchPrFiles(prFilesUrl, number).then(
+        (result) => result,
+        () => null,
+      );
+      const discussion = fetchPrDiscussion(prCommentsUrl, number).catch(() => null);
+      let restoringGraphId: string | null = null;
+      try {
+        const [handoff, summary] = await Promise.all([
+          fetchPreparedReviewHandoff(preparedReviewUrl, controller.signal),
+          fetchPrSummary(prOneUrl, number),
+        ]);
+        if (!activeBeforeEntry()) return true;
+        assertPreparedReviewHandoffIdentity(
+          handoff,
+          number,
+          summary,
+          prSessionSource,
+          get().activeProjectionGraphId,
+        );
+        restoringGraphId = handoff.head.graphId;
+        set({
+          ...refreshedPrSummaryState(get(), summary),
+          prPrepareStage: "publish",
+          prPrepareElapsedMs: handoff.timings.totalMs ?? null,
+        });
+        const checks = fetchPrChecks(prChecksUrl, number, handoff.headSha).catch(() => null);
+        const filePaths = changedFileProjectionPaths(handoff.changedFiles);
+        const [prepared, capability] = await Promise.all([
+          loadPreparedReview(handoff.head, handoff.mergeBase, filePaths, controller.signal),
+          fetchPreparedSyntheticCapability(handoff.head.metaUrl, {
+            repository: prSessionSource?.repository ?? null,
+            headSha: handoff.headSha,
+          }, controller.signal),
+        ]);
+        if (!activeBeforeEntry()) return true;
+        // Observe already-settled detail without putting it on the critical path. The immediately
+        // resolved sentinel wins while the network request is still pending.
+        const initialDetails = await Promise.race<PrFilesResponse | null>([files, Promise.resolve(null)]);
+        const canonicalFiles = canonicalPreparedPrFiles(
+          initialDetails?.files ?? [],
+          handoff.changedFiles,
+          prepared.head.artifact,
+        );
+        resetMinimalProjectionNavigationForRevision();
+        invalidateSyntheticArtifactBoundary();
+        swapToPreparedReviewProjection(
+          get,
+          set,
+          prepared,
+          invalidateArtifactCaches,
+          capability,
+          graphProjectionEndpoints(handoff.head),
+        );
+        set({
+          prPreparedHead: handoff.head,
+          prPreparedMergeBase: handoff.mergeBase,
+          prPreparedFilePaths: filePaths,
+          prPreparedHeadSha: handoff.headSha,
+          prPreparedMergeBaseSha: handoff.mergeBaseSha,
+          prFiles: canonicalFiles,
+          prFilesTruncated: false,
+          prFilesTotal: Math.max(
+            canonicalFiles.length,
+            initialDetails?.totalFiles ?? initialDetails?.files.length ?? 0,
+          ),
+          prFilesOutside: initialDetails?.outsideCount ?? 0,
+          prFilesSuggestedSubdir: initialDetails?.suggestedSubdir ?? "",
+          prsLoading: false,
+          prsError: null,
+        });
+        const visibleLayouts: Promise<void>[] = [];
+        const entered = applyPrReviewToMap(
+          get,
+          set,
+          prFilesUrl,
+          invalidateMinimalLayout,
+          invalidateModuleLayout,
+          invalidateArtifactCaches,
+          {
+            beforeVisibleLayout: options?.onVisibleLayoutStart,
+            captureVisibleLayout: (layout) => visibleLayouts.push(layout),
+          },
+        );
+        if (!entered) {
+          await restoreReviewSession({ endSession: true });
+          set({
+            prReviewStatus: "error",
+            prPrepareStage: null,
+            prPrepareElapsedMs: null,
+            prPrepareError: "The prepared pull request does not match this graph.",
+          });
+          return true;
+        }
+        await Promise.all(visibleLayouts);
+        if (get().prReviewed === number && get().prPreparedHead?.graphId === handoff.head.graphId) {
+          set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
+        }
+
+        // GitHub detail is enrichment only. The status-rich handoff controls membership immediately;
+        // if patches/comments arrive later, reproject the same immutable HEAD without another POST.
+        if (initialDetails === null) {
+          void files.then(async (detail) => {
+            let current = get();
+            if (
+              detail === null
+              || prFilesSeq !== fileSequence
+              || current.prReviewed !== number
+              || current.prPreparedHead?.graphId !== handoff.head.graphId
+            ) return;
+            if (!await ensureExtractedReviewProjection()) return;
+            current = get();
+            if (
+              prFilesSeq !== fileSequence
+              || current.prReviewed !== number
+              || current.prPreparedHead?.graphId !== handoff.head.graphId
+            ) return;
+            set({
+              prFiles: canonicalPreparedPrFiles(detail.files, handoff.changedFiles, current.artifact),
+              prFilesTruncated: false,
+              prFilesTotal: Math.max(handoff.changedFiles.length, detail.totalFiles ?? detail.files.length),
+              prFilesOutside: detail.outsideCount ?? 0,
+              prFilesSuggestedSubdir: detail.suggestedSubdir ?? "",
+            });
+            if (get().minimalGraphHistory.length > 0) {
+              reprojectLivePrReview("Updating review details…", true);
+            } else {
+              applyPrReviewToMap(
+                get,
+                set,
+                prFilesUrl,
+                invalidateMinimalLayout,
+                invalidateModuleLayout,
+                invalidateArtifactCaches,
+                { reprojecting: true, preserveReviewSelection: true, preserveReviewDiffOnly: true },
+              );
+            }
+          });
+        }
+        void discussion.then((result) => {
+          if (
+            result !== null
+            && prDiscussionSeq === discussionSequence
+            && get().prReviewed === number
+          ) {
+            set({ prDiscussion: { comments: result.comments, reviews: result.reviews } });
+          }
+        });
+        void checks.then((result) => {
+          if (result !== null && prFilesSeq === fileSequence && get().prReviewed === number) {
+            set({ prChecks: result });
+          }
+        });
+        return true;
+      } catch (error) {
+        const current = get();
+        if (
+          activeBeforeEntry()
+          || (
+            restoringGraphId !== null
+            && current.prReviewed === number
+            && current.prPreparedHead?.graphId === restoringGraphId
+          )
+        ) {
+          set({
+            prsLoading: false,
+            prReviewStatus: "error",
+            prPrepareStage: null,
+            prPrepareElapsedMs: null,
+            prPrepareError: preparedHandoffErrorMessage(error),
+          });
+        }
+        return true;
+      } finally {
+        if (preparedReviewRestoreController === controller) preparedReviewRestoreController = null;
+      }
+    },
+
+    // A selected summary is sufficient to start direct preparation. GitHub's changed-file/detail
+    // lane hydrates concurrently and may enrich the immutable status-rich prepare manifest later;
+    // it is deliberately not on the graph entry critical path.
+    async reviewPrInGraph(options) {
       const selected = get().prSelected;
       if (selected === null) {
         return;
       }
-      if (get().prFiles === null) {
-        const inFlight = prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq
-          ? prFilesRequest.promise
-          : get().selectPr(selected);
-        await inFlight;
-        if (get().prSelected !== selected || get().prFiles === null) {
+      if (get().prReviewed === selected) {
+        await get().resumePrReview(options);
+        return;
+      }
+      if (selectedPrSummary(get(), selected) === null) {
+        await get().ensurePrSummary(selected);
+        if (get().prSelected !== selected || selectedPrSummary(get(), selected) === null) {
           return;
         }
       }
-      if (get().prReviewed === selected) {
-        await get().resumePrReview();
-        return;
+      // A programmatic selection can arrive without selectPr's detail request. Start that lane now,
+      // before prepareHeadGraph, because selectPr intentionally cancels older preparation when it
+      // starts. Never await it: the prepare manifest is the canonical review inventory.
+      if (
+        get().prFiles === null
+        && !(prFilesRequest?.number === selected && prFilesRequest.sequence === prFilesSeq)
+      ) {
+        void get().selectPr(selected);
       }
       // Selection is only browsing; pressing Review in graph is the commit point that replaces an
       // older parked session. Drop its lightweight return coordinate before preparing the new PR.
       if (get().prReviewed !== null) {
-        restoreSelectedPrReview(get, restoreReviewSession);
+        await restoreSelectedPrReview(get, restoreReviewSession);
       }
       if (prepareUrl === null || prSessionSource === null) {
         set({
@@ -7022,7 +8063,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
-      const promise = get().prepareHeadGraph();
+      const promise = get().prepareHeadGraph(options);
       const request = { number: selected, promise };
       prReviewEntryRequest = request;
       try {
@@ -7039,7 +8080,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // already-prepared head projection (against the same lightweight return coordinate). Then
     // re-project the review through the current Tests setting so a toggle changed while the
     // workspace was parked is honored.
-    async resumePrReview() {
+    async resumePrReview(options) {
       const {
         prReviewed,
         prReviewSource,
@@ -7118,8 +8159,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // The restored Map stayed interactive during the fetch. Clear once more so a Code Flow opened
             // in that window cannot ride the stale base-artifact ref across the head-graph swap.
             clearResumeFlow();
-            swapToPreparedReviewProjection(get, set, prepared, invalidateArtifactCaches, capability);
+            resetMinimalProjectionNavigationForRevision();
+            swapToPreparedReviewProjection(
+              get,
+              set,
+              prepared,
+              invalidateArtifactCaches,
+              capability,
+              graphProjectionEndpoints(prPreparedHead),
+            );
           }
+          const visibleLayouts: Promise<void>[] = [];
           const resumed = applyPrReviewToMap(
             get,
             set,
@@ -7130,13 +8180,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             {
               reprojecting: true,
               preserveReviewSelection: true,
+              beforeVisibleLayout: options?.onVisibleLayoutStart,
+              captureVisibleLayout: (layout) => visibleLayouts.push(layout),
             },
           );
           if (!resumed) {
             // A corrupted or mutated retained payload must never leave the prepared HEAD projection
             // active behind a closed overlay; surface an honest retry state instead.
             if (prPreparedHead !== null) {
-              restoreReviewSession({ endSession: false });
+              await restoreReviewSession({ endSession: false });
             }
             set({
               prReviewStatus: "error",
@@ -7149,8 +8201,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           // Rebuild the reader's lightweight review context, not the entire PR. Each selector
           // invalidates the full pass that applyPrReviewToMap just queued before that pass derives,
           // so a scoped Resume remains cheap even for a repository-wide change.
-          get().selectReviewGroup(resumeGroupId);
-          get().selectReviewPathScope(resumePathScope);
+          const groupLayout = get().selectReviewGroup(resumeGroupId);
+          const pathLayout = get().selectReviewPathScope(resumePathScope);
+          await Promise.all([...visibleLayouts, groupLayout, pathLayout]);
           if (get().prReviewed === prReviewed) {
             set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
           }
@@ -7180,7 +8233,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // the prepared HEAD + merge-base projection pair,
     // then run the review so marking, seeds, and line diff all compute in HEAD coordinates. The
     // stale-seq + identity guards drop a canceled entry, PR switch, or PRs-lens exit.
-    async prepareHeadGraph() {
+    async prepareHeadGraph(options) {
       const state = get();
       const prNumber = state.prReviewed ?? state.prSelected;
       const enteringFromPrs = state.prReviewed === null;
@@ -7218,7 +8271,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return;
       }
-      if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(); })) {
+      if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(options); })) {
         return;
       }
       // A direct manual re-run supersedes the prior action just like Retry does through
@@ -7279,14 +8332,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 endpoints: graphProjectionEndpoints(previousPrepared.mergeBase),
               },
               signal: cancellation.controller.signal,
-            });
+          });
           if (!active()) return false;
+          resetMinimalProjectionNavigationForRevision();
           invalidateSyntheticArtifactBoundary();
           swapToPreparedReviewProjection(get, set, restored, invalidateArtifactCaches, {
             syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
             syntheticScenarios: previousPrepared.syntheticScenarios,
             syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
-          });
+          }, graphProjectionEndpoints(previousPrepared.preparedHead));
           set({
             prPreparedHead: previousPrepared.preparedHead,
             prPreparedMergeBase: previousPrepared.mergeBase,
@@ -7342,8 +8396,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             analysis.changedFiles,
             prepared.head.artifact,
           );
+          resetMinimalProjectionNavigationForRevision();
           invalidateSyntheticArtifactBoundary();
-          swapToPreparedReviewProjection(get, set, prepared, invalidateArtifactCaches, capability);
+          swapToPreparedReviewProjection(
+            get,
+            set,
+            prepared,
+            invalidateArtifactCaches,
+            capability,
+            graphProjectionEndpoints(analysis.head),
+          );
           swappedNewProjection = true;
           set({
             prReviewStatus: "idle",
@@ -7359,14 +8421,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             prFilesTruncated: false,
             prFilesTotal: Math.max(get().prFilesTotal, canonicalFiles.length + get().prFilesOutside),
           });
+          const visibleLayouts: Promise<void>[] = [];
           const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: !enteringFromPrs,
+            beforeVisibleLayout: options?.onVisibleLayoutStart,
+            captureVisibleLayout: (layout) => visibleLayouts.push(layout),
           });
           if (!entered) {
             // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
             // graph behind the PRs page (or replace an explicit base fallback that still matches).
             if (!await restorePreviousPrepared()) {
-              restoreReviewSession({ endSession: enteringFromPrs });
+              await restoreReviewSession({ endSession: enteringFromPrs });
             }
             if (!enteringFromPrs && previousPrepared === null) {
               set({
@@ -7389,13 +8454,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 prPrepareError: "The refreshed pull request no longer matches this graph.",
               });
             }
+          } else {
+            await Promise.all(visibleLayouts);
           }
         } catch (error) {
           if (active()) {
             // Derivation after a successful fetch is still part of preparation. If it throws after
             // the swap, put the prior graph back before exposing the retry state.
             if (swappedNewProjection && !await restorePreviousPrepared()) {
-              restoreReviewSession({ endSession: enteringFromPrs });
+              await restoreReviewSession({ endSession: enteringFromPrs });
               if (!enteringFromPrs && previousPrepared === null) {
                 set({
                   prPreparedHead: null,
@@ -7432,6 +8499,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     cancelPrReviewPreparation() {
       prPrepareSeq += 1;
+      preparedReviewRestoreController?.abort();
+      preparedReviewRestoreController = null;
       const cancellation = prPrepareCancellation;
       prPrepareCancellation = null;
       cancellation?.controller.abort();
@@ -7474,6 +8543,8 @@ function applyPrReviewToMap(
     reprojecting?: boolean;
     preserveReviewSelection?: boolean;
     preserveReviewDiffOnly?: boolean;
+    beforeVisibleLayout?: () => void;
+    captureVisibleLayout?: (layout: Promise<void>) => void;
   } = {},
 ): boolean {
   const {
@@ -7591,7 +8662,9 @@ function applyPrReviewToMap(
   // A first entry/manual re-extract owes every shared lens-transition side effect. An in-place
   // refresh is already on this review surface; its final atomic state replaces the old overlay.
   if (!get().prReviewRefreshing && !options.reprojecting) {
-    beginLensTransition(get, set);
+    if (!beginLensTransition(get, set)) {
+      return false;
+    }
   }
   // Test files are excluded before every graph/checklist derivation. Keep the complete PR's seeds
   // only as an invisible workspace sentinel when ALL matched changes are tests: minimalMemberIds
@@ -7782,6 +8855,8 @@ function applyPrReviewToMap(
     minimalView: "graph",
     minimalShowGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    minimalCodebaseTargetIds: [],
+    minimalCodebaseRetainedExpandedIds: new Set<string>(),
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,
@@ -7810,9 +8885,12 @@ function applyPrReviewToMap(
   }
   // Only the visible review graph is laid out. The underlying Map is intentionally absent until
   // closeMinimalGraph restores the base artifact and schedules one current-state source layout.
-  if (visibleSeeds.length > 0) {
-    void get().minimalRelayout({ label: "Preparing review graph…" });
-  }
+  options.beforeVisibleLayout?.();
+  const visibleLayout = visibleSeeds.length > 0
+    ? get().minimalRelayout({ label: "Preparing review graph…" })
+    : Promise.resolve();
+  if (options.captureVisibleLayout) options.captureVisibleLayout(visibleLayout);
+  else void visibleLayout;
   return true;
 }
 
@@ -7850,6 +8928,24 @@ function canonicalPreparedPrFiles(
     }
     return file;
   });
+}
+
+/** Reconstitute the immutable prepare inventory from the canonical files already installed for an
+ * active review. A malformed rename must not let a late GitHub response replace that inventory. */
+function preparedManifestFromCanonicalFiles(
+  files: readonly PrChangedFile[],
+): PreparedChangedFile[] | null {
+  const manifest: PreparedChangedFile[] = [];
+  for (const file of files) {
+    const status = file.status === "removed" ? "deleted" : file.status;
+    if (status === "renamed") {
+      if (file.previousPath === undefined) return null;
+      manifest.push({ path: file.path, status, previousPath: file.previousPath });
+    } else {
+      manifest.push({ path: file.path, status });
+    }
+  }
+  return manifest;
 }
 
 /** HEAD affected nodes without fabricated pure-deletion seams. Paintable local kinds identify rows
@@ -8049,11 +9145,11 @@ export function selectedPrSummary(state: BlueprintState, number: number | null =
 }
 
 /** End either a prepared or explicit base review without retaining another graph pair. */
-function restoreSelectedPrReview(
+async function restoreSelectedPrReview(
   get: () => BlueprintState,
-  restore: (options?: { endSession?: boolean }) => boolean,
-): boolean {
-  return get().prReviewed !== null && restore();
+  restore: (options?: { endSession?: boolean }) => boolean | Promise<boolean>,
+): Promise<boolean> {
+  return get().prReviewed !== null && await restore();
 }
 
 function prepareErrorMessage(error: unknown): string {
@@ -8066,6 +9162,57 @@ function splitGitHubRepository(repository: string): { owner: string; repo: strin
     throw new Error("invalid GitHub repository identity in renderer boot configuration");
   }
   return { owner: parts[0]!, repo: parts[1]! };
+}
+
+function assertPreparedReviewHandoffIdentity(
+  handoff: PreparedReviewHandoff,
+  number: number,
+  summary: PrSummary,
+  source: PrSessionSource | null,
+  bootGraphId: string | null,
+): void {
+  if (source === null) throw new Error("prepared review handoff has no GitHub session identity");
+  const repository = splitGitHubRepository(source.repository);
+  const expectedSubdir = source.subdir.length > 0 ? source.subdir : undefined;
+  if (
+    handoff.request.owner !== repository.owner
+    || handoff.request.repo !== repository.repo
+    || handoff.request.subdir !== expectedSubdir
+    || handoff.request.prNumber !== number
+    || summary.number !== number
+    || handoff.request.baseRef !== summary.baseRef
+    || handoff.request.headRef !== summary.headRef
+    || summary.headSha !== handoff.headSha
+  ) {
+    throw new Error("prepared review handoff does not match the requested pull request");
+  }
+  if (bootGraphId === null || handoff.head.graphId !== bootGraphId) {
+    throw new Error("prepared review HEAD descriptor does not match the boot graph");
+  }
+  assertDescriptorEndpointsBound(handoff.head);
+  assertDescriptorEndpointsBound(handoff.mergeBase);
+}
+
+function assertDescriptorEndpointsBound(descriptor: PreparedGraphDescriptor): void {
+  const origin = requestOrigin();
+  for (const endpoint of [
+    descriptor.manifestUrl,
+    descriptor.projectionUrl,
+    descriptor.sourceUrl,
+    descriptor.metaUrl,
+  ]) {
+    const parsed = new URL(endpoint, origin);
+    if (parsed.origin !== origin || parsed.searchParams.get("id") !== descriptor.graphId) {
+      throw new Error("prepared review descriptor endpoint does not match its graph identity");
+    }
+  }
+}
+
+function preparedHandoffErrorMessage(error: unknown): string {
+  const detail = error instanceof Error && error.message.trim().length > 0
+    ? ` ${error.message}`
+    : "";
+  return `Could not restore the prepared pull request.${detail}`;
 }
 
 /** Route an in-place expansion relayout to whichever module surface is showing: the minimal-graph
@@ -8122,7 +9269,11 @@ function releasedLogicScene(): ReleasedLogicScene {
  * openComposition set viewMode directly) — one helper means the next lens-entry side effect cannot
  * be forgotten four times over. openServiceScope runs it too, then SETS its own fresh scope.
  */
-function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Partial<BlueprintState>) => void): void {
+function beginLensTransition(
+  get: BlueprintStore["getState"],
+  set: (partial: Partial<BlueprintState>) => void,
+  retry?: () => void,
+): boolean {
   // Most lens entries route through setViewMode, but direct pivots (openLogicFlow,
   // openComposition, openServiceScope) call this helper themselves. They must abandon the same
   // prepare-first waiting lane before changing view. Successful prepared entry sets the lane idle
@@ -8131,7 +9282,19 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
     get().cancelPrReviewPreparation();
   }
   if (get().minimalSeedIds.length > 0) {
-    get().closeMinimalGraph();
+    const close = get().closeMinimalGraph();
+    if (get().minimalSeedIds.length > 0) {
+      // An evicted/oversized review baseline reloads asynchronously. Do not let the requested lens
+      // expose HEAD underneath the overlay; replay the complete public action only after close has
+      // installed the baseline and cleared the overlay. A failed restore leaves seeds intact and
+      // therefore deliberately does not replay.
+      if (retry !== undefined) {
+        void close.then(() => {
+          if (get().minimalSeedIds.length === 0) retry();
+        });
+      }
+      return false;
+    }
   }
   const state = get();
   // Ghost-path inspection belongs to the exact current projection. A real lens transition leaves
@@ -8162,6 +9325,7 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
       moduleLayoutActivity: null,
     });
   }
+  return true;
 }
 
 type CanonicalRequestMapKey =

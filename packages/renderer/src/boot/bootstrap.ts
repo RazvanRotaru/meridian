@@ -13,6 +13,10 @@ import {
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
+import {
+  DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
+  RecentAllocationBudget,
+} from "../state/recentViewProjectionCache";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
 import { prApiUrlsFromProjectionManifest, readBootConfig, type BootConfig } from "./bootConfig";
 import { loadDevSampleArtifact } from "./loadDevSampleArtifact";
@@ -38,7 +42,10 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
   const navigationGuard = startPrReviewNavigationGuard();
   try {
     const boot = readBootConfig();
-    const loadedGraph = await loadBootGraph(boot);
+    const recentAllocationBudget = new RecentAllocationBudget(
+      DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
+    );
+    const loadedGraph = await loadBootGraph(boot, recentAllocationBudget);
     const { artifact, index } = loadedGraph;
     const telemetrySources = await buildTelemetrySources(boot);
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
@@ -68,8 +75,16 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
       prFileUrl: prApi.prFileUrl,
       prReviewUrl: prApi.prReviewUrl,
       prepareUrl: boot.githubSource ? prApi.prepareUrl : null,
+      preparedReviewUrl: boot.preparedReviewUrl,
       projectionDataSource: loadedGraph.dataSource,
       initialProjection: loadedGraph.projection,
+      recentAllocationBudget,
+      projectionEndpoints: boot.graphSource.kind === "projections"
+        ? {
+            manifestUrl: boot.graphSource.manifestUrl,
+            projectionUrl: boot.graphSource.projectionUrl,
+          }
+        : null,
     });
     navigationGuard.bindStore(store);
     let hydration: Promise<void> | null = null;
@@ -111,12 +126,19 @@ interface LoadedBootGraph {
 
 /** Injected sessions have one graph transport: bounded projections. The complete-artifact loader
  * exists only for Vite's non-injected sample and is unreachable from server-provided config. */
-export async function loadBootGraph(boot: BootConfig): Promise<LoadedBootGraph> {
+export async function loadBootGraph(
+  boot: BootConfig,
+  recentBudget?: RecentAllocationBudget,
+): Promise<LoadedBootGraph> {
   if (boot.graphSource.kind === "dev-sample") {
     const artifact = await loadDevSampleArtifact(boot.graphSource.artifactUrl);
     return { artifact, index: buildGraphIndex(artifact), dataSource: null, projection: null };
   }
-  const client = new GraphProjectionClient(boot.graphSource.manifestUrl, boot.graphSource.projectionUrl);
+  const client = new GraphProjectionClient(
+    boot.graphSource.manifestUrl,
+    boot.graphSource.projectionUrl,
+    { recentBudget },
+  );
   const manifest = await client.loadManifest();
   const projection = await client.activate(manifest.defaultView);
   return {

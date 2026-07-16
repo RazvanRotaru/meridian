@@ -45,7 +45,9 @@ describe("synthetic execution manifest", () => {
     ].join("\n"), "utf8");
 
     await expect(runSyntheticArtifactFileWorker(workerPath, root, artifactPath, "{}", {
-      timeoutMs: 500,
+      // The full suite runs worker-heavy files in parallel; allow the fixture process enough time
+      // to start and publish its descendant PID before testing timeout-driven tree termination.
+      timeoutMs: 2_000,
       terminateGraceMs: 25,
       processTreeWaitMs: 2_000,
     })).rejects.toMatchObject({ code: "execution-failed", status: 422 });

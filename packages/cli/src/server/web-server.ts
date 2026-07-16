@@ -46,6 +46,7 @@ import {
   handleSubmitReview,
 } from "./web-prs";
 import { handlePrPrepare } from "./web-pr-prepare";
+import { sendPreparedReviewHandoff } from "./web-pr-prepared";
 import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
 import type { ArtifactSource } from "./web-source";
@@ -76,8 +77,42 @@ import type {
 } from "./extraction-worker";
 import { resolveInspectionConcurrency } from "./inspection-capacity";
 import type { InspectionGraphSummary } from "./inspection-snapshot-store";
+import {
+  PreparedReviewHandoffStore,
+  type PreparedReviewHandoffStoreOptions,
+} from "./prepared-review-handoff-store";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
+const API_METHODS = new Map<string, readonly ("GET" | "POST")[]>([
+  ["/api/generate", ["POST"]],
+  ["/api/graph/projection", ["POST"]],
+  ["/api/pr/prepare", ["POST"]],
+  ["/api/synthetic-executions", ["POST"]],
+  ["/api/auth/device", ["POST"]],
+  ["/api/auth/logout", ["POST"]],
+  ["/api/pick-folder", ["POST"]],
+  ["/api/prs/review", ["POST"]],
+  ["/api/prs/related", ["POST"]],
+  ["/api/graph/manifest", ["GET"]],
+  ["/api/pr/prepared", ["GET"]],
+  ["/api/meta", ["GET"]],
+  ["/api/overlay", ["GET"]],
+  ["/api/traces", ["GET"]],
+  ["/api/source", ["GET"]],
+  ["/api/prs", ["GET"]],
+  ["/api/prs/one", ["GET"]],
+  ["/api/prs/files", ["GET"]],
+  ["/api/prs/comments", ["GET", "POST"]],
+  ["/api/prs/checks", ["GET"]],
+  ["/api/prs/file", ["GET"]],
+  ["/api/auth/status", ["GET"]],
+  ["/api/auth/session", ["GET"]],
+  ["/api/repos/branches", ["GET"]],
+  ["/api/cache/status", ["GET"]],
+  ["/api/repos/pulls", ["GET"]],
+  ["/api/repos/search", ["GET"]],
+  ["/api/repos/mine", ["GET"]],
+]);
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -97,6 +132,11 @@ export interface WebServerConfig {
   cacheRoot?: string;
   /** Re-extract artifacts for this server run while retaining immutable checkouts. */
   refreshCache?: boolean;
+  /** Optional deployment overrides for bounded prepared-review metadata retention. */
+  preparedReviewHandoffLimits?: Pick<
+    PreparedReviewHandoffStoreOptions,
+    "maxEntries" | "maxCacheBytes" | "maxAgeMs"
+  >;
   /** Explicit opt-in; individual graph ids are still restricted to local `kind:path` sources. */
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
@@ -124,6 +164,8 @@ export interface Context {
   generationScheduler: InspectionScheduler<string, GenerationLifecycleJob, unknown, string>;
   /** Restart-safe id resolver and bounded descriptor-only cache for immutable inspections. */
   inspectionSnapshots: InspectionSnapshotStore;
+  /** Restart-safe, file-backed prepared-review navigation metadata; never an in-memory registry. */
+  preparedReviewHandoffs: PreparedReviewHandoffStore;
   /** Node-local bare object cache and isolated detached worktree allocator. */
   repositoryMirrors: RepositoryMirrorStore;
   /** One process-wide pool bounds every CPU-heavy extraction, including base/local generation. */
@@ -195,6 +237,7 @@ function buildContext(config: WebServerConfig): Context {
     }
   };
   let inspectionSnapshots: InspectionSnapshotStore | undefined;
+  let preparedReviewHandoffs: PreparedReviewHandoffStore | undefined;
   const generationConcurrency = Math.max(4, concurrency * 2);
   const ctx: Context = {
     localGraphFiles: new Map(),
@@ -225,6 +268,12 @@ function buildContext(config: WebServerConfig): Context {
       // Most web sessions never inspect a PR. Keep boot and local-only generation free of cache
       // filesystem writes; the first immutable-id read or publication initializes the resolver.
       return inspectionSnapshots ??= new InspectionSnapshotStore({ cacheRoot });
+    },
+    get preparedReviewHandoffs() {
+      return preparedReviewHandoffs ??= new PreparedReviewHandoffStore({
+        cacheRoot,
+        ...config.preparedReviewHandoffLimits,
+      });
     },
     repositoryMirrors,
     cacheRoot,
@@ -303,7 +352,12 @@ async function handle(ctx: Context, request: IncomingMessage, response: ServerRe
     return;
   }
   if (url.pathname === "/view") {
-    sendView(ctx, response, url.searchParams.get("id"));
+    sendView(ctx, response, url.searchParams.get("id"), {
+      preparedId: url.searchParams.get("prepared"),
+      prNumber: url.searchParams.get("prn"),
+      revision: url.searchParams.get("rev"),
+      view: url.searchParams.get("view"),
+    });
     return;
   }
   if (url.pathname === "/") {
@@ -317,7 +371,17 @@ async function handle(ctx: Context, request: IncomingMessage, response: ServerRe
 // same-origin guard runs before any handler so a cross-site page cannot drive these routes.
 async function handleApi(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   assertSameOrigin(request);
-  if (request.method === "POST") {
+  const allowed = API_METHODS.get(url.pathname);
+  if (!allowed) {
+    sendJson(response, 404, { error: "unknown endpoint" });
+    return;
+  }
+  const method = request.method ?? "GET";
+  if ((method !== "GET" && method !== "POST") || !allowed.includes(method)) {
+    sendJson(response, 405, { error: "method not allowed" }, { allow: allowed.join(", ") });
+    return;
+  }
+  if (method === "POST") {
     assertJsonContentType(request);
     await handleApiPost(ctx, request, response, url);
     return;
@@ -453,6 +517,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   const pathname = url.pathname;
   if (pathname === "/api/graph/manifest") {
     sendProjectionManifest(ctx, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/pr/prepared") {
+    await sendPreparedReviewHandoff(ctx, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/meta") {

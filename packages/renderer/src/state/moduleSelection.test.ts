@@ -1440,20 +1440,24 @@ describe("minimal-graph overlay (extract selection)", () => {
   it("restores the parent presentation and Codebase disclosure after nested extraction", async () => {
     const store = withBuiltGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    store.getState().setMinimalView("codebase");
+    await store.getState().setMinimalView("codebase");
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
     store.getState().setMinimalCodebaseExpansionOverride("ts:src", false);
     store.getState().setMinimalShowGhostNodes(false);
     store.getState().selectModule(BUILD_ORDERS);
-    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
-    store.getState().buildMinimalGraph();
+    await store.getState().buildMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     expect(store.getState().minimalView).toBe("graph");
     expect(store.getState().minimalShowGhostNodes).toBe(true);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map());
 
-    store.getState().backMinimalGraph();
+    await store.getState().backMinimalGraph();
     expect(store.getState().minimalView).toBe("codebase");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
     expect(store.getState().minimalShowGhostNodes).toBe(false);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map([["ts:src", false]]));
   });

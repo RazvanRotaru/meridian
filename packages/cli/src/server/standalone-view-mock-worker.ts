@@ -7,7 +7,7 @@
  */
 
 import { fork } from "node:child_process";
-import { createReadStream, existsSync, lstatSync, mkdtempSync, rmSync } from "node:fs";
+import { createReadStream, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -56,6 +56,7 @@ export async function runStandaloneMockTelemetry(
   request: RunStandaloneMockTelemetryRequest,
 ): Promise<StandaloneMockTelemetryFile> {
   if (request.signal?.aborted) throw abortReason(request.signal);
+  mkdirSync(request.scratchRoot, { recursive: true, mode: 0o700 });
   const jobRoot = mkdtempSync(join(request.scratchRoot, "mock-telemetry-"));
   const outputPath = join(jobRoot, "response.json");
   try {

@@ -50,7 +50,7 @@ export interface PreparedChangedFile {
   previousPath?: string;
 }
 
-export interface PrPreparationResult {
+export interface PreparedReviewPair {
   head: PreparedGraphDescriptor;
   mergeBase: PreparedGraphDescriptor;
   headSha: string;
@@ -62,14 +62,68 @@ export interface PrPreparationResult {
   warnings: string[];
 }
 
+export interface PreparedReviewHandoffLink {
+  id: string;
+  url: string;
+  viewUrl: string;
+}
+
+export interface PrPreparationResult extends PreparedReviewPair {
+  handoff: PreparedReviewHandoffLink;
+}
+
+export interface PreparedReviewHandoff extends PreparedReviewPair {
+  request: PrPrepareRequest;
+}
+
+/** Read one immutable, server-validated review handoff. This is deliberately a separate JSON
+ * contract from the streaming POST: a shared review URL must either consume this exact v1 pair or
+ * fail closed; it may never silently start a second preparation job. */
+export async function fetchPreparedReviewHandoff(
+  preparedReviewUrl: string,
+  signal?: AbortSignal,
+): Promise<PreparedReviewHandoff> {
+  const response = await fetch(new URL(preparedReviewUrl, requestOrigin()), {
+    credentials: "same-origin",
+    cache: "no-store",
+    headers: { accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) throw new Error(await handoffErrorMessage(response));
+  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  if (contentType !== "application/json") {
+    throw new Error("invalid prepared review handoff: expected application/json");
+  }
+  const body = await response.text();
+  if (utf8ByteLength(body) > MAX_LINE_BYTES) {
+    throw new Error("invalid prepared review handoff: response is too large");
+  }
+  let value: unknown;
+  try {
+    value = JSON.parse(body);
+  } catch {
+    throw new Error("invalid prepared review handoff: expected JSON");
+  }
+  if (!isRecord(value) || value.version !== PROTOCOL_VERSION) {
+    throw new Error("invalid prepared review handoff: expected protocol version 1");
+  }
+  return { request: parseHandoffRequest(value.request), ...parsePreparedPair(value) };
+}
+
 export async function streamPrPreparation(
   prepareUrl: string,
   request: PrPrepareRequest,
   onStage: (stage: PrPrepareStage, elapsedMs: number) => void,
   signal?: AbortSignal,
 ): Promise<PrPreparationResult> {
-  const response = await postPreparation(prepareUrl, canonicalRequest(request), signal);
-  return drainPreparationStream(response, onStage);
+  const canonical = canonicalRequest(request);
+  const response = await postPreparation(prepareUrl, canonical, signal);
+  const result = await drainPreparationStream(response, onStage);
+  const view = new URL(result.handoff.viewUrl, "http://meridian.local");
+  if (view.searchParams.get("prn") !== String(canonical.prNumber)) {
+    throw invalidDone("handoff.viewUrl PR number");
+  }
+  return result;
 }
 
 /** Canonical changed paths sent to both review projections. Renames address both tree locations. */
@@ -186,6 +240,14 @@ function parseLine(line: string): ParsedLine {
 }
 
 function parseDoneLine(line: Record<string, unknown>): PrPreparationResult {
+  const pair = parsePreparedPair(line);
+  return {
+    ...pair,
+    handoff: parseHandoffLink(line.handoff, pair.head.graphId),
+  };
+}
+
+function parsePreparedPair(line: Record<string, unknown>): PreparedReviewPair {
   return {
     head: parseGraphDescriptor(line.head, "head"),
     mergeBase: parseGraphDescriptor(line.mergeBase, "mergeBase"),
@@ -199,15 +261,94 @@ function parseDoneLine(line: Record<string, unknown>): PrPreparationResult {
   };
 }
 
+function parseHandoffLink(value: unknown, headGraphId: string): PreparedReviewHandoffLink {
+  if (!isRecord(value)) throw invalidDone("handoff");
+  const id = requiredString(value.id, "handoff.id");
+  const url = requiredString(value.url, "handoff.url");
+  const viewUrl = requiredString(value.viewUrl, "handoff.viewUrl");
+  const parsedUrl = strictRelativeUrl(url, "/api/pr/prepared", ["id"], "handoff.url");
+  const parsedView = strictRelativeUrl(
+    viewUrl,
+    "/view",
+    ["id", "view", "prn", "rev", "prepared"],
+    "handoff.viewUrl",
+  );
+  if (
+    parsedUrl.searchParams.get("id") !== id
+    || parsedView.searchParams.get("id") !== headGraphId
+    || parsedView.searchParams.get("view") !== "modules"
+    || parsedView.searchParams.get("rev") !== "1"
+    || parsedView.searchParams.get("prepared") !== id
+    || !/^[1-9]\d*$/.test(parsedView.searchParams.get("prn") ?? "")
+  ) {
+    throw invalidDone("handoff");
+  }
+  return { id, url, viewUrl };
+}
+
+function strictRelativeUrl(
+  value: string,
+  pathname: string,
+  expectedKeys: readonly string[],
+  label: string,
+): URL {
+  const separatorIndex = value.search(/[?#]/);
+  const rawPathname = separatorIndex < 0 ? value : value.slice(0, separatorIndex);
+  if (!value.startsWith("/") || value.startsWith("//") || rawPathname !== pathname) {
+    throw invalidDone(label);
+  }
+  const parsed = new URL(value, "http://meridian.local");
+  const keys = [...parsed.searchParams.keys()].sort();
+  if (
+    parsed.origin !== "http://meridian.local"
+    || parsed.pathname !== pathname
+    || value.includes("#")
+    || keys.length !== expectedKeys.length
+    || keys.some((key, index) => key !== [...expectedKeys].sort()[index])
+  ) {
+    throw invalidDone(label);
+  }
+  return parsed;
+}
+
+function parseHandoffRequest(value: unknown): PrPrepareRequest {
+  if (!isRecord(value)) throw new Error("invalid prepared review handoff: request");
+  try {
+    return canonicalRequest({
+      owner: requiredString(value.owner, "request.owner"),
+      repo: requiredString(value.repo, "request.repo"),
+      ...(Object.prototype.hasOwnProperty.call(value, "subdir")
+        ? { subdir: requiredString(value.subdir, "request.subdir") }
+        : {}),
+      prNumber: nonNegativeInteger(value.prNumber, "request.prNumber"),
+      baseRef: requiredString(value.baseRef, "request.baseRef"),
+      headRef: requiredString(value.headRef, "request.headRef"),
+    });
+  } catch {
+    throw new Error("invalid prepared review handoff: request");
+  }
+}
+
 function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescriptor {
   if (!isRecord(value)) throw invalidDone(`${label} descriptor`);
   if (!isRecord(value.graphSummary)) throw invalidDone(`${label}.graphSummary`);
+  const graphId = requiredString(value.graphId, `${label}.graphId`);
   return {
-    graphId: requiredString(value.graphId, `${label}.graphId`),
-    manifestUrl: requiredString(value.manifestUrl, `${label}.manifestUrl`),
-    projectionUrl: requiredString(value.projectionUrl, `${label}.projectionUrl`),
-    sourceUrl: requiredString(value.sourceUrl, `${label}.sourceUrl`),
-    metaUrl: requiredString(value.metaUrl, `${label}.metaUrl`),
+    graphId,
+    manifestUrl: parseDescriptorEndpoint(
+      value.manifestUrl,
+      graphId,
+      "/api/graph/manifest",
+      `${label}.manifestUrl`,
+    ),
+    projectionUrl: parseDescriptorEndpoint(
+      value.projectionUrl,
+      graphId,
+      "/api/graph/projection",
+      `${label}.projectionUrl`,
+    ),
+    sourceUrl: parseDescriptorEndpoint(value.sourceUrl, graphId, "/api/source", `${label}.sourceUrl`),
+    metaUrl: parseDescriptorEndpoint(value.metaUrl, graphId, "/api/meta", `${label}.metaUrl`),
     graphSummary: {
       schemaVersion: requiredString(value.graphSummary.schemaVersion, `${label}.graphSummary.schemaVersion`),
       generatedAt: requiredString(value.graphSummary.generatedAt, `${label}.graphSummary.generatedAt`),
@@ -215,6 +356,18 @@ function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescr
       edgeCount: nonNegativeInteger(value.graphSummary.edgeCount, `${label}.graphSummary.edgeCount`),
     },
   };
+}
+
+function parseDescriptorEndpoint(
+  value: unknown,
+  graphId: string,
+  pathname: string,
+  label: string,
+): string {
+  const endpoint = requiredString(value, label);
+  const parsed = strictRelativeUrl(endpoint, pathname, ["id"], label);
+  if (parsed.searchParams.get("id") !== graphId) throw invalidDone(label);
+  return endpoint;
 }
 
 function parseChangedFiles(value: unknown): PreparedChangedFile[] {
@@ -360,6 +513,16 @@ async function requestErrorMessage(response: Response): Promise<string> {
     // Non-JSON response: use the bounded generic message below.
   }
   return `PR preparation request failed (${response.status}).`;
+}
+
+async function handoffErrorMessage(response: Response): Promise<string> {
+  try {
+    const data = await response.json() as { error?: unknown };
+    if (typeof data.error === "string" && data.error.length > 0) return data.error;
+  } catch {
+    // Non-JSON response: use the bounded generic message below.
+  }
+  return `Prepared review handoff request failed (${response.status}).`;
 }
 
 function requestOrigin(): string {

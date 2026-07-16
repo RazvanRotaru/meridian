@@ -68,7 +68,7 @@ export function CanvasActionBar({
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
       state.review === null
-      || state.minimalLayoutStatus !== "ready"
+      || (state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
       || state.moduleSelected.size !== 1
       || state.flowSelection !== null
       || state.syntheticExecutionStatus === "running"
@@ -118,7 +118,7 @@ export function CanvasActionBar({
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
   const canExtract = selectedCount > 0
-    && (!minimalOpen || minimalLayoutStatus === "ready")
+    && (!minimalOpen || minimalView === "codebase" || minimalLayoutStatus === "ready")
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";
   const showSourceSelectionActions = canExtract && !minimalOpen;
@@ -185,7 +185,7 @@ export function CanvasActionBar({
                 ariaLabel={`Extract selection (${selectedCount})`}
                 title="Extract the current selection into a focused graph"
                 icon={<ExtractSelectionIcon size={18} />}
-                onClick={buildMinimalGraph}
+                onClick={() => { void buildMinimalGraph(); }}
               />
               <CanvasActionButton
                 ariaLabel="Remove added nodes in selection"
@@ -212,7 +212,7 @@ export function CanvasActionBar({
                   ? "Return to the source graph"
                   : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
                 icon={<BackToGraphIcon size={18} />}
-                onClick={backMinimalGraph}
+                onClick={() => { void backMinimalGraph(); }}
               />
               {!reviewActive || selectedReviewContainerId === null ? null : (
                 <CanvasActionButton
@@ -220,7 +220,7 @@ export function CanvasActionBar({
                   ariaLabel="Open selected container as review subgraph"
                   title="Open the selected container's changed files in a separate review graph"
                   icon={<ExtractSelectionIcon size={18} />}
-                  onClick={() => openReviewSubgraph(selectedReviewContainerId)}
+                  onClick={() => { void openReviewSubgraph(selectedReviewContainerId); }}
                 />
               )}
               {!canExtract || selectedReviewContainerId !== null ? null : (
@@ -230,7 +230,7 @@ export function CanvasActionBar({
                   ariaLabel={`Extract selection (${selectedCount})`}
                   title="Extract the current selection into another focused graph"
                   icon={<ExtractSelectionIcon size={18} />}
-                  onClick={buildMinimalGraph}
+                  onClick={() => { void buildMinimalGraph(); }}
                 />
               )}
               {onToggleGhostNodes === undefined ? null : (
@@ -313,7 +313,7 @@ export function CanvasActionBar({
                   ? "Return to the source graph"
                   : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
                 icon={<BackToGraphIcon size={18} />}
-                onClick={backMinimalGraph}
+                onClick={() => { void backMinimalGraph(); }}
               />
               {!reviewActive || selectedReviewContainerId === null ? null : (
                 <CanvasActionButton
@@ -322,8 +322,7 @@ export function CanvasActionBar({
                   title="Open the selected container's changed files in a separate review graph"
                   icon={<ExtractSelectionIcon size={18} />}
                   onClick={() => {
-                    openReviewSubgraph(selectedReviewContainerId);
-                    onBackToGraph?.();
+                    void openReviewSubgraph(selectedReviewContainerId);
                   }}
                 />
               )}
@@ -335,8 +334,7 @@ export function CanvasActionBar({
                   title="Extract the current selection into another focused graph"
                   icon={<ExtractSelectionIcon size={18} />}
                   onClick={() => {
-                    buildMinimalGraph();
-                    onBackToGraph?.();
+                    void buildMinimalGraph();
                   }}
                 />
               )}

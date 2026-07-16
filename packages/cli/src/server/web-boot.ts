@@ -55,6 +55,7 @@ export function injectViewBoot(
   source: ArtifactSource | undefined,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
   syntheticExecutionTrust: SyntheticExecutionTrust | null = null,
+  preparedReviewUrl: string | null = null,
 ): string {
   // A catalog is a capability, not just display data. Local paths are admitted as before. GitHub
   // sources require an explicit, per-id sandbox trust record created only after the CLI flag and
@@ -72,6 +73,9 @@ export function injectViewBoot(
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
+    // The potentially large two-sided manifest remains behind a validated immutable file URL.
+    // Ordinary graph views carry an explicit null and never infer a review from query parameters.
+    preparedReviewUrl,
     ...syntheticCapability,
     hasOverlay: false,
     overlayKind: null,

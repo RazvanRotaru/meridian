@@ -14,10 +14,94 @@ export interface RecentViewProjectionCacheLimits {
   maxRecentBytes: number;
 }
 
+/** The single browser-wide allowance shared by every inactive decoded-view cache. */
+export const DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS: Readonly<RecentViewProjectionCacheLimits> = {
+  maxRecentEntries: 3,
+  maxRecentBytes: 48 * 1024 * 1024,
+};
+
+interface RecentAllocation {
+  residentBytes: number;
+  evict: () => void;
+}
+
+/**
+ * Coordinates inactive allocations owned by otherwise independent caches.
+ *
+ * Active views are deliberately never registered here. Each inactive allocation gets one opaque
+ * handle and one synchronous eviction callback, so a paired review projection or a scene snapshot
+ * remains an atomic eviction unit. Map order is the global least-to-most-recently-used order.
+ */
+export class RecentAllocationBudget {
+  private readonly maxRecentEntries: number;
+  private readonly maxRecentBytes: number;
+  private readonly allocations = new Map<object, RecentAllocation>();
+  private residentBytes = 0;
+
+  constructor(limits: RecentViewProjectionCacheLimits) {
+    this.maxRecentEntries = nonNegativeSafeInteger(limits.maxRecentEntries, "maxRecentEntries");
+    this.maxRecentBytes = nonNegativeSafeInteger(limits.maxRecentBytes, "maxRecentBytes");
+  }
+
+  get inactiveEntryCount(): number {
+    return this.allocations.size;
+  }
+
+  get inactiveResidentByteLength(): number {
+    return this.residentBytes;
+  }
+
+  /** Register one atomic inactive allocation, or reject it when it can never fit. */
+  register(residentBytes: number, evict: () => void): object | undefined {
+    const bytes = nonNegativeSafeInteger(residentBytes, "residentBytes");
+    if (this.maxRecentEntries === 0 || bytes > this.maxRecentBytes) return undefined;
+
+    const handle = {};
+    this.allocations.set(handle, { residentBytes: bytes, evict });
+    this.residentBytes += bytes;
+    this.evictToLimits();
+    return handle;
+  }
+
+  /** Promote an inactive allocation to the global MRU end. Unknown/released handles are ignored. */
+  touch(handle: object): void {
+    const allocation = this.allocations.get(handle);
+    if (allocation === undefined) return;
+    this.allocations.delete(handle);
+    this.allocations.set(handle, allocation);
+  }
+
+  /** Stop charging an allocation without invoking its eviction callback. */
+  release(handle: object): void {
+    const allocation = this.allocations.get(handle);
+    if (allocation === undefined) return;
+    this.allocations.delete(handle);
+    this.residentBytes -= allocation.residentBytes;
+  }
+
+  private evictToLimits(): void {
+    while (this.allocations.size > this.maxRecentEntries || this.residentBytes > this.maxRecentBytes) {
+      const oldest = this.allocations.entries().next();
+      if (oldest.done) {
+        // Defensive recovery: an accounting defect must not turn into an infinite production loop.
+        this.residentBytes = 0;
+        return;
+      }
+      const [handle, allocation] = oldest.value;
+      // Uncharge first. The cache callback may call release(handle), which then safely becomes a
+      // no-op while it removes the corresponding local entry and its local byte accounting.
+      this.allocations.delete(handle);
+      this.residentBytes -= allocation.residentBytes;
+      allocation.evict();
+    }
+  }
+}
+
 interface ProjectionEntry<Key, Projection> {
   key: Key;
   projection: Projection;
   residentBytes: number;
+  allocationHandle?: object;
 }
 
 export class RecentViewProjectionCache<Key, Projection> {
@@ -28,7 +112,10 @@ export class RecentViewProjectionCache<Key, Projection> {
   private readonly recentEntries = new Map<Key, ProjectionEntry<Key, Projection>>();
   private recentResidentBytes = 0;
 
-  constructor(limits: RecentViewProjectionCacheLimits) {
+  constructor(
+    limits: RecentViewProjectionCacheLimits,
+    private readonly sharedBudget?: RecentAllocationBudget,
+  ) {
     this.maxRecentEntries = nonNegativeSafeInteger(limits.maxRecentEntries, "maxRecentEntries");
     this.maxRecentBytes = nonNegativeSafeInteger(limits.maxRecentBytes, "maxRecentBytes");
   }
@@ -71,11 +158,13 @@ export class RecentViewProjectionCache<Key, Projection> {
     if (this.isActive(key)) {
       return this.activeEntry?.projection;
     }
-    const entry = this.removeRecent(key);
+    const entry = this.recentEntries.get(key);
     if (entry === undefined) {
       return undefined;
     }
-    this.addRecent(entry);
+    this.recentEntries.delete(key);
+    this.recentEntries.set(key, entry);
+    if (entry.allocationHandle !== undefined) this.sharedBudget?.touch(entry.allocationHandle);
     return entry.projection;
   }
 
@@ -105,6 +194,22 @@ export class RecentViewProjectionCache<Key, Projection> {
    * an empirically chosen expansion factor that includes the decoded projection and its indexes).
    */
   setActive(key: Key, projection: Projection, residentBytes: number): void {
+    this.setActiveReplacing(key, projection, residentBytes, []);
+  }
+
+  /**
+   * Install a decoded projection while atomically discarding entries that it subsumes.
+   *
+   * Composite projections use this to replace their separately decoded constituents without
+   * briefly retaining or double-charging aliases of the same object graph. Unrelated navigation
+   * entries keep their LRU order and exact byte accounting.
+   */
+  setActiveReplacing(
+    key: Key,
+    projection: Projection,
+    residentBytes: number,
+    supersededKeys: readonly Key[],
+  ): void {
     const entry: ProjectionEntry<Key, Projection> = {
       key,
       projection,
@@ -112,17 +217,35 @@ export class RecentViewProjectionCache<Key, Projection> {
     };
     const replacingActive = this.isActive(key);
     this.removeRecent(key);
-    if (!replacingActive && this.activeEntry !== undefined) {
+    for (const supersededKey of supersededKeys) {
+      if (!sameValueZero(supersededKey, key)) this.removeRecent(supersededKey);
+    }
+    const activeIsSuperseded = this.activeEntry !== undefined
+      && supersededKeys.some((supersededKey) => sameValueZero(supersededKey, this.activeEntry!.key));
+    if (!replacingActive && !activeIsSuperseded && this.activeEntry !== undefined) {
       this.addRecent(this.activeEntry);
     }
     this.activeEntry = entry;
   }
 
+  /**
+   * Relinquish the current active pin and offer that allocation to the inactive LRU. Oversized
+   * entries are dropped, exactly as when navigation replaces an active view.
+   */
+  deactivateActive(): void {
+    const active = this.activeEntry;
+    this.activeEntry = undefined;
+    if (active !== undefined) this.addRecent(active);
+  }
+
   /** Release the active projection and every decoded recent view. */
   clear(): void {
     this.activeEntry = undefined;
-    this.recentEntries.clear();
-    this.recentResidentBytes = 0;
+    while (this.recentEntries.size > 0) {
+      const oldest = this.recentEntries.keys().next();
+      if (oldest.done) break;
+      this.removeRecent(oldest.value);
+    }
   }
 
   private isActive(key: Key): boolean {
@@ -140,6 +263,15 @@ export class RecentViewProjectionCache<Key, Projection> {
     this.recentEntries.set(entry.key, entry);
     this.recentResidentBytes += entry.residentBytes;
     this.evictToLimits();
+    if (this.recentEntries.get(entry.key) !== entry || this.sharedBudget === undefined) return;
+    const allocationHandle = this.sharedBudget.register(entry.residentBytes, () => {
+      if (this.recentEntries.get(entry.key) === entry) this.removeRecent(entry.key);
+    });
+    if (allocationHandle === undefined) {
+      this.removeRecent(entry.key);
+      return;
+    }
+    entry.allocationHandle = allocationHandle;
   }
 
   private removeRecent(key: Key): ProjectionEntry<Key, Projection> | undefined {
@@ -149,6 +281,10 @@ export class RecentViewProjectionCache<Key, Projection> {
     }
     this.recentEntries.delete(key);
     this.recentResidentBytes -= entry.residentBytes;
+    if (entry.allocationHandle !== undefined) {
+      this.sharedBudget?.release(entry.allocationHandle);
+      entry.allocationHandle = undefined;
+    }
     return entry;
   }
 

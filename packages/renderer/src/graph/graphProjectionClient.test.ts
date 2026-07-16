@@ -1,11 +1,12 @@
 import type { GraphArtifact } from "@meridian/core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GraphProjectionClient,
   canonicalProjectionKey,
   canonicalizeProjectionRequest,
   type GraphProjectionRequest,
 } from "./graphProjectionClient";
+import { RecentAllocationBudget } from "../state/recentViewProjectionCache";
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.1.0",
@@ -33,7 +34,20 @@ const REQUEST: GraphProjectionRequest = {
   includeTests: false,
 };
 
+afterEach(() => vi.unstubAllGlobals());
+
 describe("GraphProjectionClient", () => {
+  it("binds the browser-native fetch receiver when no transport is injected", async () => {
+    const nativeLikeFetch = function (this: unknown): Promise<Response> {
+      expect(this).toBe(globalThis);
+      return Promise.resolve(jsonResponse(manifest("graph-1")));
+    } as typeof fetch;
+    vi.stubGlobal("fetch", nativeLikeFetch);
+
+    const client = new GraphProjectionClient("/manifest", "/projection");
+    await expect(client.loadManifest()).resolves.toMatchObject({ graphId: "graph-1" });
+  });
+
   it("canonicalizes valid view keys so ordering and duplicates share one cache entry", () => {
     const left = canonicalProjectionKey("graph-1", {
       ...REQUEST,
@@ -91,6 +105,79 @@ describe("GraphProjectionClient", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("shares inactive projection eviction across independent clients", async () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 1, maxRecentBytes: 1_000_000 });
+    const calls = new Map<string, number>();
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      const graphId = url.searchParams.get("id")!;
+      if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      calls.set(graphId, (calls.get(graphId) ?? 0) + 1);
+      return jsonResponse(projectionEnvelope(requestFrom(init), { projectionId: `${graphId}-${calls.get(graphId)}` }));
+    });
+    const first = new GraphProjectionClient("/manifest?id=first", "/projection?id=first", {
+      fetch: fetchMock,
+      recentBudget: budget,
+    });
+    const second = new GraphProjectionClient("/manifest?id=second", "/projection?id=second", {
+      fetch: fetchMock,
+      recentBudget: budget,
+    });
+
+    await first.activate(REQUEST);
+    await first.activate({ ...REQUEST, focusIds: ["ts:src"] });
+    expect(budget.inactiveEntryCount).toBe(1);
+    await second.activate(REQUEST);
+    await second.activate({ ...REQUEST, focusIds: ["ts:src"] });
+
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(calls).toEqual(new Map([["first", 2], ["second", 2]]));
+    await first.activate(REQUEST);
+    expect(calls.get("first")).toBe(3); // first's globally-evicted overview was fetched again.
+    expect(budget.inactiveEntryCount).toBe(1);
+  });
+
+  it("charges a HEAD + merge-base review pair as one atomic shared allocation", async () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 1, maxRecentBytes: 1_000_000 });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      const graphId = url.searchParams.get("id") ?? "base";
+      return url.pathname.includes("manifest")
+        ? jsonResponse(manifest(graphId))
+        : jsonResponse(projectionEnvelope(requestFrom(init), { projectionId: `p-${graphId}`, residentBytes: 10 }));
+    });
+    const client = new GraphProjectionClient("/manifest?id=base", "/projection?id=base", {
+      fetch: fetchMock,
+      recentBudget: budget,
+    });
+    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
+    const pair = await client.activateReviewPair({
+      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
+      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+    });
+
+    await client.activate(REQUEST);
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(pair.residentBytes);
+    expect(client.activateCachedReview(pair.key)).toBe(pair);
+    expect(budget.inactiveEntryCount).toBe(1); // The prior active overview replaced the pair's slot.
+
+    // Moving away once more makes the pair inactive again; a different client's inactive view
+    // evicts the complete pair, never one constituent side.
+    await client.activate(REQUEST);
+    const other = new GraphProjectionClient("/manifest?id=other", "/projection?id=other", {
+      fetch: fetchMock,
+      recentBudget: budget,
+    });
+    await other.activate(REQUEST);
+    await other.activate({ ...REQUEST, focusIds: ["ts:src"] });
+
+    expect(client.activateCachedReview(pair.key)).toBeUndefined();
+    expect(client.activateCached(pair.head.key)).toBeUndefined();
+    expect(client.activateCached(pair.mergeBase.key)).toBeUndefined();
+    expect(budget.inactiveEntryCount).toBe(1);
+  });
+
   it("honours server resident estimates when they exceed the default 3x response estimate", async () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => String(input).includes("manifest")
       ? jsonResponse(manifest("graph-1"))
@@ -100,7 +187,7 @@ describe("GraphProjectionClient", () => {
     expect((await client.activate(REQUEST)).residentBytes).toBe(99_000);
   });
 
-  it("uses direct endpoints with a live shared signal independent of the subscriber signal", async () => {
+  it("uses direct endpoints with live shared signals independent of the subscriber signal", async () => {
     const seen: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       seen.push({ url: String(input), signal: init?.signal });
@@ -124,7 +211,9 @@ describe("GraphProjectionClient", () => {
     });
 
     expect(seen.map(({ url }) => new URL(url).searchParams.get("id"))).toEqual(["prepared-9", "prepared-9"]);
-    expect(seen[0]?.signal).toBeUndefined();
+    expect(seen[0]?.signal).toBeInstanceOf(AbortSignal);
+    expect(seen[0]?.signal).not.toBe(controller.signal);
+    expect(seen[0]?.signal?.aborted).toBe(false);
     expect(seen[1]?.signal).toBeInstanceOf(AbortSignal);
     expect(seen[1]?.signal).not.toBe(controller.signal);
     expect(seen[1]?.signal?.aborted).toBe(false);
@@ -213,6 +302,55 @@ describe("GraphProjectionClient", () => {
     const pair = await first;
     expect(pair).toBe(await second);
     expect(await headOnly).toBe(pair.head);
+    expect(pairClient.activeKey).toBe(pair.key);
+
+    // A constituent key aliases the composite allocation. It can navigate back to HEAD without
+    // retaining or activating a separately charged copy of the same decoded side.
+    await pairClient.activate(REQUEST);
+    expect(pairClient.activateCached(pair.head.key)).toBe(pair.head);
+    expect(pairClient.activeKey).toBe(pair.key);
+  });
+
+  it("keeps a shared HEAD active when the pending merge-base side rejects", async () => {
+    let rejectMergeBase!: (reason: unknown) => void;
+    const mergeBaseResponse = new Promise<Response>((_resolve, reject) => { rejectMergeBase = reject; });
+    const projectionCalls = new Map<string, number>();
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      const graphId = url.searchParams.get("id") ?? "base";
+      if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      projectionCalls.set(graphId, (projectionCalls.get(graphId) ?? 0) + 1);
+      if (graphId === "merge-base") return mergeBaseResponse;
+      return jsonResponse(projectionEnvelope(requestFrom(init), { projectionId: `p-${graphId}` }));
+    });
+    const client = new GraphProjectionClient("/manifest?id=base", "/projection?id=base", {
+      fetch: fetchMock,
+      recentCache: { maxRecentEntries: 1, maxRecentBytes: 1024 * 1024 },
+    });
+    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
+    const pairRead = client.activateReviewPair({
+      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
+      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+    });
+    const pairOutcome = pairRead.then(
+      () => new Error("expected the review pair to reject"),
+      (error: unknown) => error,
+    );
+    const head = await client.activate(reviewRequest, { endpoints: graphEndpoints("head") });
+
+    expect(client.activeKey).toBe(head.key);
+    expect(projectionCalls.get("head")).toBe(1);
+    rejectMergeBase(new Error("merge-base projection failed"));
+    await expect(pairOutcome).resolves.toMatchObject({ message: "merge-base projection failed" });
+    expect(client.activeKey).toBe(head.key);
+    expect(client.activateCached(head.key)).toBe(head);
+
+    // The failed pair retained no hidden composite. HEAD remains the single charged navigation
+    // unit and survives one round trip through the configured one-entry inactive cache.
+    await client.activate(REQUEST);
+    expect(client.activateCached(head.key)).toBe(head);
+    expect(client.activeKey).toBe(head.key);
+    expect(projectionCalls).toEqual(new Map([["head", 1], ["merge-base", 1], ["base", 1]]));
   });
 
   it("aborts the shared transport after its final subscriber leaves", async () => {
@@ -329,6 +467,63 @@ describe("GraphProjectionClient", () => {
     expect(manifestCalls.get("graph-0")).toBe(1);
     expect(manifestCalls.get("graph-1")).toBe(2);
     expect(manifestCalls.size).toBe(17);
+  });
+
+  it("singleflights manifest reads and aborts transport only after the final subscriber leaves", async () => {
+    let transportSignal: AbortSignal | undefined;
+    let manifestStarted!: () => void;
+    const started = new Promise<void>((resolve) => { manifestStarted = resolve; });
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      transportSignal = init?.signal as AbortSignal;
+      manifestStarted();
+      return new Promise<Response>((_resolve, reject) => {
+        transportSignal!.addEventListener("abort", () => reject(transportSignal!.reason), { once: true });
+      });
+    });
+    const client = new GraphProjectionClient("/manifest", "/projection", { fetch: fetchMock });
+    const first = new AbortController();
+    const second = new AbortController();
+    const firstRead = client.loadManifest({ signal: first.signal });
+    const secondRead = client.loadManifest({ signal: second.signal });
+    await started;
+
+    first.abort();
+    await expect(firstRead).rejects.toMatchObject({ name: "AbortError" });
+    expect(transportSignal?.aborted).toBe(false);
+    second.abort();
+    await expect(secondRead).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(transportSignal?.aborted).toBe(true));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("bounds canceled manifest transports and never duplicates an abandoned live key", async () => {
+    const transportSignals: AbortSignal[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (_input, init) => {
+      transportSignals.push(init?.signal as AbortSignal);
+      // Model a broken transport that ignores cancellation. Its live reads must still remain
+      // bounded, and the client must not start a duplicate while the abandoned flight is pending.
+      return new Promise<Response>(() => undefined);
+    });
+    const client = new GraphProjectionClient("/manifest", "/projection", { fetch: fetchMock });
+
+    for (let index = 0; index < 16; index += 1) {
+      const controller = new AbortController();
+      const read = client.loadManifest({
+        endpoints: graphEndpoints(`stalled-${index}`),
+        signal: controller.signal,
+      });
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(index + 1));
+      controller.abort();
+      await expect(read).rejects.toMatchObject({ name: "AbortError" });
+    }
+
+    expect(transportSignals).toHaveLength(16);
+    expect(transportSignals.every((signal) => signal.aborted)).toBe(true);
+    await expect(client.loadManifest({ endpoints: graphEndpoints("overflow") }))
+      .rejects.toThrow("too many graph manifests are already in flight");
+    await expect(client.loadManifest({ endpoints: graphEndpoints("stalled-0") }))
+      .rejects.toMatchObject({ name: "AbortError" });
+    expect(fetchMock).toHaveBeenCalledTimes(16);
   });
 });
 

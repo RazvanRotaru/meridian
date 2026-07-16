@@ -35,10 +35,8 @@ export function MinimalCodebaseView({
 }) {
   const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
-  const memberIds = useBlueprint((state) => state.minimalMemberIds);
-  const minimalNodes = useBlueprint((state) => state.minimalRfNodes);
-  const minimalLayoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
-  const moduleExpanded = useBlueprint((state) => state.moduleExpanded);
+  const capturedTargetIds = useBlueprint((state) => state.minimalCodebaseTargetIds);
+  const retainedExpandedIds = useBlueprint((state) => state.minimalCodebaseRetainedExpandedIds);
   const selected = useBlueprint((state) => state.moduleSelected);
   const expansionOverrides = useBlueprint((state) => state.minimalCodebaseExpansionOverrides);
   const rollups = useBlueprint((state) => state.minimalRollups);
@@ -55,34 +53,16 @@ export function MinimalCodebaseView({
     () => (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows,
     [artifact],
   );
-  // Members are the stable fallback while an overlay relayout is pending. Once laid, include every
-  // real core card it disclosed (but not one-hop ghosts): the context must faithfully show the
-  // declaration-level shape the reader was looking at, not merely its collapsed member files.
-  const currentMinimalNodes = minimalLayoutStatus === "ready" ? minimalNodes : EMPTY_NODES;
-  const minimalVisibleIds = useMemo(
-    () => new Set(currentMinimalNodes.filter((node) => node.type !== "ghost").map((node) => node.id)),
-    [currentMinimalNodes],
-  );
-  const retainedExpandedIds = useMemo(
-    () => new Set([
-      // Preserve the hidden source path needed to resolve a deeply nested synthetic step. Only
-      // pseudo-step gates are inherited; unrelated artifact disclosure remains local to this view.
-      ...[...moduleExpanded].filter((id) => id.startsWith("step:")),
-      ...currentMinimalNodes
-        .filter((node) => (node.data as { isExpanded?: unknown }).isExpanded === true)
-        .map((node) => node.id),
-    ]),
-    [currentMinimalNodes, moduleExpanded],
-  );
+  // The store releases the hidden ReactFlow scene on Codebase entry. These ids are the lightweight
+  // semantic coordinate captured before release; they preserve highlighting/disclosure without
+  // pinning any inactive node/edge objects outside the shared eviction budget.
+  const minimalVisibleIds = useMemo(() => new Set(capturedTargetIds), [capturedTargetIds]);
   const contextTargetIds = useMemo(
     () => [...new Set([
-      ...memberIds,
+      ...capturedTargetIds,
       ...selected,
-      ...currentMinimalNodes
-        .filter((node) => node.type !== "ghost" && index.nodesById.has(node.id))
-        .map((node) => node.id),
     ])],
-    [currentMinimalNodes, index, memberIds, selected],
+    [capturedTargetIds, selected],
   );
   const canonicalContext = useMemo(
     () => deriveMinimalCodebaseContext({
@@ -243,4 +223,3 @@ export function MinimalCodebaseView({
 }
 
 const EMPTY_HIGHLIGHTS: ReadonlySet<string> = new Set<string>();
-const EMPTY_NODES: Node[] = [];

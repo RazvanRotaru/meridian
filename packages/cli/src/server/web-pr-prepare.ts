@@ -13,21 +13,19 @@ import { InspectionQueueFullError } from "./inspection-scheduler";
 import type { CachedPrPreparation, CachedPrSide, PrPrepareProgress } from "./web-pr-cache";
 import type { InspectionGraphSummary } from "./inspection-snapshot-store";
 import {
+  MAX_PREPARED_REVIEW_HANDOFF_BYTES,
+  PreparedReviewHandoffStoreError,
+  type PreparedReviewGraphDescriptor,
+} from "./prepared-review-handoff-store";
+import {
   readSyntheticCapabilitySidecar,
   syntheticCapabilitySidecarPath,
 } from "./synthetic-capability-sidecar";
 
 const PROTOCOL_VERSION = 1;
-const MAX_NDJSON_LINE_BYTES = 2 * 1024 * 1024;
+const MAX_NDJSON_LINE_BYTES = MAX_PREPARED_REVIEW_HANDOFF_BYTES;
 
-export interface PreparedGraphDescriptor {
-  graphId: string;
-  manifestUrl: string;
-  projectionUrl: string;
-  sourceUrl: string;
-  metaUrl: string;
-  graphSummary: InspectionGraphSummary;
-}
+export type PreparedGraphDescriptor = PreparedReviewGraphDescriptor;
 
 export async function handlePrPrepare(
   ctx: Context,
@@ -63,8 +61,20 @@ export async function handlePrPrepare(
     beginNdjson(response);
     try {
       const prepared = await pending;
-      const descriptors = publishDescriptors(ctx, body, prepared);
-      writeLine(response, {
+      const descriptors = describePreparedGraphs(body, prepared);
+      const candidate = ctx.preparedReviewHandoffs.prepare({
+        request: body,
+        headSha: prepared.headSha,
+        baseSha: prepared.baseSha,
+        mergeBaseSha: prepared.mergeBaseSha,
+        changedFiles: prepared.changedFiles,
+        head: descriptors.head,
+        mergeBase: descriptors.mergeBase,
+        cache: prepared.cache,
+        timings: prepared.timings,
+        warnings: prepared.warnings,
+      });
+      const done = {
         version: PROTOCOL_VERSION,
         type: "done",
         headSha: prepared.headSha,
@@ -76,7 +86,14 @@ export async function handlePrPrepare(
         cache: prepared.cache,
         timings: prepared.timings,
         warnings: prepared.warnings,
-      });
+        handoff: candidate.reference,
+      };
+      // Validate the exact terminal line before disk publication. This avoids leaving a published
+      // handoff that the strict 2 MiB NDJSON transport can never return to its creator.
+      const serializedDone = serializeLine(done);
+      publishDescriptorSides(ctx, body, prepared, descriptors);
+      ctx.preparedReviewHandoffs.publish(candidate);
+      writeSerializedLine(response, serializedDone);
     } catch (error) {
       if (!cancellation.signal.aborted) {
         writeLine(response, { version: PROTOCOL_VERSION, type: "error", message: safeMessage(error) });
@@ -89,12 +106,10 @@ export async function handlePrPrepare(
   }
 }
 
-function publishDescriptors(
-  ctx: Context,
+function describePreparedGraphs(
   request: PrPrepareRequest,
   prepared: CachedPrPreparation,
 ): { head: PreparedGraphDescriptor; mergeBase: PreparedGraphDescriptor } {
-  const source = sourceForPrPrepare(request);
   const headId = graphId("head", [
     prepared.repositoryKey,
     prepared.securityDigest,
@@ -113,12 +128,29 @@ function publishDescriptors(
     prepared.analysisKey,
     prepared.mergeBaseGenerationId,
   ], prepared.mergeBaseSha);
-  publishSide(ctx, headId, prepared.head, source, request.subdir, request.headRef, prepared.headSha);
-  publishSide(ctx, mergeBaseId, prepared.mergeBase, source, request.subdir);
   return {
     head: descriptorFor(headId, prepared.head.graphSummary),
     mergeBase: descriptorFor(mergeBaseId, prepared.mergeBase.graphSummary),
   };
+}
+
+function publishDescriptorSides(
+  ctx: Context,
+  request: PrPrepareRequest,
+  prepared: CachedPrPreparation,
+  descriptors: { head: PreparedGraphDescriptor; mergeBase: PreparedGraphDescriptor },
+): void {
+  const source = sourceForPrPrepare(request);
+  publishSide(
+    ctx,
+    descriptors.head.graphId,
+    prepared.head,
+    source,
+    request.subdir,
+    request.headRef,
+    prepared.headSha,
+  );
+  publishSide(ctx, descriptors.mergeBase.graphId, prepared.mergeBase, source, request.subdir);
 }
 
 function publishSide(
@@ -197,10 +229,18 @@ function beginNdjson(response: ServerResponse): void {
 }
 
 function writeLine(response: ServerResponse, line: Record<string, unknown>): void {
+  writeSerializedLine(response, serializeLine(line));
+}
+
+function serializeLine(line: Record<string, unknown>): string {
   const serialized = JSON.stringify(line);
-  if (Buffer.byteLength(serialized, "utf8") > MAX_NDJSON_LINE_BYTES) {
+  if (Buffer.byteLength(`${serialized}\n`, "utf8") > MAX_NDJSON_LINE_BYTES) {
     throw new WebError(422, "PR preparation result exceeds the 2 MiB NDJSON line limit");
   }
+  return serialized;
+}
+
+function writeSerializedLine(response: ServerResponse, serialized: string): void {
   response.write(`${serialized}\n`);
 }
 
@@ -213,7 +253,9 @@ function throwQueueFull(response: ServerResponse, error: unknown): never {
 }
 
 function safeMessage(error: unknown): string {
-  if (error instanceof WebError || error instanceof CliError) return error.message;
+  if (error instanceof WebError || error instanceof CliError || error instanceof PreparedReviewHandoffStoreError) {
+    return error.message;
+  }
   return "internal error while preparing the pull request";
 }
 

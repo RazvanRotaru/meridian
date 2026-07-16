@@ -99,7 +99,7 @@ export function PrDetailPanel() {
         <button
           type="button"
           style={REVIEW_STYLE}
-          disabled={!files || loading || allOutside}
+          disabled={summary === null || allOutside}
           title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
           onClick={() => void reviewPrInGraph()}
         >

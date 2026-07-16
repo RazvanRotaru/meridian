@@ -1,6 +1,6 @@
 /**
- * One ordered browser journey through the complete GitHub PR-review loop: synchronous base review,
- * opt-in head extraction, progress and comments, URL restore, layered Escape, and resume.
+ * One ordered browser journey through the complete GitHub PR-review loop: strict two-sided
+ * preparation, streamed progress, comments, URL restore, layered Escape, and bounded resume.
  */
 
 import { rmSync } from "node:fs";
@@ -75,8 +75,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
   it("completes the full review journey in order", async () => {
     // 4a — load the GitHub session, enter the PR page, and select PR #7.
-    await page.goto(viewUrl, { waitUntil: "networkidle" });
-    await page.getByText("1 open", { exact: true }).waitFor();
+    await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
+    await waitForLandingPrCount(page, "1 open");
     await page.getByTitle("Open the full Pull requests page").click();
     await page.getByRole("heading", { name: "Pull requests" }).waitFor();
     const prCard = page.getByText("#7", { exact: true }).locator("xpath=ancestor::button[1]");
@@ -100,14 +100,18 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       reviewFiles.waitFor({ timeout: 120_000 }),
     ]);
     await reviewFiles.waitFor({ timeout: 120_000 });
-    const syncProvenance = page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/);
+    const syncProvenance = page.getByText(
+      `pr-head → main · HEAD @${fixture!.headSha.slice(0, 7)}`,
+      { exact: true },
+    );
     await syncProvenance.waitFor({ timeout: 120_000 });
     await page.getByRole("region", { name: "Extracted graph" }).waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
-    // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:
+    // The bounded codebase context is an alternate read-only surface, not a review close/reopen:
     // the prepared HEAD artifact, change colours, and review rail stay live, while its chevrons
-    // disclose context locally without changing the hidden extracted graph's expansion state.
+    // disclose only the relevant ancestor/sibling projection without changing the hidden extracted
+    // graph's expansion state.
     await page.getByRole("button", { name: "Highlight code in codebase" }).click();
     const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
     await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
@@ -138,7 +142,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await contextLoyaltyPreview.getByTitle("src/pricing/loyaltyTiers.ts").waitFor();
     await contextLoyaltyPreview.hover();
     expect(await contextLoyaltyPreview.isVisible()).toBe(true);
-    // Hover source is available throughout an active review, including nodes untouched by its diff.
+    // The sibling arrived through the view-scoped projection and still resolves immutable HEAD source.
     await unchangedModule.hover();
     const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
@@ -423,7 +427,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(Object.keys(storedTick.unitTicks)).toHaveLength(1);
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("rev") === "1");
     expect(new URL(page.url()).searchParams.get("rev")).toBe("1");
-    await page.reload({ waitUntil: "networkidle" });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 60_000 });
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
@@ -528,6 +532,15 @@ async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
   }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
 }
 
+async function waitForLandingPrCount(target: Page, label: string): Promise<void> {
+  try {
+    await target.getByText(label, { exact: true }).waitFor();
+  } catch (error) {
+    const body = (await target.locator("body").innerText()).slice(0, 4_000);
+    throw new Error(`PR landing count '${label}' did not render at ${target.url()}. Body:\n${body}`, { cause: error });
+  }
+}
+
 async function lineActionStyle(action: Locator): Promise<{ opacity: string; pointerEvents: string }> {
   return action.evaluate((element) => {
     const style = getComputedStyle(element);
@@ -564,7 +577,7 @@ async function generateSession(baseUrl: string): Promise<{ id: string }> {
   const response = await nativeFetch(`${baseUrl}/api/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind: "github", value: "e2e/shop", subdir: "", ref: "" }),
+    body: JSON.stringify({ kind: "github", value: "e2e/shop" }),
   });
   if (!response.ok) {
     throw new Error(`fixture session generation failed (${response.status}): ${await response.text()}`);

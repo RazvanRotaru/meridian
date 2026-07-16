@@ -235,7 +235,19 @@ export function sendMeta(ctx: Context, response: ServerResponse, id: string | nu
   });
 }
 
-export function sendView(ctx: Context, response: ServerResponse, id: string | null): void {
+export interface PreparedReviewViewQuery {
+  readonly preparedId: string | null;
+  readonly prNumber: string | null;
+  readonly revision: string | null;
+  readonly view: string | null;
+}
+
+export function sendView(
+  ctx: Context,
+  response: ServerResponse,
+  id: string | null,
+  preparedQuery?: PreparedReviewViewQuery,
+): void {
   if (id === null) {
     sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
     return;
@@ -245,6 +257,20 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
     sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
     return;
   }
+  let preparedReviewUrl: string | null = null;
+  const preparedId = preparedQuery?.preparedId ?? null;
+  if (preparedId !== null) {
+    const handoff = ctx.preparedReviewHandoffs.resolve(preparedId);
+    if (!handoff
+      || preparedQuery?.revision !== "1"
+      || preparedQuery.view !== "modules"
+      || preparedQuery.prNumber !== String(handoff.document.request.prNumber)
+      || handoff.document.head.graphId !== id) {
+      sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown prepared review.</p>", 404);
+      return;
+    }
+    preparedReviewUrl = `/api/pr/prepared?id=${encodeURIComponent(preparedId)}`;
+  }
   const source = ctx.sources.get(id) ?? ctx.inspectionSnapshots.resolveDescriptor(id)?.source.metadata;
   const capability = resolveSyntheticCapability(ctx, id);
   sendHtml(response, injectViewBoot(
@@ -253,6 +279,7 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
     source,
     capability?.scenarios ?? null,
     capability?.trust ?? null,
+    preparedReviewUrl,
   ));
 }
 

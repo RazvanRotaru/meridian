@@ -20,10 +20,32 @@ let prevNav: NavState | null = null;
 // True while a popstate-driven restore is writing to the store, so the writer stays muted.
 let suppress = false;
 
+type RestoreOutcome = "completed" | "superseded";
+
+interface RestoreRun {
+  signal: AbortSignal;
+  isCurrent(): boolean;
+}
+
+type CurrentResult<T> =
+  | { current: true; value: T }
+  | { current: false };
+
 /** Apply the URL's navigation state to the store and lay out the restored view. Inert off-DOM. */
 export async function restoreFromUrl(store: BlueprintStore, search?: string): Promise<void> {
+  await restoreFromUrlRun(store, search, null);
+}
+
+async function restoreFromUrlRun(
+  store: BlueprintStore,
+  search: string | undefined,
+  run: RestoreRun | null,
+): Promise<RestoreOutcome> {
   if (typeof window === "undefined") {
-    return;
+    return "completed";
+  }
+  if (!restoreIsCurrent(run)) {
+    return "superseded";
   }
   const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
   const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
@@ -43,52 +65,110 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   // the PR queue, which must keep the current review resumable.
   const hasNoReview = !nav.reviewActive && nav.reviewPr === null && nav.prSelected === null;
   if (hasNoReview && store.getState().prReviewed !== null) {
-    await store.getState().selectPr(null, { endReviewSession: true });
+    const result = await currentResult(
+      store.getState().selectPr(null, { endReviewSession: true }),
+      run,
+    );
+    if (!result.current) {
+      return "superseded";
+    }
+  }
+  if (!restoreIsCurrent(run)) {
+    return "superseded";
   }
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // Telemetry coordinates are deliberately excluded: nulling loaded data on every sparse history
   // restore is undesirable, so explicit source/env values are apply-only below.
   store.setState(structuralState(nav));
-  // The restored viewMode decides which layout pass runs; every module surface routes through
-  // relayout() (→ moduleRelayout), "logic" needs its own ELK pass. This is the boot's first layout.
-  const finishLayout = startPerformanceSpan(PERFORMANCE.initialLayout);
-  try {
-    if (store.getState().viewMode === "logic") {
-      await store.getState().logicRelayout();
-    } else {
-      await store.getState().relayout();
+  // Start this span at the first layout that contributes to the scene the reader will actually
+  // see. A direct PR restore prepares its immutable projections first, then starts here at review
+  // ELK; it must never time (or wait on) a hidden boot/base layout.
+  let finishLayout = () => {};
+  let initialLayoutStarted = false;
+  const startInitialLayout = () => {
+    if (restoreIsCurrent(run) && !initialLayoutStarted) {
+      initialLayoutStarted = true;
+      finishLayout = startPerformanceSpan(PERFORMANCE.initialLayout);
     }
-    // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
-    // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
-    // when the URL carried none).
-    if (store.getState().minimalSeedIds.length > 0) {
-      await store.getState().minimalRelayout();
+  };
+  try {
+    if (rebuildingReview) {
+      const outcome = await restorePrReview(store, nav.reviewPr!, startInitialLayout, run);
+      if (outcome === "superseded") {
+        return outcome;
+      }
+    } else {
+      // The restored viewMode decides which layout pass runs; every module surface routes through
+      // relayout() (→ moduleRelayout), while Logic owns its own ELK pass.
+      startInitialLayout();
+      if (store.getState().viewMode === "logic") {
+        const result = await currentResult(store.getState().logicRelayout(), run);
+        if (!result.current) {
+          return "superseded";
+        }
+      } else {
+        const result = await currentResult(store.getState().relayout(), run);
+        if (!result.current) {
+          return "superseded";
+        }
+      }
+      // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
+      // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
+      // when the URL carried none).
+      if (store.getState().minimalSeedIds.length > 0) {
+        const result = await currentResult(store.getState().minimalRelayout(), run);
+        if (!result.current) {
+          return "superseded";
+        }
+      }
+    }
+    if (!rebuildingReview && nav.prSelected !== null) {
+      // The checks lane keys off the summary's head SHA after files land. A bookmarked PR can restore
+      // before either list page exists, so resolve its one-off summary first; the file/detail fetch
+      // itself stays fire-and-forget like the existing plain-browser restore.
+      const result = await currentResult(store.getState().ensurePrSummary(nav.prSelected), run);
+      if (!result.current) {
+        return "superseded";
+      }
+      if (selectedPrSummary(store.getState(), nav.prSelected) !== null) {
+        void store.getState().selectPr(nav.prSelected);
+      }
+    }
+    // A review flow must be replayed against the restored PR-head artifact, never the boot/base graph.
+    // Both actions resolve after their visible ELK work, so first usable paint cannot race a restored
+    // flow pane or its exact Map target.
+    if (nav.flowSelection) {
+      startInitialLayout();
+      const selection = await currentResult(store.getState().selectFlowEntry(nav.flowSelection), run);
+      if (!selection.current) {
+        return "superseded";
+      }
+      if (nav.logicSelected !== null) {
+        const target = await currentResult(store.getState().selectFlowPaneTarget(nav.logicSelected), run);
+        if (!target.current) {
+          return "superseded";
+        }
+      }
     }
   } finally {
-    finishLayout();
-  }
-  if (nav.reviewActive && nav.reviewPr !== null) {
-    await restorePrReview(store, nav.reviewPr);
-  } else if (nav.prSelected !== null) {
-    // The checks lane keys off the summary's head SHA after files land. A bookmarked PR can restore
-    // before either list page exists, so resolve its one-off summary first; the file/detail fetch
-    // itself stays fire-and-forget like the existing plain-browser restore.
-    await store.getState().ensurePrSummary(nav.prSelected);
-    if (selectedPrSummary(store.getState(), nav.prSelected) !== null) {
-      void store.getState().selectPr(nav.prSelected);
+    // Error/empty-review surfaces have no ELK pass, but still get one well-formed zero-work span.
+    if (restoreIsCurrent(run)) {
+      startInitialLayout();
+    }
+    if (initialLayoutStarted) {
+      finishLayout();
     }
   }
-  // A review flow must be replayed against the restored PR-head artifact, never the boot/base graph.
-  // `selectFlowEntry` deliberately clears stale target state, so replay the target after the pane.
-  if (nav.flowSelection) {
-    store.getState().selectFlowEntry(nav.flowSelection);
-    if (nav.logicSelected !== null) {
-      store.getState().selectFlowPaneTarget(nav.logicSelected);
-    }
+  if (!restoreIsCurrent(run)) {
+    return "superseded";
   }
   applyTelemetryCoordinates(store, nav.telemetrySourceId, nav.environment);
+  if (!restoreIsCurrent(run)) {
+    return "superseded";
+  }
   prevNav = navFrom(store.getState());
+  return "completed";
 }
 
 /** Start reflecting the store into the URL and honouring back/forward. Returns an unsubscribe. */
@@ -102,47 +182,129 @@ export function startUrlSync(store: BlueprintStore): () => void {
     }
     writeUrl(store);
   });
-  let restoreQueue = Promise.resolve();
-  let pendingRestores = 0;
+  let restoreGeneration = 0;
+  let activeRestoreController: AbortController | null = null;
+  let stopped = false;
   const onPopState = () => {
     const search = window.location.search;
-    pendingRestores += 1;
+    const generation = ++restoreGeneration;
+    activeRestoreController?.abort();
+    const controller = new AbortController();
+    activeRestoreController = controller;
     suppress = true;
-    // Cancel at event receipt, not inside the serialized restore: a prior rev=1 restore may be
+    // Cancel at event receipt, not after an awaited restore step: a prior rev=1 restore may be
     // blocked on a long server stream, and the newly requested history entry must abandon it now.
     if (store.getState().prReviewStatus === "preparing") {
       store.getState().cancelPrReviewPreparation();
     }
-    const restore = restoreQueue.then(() => restoreFromUrl(store, search));
-    // Keep the queue usable after a failed restore; completion is still observed below.
-    restoreQueue = restore.catch(() => {});
-    const finish = () => {
-      pendingRestores -= 1;
-      if (pendingRestores === 0) {
-        suppress = false;
-      }
+    const run: RestoreRun = {
+      signal: controller.signal,
+      isCurrent: () => !stopped
+        && restoreGeneration === generation
+        && activeRestoreController === controller,
     };
-    void restore.then(finish, finish);
+    void restoreFromUrlRun(store, search, run)
+      // A failed history entry must not poison the next Back/Forward event.
+      .catch(() => {})
+      .finally(() => {
+        if (!run.isCurrent()) {
+          return;
+        }
+        activeRestoreController = null;
+        suppress = false;
+      });
   };
   window.addEventListener("popstate", onPopState);
   return () => {
+    stopped = true;
+    restoreGeneration += 1;
+    activeRestoreController?.abort();
+    activeRestoreController = null;
+    suppress = false;
     unsubscribe();
     window.removeEventListener("popstate", onPopState);
   };
 }
 
-async function restorePrReview(store: BlueprintStore, number: number): Promise<void> {
-  await store.getState().ensurePrSummary(number);
-  if (selectedPrSummary(store.getState(), number) === null) {
-    return;
+async function restorePrReview(
+  store: BlueprintStore,
+  number: number,
+  onVisibleLayoutStart: () => void,
+  run: RestoreRun | null,
+): Promise<RestoreOutcome> {
+  const handoff = await currentResult(
+    store.getState().restorePreparedPrReview(number, { onVisibleLayoutStart }),
+    run,
+  );
+  if (!handoff.current) {
+    return "superseded";
   }
-  await store.getState().selectPr(number);
+  if (handoff.value) {
+    return "completed";
+  }
+  const summary = await currentResult(store.getState().ensurePrSummary(number), run);
+  if (!summary.current) {
+    return "superseded";
+  }
+  if (selectedPrSummary(store.getState(), number) === null) {
+    return "completed";
+  }
+  const selection = await currentResult(store.getState().selectPr(number), run);
+  if (!selection.current) {
+    return "superseded";
+  }
   if (store.getState().prSelected !== number || store.getState().prFiles === null) {
-    return;
+    return "completed";
   }
   // Prepare-first is blocking: a restored review stays on the PRs waiting surface until the cached
   // or freshly prepared HEAD graph has swapped and reviewPrInGraph enters the Map.
-  await store.getState().reviewPrInGraph();
+  const review = await currentResult(store.getState().reviewPrInGraph({ onVisibleLayoutStart }), run);
+  return review.current ? "completed" : "superseded";
+}
+
+function restoreIsCurrent(run: RestoreRun | null): boolean {
+  return run === null || (!run.signal.aborted && run.isCurrent());
+}
+
+/**
+ * Await one restore step only while its popstate generation is current. Aborting resolves this
+ * wrapper immediately, while the attached fulfillment/rejection handlers safely drain work that
+ * cannot itself accept an AbortSignal. Every caller gates its next mutation on the tagged result.
+ */
+async function currentResult<T>(operation: Promise<T>, run: RestoreRun | null): Promise<CurrentResult<T>> {
+  if (run === null) {
+    return { current: true, value: await operation };
+  }
+  if (!restoreIsCurrent(run)) {
+    void operation.catch(() => {});
+    return { current: false };
+  }
+  return await new Promise<CurrentResult<T>>((resolve, reject) => {
+    let settled = false;
+    const finish = (result: CurrentResult<T>) => {
+      if (settled) return;
+      settled = true;
+      run.signal.removeEventListener("abort", onAbort);
+      resolve(result);
+    };
+    const onAbort = () => finish({ current: false });
+    run.signal.addEventListener("abort", onAbort, { once: true });
+    operation.then(
+      (value) => finish(restoreIsCurrent(run) ? { current: true, value } : { current: false }),
+      (error: unknown) => {
+        if (settled || !restoreIsCurrent(run)) {
+          finish({ current: false });
+          return;
+        }
+        settled = true;
+        run.signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+    if (!restoreIsCurrent(run)) {
+      onAbort();
+    }
+  });
 }
 
 // Reflect the current store into the URL. A no-op when the URL wouldn't change (this also absorbs

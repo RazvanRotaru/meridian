@@ -27,6 +27,7 @@ describe("injectViewBoot", () => {
     expect(local).toContain('"traceUrl":"/api/traces?id=graph-2"');
     expect(github).toContain('"projectionManifestUrl":"/api/graph/manifest?id=graph-1"');
     expect(github).toContain('"projectionUrl":"/api/graph/projection?id=graph-1"');
+    expect(github).toContain('"preparedReviewUrl":null');
     expect(github).not.toContain('"graphUrl"');
     expect(github).toContain('"telemetrySources":[{"id":"demo"');
     expect(github).toContain('"label":"Synthetic demo"');

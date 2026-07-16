@@ -84,11 +84,11 @@ export function ModuleMapView() {
   }, [minimalOpen, minimalView]);
   const showCodebase = () => {
     focusTransfer.current = "codebase";
-    setMinimalView("codebase");
+    void setMinimalView("codebase");
   };
   const showExtractedGraph = () => {
     focusTransfer.current = "graph";
-    setMinimalView("graph");
+    void setMinimalView("graph");
   };
   return (
     <div style={SURFACE_STYLE}>

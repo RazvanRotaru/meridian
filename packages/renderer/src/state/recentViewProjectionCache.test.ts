@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { RecentViewProjectionCache } from "./recentViewProjectionCache";
+import {
+  RecentAllocationBudget,
+  RecentViewProjectionCache,
+} from "./recentViewProjectionCache";
 
 interface Projection {
   label: string;
@@ -149,6 +152,27 @@ describe("RecentViewProjectionCache", () => {
     expect(cache.recentResidentByteLength).toBe(0);
   });
 
+  it("atomically replaces composite constituents while retaining unrelated navigation entries", () => {
+    const cache = new RecentViewProjectionCache<string, Projection>({
+      maxRecentEntries: 4,
+      maxRecentBytes: 1_000,
+    });
+    const composite = projection("head + merge base");
+
+    cache.setActive("unrelated", projection("unrelated"), 30);
+    cache.setActive("head", projection("head"), 100);
+    cache.setActive("merge-base", projection("merge base"), 200);
+    cache.setActiveReplacing("review", composite, 300, ["head", "merge-base"]);
+
+    expect(cache.activeKey).toBe("review");
+    expect(cache.active).toBe(composite);
+    expect(cache.has("head")).toBe(false);
+    expect(cache.has("merge-base")).toBe(false);
+    expect(cache.has("unrelated")).toBe(true);
+    expect(cache.recentEntryCount).toBe(1);
+    expect(cache.recentResidentByteLength).toBe(30);
+  });
+
   it("clears active and recent projections with exact accounting reset", () => {
     const cache = new RecentViewProjectionCache<string, Projection>({
       maxRecentEntries: 3,
@@ -197,5 +221,130 @@ describe("RecentViewProjectionCache", () => {
     expect(cache.has(undefined)).toBe(false);
     expect(cache.has("second")).toBe(true);
     expect(cache.activeKey).toBe("current");
+  });
+
+  it("shares one exact global LRU across independent inactive caches", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 2, maxRecentBytes: 1_000 });
+    const first = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 10, maxRecentBytes: 10_000 },
+      budget,
+    );
+    const second = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 10, maxRecentBytes: 10_000 },
+      budget,
+    );
+
+    first.setActive("a1", projection("a1"), 100);
+    first.setActive("a2", projection("a2"), 200);
+    second.setActive("b1", projection("b1"), 300);
+    second.setActive("b2", projection("b2"), 400);
+
+    expect(budget.inactiveEntryCount).toBe(2);
+    expect(budget.inactiveResidentByteLength).toBe(400);
+    expect(first.get("a1")?.label).toBe("a1"); // a1 is now globally MRU.
+    first.setActive("a3", projection("a3"), 500);
+
+    // Adding inactive a2 evicts globally-oldest b1, including its owning cache's accounting.
+    expect(second.has("b1")).toBe(false);
+    expect(second.recentEntryCount).toBe(0);
+    expect(first.has("a1")).toBe(true);
+    expect(first.has("a2")).toBe(true);
+    expect(first.recentResidentByteLength).toBe(300);
+    expect(budget.inactiveEntryCount).toBe(2);
+    expect(budget.inactiveResidentByteLength).toBe(300);
+  });
+
+  it("enforces the shared resident-byte limit independently of its entry limit", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 10, maxRecentBytes: 250 });
+    const first = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 10, maxRecentBytes: 10_000 },
+      budget,
+    );
+    const second = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 10, maxRecentBytes: 10_000 },
+      budget,
+    );
+    first.setActive("a1", projection("a1"), 100);
+    first.setActive("a2", projection("a2"), 1);
+    second.setActive("b1", projection("b1"), 160);
+    second.setActive("b2", projection("b2"), 1);
+
+    expect(first.has("a1")).toBe(false);
+    expect(second.has("b1")).toBe(true);
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(160);
+  });
+
+  it("uncharges a globally shared entry while active and recharges it on deactivation", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 1_000 });
+    const cache = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 3, maxRecentBytes: 1_000 },
+      budget,
+    );
+    cache.setActive("first", projection("first"), 120);
+    cache.setActive("second", projection("second"), 180);
+
+    expect(budget.inactiveResidentByteLength).toBe(120);
+    expect(cache.activate("first")?.label).toBe("first");
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(180);
+
+    cache.deactivateActive();
+    expect(cache.active).toBeUndefined();
+    expect(cache.recentEntryCount).toBe(2);
+    expect(cache.recentResidentByteLength).toBe(300);
+    expect(budget.inactiveEntryCount).toBe(2);
+    expect(budget.inactiveResidentByteLength).toBe(300);
+  });
+
+  it("never registers an oversized deactivated allocation in either inactive cache", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 100 });
+    const cache = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 3, maxRecentBytes: 1_000 },
+      budget,
+    );
+    cache.setActive("oversized", projection("oversized"), 101);
+
+    cache.deactivateActive();
+
+    expect(cache.active).toBeUndefined();
+    expect(cache.has("oversized")).toBe(false);
+    expect(cache.recentEntryCount).toBe(0);
+    expect(cache.recentResidentByteLength).toBe(0);
+    expect(budget.inactiveEntryCount).toBe(0);
+    expect(budget.inactiveResidentByteLength).toBe(0);
+  });
+
+  it("releases only the clearing cache's allocations from a shared budget", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 1_000 });
+    const first = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 3, maxRecentBytes: 1_000 },
+      budget,
+    );
+    const second = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 3, maxRecentBytes: 1_000 },
+      budget,
+    );
+    first.setActive("a1", projection("a1"), 100);
+    first.setActive("a2", projection("a2"), 200);
+    second.setActive("b1", projection("b1"), 300);
+    second.setActive("b2", projection("b2"), 400);
+
+    first.clear();
+
+    expect(first.recentResidentByteLength).toBe(0);
+    expect(second.has("b1")).toBe(true);
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(300);
+  });
+
+  it("rejects invalid global limits and weights before changing global accounting", () => {
+    expect(() => new RecentAllocationBudget({ maxRecentEntries: -1, maxRecentBytes: 1 }))
+      .toThrow(RangeError);
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 1, maxRecentBytes: 10 });
+
+    expect(() => budget.register(1.5, () => undefined)).toThrow(RangeError);
+    expect(budget.inactiveEntryCount).toBe(0);
+    expect(budget.inactiveResidentByteLength).toBe(0);
   });
 });

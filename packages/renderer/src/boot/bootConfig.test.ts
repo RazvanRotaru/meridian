@@ -18,6 +18,7 @@ const BASE_CONFIG = {
   syntheticExecutionTrust: null,
   syntheticScenarios: [],
   githubSource: null,
+  preparedReviewUrl: null,
   defaultEnv: null,
 };
 
@@ -239,6 +240,32 @@ describe("telemetry boot config", () => {
 });
 
 describe("graph projection boot config", () => {
+  it("accepts only a same-origin prepared-review endpoint in a GitHub session", () => {
+    const githubSource = { repository: "acme/shop", subdir: "packages/api" };
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...BASE_CONFIG,
+        githubSource,
+        preparedReviewUrl: "/api/pr/prepared?id=opaque%2Fhandoff",
+      },
+    });
+    expect(readBootConfig()).toMatchObject({
+      githubSource,
+      preparedReviewUrl: "/api/pr/prepared?id=opaque%2Fhandoff",
+    });
+
+    for (const preparedReviewUrl of [
+      "https://example.com/api/pr/prepared?id=opaque",
+      "//example.com/api/pr/prepared?id=opaque",
+      "/api/pr/prepared",
+      "/api/pr/prepared?id=opaque&extra=1",
+      "/api/pr/prepare?id=opaque",
+    ]) {
+      vi.stubGlobal("window", { __MERIDIAN__: { ...BASE_CONFIG, githubSource, preparedReviewUrl } });
+      expect(() => readBootConfig()).toThrow("preparedReviewUrl");
+    }
+  });
+
   it("requires both projection endpoints in every injected session", () => {
     vi.stubGlobal("window", {
       __MERIDIAN__: {

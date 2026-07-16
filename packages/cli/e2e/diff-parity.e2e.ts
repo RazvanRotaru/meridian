@@ -123,7 +123,7 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   const page = await context.newPage();
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(viewUrl, { waitUntil: "networkidle" });
+  await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
   await page.getByText(`${DIFF_PARITY_CASES.length} open`, { exact: true }).waitFor();
   await page.getByTitle("Open the full Pull requests page").click();
   await page.getByRole("heading", { name: "Pull requests" }).waitFor();
@@ -142,8 +142,8 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   }
   await detail.getByRole("button", { name: "Review in graph" }).click();
   await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 120_000 });
-  const provenance = new RegExp(`^${escapeRegExp(pr.headRef)} → main · head graph @[0-9a-f]{7}$`);
-  await page.getByText(provenance).waitFor({ timeout: 180_000 });
+  const provenance = `${pr.headRef} → ${pr.baseRef} · HEAD @${pr.headSha.slice(0, 7)}`;
+  await page.getByText(provenance, { exact: true }).waitFor({ timeout: 180_000 });
 
   const reviewSurface = page.getByRole("region", { name: "Extracted graph" });
   await reviewSurface.waitFor();
@@ -463,7 +463,7 @@ async function generateSession(baseUrl: string): Promise<{ id: string }> {
   const response = await nativeFetch(`${baseUrl}/api/generate`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind: "github", value: "e2e/shop", subdir: "", ref: "" }),
+    body: JSON.stringify({ kind: "github", value: "e2e/shop" }),
   });
   if (!response.ok) {
     throw new Error(`diff parity session generation failed (${response.status}): ${await response.text()}`);
@@ -542,10 +542,6 @@ function installGitRedirect(repoUrl: string): () => void {
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function json(body: unknown, status = 200): Response {

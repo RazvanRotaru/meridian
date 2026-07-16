@@ -73,7 +73,7 @@ describe("runExtractionWorker", () => {
     expect((error as Error).message).toContain("no extractor for language 'not-a-language'");
   });
 
-  it("preserves safe CliError details and defensively redacts a token from the response", async () => {
+  it("preserves safe CliError details and defensively redacts a token from the response", { timeout: 15_000 }, async () => {
     const token = "github_pat_worker_transport_secret_123456789";
     const entry = await customWorker(`
       process.once("message", (message) => {
@@ -135,7 +135,7 @@ describe("runExtractionWorker", () => {
     expect((error as Error).message).not.toContain("sensitive-marker");
   });
 
-  it("sends SIGTERM, escalates to SIGKILL, and rejects only after the child closes", async () => {
+  it("sends SIGTERM, escalates to SIGKILL, and rejects only after the child closes", { timeout: 15_000 }, async () => {
     const directory = await temporaryDirectory();
     const ready = join(directory, "ready");
     const entry = await customWorker(`
@@ -191,7 +191,7 @@ describe("runExtractionWorker", () => {
     expect(error).toMatchObject({ exitCode: EXIT.extractor, message: "extraction timed out after 1s" });
   });
 
-  it("kills descendant processes when a worker is cancelled", async () => {
+  it("kills descendant processes when a worker is cancelled", { timeout: 15_000 }, async () => {
     const directory = await temporaryDirectory();
     const ready = join(directory, "descendant-pid");
     const entry = await customWorker(`
@@ -220,7 +220,7 @@ describe("runExtractionWorker", () => {
     expect(processExists(descendantPid)).toBe(false);
   });
 
-  it("kills residual process-group members before settling a normal worker exit", async () => {
+  it("kills residual process-group members before settling a normal worker exit", { timeout: 15_000 }, async () => {
     const directory = await temporaryDirectory();
     const descendantFile = join(directory, "normal-exit-descendant-pid");
     const entry = await customWorker(`

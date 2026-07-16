@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   changedFileProjectionPaths,
+  fetchPreparedReviewHandoff,
   streamPrPreparation,
   type PrPrepareRequest,
   type PrPrepareStage,
@@ -30,6 +31,23 @@ const INVALID_CHANGED_FILES: unknown[][] = [
   [{ path: "src/a.ts", status: "modified", previousPath: "src/old.ts" }],
   [{ path: "src/a.ts", status: "modified" }, { path: "src/a.ts", status: "deleted" }],
 ];
+const INVALID_DESCRIPTOR_ENDPOINTS = [
+  ["manifestUrl", "http://meridian.local/api/graph/manifest?id=pr-head"],
+  ["manifestUrl", "//evil.example/api/graph/manifest?id=pr-head"],
+  ["manifestUrl", "//meridian.local/api/graph/manifest?id=pr-head"],
+  ["manifestUrl", "https://evil.example/api/graph/manifest?id=pr-head"],
+  ["manifestUrl", "/api/graph/other/../manifest?id=pr-head"],
+  ["manifestUrl", "/api/graph/projection?id=pr-head"],
+  ["projectionUrl", "/api/graph/manifest?id=pr-head"],
+  ["sourceUrl", "/api/meta?id=pr-head"],
+  ["metaUrl", "/api/source?id=pr-head"],
+  ["manifestUrl", "/api/graph/manifest"],
+  ["manifestUrl", "/api/graph/manifest?id=other"],
+  ["manifestUrl", "/api/graph/manifest?id=pr-head&id=other"],
+  ["manifestUrl", "/api/graph/manifest?id=pr-head&format=json"],
+  ["manifestUrl", "/api/graph/manifest?id=pr-head#"],
+  ["manifestUrl", "/api/graph/manifest?id=pr-head#fragment"],
+] as const;
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -51,20 +69,7 @@ describe("streamPrPreparation", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/prepare");
     expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual(REQUEST);
     expect(stages).toEqual(["resolve", "git", "extract-head", "extract-merge-base", "publish"]);
-    expect(result).toEqual({
-      head: HEAD,
-      mergeBase: BASE,
-      headSha: HEAD_SHA,
-      baseSha: BASE_SHA,
-      mergeBaseSha: MERGE_BASE_SHA,
-      changedFiles: [
-        { path: "src/a.ts", status: "modified" },
-        { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed" },
-      ],
-      cache: "miss",
-      timings: { gitMs: 12, extractMs: 34 },
-      warnings: ["one bounded warning"],
-    });
+    expect(result).toEqual(expectedResult());
   });
 
   it("canonicalizes both sides of renames for review projection routing", () => {
@@ -91,6 +96,30 @@ describe("streamPrPreparation", () => {
       .rejects.toThrow("invalid PR preparation done line: changedFiles");
   });
 
+  it.each(INVALID_DESCRIPTOR_ENDPOINTS)(
+    "rejects an unsafe or unbound descriptor endpoint in %s: %s",
+    async (field, endpoint) => {
+      vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{
+        ...doneLine(),
+        head: { ...HEAD, [field]: endpoint },
+      }])));
+
+      await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
+        .rejects.toThrow(`invalid PR preparation done line: head.${field}`);
+    },
+  );
+
+  it.each([
+    null,
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=other", viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff" },
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=opaque-handoff", viewUrl: "/view?id=other&view=modules&prn=7&rev=1&prepared=opaque-handoff" },
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=opaque-handoff", viewUrl: "/view?id=pr-head&view=modules&prn=9&rev=1&prepared=opaque-handoff" },
+  ])("rejects a missing or mismatched immutable handoff %#", async (handoff) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{ ...doneLine(), handoff }])));
+    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
+      .rejects.toThrow("handoff");
+  });
+
   it("rejects any line after the terminal done response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([doneLine(), progress("publish", 50)])));
     await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
@@ -110,6 +139,50 @@ describe("streamPrPreparation", () => {
     )));
     await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
       .rejects.toThrow("inspection queue is full; retry later");
+  });
+});
+
+describe("fetchPreparedReviewHandoff", () => {
+  it("GETs and strictly parses one immutable v1 handoff", async () => {
+    const handoff = { version: 1, request: REQUEST, ...pairResult() };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(handoff));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(fetchPreparedReviewHandoff("/api/pr/prepared?id=opaque")).resolves.toEqual({
+      request: REQUEST,
+      ...expectedPair(),
+    });
+    expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/prepared?id=opaque");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { accept: "application/json" },
+    });
+  });
+
+  it.each([
+    { version: 0, request: REQUEST, ...doneResult() },
+    { version: 1, request: { ...REQUEST, prNumber: 0 }, ...doneResult() },
+    { version: 1, request: { ...REQUEST, subdir: "../escape" }, ...doneResult() },
+    { version: 1, request: REQUEST, ...doneResult(), mergeBase: null },
+  ])("rejects malformed or non-v1 handoff data %#", async (handoff) => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(handoff)));
+    await expect(fetchPreparedReviewHandoff("/api/pr/prepared?id=opaque")).rejects.toThrow();
+  });
+
+  it("applies the same descriptor endpoint validation to immutable GET handoffs", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      version: 1,
+      request: REQUEST,
+      ...pairResult(),
+      mergeBase: {
+        ...BASE,
+        projectionUrl: "/api/graph/projection?id=pr-head",
+      },
+    })));
+
+    await expect(fetchPreparedReviewHandoff("/api/pr/prepared?id=opaque"))
+      .rejects.toThrow("invalid PR preparation done line: mergeBase.projectionUrl");
   });
 });
 
@@ -137,6 +210,23 @@ function doneLine() {
   return {
     version: 1,
     type: "done",
+    ...doneResult(),
+  };
+}
+
+function doneResult() {
+  return {
+    ...pairResult(),
+    handoff: {
+      id: "opaque-handoff",
+      url: "/api/pr/prepared?id=opaque-handoff",
+      viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff",
+    },
+  };
+}
+
+function pairResult() {
+  return {
     head: HEAD,
     mergeBase: BASE,
     headSha: HEAD_SHA,
@@ -147,6 +237,34 @@ function doneLine() {
       { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed" },
     ],
     cache: "miss",
+    timings: { gitMs: 12, extractMs: 34 },
+    warnings: ["one bounded warning"],
+  };
+}
+
+function expectedResult() {
+  return {
+    ...expectedPair(),
+    handoff: {
+      id: "opaque-handoff",
+      url: "/api/pr/prepared?id=opaque-handoff",
+      viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff",
+    },
+  };
+}
+
+function expectedPair() {
+  return {
+    head: HEAD,
+    mergeBase: BASE,
+    headSha: HEAD_SHA,
+    baseSha: BASE_SHA,
+    mergeBaseSha: MERGE_BASE_SHA,
+    changedFiles: [
+      { path: "src/a.ts", status: "modified" },
+      { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed" },
+    ],
+    cache: "miss" as const,
     timings: { gitMs: 12, extractMs: 34 },
     warnings: ["one bounded warning"],
   };

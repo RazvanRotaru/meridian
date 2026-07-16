@@ -7,6 +7,7 @@ import {
   type GraphProjectionRequest,
 } from "../graph/graphProjectionClient";
 import { loadBootGraph, prepareBootstrap } from "./bootstrap";
+import { RecentAllocationBudget } from "../state/recentViewProjectionCache";
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.1.0",
@@ -38,6 +39,22 @@ describe("projection-aware graph boot", () => {
       "/api/graph/manifest?id=graph-1",
       "/api/graph/projection?id=graph-1",
     ]);
+  });
+
+  it("attaches boot projections to the caller-supplied shared inactive budget", async () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 1, maxRecentBytes: 1_000_000 });
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>(async (input, init) => String(input).includes("manifest")
+      ? json(manifest())
+      : json(projectionEnvelope(init, `projection-${String(init?.body).includes("ts:focus") ? "focus" : "overview"}`))));
+    const loaded = await loadBootGraph(config(), budget);
+
+    await loaded.dataSource!.activate({
+      ...OVERVIEW_PROJECTION_REQUEST,
+      focusIds: ["ts:focus"],
+    });
+
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(loaded.projection!.residentBytes);
   });
 
   it("surfaces an advertised projection failure instead of silently materializing /api/graph", async () => {
@@ -89,6 +106,7 @@ describe("projection-aware graph boot", () => {
         syntheticExecutionTrust: null,
         syntheticScenarios: [],
         githubSource: null,
+        preparedReviewUrl: null,
         defaultEnv: null,
       },
     });
@@ -127,6 +145,7 @@ function config(): BootConfig {
     syntheticExecutionTrust: null,
     syntheticScenarios: [],
     githubSource: null,
+    preparedReviewUrl: null,
     defaultEnv: null,
   };
 }
