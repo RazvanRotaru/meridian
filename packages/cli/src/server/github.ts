@@ -26,6 +26,7 @@ import { API_ROOT, getApi, getApiOrNull, getApiPage, mutateApi, postForm, repoAp
 import { asObject } from "./json-fields";
 import { submitPullRequestReviewWithFetch } from "./github-review";
 import type { SubmitReviewRequest, SubmitReviewResult } from "./github-review";
+import { enrichPullRequestsForViewer } from "./github-pr-viewer";
 
 const DEVICE_CODE_URL = "https://github.com/login/device/code";
 const TOKEN_URL = "https://github.com/login/oauth/access_token";
@@ -81,6 +82,7 @@ export interface PullRequestsRequest {
   state: "open" | "closed";
   page: number;
   token?: string;
+  includeViewerStatus?: boolean;
 }
 
 export interface BranchesRequest {
@@ -92,6 +94,7 @@ export interface BranchesRequest {
 export interface PullRequestsResult {
   prs: PrSummary[];
   hasMore: boolean;
+  viewerLogin?: string;
 }
 
 export interface PullRequestRequest {
@@ -359,7 +362,17 @@ async function listBranches(fetchImpl: typeof fetch, request: BranchesRequest): 
 async function listPullRequestsWithFetch(fetchImpl: typeof fetch, request: PullRequestsRequest): Promise<PullRequestsResult> {
   const params = new URLSearchParams({ state: request.state, per_page: String(PR_PER_PAGE), page: String(request.page) });
   const prs = parsePullRequestList(await getApi(fetchImpl, repoApi(request.owner, request.repo, `/pulls?${params}`), request.token));
-  return { prs, hasMore: prs.length === PR_PER_PAGE };
+  const result = { prs, hasMore: prs.length === PR_PER_PAGE };
+  if (!request.includeViewerStatus || !request.token || prs.length === 0) {
+    return result;
+  }
+  try {
+    return { ...result, ...await enrichPullRequestsForViewer(fetchImpl, request.owner, request.repo, prs, request.token) };
+  } catch {
+    // Personalized status is progressive enhancement: a GraphQL permission/schema failure must
+    // never make the ordinary REST-backed PR picker unusable.
+    return result;
+  }
 }
 
 async function fetchPullRequestFilesWithFetch(fetchImpl: typeof fetch, request: PullRequestFilesRequest): Promise<PullRequestFilesResult> {

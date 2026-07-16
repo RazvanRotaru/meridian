@@ -11,7 +11,7 @@
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
     GET  /api/repos/branches?repo= -> { branches: [string] }       (public without auth; private when signed in)
-    GET  /api/repos/pulls?repo=&state=&page= -> { prs: [summary], hasMore }
+    GET  /api/repos/pulls?repo=&state=&page= -> { prs: [summary + viewerStatus?], hasMore, viewerLogin? }
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
@@ -486,11 +486,45 @@
         font-weight: 650;
       }
       .pr-result-title {
+        flex: 1 1 auto;
         min-width: 0;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
         font-weight: 600;
+      }
+      .personal-pr-badge {
+        flex: 0 0 auto;
+        padding: 2px 6px;
+        border: 1px solid rgba(139, 148, 158, 0.34);
+        border-radius: 999px;
+        color: var(--muted-2);
+        background: rgba(139, 148, 158, 0.08);
+        font-family: var(--font-mono);
+        font-size: 9px;
+        font-weight: 650;
+        letter-spacing: 0.01em;
+        white-space: nowrap;
+      }
+      .personal-pr-badge.mine {
+        color: #a5d6ff;
+        border-color: rgba(88, 166, 255, 0.38);
+        background: rgba(88, 166, 255, 0.11);
+      }
+      .personal-pr-badge.attention {
+        color: #f2cc60;
+        border-color: rgba(210, 153, 34, 0.42);
+        background: rgba(210, 153, 34, 0.11);
+      }
+      .personal-pr-badge.positive {
+        color: #7ee787;
+        border-color: rgba(63, 185, 80, 0.4);
+        background: rgba(63, 185, 80, 0.1);
+      }
+      .personal-pr-badge.negative {
+        color: #ffb3ad;
+        border-color: rgba(248, 81, 73, 0.4);
+        background: rgba(248, 81, 73, 0.1);
       }
       .pr-preview {
         padding: 10px 12px;
@@ -1180,6 +1214,7 @@
                     <span class="pr-preview-number" id="pr-preview-number"></span>
                     <span class="pr-preview-title" id="pr-preview-title"></span>
                     <span class="badge" id="pr-preview-draft" hidden>draft</span>
+                    <span class="personal-pr-badge" id="pr-preview-personal" hidden></span>
                   </div>
                   <div class="pr-preview-meta" id="pr-preview-meta"></div>
                 </div>
@@ -1280,6 +1315,7 @@
       const status = $("status");
       const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
       let signedIn = false;
+      let currentUserLogin = null;
       let pollTimer = null;
       let pollDelayMs = 5000;
       let searchTimer = null;
@@ -1466,6 +1502,7 @@
 
       function showSignedOut() {
         signedIn = false;
+        currentUserLogin = null;
         devicePending = false;
         $("view-device").hidden = true;
         $("view-form").hidden = false;
@@ -1481,6 +1518,9 @@
 
       function showSignedIn(user) {
         signedIn = true;
+        if (user && typeof user.login === "string" && user.login.length > 0) {
+          currentUserLogin = user.login;
+        }
         devicePending = false;
         clearTimeout(pollTimer);
         animateCardSwap(() => {
@@ -1490,7 +1530,7 @@
           $("signedin").hidden = false;
           $("auth-divider").hidden = true;
           labelRepoField(true);
-          $("me-login").textContent = user && user.login ? user.login : "signed in";
+          $("me-login").textContent = currentUserLogin || "signed in";
           const avatar = $("me-avatar");
           const src = user && safeHttpsUrl(user.avatarUrl);
           if (src) {
@@ -1978,6 +2018,10 @@
         if (!value || typeof value !== "object") return null;
         const number = Number(value.number);
         if (!Number.isSafeInteger(number) || number < 1) return null;
+        const review = value.viewerStatus && typeof value.viewerStatus === "object"
+          && ["approved", "changes_requested", "commented", "dismissed"].includes(value.viewerStatus.review)
+          ? value.viewerStatus.review
+          : null;
         return {
           number,
           title: typeof value.title === "string" ? value.title : "PR #" + number,
@@ -1987,7 +2031,30 @@
           updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
           draft: value.draft === true,
           state: value.state === "closed" ? "closed" : "open",
+          viewerStatus: value.viewerStatus && typeof value.viewerStatus === "object"
+            ? { reviewRequested: value.viewerStatus.reviewRequested === true, review }
+            : null,
         };
+      }
+
+      function rememberViewerLogin(value) {
+        if (typeof value !== "string" || value.length === 0) return;
+        currentUserLogin = value;
+        if (signedIn) $("me-login").textContent = value;
+      }
+
+      function isCurrentUser(login) {
+        return currentUserLogin !== null && login.toLowerCase() === currentUserLogin.toLowerCase();
+      }
+
+      function personalPullRequestStatus(pr) {
+        if (isCurrentUser(pr.author)) return { label: "Yours", tone: "mine" };
+        if (pr.viewerStatus?.reviewRequested) return { label: "Review requested", tone: "attention" };
+        if (pr.viewerStatus?.review === "approved") return { label: "You approved", tone: "positive" };
+        if (pr.viewerStatus?.review === "changes_requested") return { label: "You requested changes", tone: "negative" };
+        if (pr.viewerStatus?.review === "commented") return { label: "You reviewed", tone: "neutral" };
+        if (pr.viewerStatus?.review === "dismissed") return { label: "Review dismissed", tone: "neutral" };
+        return null;
       }
 
       function relativeUpdatedAt(value) {
@@ -2016,6 +2083,11 @@
         $("pr-preview-number").textContent = "#" + pr.number;
         $("pr-preview-title").textContent = pr.title;
         $("pr-preview-draft").hidden = !pr.draft;
+        const personal = personalPullRequestStatus(pr);
+        const personalBadge = $("pr-preview-personal");
+        personalBadge.hidden = personal === null;
+        personalBadge.textContent = personal?.label || "";
+        personalBadge.className = "personal-pr-badge" + (personal ? " " + personal.tone : "");
         const branches = pr.headRef && pr.baseRef ? " · " + pr.headRef + " → " + pr.baseRef : "";
         $("pr-preview-meta").textContent = pr.author
           + branches
@@ -2054,9 +2126,17 @@
         const previous = $("pr-author").value;
         const authors = [...new Set(pullRequests.map((pr) => pr.author))].sort((a, b) => a.localeCompare(b));
         $("pr-author").value = authors.includes(previous) ? previous : "";
+        const me = authors.find((author) => isCurrentUser(author)) || null;
+        const authorOptions = me
+          ? [
+              { value: me, label: "My pull requests · " + me },
+              { value: "", label: "All authors" },
+              ...authors.filter((author) => author !== me).map((author) => ({ value: author, label: author })),
+            ]
+          : [{ value: "", label: "All authors" }, ...authors.map((author) => ({ value: author, label: author }))];
         renderMenu(
           "pr-author",
-          [{ value: "", label: "All authors" }, ...authors.map((author) => ({ value: author, label: author }))],
+          authorOptions,
           () => {
             clearPullRequestSelection(false);
             renderPullRequestResults(document.activeElement === $("pr-query"));
@@ -2119,6 +2199,8 @@
         top.className = "pr-result-top";
         appendText(top, "pr-result-number", "#" + pr.number);
         appendText(top, "pr-result-title", (pr.draft ? "[Draft] " : "") + pr.title);
+        const personal = personalPullRequestStatus(pr);
+        if (personal) appendText(top, "personal-pr-badge " + personal.tone, personal.label);
         item.appendChild(top);
         const branches = pr.headRef && pr.baseRef ? " · " + pr.headRef + " → " + pr.baseRef : "";
         appendText(item, "result-desc", pr.author + branches + " · " + relativeUpdatedAt(pr.updatedAt));
@@ -2128,6 +2210,25 @@
         });
         item.addEventListener("click", () => pickPullRequest(pr));
         return item;
+      }
+
+      function personalPullRequestGroups(filtered) {
+        if (!currentUserLogin || $("pr-author").value || prSearchQuery.trim()) {
+          return [{ label: null, prs: filtered }];
+        }
+        const groups = [
+          { label: "My pull requests", prs: [] },
+          { label: "Needs your review", prs: [] },
+          { label: "Reviewed by you", prs: [] },
+          { label: "Other pull requests", prs: [] },
+        ];
+        for (const pr of filtered) {
+          if (isCurrentUser(pr.author)) groups[0].prs.push(pr);
+          else if (pr.viewerStatus?.reviewRequested) groups[1].prs.push(pr);
+          else if (pr.viewerStatus?.review) groups[2].prs.push(pr);
+          else groups[3].prs.push(pr);
+        }
+        return groups.filter((group) => group.prs.length > 0);
       }
 
       function renderPullRequestStatus(filtered) {
@@ -2154,7 +2255,10 @@
         if (filtered.length === 0) {
           appendPlainItem(list, "group-note", "No pull requests match the current filters.");
         } else {
-          for (const pr of filtered) list.appendChild(pullRequestResultItem(pr));
+          for (const group of personalPullRequestGroups(filtered)) {
+            if (group.label) appendPlainItem(list, "group-label", group.label);
+            for (const pr of group.prs) list.appendChild(pullRequestResultItem(pr));
+          }
         }
         renderPullRequestPreview();
         renderPullRequestStatus(filtered);
@@ -2203,6 +2307,7 @@
               showPullRequestError("Could not load pull requests" + detail + " Sign in for private repositories.");
               return;
             }
+            if (data) rememberViewerLogin(data.viewerLogin);
             const pagePrs = data && Array.isArray(data.prs) ? data.prs : [];
             for (const value of pagePrs) {
               const pr = normalizePullRequest(value);

@@ -49,6 +49,14 @@ export interface PrSummary {
   draft: boolean;
   state: "open" | "closed";
   url: string;
+  viewerStatus?: PrViewerStatus;
+}
+
+export type PrViewerReview = "approved" | "changes_requested" | "commented" | "dismissed";
+
+export interface PrViewerStatus {
+  reviewRequested: boolean;
+  review: PrViewerReview | null;
 }
 
 export interface PrGitHubComment {
