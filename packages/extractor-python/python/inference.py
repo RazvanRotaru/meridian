@@ -65,6 +65,39 @@ def type_ref_of(annotation: ast.expr | None) -> str | None:
     return None
 
 
+def type_refs_of(annotation: ast.expr | None) -> list[str]:
+    """Return the named types present in an annotation, preserving source order."""
+    if annotation is None:
+        return []
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            parsed = ast.parse(annotation.value, mode="eval")
+        except SyntaxError:
+            return [annotation.value]
+        return type_refs_of(parsed.body)  # type: ignore[attr-defined]
+    if isinstance(annotation, (ast.Name, ast.Attribute)):
+        ref = expression_name(annotation)
+        return [ref] if ref and ref != "None" else []
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return unique_refs([*type_refs_of(annotation.left), *type_refs_of(annotation.right)])
+    if isinstance(annotation, ast.Subscript):
+        wrapper = expression_name(annotation.value)
+        elements = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+        # Literal values are metadata, not forward type references. Annotated's metadata is the
+        # same; only its first argument is a type position.
+        wrapper_name = wrapper.split(".")[-1] if wrapper else ""
+        if wrapper_name == "Literal":
+            nested: list[str] = []
+        elif wrapper_name == "Annotated":
+            nested = type_refs_of(elements[0]) if elements else []
+        else:
+            nested = [ref for element in elements for ref in type_refs_of(element)]
+        return unique_refs(([wrapper] if wrapper else []) + nested)
+    if isinstance(annotation, (ast.Tuple, ast.List)):
+        return unique_refs([ref for element in annotation.elts for ref in type_refs_of(element)])
+    return []
+
+
 def parse_forward_reference(value: str) -> str:
     try:
         parsed = ast.parse(value, mode="eval")
@@ -85,6 +118,10 @@ def expression_name(expression: ast.expr) -> str | None:
 def single_type(candidates: list[str | None]) -> str | None:
     concrete = {candidate for candidate in candidates if candidate is not None}
     return next(iter(concrete)) if len(concrete) == 1 else None
+
+
+def unique_refs(refs: list[str]) -> list[str]:
+    return list(dict.fromkeys(refs))
 
 
 def is_none_type(node: ast.expr) -> bool:

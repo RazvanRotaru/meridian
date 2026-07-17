@@ -21,6 +21,7 @@ class TypeIdentity:
     resolution: str
     module: str
     qualname: str
+    target_line: int | None = None
 
 
 class SymbolTable:
@@ -119,11 +120,17 @@ class SymbolTable:
             return None
         definition = scope.definitions.get(type_ref)
         if definition and self.project.kind_of(self.module_path, definition) == "class":
-            return TypeIdentity("resolved", self.module_path, definition)
+            origin = scope.definition_origins.get(type_ref)
+            return TypeIdentity(
+                "resolved",
+                self.module_path,
+                definition,
+                origin if isinstance(origin, int) else self.project.unique_class_line(self.module_path, definition),
+            )
         if root in scope.from_imports:
             module, imported_name = scope.from_imports[root]
             imported_qualname = ".".join([imported_name, *parts[1:]])
-            located = locate_imported_type(self.project, module, imported_name, parts[1:])
+            located = locate_imported_type_target(self.project, module, imported_name, parts[1:])
             if located:
                 return TypeIdentity("resolved", *located)
             if self.project.import_target(module) is None:
@@ -131,7 +138,7 @@ class SymbolTable:
             return None
         if root in scope.module_imports:
             prefix = scope.module_imports[root]
-            located = locate_qualified_type(self.project, prefix, parts[1:])
+            located = locate_qualified_type_target(self.project, prefix, parts[1:])
             if located:
                 return TypeIdentity("resolved", *located)
             if parts[1:] and self.project.import_target(prefix) is None:
@@ -142,10 +149,20 @@ class SymbolTable:
                     scope.module_import_paths.get(root, {prefix}),
                 )
             return None
-        located = self.project.locate_symbol(self.module_path, type_ref)
-        if located and self.project.kind_of(*located) == "class":
+        located = self.project.symbol_target(self.module_path, type_ref)
+        if located and self.project.kind_of(located[0], located[1]) == "class":
             return TypeIdentity("resolved", *located)
         return None
+
+    def locate_type_target(
+        self,
+        type_ref: str,
+        scope: ScopeBindings,
+    ) -> tuple[str, str, int | None] | None:
+        located = self.locate_type(type_ref, scope)
+        if not located or located.resolution != "resolved":
+            return None
+        return located.module, located.qualname, located.target_line
 
 
 def walk_scope(body: list[ast.stmt]):
@@ -159,28 +176,39 @@ def walk_scope(body: list[ast.stmt]):
 
 
 def locate_qualified_type(project: ProjectIndex, prefix: str, rest: list[str]) -> tuple[str, str] | None:
+    located = locate_qualified_type_target(project, prefix, rest)
+    return (located[0], located[1]) if located else None
+
+
+def locate_qualified_type_target(
+    project: ProjectIndex,
+    prefix: str,
+    rest: list[str],
+) -> tuple[str, str, int | None] | None:
     for split in range(len(rest), -1, -1):
         module = ".".join([prefix, *rest[:split]])
         actual = project.canonical_module(module)
         if actual and split < len(rest):
-            located = project.locate_symbol(actual, ".".join(rest[split:]))
-            if located and project.kind_of(*located) == "class":
+            located = project.symbol_target(actual, ".".join(rest[split:]))
+            if located and project.kind_of(located[0], located[1]) == "class":
                 return located
     return None
 
 
-def locate_imported_type(
+def locate_imported_type_target(
     project: ProjectIndex,
     module: str,
     imported_name: str,
     rest: list[str],
-) -> tuple[str, str] | None:
-    located = project.locate_symbol(module, imported_name)
+) -> tuple[str, str, int | None] | None:
+    located = project.symbol_target(module, imported_name)
     if not located:
         return None
     qualname = ".".join([located[1], *rest])
     candidate = (located[0], qualname)
-    return candidate if project.kind_of(*candidate) == "class" else None
+    if project.kind_of(*candidate) != "class":
+        return None
+    return (*candidate, located[2] if not rest else project.unique_class_line(*candidate))
 
 
 def locate_external_qualified_type(

@@ -3,7 +3,7 @@
  * and this adapter the only consumer, so these types ARE the schema for that boundary.
  */
 
-export type AnalyzeNodeKind = "class" | "function" | "method";
+export type AnalyzeNodeKind = "class" | "interface" | "function" | "method";
 
 export interface AnalyzeNode {
   kind: AnalyzeNodeKind;
@@ -24,7 +24,9 @@ export type AnalyzeTarget =
   | { resolution: "unresolved" };
 
 export interface AnalyzeEdge {
-  kind: "call" | "extends" | "imports" | "reference";
+  kind: "call" | "extends" | "implements" | "imports" | "reference";
+  confidence?: number;
+  sourceModulePath?: string;
   sourceQualname: string | null;
   sourceLine: number | null;
   line: number;

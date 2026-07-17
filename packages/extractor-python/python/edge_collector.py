@@ -6,7 +6,7 @@ import ast
 
 from bindings import bound_names
 from definitions import FUNCTIONS, qualify
-from inference import expression_name, parameter_names
+from inference import expression_name, infer_value_type, parameter_names
 from project import resolve_from_module_path
 from resolve import external, resolve_base, resolve_callee, resolve_type_reference, resolved
 from scope import ScopeBindings, bind_local, clone_scope
@@ -128,6 +128,8 @@ class EdgeCollector:
         if isinstance(statement, ast.AnnAssign):
             self.collect_annotation_references(statement.annotation, source, scope)
         self.collect_calls(statement, source, method_class, scope)
+        if isinstance(statement, ast.Return):
+            self.collect_protocol_implementation(statement, source, method_class, scope)
         self.visit_nested_definitions(
             statement, source, definition_owner, scope, closure_scope
         )
@@ -176,7 +178,13 @@ class EdgeCollector:
         class_body_scope: ScopeBindings,
     ) -> None:
         for base in classdef.bases:
-            self.append("extends", qualname, base, resolve_base(base, self.table, definition_scope))
+            target = resolve_base(base, self.table, definition_scope)
+            kind = (
+                "implements"
+                if self.is_concrete_protocol_base(qualname, classdef.lineno, target)
+                else "extends"
+            )
+            self.append(kind, qualname, base, target, confidence=1 if kind == "implements" else None)
         for expression in [*classdef.decorator_list, *classdef.keywords]:
             node = expression.value if isinstance(expression, ast.keyword) else expression
             self.collect_calls(node, qualname, None, definition_scope)
@@ -210,6 +218,90 @@ class EdgeCollector:
         expressions.extend(default for default in function.args.kw_defaults if default is not None)
         for expression in expressions:
             self.collect_calls(expression, source, None, scope)
+
+    def collect_protocol_implementation(
+        self,
+        statement: ast.Return,
+        source: str | None,
+        class_name: str | None,
+        scope: ScopeBindings,
+    ) -> None:
+        """Infer declared conformance from the value returned under a Protocol annotation.
+
+        The return expression is the evidence boundary: pairing the annotation with every class
+        constructed in this function would incorrectly mark helpers as implementations. Python's
+        stdlib AST cannot prove full structural assignability, so the emitted edge carries bounded
+        confidence instead of masquerading as an explicit base declaration.
+        """
+        if source is None or statement.value is None:
+            return
+        contract = self.table.project.return_target_info(
+            self.table.module_path,
+            source,
+            self.source_lines.get(source),
+        )
+        if contract is None or not self.table.project.is_protocol(*contract):
+            return
+        implementation = self.returned_class(statement.value, class_name, scope)
+        if implementation is None:
+            return
+        implementation_key = (
+            implementation["modulePath"],
+            implementation["qualname"],
+            implementation.get("targetLine"),
+        )
+        if implementation_key == contract or self.table.project.is_protocol(*implementation_key):
+            return
+        self.append_from_target(
+            "implements",
+            implementation,
+            statement.value,
+            resolved(*contract),
+            confidence=0.8,
+        )
+
+    def returned_class(
+        self,
+        value: ast.expr,
+        class_name: str | None,
+        scope: ScopeBindings,
+    ) -> dict | None:
+        if isinstance(value, ast.Call):
+            target = resolve_callee(value.func, self.table, scope, class_name)
+            if self.is_class_target(target):
+                return target
+            if target["resolution"] == "resolved" and target.get("qualname"):
+                returned = self.table.project.return_target_info(
+                    target["modulePath"],
+                    target["qualname"],
+                    target.get("targetLine"),
+                )
+                if returned:
+                    candidate = resolved(*returned)
+                    return candidate if self.is_class_target(candidate) else None
+        inferred = infer_value_type(value, scope.local_types)
+        located = self.table.locate_type_target(inferred, scope) if inferred else None
+        candidate = resolved(*located) if located else None
+        return candidate if candidate and self.is_class_target(candidate) else None
+
+    def is_class_target(self, target: dict) -> bool:
+        return (
+            target["resolution"] == "resolved"
+            and bool(target.get("qualname"))
+            and self.table.project.kind_of(target["modulePath"], target["qualname"]) == "class"
+        )
+
+    def is_concrete_protocol_base(self, qualname: str, line: int, target: dict) -> bool:
+        return (
+            target["resolution"] == "resolved"
+            and bool(target.get("qualname"))
+            and not self.table.project.is_protocol(self.table.module_path, qualname, line)
+            and self.table.project.is_protocol(
+                target["modulePath"],
+                target["qualname"],
+                target.get("targetLine"),
+            )
+        )
 
     def collect_calls(
         self,
@@ -294,16 +386,45 @@ class EdgeCollector:
                             name = None if alias.name == "*" else alias.name
                             self.append("imports", None, node, external(module, name))
 
-    def append(self, kind: str, source: str | None, site: ast.AST, target: dict) -> None:
-        self.edges.append(
-            {
-                "kind": kind,
-                "sourceQualname": source,
-                "sourceLine": self.source_lines.get(source) if source else None,
-                **source_range(site),
-                "target": target,
-            }
-        )
+    def append(
+        self,
+        kind: str,
+        source: str | None,
+        site: ast.AST,
+        target: dict,
+        confidence: float | None = None,
+    ) -> None:
+        edge = {
+            "kind": kind,
+            "sourceQualname": source,
+            "sourceLine": self.source_lines.get(source) if source else None,
+            **source_range(site),
+            "target": target,
+        }
+        if confidence is not None:
+            edge["confidence"] = confidence
+        self.edges.append(edge)
+
+    def append_from_target(
+        self,
+        kind: str,
+        source: dict,
+        site: ast.AST,
+        target: dict,
+        confidence: float | None = None,
+    ) -> None:
+        """Append a relationship whose source may be declared in a different module."""
+        edge = {
+            "kind": kind,
+            "sourceModulePath": source["modulePath"],
+            "sourceQualname": source["qualname"],
+            "sourceLine": source.get("targetLine"),
+            **source_range(site),
+            "target": target,
+        }
+        if confidence is not None:
+            edge["confidence"] = confidence
+        self.edges.append(edge)
 
 
 def collect_edges(tree: ast.Module, table: SymbolTable, value_refs: bool) -> list[dict]:
