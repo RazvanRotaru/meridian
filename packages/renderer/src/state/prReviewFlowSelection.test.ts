@@ -512,6 +512,7 @@ async function enterPreparedReview(store: ReturnType<typeof freshStore>): Promis
 }
 
 function preparationResponse(graphId: string, files: readonly PrChangedFile[]): Response {
+  const handoffId = `prh-v1-${"d".repeat(64)}`;
   const descriptor = (id: string) => ({
     graphId: id,
     manifestUrl: `/api/graph/manifest?id=${id}`,
@@ -549,9 +550,9 @@ function preparationResponse(graphId: string, files: readonly PrChangedFile[]): 
       timings: { resolve: 0, git: 1, "extract-head": 2, "extract-merge-base": 3, publish: 4 },
       warnings: [],
       handoff: {
-        id: `handoff-${graphId}`,
-        url: `/api/pr/prepared?id=handoff-${graphId}`,
-        viewUrl: `/view?id=${graphId}&view=modules&prn=17&rev=1&prepared=handoff-${graphId}`,
+        id: handoffId,
+        url: `/api/pr/prepared?id=${handoffId}`,
+        viewUrl: `/view?id=${graphId}&view=modules&prn=17&rev=1&prepared=${handoffId}`,
       },
     },
   ];

@@ -12,9 +12,11 @@
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
     GET  /api/repos/branches?repo= -> { branches: [string] }       (public without auth; private when signed in)
     GET  /api/repos/pulls?repo=&state=&page= -> { prs: [summary + viewerStatus?], hasMore, viewerLogin? }
-    POST /api/generate     -> { id } | { error }
-  On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
-  textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
+    POST /api/generate     -> versioned blueprint-generation NDJSON
+    POST /api/pr/prepare   -> strict v1 two-sided PR-preparation NDJSON
+  Blueprint generation redirects by id. PR review redirects only through the validated immutable
+  handoff returned by /api/pr/prepare. Every GitHub-sourced string is written via textContent and
+  every external URL is https-validated before use — repo names/descriptions are untrusted.
 
   Design: hero + auth-card over a live Canvas 2D rendering of a Meridian dependency graph
   (design_handoff_meridian_landing). The card's segmented toggle maps the design's two auth modes
@@ -744,6 +746,16 @@
         margin-top: 2px;
         border-top: 1px solid rgba(255, 255, 255, 0.06);
       }
+      .pr-result-group,
+      .pr-result-group-options {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .pr-result-group:not(:first-child) > .group-label {
+        margin-top: 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
       .group-note {
         padding: 4px 12px 8px;
         font-size: 12px;
@@ -840,6 +852,13 @@
       }
       .prepare-step[data-state="done"] .prepare-dot {
         background: #56c271;
+      }
+      .prepare-step[data-state="skipped"] {
+        color: var(--muted-2);
+      }
+      .prepare-step[data-state="skipped"] .prepare-dot {
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.24);
       }
       .prepare-step[data-state="pending"] {
         color: var(--muted-2);
@@ -1242,17 +1261,37 @@
               <span class="sr-only" id="prepare-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
               <div class="prepare-title">Preparing blueprint</div>
               <ol class="prepare-steps">
-                <li class="prepare-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
+                <li class="prepare-step prepare-blueprint-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span>Check cache</span>
                 </li>
-                <li class="prepare-step" id="prepare-source-step" data-stage="source" data-state="pending">
+                <li class="prepare-step prepare-blueprint-step" id="prepare-source-step" data-stage="source" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-source-label">Fetch repository</span>
                 </li>
-                <li class="prepare-step" data-stage="extract" data-state="pending">
+                <li class="prepare-step prepare-blueprint-step" data-stage="extract" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-extract-label">Generate code graph</span>
+                </li>
+                <li class="prepare-step prepare-review-step" data-stage="resolve" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Resolve pull request</span>
+                </li>
+                <li class="prepare-step prepare-review-step" data-stage="git" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Prepare repository</span>
+                </li>
+                <li class="prepare-step prepare-review-step" data-stage="extract-head" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Extract HEAD projection</span>
+                </li>
+                <li class="prepare-step prepare-review-step" data-stage="extract-merge-base" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Extract merge-base projection</span>
+                </li>
+                <li class="prepare-step prepare-review-step" data-stage="publish" data-state="pending" hidden>
+                  <span class="prepare-dot" aria-hidden="true"></span>
+                  <span>Publish immutable handoff</span>
                 </li>
                 <li class="prepare-step" data-stage="open" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
@@ -1368,6 +1407,28 @@
       let generateProgressSuppressed = false;
       let prTimer = null;
       let prRequest = 0;
+      let activeSubmission = null;
+
+      function beginSubmission() {
+        cancelActiveSubmission();
+        const submission = { controller: new AbortController() };
+        activeSubmission = submission;
+        return submission;
+      }
+
+      function cancelActiveSubmission() {
+        const submission = activeSubmission;
+        if (!submission) return;
+        activeSubmission = null;
+        submission.controller.abort();
+        hidePrepareProgress();
+        $("submit").disabled = false;
+        generateProgressSuppressed = false;
+      }
+
+      function ownsSubmission(submission) {
+        return activeSubmission === submission;
+      }
 
       function setHeaderCopy(copy) {
         $("card-title").textContent = copy.title;
@@ -1376,6 +1437,7 @@
 
       function setGithubIntent(next) {
         if (githubIntent === next) return;
+        cancelActiveSubmission();
         githubIntent = next;
         const review = next === "review";
         animateCardSwap(() => {
@@ -1396,6 +1458,7 @@
 
       function setMode(next) {
         if (mode === next) return;
+        cancelActiveSubmission();
         mode = next;
         const github = next === "github";
         animateCardSwap(() => {
@@ -1451,7 +1514,7 @@
       function apiGet(path) {
         return fetch(path, { credentials: "same-origin" });
       }
-      function apiPost(path, body, accept) {
+      function apiPost(path, body, accept, signal) {
         const headers = { "content-type": "application/json" };
         if (accept) headers.accept = accept;
         return fetch(path, {
@@ -1459,6 +1522,7 @@
           credentials: "same-origin",
           headers,
           body: JSON.stringify(body || {}),
+          signal,
         });
       }
 
@@ -1501,6 +1565,7 @@
       }
 
       function showSignedOut() {
+        cancelActiveSubmission();
         signedIn = false;
         currentUserLogin = null;
         devicePending = false;
@@ -1517,6 +1582,7 @@
       }
 
       function showSignedIn(user) {
+        cancelActiveSubmission();
         signedIn = true;
         if (user && typeof user.login === "string" && user.login.length > 0) {
           currentUserLogin = user.login;
@@ -1684,7 +1750,11 @@
       const CUSTOM_BRANCH_VALUE = ":custom";
       let pullRequests = [];
       let selectedPrNumber = null;
+      let selectedPrSummary = null;
       let prSearchQuery = "";
+      let pullRequestsLoading = false;
+      let pullRequestLoadWarning = null;
+      let pullRequestAuthorsDirty = false;
 
       // Branch discovery is intentionally GitHub-only even though the clone endpoint accepts a
       // broader set of git URLs. An unrecognised source still generates with its remote default.
@@ -1733,7 +1803,10 @@
         const repository = githubRepoSlug(value);
         if (!repository) return null;
         const changed = repository !== selectedRepository;
-        if (changed) cancelGithubDiscovery();
+        if (changed) {
+          cancelActiveSubmission();
+          cancelGithubDiscovery();
+        }
         showRepositorySelection(repository);
         writeSelectedRepository(repository);
         hideAllPickerPopovers();
@@ -1745,6 +1818,7 @@
 
       function startRepositoryChange() {
         if (!selectedRepository) return;
+        cancelActiveSubmission();
         changingRepository = true;
         animateCardSwap(() => {
           $("repository-selection").hidden = true;
@@ -1910,7 +1984,7 @@
       }
 
       function scheduleCacheProbe() {
-        const request = buildRequest();
+        const request = buildBlueprintRequest();
         const key = request && githubRepoSlug(request.value) ? cacheKey(request) : null;
         if (mode === "github" && githubIntent === "explore" && key
           && (checkedCacheKey === key || pendingCacheKey === key)) return;
@@ -1953,7 +2027,7 @@
         renderMenu(
           "ref",
           [{ value: "", label: "Default branch" }, { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" }],
-          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
+          () => { cancelActiveSubmission(); syncCustomBranchInput(true); scheduleCacheProbe(); },
           false,
         );
         syncCustomBranchInput(false);
@@ -1969,7 +2043,7 @@
             ...branches.map((branch) => ({ value: branch, label: branch })),
             { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" },
           ],
-          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
+          () => { cancelActiveSubmission(); syncCustomBranchInput(true); scheduleCacheProbe(); },
           false,
         );
         syncCustomBranchInput(false);
@@ -2071,7 +2145,8 @@
 
       function selectedPullRequest() {
         return Number.isSafeInteger(selectedPrNumber)
-          ? pullRequests.find((pr) => pr.number === selectedPrNumber) || null
+          && selectedPrSummary?.number === selectedPrNumber
+          ? selectedPrSummary
           : null;
       }
 
@@ -2095,7 +2170,9 @@
       }
 
       function clearPullRequestSelection(clearQuery) {
+        if (selectedPrNumber !== null) cancelActiveSubmission();
         selectedPrNumber = null;
+        selectedPrSummary = null;
         if (clearQuery) prSearchQuery = "";
         $("pr-query").value = prSearchQuery;
         $("pr-preview").hidden = true;
@@ -2111,6 +2188,9 @@
       function resetPullRequests(message, clearFilters) {
         prRequest++;
         pullRequests = [];
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = null;
+        pullRequestAuthorsDirty = false;
         if (clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
@@ -2118,6 +2198,8 @@
         clearPullRequestSelection(false);
         renderMenu("pr-author", [{ value: "", label: "All authors" }], () => {}, true);
         $("pr-query").disabled = true;
+        $("pr-query").removeAttribute("aria-busy");
+        $("pr-results").replaceChildren();
         hidePullRequestResults();
         $("pr-status").textContent = message || "Choose a repository to load its pull requests.";
       }
@@ -2143,6 +2225,15 @@
           },
           pullRequests.length === 0,
         );
+        pullRequestAuthorsDirty = false;
+      }
+
+      function refreshPullRequestAuthors() {
+        if ($("pr-author-trigger").getAttribute("aria-expanded") === "true") {
+          pullRequestAuthorsDirty = true;
+          return;
+        }
+        renderPullRequestAuthors();
       }
 
       function matchesPullRequest(pr, query, author) {
@@ -2176,7 +2267,11 @@
       }
 
       function pickPullRequest(pr) {
+        cancelActiveSubmission();
         selectedPrNumber = pr.number;
+        // Keep the selected page summary as its own immutable request input. Appending or
+        // deduplicating later pages must never replace the branch coordinates the user chose.
+        selectedPrSummary = Object.freeze({ ...pr });
         prSearchQuery = "";
         $("pr-query").value = pullRequestSearchLabel(pr);
         hidePullRequestResults();
@@ -2187,7 +2282,7 @@
         // dropdown appear to require a second selection click.
       }
 
-      function pullRequestResultItem(pr) {
+      function pullRequestResultItem(pr, groupKey = "all") {
         const item = document.createElement("li");
         item.className = "result";
         item.id = "pr-result-" + pr.number;
@@ -2195,6 +2290,7 @@
         item.setAttribute("role", "option");
         item.setAttribute("aria-selected", String(pr.number === selectedPrNumber));
         item.dataset.prNumber = String(pr.number);
+        item.dataset.prGroup = groupKey;
         const top = document.createElement("div");
         top.className = "pr-result-top";
         appendText(top, "pr-result-number", "#" + pr.number);
@@ -2214,13 +2310,13 @@
 
       function personalPullRequestGroups(filtered) {
         if (!currentUserLogin || $("pr-author").value || prSearchQuery.trim()) {
-          return [{ label: null, prs: filtered }];
+          return [{ key: "all", label: null, prs: filtered }];
         }
         const groups = [
-          { label: "My pull requests", prs: [] },
-          { label: "Needs your review", prs: [] },
-          { label: "Reviewed by you", prs: [] },
-          { label: "Other pull requests", prs: [] },
+          { key: "mine", label: "My pull requests", prs: [] },
+          { key: "requested", label: "Needs your review", prs: [] },
+          { key: "reviewed", label: "Reviewed by you", prs: [] },
+          { key: "other", label: "Other pull requests", prs: [] },
         ];
         for (const pr of filtered) {
           if (isCurrentUser(pr.author)) groups[0].prs.push(pr);
@@ -2231,18 +2327,61 @@
         return groups.filter((group) => group.prs.length > 0);
       }
 
+      function ensurePullRequestGroup(list, group, before) {
+        const existing = [...list.children].find((node) =>
+          node.classList.contains("pr-result-group") && node.dataset.prGroup === group.key,
+        );
+        if (existing) return existing.querySelector(".pr-result-group-options");
+
+        const container = document.createElement("li");
+        container.className = "pr-result-group";
+        container.dataset.prGroup = group.key;
+        container.setAttribute("role", "group");
+        if (group.label) {
+          const label = document.createElement("div");
+          label.className = "group-label";
+          label.id = "pr-result-group-label-" + group.key;
+          label.textContent = group.label;
+          container.setAttribute("aria-labelledby", label.id);
+          container.appendChild(label);
+        } else {
+          container.setAttribute("aria-label", "Pull requests");
+        }
+        const options = document.createElement("ul");
+        options.className = "pr-result-group-options";
+        options.setAttribute("role", "presentation");
+        container.appendChild(options);
+        list.insertBefore(container, before);
+        return options;
+      }
+
+      function firstLaterPullRequestGroupNode(list, key, orderedKeys) {
+        const currentIndex = orderedKeys.indexOf(key);
+        return [...list.children].find((node) => {
+          const nodeIndex = orderedKeys.indexOf(node.dataset.prGroup || "");
+          return nodeIndex > currentIndex;
+        }) || null;
+      }
+
       function renderPullRequestStatus(filtered) {
         const state = $("pr-state").value;
+        const suffix = pullRequestLoadSuffix();
         if (pullRequests.length === 0) {
-          $("pr-status").textContent = "No " + state + " pull requests.";
+          $("pr-status").textContent = "No " + state + " pull requests." + suffix;
         } else if (filtered.length === 0) {
           const query = prSearchQuery.trim();
-          $("pr-status").textContent = query ? "No PRs match “" + query + "”." : "No PRs match the current filters.";
+          $("pr-status").textContent = (query ? "No loaded PRs match “" + query + "”." : "No loaded PRs match the current filters.") + suffix;
         } else {
           const loaded = pullRequests.length + " " + state + (pullRequests.length === 1 ? " pull request" : " pull requests") + " loaded";
           $("pr-status").textContent = loaded
-            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown");
+            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown")
+            + suffix;
         }
+      }
+
+      function pullRequestLoadSuffix() {
+        if (pullRequestsLoading) return " · loading more…";
+        return pullRequestLoadWarning ? " · " + pullRequestLoadWarning : "";
       }
 
       function renderPullRequestResults(show) {
@@ -2253,11 +2392,12 @@
         const list = $("pr-results");
         list.replaceChildren();
         if (filtered.length === 0) {
-          appendPlainItem(list, "group-note", "No pull requests match the current filters.");
+          const note = appendPlainItem(list, "group-note", "No pull requests match the current filters.");
+          note.setAttribute("role", "presentation");
         } else {
           for (const group of personalPullRequestGroups(filtered)) {
-            if (group.label) appendPlainItem(list, "group-label", group.label);
-            for (const pr of group.prs) list.appendChild(pullRequestResultItem(pr));
+            const options = ensurePullRequestGroup(list, group, null);
+            for (const pr of group.prs) options.appendChild(pullRequestResultItem(pr, group.key));
           }
         }
         renderPullRequestPreview();
@@ -2267,8 +2407,52 @@
         $("pr-query").removeAttribute("aria-activedescendant");
       }
 
+      function appendPullRequestResults(requests) {
+        const matching = requests.filter((pr) => matchesPullRequest(pr, prSearchQuery, $("pr-author").value));
+        const list = $("pr-results");
+        if (matching.length > 0 && list.querySelector(".group-note")) list.replaceChildren();
+        const groups = personalPullRequestGroups(matching);
+        const orderedKeys = personalPullRequestGroups(pullRequests).map((group) => group.key);
+        for (const group of groups) {
+          const before = firstLaterPullRequestGroupNode(list, group.key, orderedKeys);
+          const options = ensurePullRequestGroup(list, group, before);
+          for (const pr of group.prs) options.appendChild(pullRequestResultItem(pr, group.key));
+        }
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
       function showPullRequestError(message) {
         resetPullRequests(message, false);
+      }
+
+      function showPullRequestPaginationError(message) {
+        if (pullRequests.length === 0) {
+          showPullRequestError(message);
+          return;
+        }
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = message;
+        $("pr-query").setAttribute("aria-busy", "false");
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
+      function publishPullRequestPage(byNumber, hasMore) {
+        const previousNumbers = new Set(pullRequests.map((pr) => pr.number));
+        const resultsOpen = !$("pr-results").hidden;
+        pullRequests = [...byNumber.values()];
+        const added = pullRequests.filter((pr) => !previousNumbers.has(pr.number));
+        pullRequestsLoading = hasMore;
+        pullRequestLoadWarning = null;
+        refreshPullRequestAuthors();
+        $("pr-query").disabled = pullRequests.length === 0;
+        $("pr-query").setAttribute("aria-busy", String(hasMore));
+        if (resultsOpen) appendPullRequestResults(added);
+        else {
+          renderPullRequestPreview();
+          renderPullRequestStatus(matchingPullRequests());
+        }
       }
 
       async function loadRepoPullRequests(value, options) {
@@ -2277,6 +2461,8 @@
         const request = ++prRequest;
         const state = $("pr-state").value;
         pullRequests = [];
+        pullRequestsLoading = true;
+        pullRequestLoadWarning = null;
         if (options && options.clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
@@ -2285,15 +2471,15 @@
         $("pr-author-trigger").disabled = true;
         closeMenu("pr-author", false);
         $("pr-query").disabled = true;
+        $("pr-query").setAttribute("aria-busy", "true");
         hidePullRequestResults();
         $("pr-status").textContent = "Loading " + state + " pull requests…";
         const byNumber = new Map();
         let hasMore = true;
         let page = 1;
         try {
-          // Review mode promises one picker over the whole state-specific queue, so keep following
-          // GitHub's pages until it is exhausted. A repo/intent/auth change increments `prRequest`;
-          // the stale guard after every page then abandons this loop before it can repaint the UI.
+          // Publish each page before asking GitHub for the next one. The first page makes the picker
+          // usable; remaining pages expand the same queue without blocking selection.
           while (hasMore) {
             const response = await apiGet(
               "/api/repos/pulls?repo=" + encodeURIComponent(repo)
@@ -2304,7 +2490,11 @@
             if (request !== prRequest) return;
             if (!response.ok) {
               const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
-              showPullRequestError("Could not load pull requests" + detail + " Sign in for private repositories.");
+              showPullRequestPaginationError(
+                pullRequests.length === 0
+                  ? "Could not load pull requests" + detail + " Sign in for private repositories."
+                  : "Could not load more pull requests" + detail,
+              );
               return;
             }
             if (data) rememberViewerLogin(data.viewerLogin);
@@ -2314,17 +2504,19 @@
               if (pr) byNumber.set(pr.number, pr);
             }
             hasMore = data && data.hasMore === true;
+            publishPullRequestPage(byNumber, hasMore);
             page++;
           }
         } catch {
-          if (request === prRequest) showPullRequestError("Could not reach GitHub for pull requests.");
+          if (request === prRequest) {
+            showPullRequestPaginationError(
+              pullRequests.length === 0
+                ? "Could not reach GitHub for pull requests."
+                : "Could not reach GitHub for more pull requests.",
+            );
+          }
           return;
         }
-        if (request !== prRequest) return;
-        pullRequests = [...byNumber.values()];
-        renderPullRequestAuthors();
-        $("pr-query").disabled = pullRequests.length === 0;
-        renderPullRequestResults(false);
       }
 
       function scheduleRepoPullRequests() {
@@ -2364,6 +2556,7 @@
       }
 
       function scheduleGithubRepositoryData() {
+        cancelActiveSubmission();
         if (githubIntent === "review") scheduleRepoPullRequests();
         else scheduleRepoBranches();
       }
@@ -2378,10 +2571,15 @@
       // Repository discovery stays on input. A change handler would run when this field blurs on
       // result pointer-down and could remove the result before its click selects the repository.
       $("repo").addEventListener("input", scheduleGithubRepositoryData);
-      $("custom-ref").addEventListener("input", scheduleCacheProbe);
+      $("custom-ref").addEventListener("input", () => {
+        cancelActiveSubmission();
+        scheduleCacheProbe();
+      });
+      $("path").addEventListener("input", cancelActiveSubmission);
 
       function setPullRequestState(next) {
         if ($("pr-state").value === next) return;
+        cancelActiveSubmission();
         $("pr-state").value = next;
         for (const state of ["open", "closed"]) {
           const button = $("pr-state-" + state);
@@ -2397,8 +2595,21 @@
       $("pr-state-open").addEventListener("click", () => setPullRequestState("open"));
       $("pr-state-closed").addEventListener("click", () => setPullRequestState("closed"));
 
+      function flushPullRequestAuthorsBeforeOpen() {
+        if (pullRequestAuthorsDirty && $("pr-author-trigger").getAttribute("aria-expanded") !== "true") {
+          renderPullRequestAuthors();
+        }
+      }
+
+      $("pr-author-trigger").addEventListener("click", flushPullRequestAuthorsBeforeOpen, true);
+      $("pr-author-trigger").addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") flushPullRequestAuthorsBeforeOpen();
+      }, true);
+
       $("pr-query").addEventListener("input", () => {
+        cancelActiveSubmission();
         selectedPrNumber = null;
+        selectedPrSummary = null;
         prSearchQuery = $("pr-query").value;
         $("pr-preview").hidden = true;
         renderPullRequestResults(true);
@@ -2523,6 +2734,7 @@
         item.className = className;
         item.textContent = text;
         list.appendChild(item);
+        return item;
       }
 
       // Built entirely with createElement + textContent: repo names/descriptions are untrusted.
@@ -2610,12 +2822,15 @@
       function showPrepareProgress(sourceKind, cacheAlreadyChecked = false) {
         const review = sourceKind === "github" && githubIntent === "review";
         document.querySelector(".prepare-title").textContent = review ? "Preparing PR review" : "Preparing blueprint";
-        $("prepare-cache-step").hidden = sourceKind !== "github" || cacheAlreadyChecked;
+        document.querySelectorAll(".prepare-review-step").forEach((step) => { step.hidden = !review; });
+        document.querySelectorAll(".prepare-blueprint-step").forEach((step) => { step.hidden = review; });
+        $("prepare-cache-step").hidden = review || sourceKind !== "github" || cacheAlreadyChecked;
         $("prepare-source-label").textContent = sourceKind === "path" ? "Read repository" : "Fetch repository";
         $("prepare-extract-label").textContent = "Generate code graph";
         $("prepare-open-label").textContent = review ? "Open PR review" : "Open blueprint";
         $("prepare-progress").hidden = false;
-        setPrepareStage(sourceKind === "github" && !cacheAlreadyChecked ? "cache" : "source");
+        if (review) resetReviewPrepareProgress();
+        else setPrepareStage(sourceKind === "github" && !cacheAlreadyChecked ? "cache" : "source");
         reveal($("prepare-progress"));
       }
 
@@ -2625,20 +2840,179 @@
       }
 
       function setPrepareStage(activeStage) {
-        const steps = Array.from(document.querySelectorAll(".prepare-step")).filter((step) => !step.hidden);
-        const activeIndex = Math.max(0, steps.findIndex((step) => step.dataset.stage === activeStage));
+        const allSteps = Array.from(document.querySelectorAll(".prepare-step"));
+        const steps = allSteps.filter((step) => !step.hidden);
+        const activeIndex = steps.findIndex((step) => step.dataset.stage === activeStage);
+        if (activeIndex < 0) throw new Error("Unknown preparation stage: " + activeStage);
+        allSteps.filter((step) => step.hidden).forEach((step) => {
+          step.dataset.state = "pending";
+          step.removeAttribute("aria-current");
+        });
         steps.forEach((step, index) => {
           const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "pending";
           step.dataset.state = state;
           if (state === "active") step.setAttribute("aria-current", "step");
           else step.removeAttribute("aria-current");
         });
-        const activeStep = document.querySelector('.prepare-step[data-state="active"]');
+        const activeStep = steps[activeIndex];
         $("prepare-announcement").textContent = (mode === "github" && githubIntent === "review" ? "Preparing PR review: " : "Preparing blueprint: ") + activeStep.textContent.trim();
       }
 
-      async function generateBlueprint(request) {
-        const response = await apiPost("/api/generate", request, "application/x-ndjson");
+      const REVIEW_PREPARE_STAGES = Object.freeze([
+        "resolve", "git", "extract-head", "extract-merge-base", "publish",
+      ]);
+      const reviewPrepareCompleted = new Set();
+      let prPreparationClient = null;
+      let prPreparationClientAttempt = 0;
+      // Progress records are completion events, and the two extraction workers may finish in
+      // either order. Model their states independently instead of inventing a serial timeline.
+      function resetReviewPrepareProgress() {
+        reviewPrepareCompleted.clear();
+        document.querySelectorAll(".prepare-blueprint-step").forEach((step) => {
+          step.dataset.state = "pending";
+          step.removeAttribute("aria-current");
+        });
+        renderReviewPrepareProgress();
+      }
+
+      function recordReviewPrepareProgress(stage) {
+        if (stage !== "resolve") reviewPrepareCompleted.add("resolve");
+        if (stage !== "resolve" && stage !== "git") reviewPrepareCompleted.add("git");
+        if (stage === "publish") {
+          reviewPrepareCompleted.add("extract-head");
+          reviewPrepareCompleted.add("extract-merge-base");
+        }
+        reviewPrepareCompleted.add(stage);
+        renderReviewPrepareProgress(stage);
+      }
+
+      function renderReviewPrepareProgress(completedStage = null) {
+        const resolveDone = reviewPrepareCompleted.has("resolve");
+        const gitDone = reviewPrepareCompleted.has("git");
+        const headDone = reviewPrepareCompleted.has("extract-head");
+        const mergeBaseDone = reviewPrepareCompleted.has("extract-merge-base");
+        const states = {
+          resolve: resolveDone ? "done" : "active",
+          git: gitDone ? "done" : resolveDone ? "active" : "pending",
+          "extract-head": headDone ? "done" : gitDone ? "active" : "pending",
+          "extract-merge-base": mergeBaseDone ? "done" : gitDone ? "active" : "pending",
+          // The timed cache publication completes before capabilities and the immutable handoff.
+          // Keep this final stage active until the terminal record confirms the whole publication.
+          publish: headDone && mergeBaseDone ? "active" : "pending",
+          open: "pending",
+        };
+        applyReviewPrepareStates(states);
+        const completed = completedStage === null ? null : reviewPrepareStep(completedStage);
+        const active = reviewPrepareActiveLabel(states);
+        $("prepare-announcement").textContent = completedStage === "publish"
+          ? "Finalizing the immutable review handoff."
+          : completed
+          ? "Completed " + completed.textContent.trim() + ". " + active
+          : active;
+      }
+
+      function stageReviewPrepareHandoff(timings) {
+        const states = {};
+        for (const stage of REVIEW_PREPARE_STAGES) {
+          states[stage] = stage === "publish"
+            ? "active"
+            : reviewPrepareCompleted.has(stage)
+              || Object.prototype.hasOwnProperty.call(timings, stage)
+              ? "done"
+              : "skipped";
+        }
+        states.open = "pending";
+        applyReviewPrepareStates(states);
+        $("prepare-announcement").textContent = "Finalizing the immutable review handoff.";
+      }
+
+      function completeReviewPrepare(timings) {
+        const states = {};
+        for (const stage of REVIEW_PREPARE_STAGES) {
+          states[stage] = stage === "publish"
+            || reviewPrepareCompleted.has(stage)
+            || Object.prototype.hasOwnProperty.call(timings, stage)
+            ? "done"
+            : "skipped";
+        }
+        states.open = "active";
+        applyReviewPrepareStates(states);
+        $("prepare-announcement").textContent = "PR review is ready to open.";
+      }
+
+      function applyReviewPrepareStates(states) {
+        let currentAssigned = false;
+        document.querySelectorAll(".prepare-review-step, .prepare-step[data-stage=open]").forEach((step) => {
+          const state = states[step.dataset.stage] || "pending";
+          step.dataset.state = state;
+          if (state === "active" && !currentAssigned) {
+            step.setAttribute("aria-current", "step");
+            currentAssigned = true;
+          } else {
+            step.removeAttribute("aria-current");
+          }
+        });
+      }
+
+      function reviewPrepareStep(stage) {
+        const step = document.querySelector('.prepare-review-step[data-stage="' + stage + '"]');
+        if (!step) throw new Error("Unknown PR preparation stage: " + stage);
+        return step;
+      }
+
+      function reviewPrepareActiveLabel(states) {
+        const headActive = states["extract-head"] === "active";
+        const baseActive = states["extract-merge-base"] === "active";
+        if (headActive && baseActive) return "Extracting HEAD and merge-base projections.";
+        if (headActive) return "Extracting the HEAD projection.";
+        if (baseActive) return "Extracting the merge-base projection.";
+        const active = Object.entries(states).find(([, state]) => state === "active");
+        if (!active) return "Finalizing PR preparation.";
+        const step = active[0] === "open"
+          ? document.querySelector('.prepare-step[data-stage="open"]')
+          : reviewPrepareStep(active[0]);
+        return "Preparing PR review: " + step.textContent.trim() + ".";
+      }
+
+      async function loadPrPreparationClient() {
+        if (prPreparationClient) return prPreparationClient;
+        const attempt = prPreparationClientAttempt++;
+        const url = attempt === 0
+          ? "/pr-prepare-client.js"
+          : "/pr-prepare-client.js?retry=" + attempt;
+        const pending = import(url);
+        prPreparationClient = pending;
+        try {
+          return await pending;
+        } catch (error) {
+          if (prPreparationClient === pending) prPreparationClient = null;
+          throw error;
+        }
+      }
+
+      /** Consume the direct review contract without accepting any legacy or partial handoff. */
+      async function preparePrReview(request, signal) {
+        let client;
+        try {
+          client = await loadPrPreparationClient();
+          const result = await client.streamPrPreparation(
+            "/api/pr/prepare",
+            request,
+            (stage) => { if (!signal.aborted) recordReviewPrepareProgress(stage); },
+            signal,
+            (candidate) => { if (!signal.aborted) stageReviewPrepareHandoff(candidate.timings); },
+          );
+          return result;
+        } catch (error) {
+          if (client && error instanceof client.PrPreparationResponseError) {
+            throw expectedGenerationError(error.message);
+          }
+          throw error;
+        }
+      }
+
+      async function generateBlueprint(request, signal) {
+        const response = await apiPost("/api/generate", request, "application/x-ndjson", signal);
         if (!response.ok || !response.body) {
           throw expectedGenerationError(await generationResponseError(response));
         }
@@ -2721,22 +3095,17 @@
         return Promise.race([painted, fallback]);
       }
 
-      function buildRequest() {
+      function buildBlueprintRequest() {
         if (mode === "path") {
           const path = $("path").value.trim();
           return path ? { kind: "path", value: path } : null;
         }
+        if (githubIntent === "review") return null;
         const repo = $("repo").value.trim();
         if (!repo) {
           return null;
         }
         const body = { kind: "github", value: githubRepoSlug(repo) || repo };
-        if (githubIntent === "review") {
-          const pr = selectedPullRequest();
-          if (!pr) return null;
-          if (pr.baseRef) body.ref = pr.baseRef;
-          return body;
-        }
         const selectedRef = $("ref").value;
         const ref = selectedRef === CUSTOM_BRANCH_VALUE ? $("custom-ref").value.trim() : selectedRef.trim();
         if (selectedRef === CUSTOM_BRANCH_VALUE && !ref) return null;
@@ -2744,27 +3113,45 @@
         return body;
       }
 
+      function buildPrPrepareRequest(pr) {
+        if (mode !== "github" || githubIntent !== "review") return null;
+        const slug = githubRepoSlug($("repo").value);
+        if (!slug || !pr || !pr.baseRef || !pr.headRef) return null;
+        const parts = slug.split("/");
+        if (parts.length !== 2 || !parts[0] || !parts[1]) return null;
+        return {
+          owner: parts[0],
+          repo: parts[1],
+          prNumber: pr.number,
+          baseRef: pr.baseRef,
+          headRef: pr.headRef,
+        };
+      }
+
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
+        const reviewing = mode === "github" && githubIntent === "review";
+        const selectedReview = reviewing ? selectedPullRequest() : null;
         const customBranchMissing = mode === "github"
           && githubIntent === "explore"
           && $("repo").value.trim()
           && $("ref").value === CUSTOM_BRANCH_VALUE
           && !$("custom-ref").value.trim();
-        const pullRequestMissing = mode === "github"
-          && githubIntent === "review"
+        const pullRequestMissing = reviewing
           && $("repo").value.trim()
-          && selectedPullRequest() === null;
-        const reviewPrNumber = mode === "github" && githubIntent === "review"
-          ? selectedPullRequest()?.number ?? null
-          : null;
-        const request = buildRequest();
+          && selectedReview === null;
+        const reviewRefsMissing = selectedReview !== null && (!selectedReview.baseRef || !selectedReview.headRef);
+        // Capture one immutable page-one summary. Later pages may continue hydrating the picker,
+        // but they cannot retarget the direct preparation request already being submitted.
+        const request = reviewing ? buildPrPrepareRequest(selectedReview) : buildBlueprintRequest();
         if (!request) {
           setStatus(
             customBranchMissing
               ? "Enter a branch name."
               : pullRequestMissing
                 ? "Choose a pull request."
+                : reviewRefsMissing
+                  ? "The selected pull request is missing required branch information."
               : mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.",
             "error",
           );
@@ -2772,39 +3159,48 @@
           if (pullRequestMissing) $("pr-query").focus();
           return;
         }
-        if (request.kind === "github") {
+        if (!reviewing && request.kind === "github") {
           request.value = selectRepository(request.value, { load: false }) || request.value;
         }
+        const submission = beginSubmission();
         hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
-        const selectedCacheKey = request.kind === "github" && githubIntent === "explore" ? cacheKey(request) : null;
+        const selectedCacheKey = !reviewing && request.kind === "github" ? cacheKey(request) : null;
         const cacheAlreadyChecked = selectedCacheKey !== null && checkedCacheKey === selectedCacheKey;
-        generateProgressSuppressed = request.kind === "github"
+        generateProgressSuppressed = !reviewing
+          && request.kind === "github"
           && githubIntent === "explore"
           && cacheAlreadyChecked
           && checkedCacheStatus === "hit";
         if (generateProgressSuppressed) hidePrepareProgress();
-        else showPrepareProgress(request.kind, cacheAlreadyChecked);
+        else showPrepareProgress(reviewing ? "github" : request.kind, cacheAlreadyChecked);
         let navigating = false;
         try {
-          const data = await generateBlueprint(request);
-          navigating = true;
+          const data = reviewing
+            ? await preparePrReview(request, submission.controller.signal)
+            : await generateBlueprint(request, submission.controller.signal);
+          if (!ownsSubmission(submission)) return;
+          if (reviewing) completeReviewPrepare(data.timings);
           await allowFinalStagePaint();
-          window.location = reviewPrNumber === null
-            ? "/view?id=" + encodeURIComponent(data.id)
-            : "/view?id=" + encodeURIComponent(data.id)
-              + "&view=modules&prn=" + encodeURIComponent(reviewPrNumber)
-              + "&rev=1";
+          if (!ownsSubmission(submission)) return;
+          navigating = true;
+          window.location = reviewing
+            ? data.handoff.viewUrl
+            : "/view?id=" + encodeURIComponent(data.id);
         } catch (error) {
+          if (!ownsSubmission(submission)) return;
           const message = error && error.expected ? error.message : "Could not reach the server.";
           setStatus(message, "error");
         } finally {
-          if (!navigating) {
-            hidePrepareProgress();
-            $("submit").disabled = false;
+          if (ownsSubmission(submission)) {
+            activeSubmission = null;
+            if (!navigating) {
+              hidePrepareProgress();
+              $("submit").disabled = false;
+            }
+            generateProgressSuppressed = false;
           }
-          generateProgressSuppressed = false;
         }
       });
 
