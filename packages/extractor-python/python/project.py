@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from collections.abc import Iterable
+from typing import Optional
 
 from export_flow import scan_export_body
 from exports import ExportBindings
@@ -11,6 +12,9 @@ from inheritance import ClassKey, c3_mro
 from inference import type_ref_of
 
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
+ClassOccurrence = tuple[str, str, int]
+CallableOccurrence = tuple[str, str, int]
+ClassTarget = tuple[str, str, Optional[int]]
 
 
 class ProjectIndex:
@@ -22,6 +26,9 @@ class ProjectIndex:
         self.top_origins: dict[str, dict[str, int | str]] = {}
         self.reexports: dict[str, dict[str, tuple[str, str]]] = {}
         self.class_methods: dict[ClassKey, dict[str, int]] = {}
+        self.protocols: set[ClassOccurrence] = set()
+        self.class_occurrence_bases: dict[ClassOccurrence, list[ast.expr]] = {}
+        self.class_occurrence_contexts: dict[ClassOccurrence, ExportBindings | None] = {}
         self.class_bases: dict[tuple[str, str], list[ast.expr]] = {}
         self.resolved_bases: dict[ClassKey, list[ClassKey]] = {}
         self.complete_bases: set[ClassKey] = set()
@@ -29,11 +36,16 @@ class ProjectIndex:
         self.returns: dict[tuple[str, str], ast.expr] = {}
         self.return_contexts: dict[tuple[str, str], ExportBindings | None] = {}
         self.return_types: dict[tuple[str, str], ClassKey] = {}
+        self.return_type_lines: dict[tuple[str, str], int | None] = {}
+        self.return_occurrence_annotations: dict[CallableOccurrence, ast.expr] = {}
+        self.return_occurrence_contexts: dict[CallableOccurrence, ExportBindings | None] = {}
+        self.return_type_occurrences: dict[CallableOccurrence, ClassTarget] = {}
         self.from_imports: dict[str, dict[str, tuple[str, str]]] = {}
         self.module_imports: dict[str, dict[str, str]] = {}
         parsed_modules = list(parsed)
         for module_path, tree in parsed_modules:
             self.scan_module(module_path, tree)
+        self.resolve_protocols()
         self.resolve_class_bases()
         self.resolve_return_types()
 
@@ -82,6 +94,26 @@ class ProjectIndex:
 
     def has_method(self, module_path: str, class_qualname: str, method: str) -> bool:
         return method in self.class_methods.get((module_path, class_qualname), {})
+
+    def is_protocol(self, module_path: str, qualname: str, line: int | None = None) -> bool:
+        matches = {
+            occurrence_line
+            for module, name, occurrence_line in self.protocols
+            if module == module_path and name == qualname
+        }
+        occurrences = {
+            occurrence_line
+            for module, name, occurrence_line in self.class_occurrence_bases
+            if module == module_path and name == qualname
+        }
+        return line in matches if line is not None else len(occurrences) == 1 and matches == occurrences
+
+    def protocol_occurrences(self, module_path: str) -> set[tuple[str, int]]:
+        return {
+            (qualname, line)
+            for module, qualname, line in self.protocols
+            if module == module_path
+        }
 
     def method_target(
         self,
@@ -138,8 +170,27 @@ class ProjectIndex:
                     return located
         return None
 
-    def return_target(self, module_path: str, qualname: str) -> ClassKey | None:
+    def return_target(
+        self,
+        module_path: str,
+        qualname: str,
+        line: int | None = None,
+    ) -> ClassKey | None:
+        if line is not None:
+            target = self.return_type_occurrences.get((module_path, qualname, line))
+            return (target[0], target[1]) if target else None
         return self.return_types.get((module_path, qualname))
+
+    def return_target_info(
+        self,
+        module_path: str,
+        qualname: str,
+        line: int | None = None,
+    ) -> ClassTarget | None:
+        if line is not None:
+            return self.return_type_occurrences.get((module_path, qualname, line))
+        target = self.return_types.get((module_path, qualname))
+        return (*target, self.return_type_lines.get((module_path, qualname))) if target else None
 
     def scan_module(self, module_path: str, tree: ast.Module) -> None:
         bindings = ExportBindings()
@@ -164,15 +215,18 @@ class ProjectIndex:
         context: ExportBindings | None = None,
     ) -> None:
         key = (module_path, qualname)
+        occurrence = (module_path, qualname, classdef.lineno)
         self.kinds[key] = "class"
+        self.class_occurrence_bases[occurrence] = list(classdef.bases)
+        self.class_occurrence_contexts[occurrence] = context.clone() if context else None
         self.class_bases[key] = list(classdef.bases)
         self.base_contexts[key] = context.clone() if context else None
-        methods = ExportBindings()
+        methods = context.clone() if context else ExportBindings()
 
         def record(statement: ast.AST, kind: str, child_context: ExportBindings) -> None:
             child = f"{qualname}.{statement.name}"  # type: ignore[attr-defined]
             if isinstance(statement, FUNCTIONS):
-                self.scan_function(module_path, statement, child, "method", context)
+                self.scan_function(module_path, statement, child, "method", child_context)
             elif isinstance(statement, ast.ClassDef):
                 self.scan_class(module_path, statement, child, child_context)
 
@@ -194,13 +248,78 @@ class ProjectIndex:
     ) -> None:
         self.kinds[(module_path, qualname)] = kind
         if function.returns:
+            occurrence = (module_path, qualname, function.lineno)
             self.returns[(module_path, qualname)] = function.returns
             self.return_contexts[(module_path, qualname)] = context.clone() if context else None
+            self.return_occurrence_annotations[occurrence] = function.returns
+            self.return_occurrence_contexts[occurrence] = context.clone() if context else None
         for statement in walk_scope(function.body):
             if isinstance(statement, FUNCTIONS):
                 self.scan_function(module_path, statement, f"{qualname}.{statement.name}", "function")
             elif isinstance(statement, ast.ClassDef):
                 self.scan_class(module_path, statement, f"{qualname}.{statement.name}")
+
+    def resolve_protocols(self) -> None:
+        for occurrence, expressions in self.class_occurrence_bases.items():
+            context = self.class_occurrence_contexts.get(occurrence)
+            if any(self.is_protocol_base(occurrence[0], base, context) for base in expressions):
+                self.protocols.add(occurrence)
+
+    def is_protocol_base(
+        self,
+        module_path: str,
+        base: ast.expr,
+        context: ExportBindings | None,
+    ) -> bool:
+        type_ref = type_ref_of(base)
+        origin = self.type_origin_in_context(module_path, type_ref, context)
+        return origin in {("typing", "Protocol"), ("typing_extensions", "Protocol")}
+
+    def type_origin_in_context(
+        self,
+        module_path: str,
+        type_ref: str | None,
+        context: ExportBindings | None,
+    ) -> tuple[str, str] | None:
+        if not type_ref or context is None:
+            return None
+        parts = type_ref.split(".")
+        imported = context.from_imports.get(parts[0])
+        if imported:
+            return self.symbol_origin(
+                imported[0],
+                ".".join([imported[1], *parts[1:]]),
+            )
+        imported_module = context.module_imports.get(parts[0])
+        if imported_module:
+            return self.symbol_origin(imported_module, ".".join(parts[1:]))
+        local = context.top_names.get(parts[0])
+        return (module_path, ".".join([local, *parts[1:]])) if local else None
+
+    def symbol_origin(
+        self,
+        module_path: str,
+        name: str,
+        seen: frozenset[tuple[str, str]] = frozenset(),
+    ) -> tuple[str, str] | None:
+        actual = self.canonical_module(module_path)
+        if actual is None:
+            return (module_path, name) if name else None
+        parts = name.split(".")
+        key = (actual, name)
+        if key in seen:
+            return None
+        local = self.top_names.get(actual, {}).get(parts[0])
+        if local:
+            return actual, ".".join([local, *parts[1:]])
+        exported = self.reexports.get(actual, {}).get(parts[0])
+        if exported:
+            return self.symbol_origin(
+                exported[0],
+                ".".join([exported[1], *parts[1:]]),
+                seen | {key},
+            )
+        return actual, name
 
     def resolve_class_bases(self) -> None:
         for key, expressions in self.class_bases.items():
@@ -212,11 +331,20 @@ class ProjectIndex:
 
     def resolve_return_types(self) -> None:
         for key, annotation in self.returns.items():
-            located = self.locate_type_in_context(
+            located = self.locate_type_target_in_context(
                 key[0], type_ref_of(annotation), self.return_contexts.get(key)
             )
             if located:
-                self.return_types[key] = located
+                self.return_types[key] = (located[0], located[1])
+                self.return_type_lines[key] = located[2]
+        for occurrence, annotation in self.return_occurrence_annotations.items():
+            located = self.locate_type_target_in_context(
+                occurrence[0],
+                type_ref_of(annotation),
+                self.return_occurrence_contexts.get(occurrence),
+            )
+            if located:
+                self.return_type_occurrences[occurrence] = located
 
     def locate_type_in_context(
         self,
@@ -224,31 +352,60 @@ class ProjectIndex:
         type_ref: str | None,
         context: ExportBindings | None,
     ) -> ClassKey | None:
+        located = self.locate_type_target_in_context(module_path, type_ref, context)
+        return (located[0], located[1]) if located else None
+
+    def locate_type_target_in_context(
+        self,
+        module_path: str,
+        type_ref: str | None,
+        context: ExportBindings | None,
+    ) -> ClassTarget | None:
         if not type_ref or context is None:
             return None
         parts = type_ref.split(".")
         imported = context.from_imports.get(parts[0])
         if imported:
-            located = self.locate_symbol(imported[0], ".".join([imported[1], *parts[1:]]))
-            return located if located and self.kind_of(*located) == "class" else None
+            located = self.symbol_target(imported[0], ".".join([imported[1], *parts[1:]]))
+            return located if located and self.kind_of(located[0], located[1]) == "class" else None
         local = context.top_names.get(parts[0])
         if local:
             located = (module_path, ".".join([local, *parts[1:]]))
-            return located if self.kind_of(*located) == "class" else None
+            origin = context.local_origins.get(parts[0])
+            line = (
+                origin
+                if isinstance(origin, int) and len(parts) == 1
+                else self.unique_class_line(*located)
+            )
+            target = (*located, line)
+            return target if self.kind_of(*located) == "class" else None
         imported_module = context.module_imports.get(parts[0])
-        return self.locate_qualified_type(imported_module, parts[1:]) if imported_module else None
+        return self.locate_qualified_type_target(imported_module, parts[1:]) if imported_module else None
 
     def locate_qualified_type(self, prefix: str, rest: list[str]) -> ClassKey | None:
+        located = self.locate_qualified_type_target(prefix, rest)
+        return (located[0], located[1]) if located else None
+
+    def locate_qualified_type_target(self, prefix: str, rest: list[str]) -> ClassTarget | None:
         for split in range(len(rest), 0, -1):
             module = ".".join([prefix, *rest[:split]])
             actual = self.canonical_module(module)
             if actual and split < len(rest):
-                located = self.locate_symbol(actual, ".".join(rest[split:]))
-                if located and self.kind_of(*located) == "class":
+                located = self.symbol_target(actual, ".".join(rest[split:]))
+                if located and self.kind_of(located[0], located[1]) == "class":
                     return located
         actual = self.canonical_module(prefix)
-        located = self.locate_symbol(actual, ".".join(rest)) if actual and rest else None
-        return located if located and self.kind_of(*located) == "class" else None
+        located = self.symbol_target(actual, ".".join(rest)) if actual and rest else None
+        return located if located and self.kind_of(located[0], located[1]) == "class" else None
+
+    def unique_class_line(self, module_path: str, qualname: str) -> int | None:
+        lines = {
+            line
+            for module, name, line in self.class_occurrence_bases
+            if module == module_path and name == qualname
+        }
+        return next(iter(lines)) if len(lines) == 1 else None
+
 
 def resolve_from_module_path(module_path: str, statement: ast.ImportFrom) -> str | None:
     if statement.level == 0:

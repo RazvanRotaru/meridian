@@ -46,7 +46,9 @@ function buildRawEdge(
   options: ExtractOptions,
   counters: Counters,
 ): RawGraphEdge | null {
-  const source = index.sourceId(module, edge.sourceQualname, edge.sourceLine);
+  const source = edge.sourceModulePath
+    ? index.targetId(edge.sourceModulePath, edge.sourceQualname, edge.sourceLine ?? undefined)
+    : index.sourceId(module, edge.sourceQualname, edge.sourceLine);
   if (!source) return null;
   const verdict = resolveTarget(edge, index, options, counters);
   if (!verdict) return null;
@@ -56,6 +58,7 @@ function buildRawEdge(
     kind: verdict.kind,
     resolution: verdict.resolution,
     callSite: callSiteOf(module, edge),
+    confidence: edge.confidence,
   };
 }
 
@@ -120,6 +123,7 @@ function resolvedKind(edge: AnalyzeEdge, targetKind: string | undefined): EdgeKi
 
 function kindOf(edge: AnalyzeEdge): EdgeKind {
   if (edge.kind === "extends") return "extends";
+  if (edge.kind === "implements") return "implements";
   if (edge.kind === "imports") return "imports";
   if (edge.kind === "reference") return "references";
   return "calls";
