@@ -88,7 +88,7 @@ def analyze_module(module: ParsedModule, project: ProjectIndex, value_refs: bool
         "file": module.discovered.file,
         "isPackage": module.discovered.is_package,
         "endLine": module_end_line(module.tree),
-        "nodes": collect_nodes(module.tree),
+        "nodes": collect_nodes(module.tree, project.protocol_occurrences(module.discovered.module_path)),
         "edges": edges,
         "flows": collect_flows(module.tree, edges),
     }

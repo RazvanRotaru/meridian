@@ -153,7 +153,11 @@ def resolve_return_method(
     target = resolve_callee(call.func, table, scope, class_name)
     if target["resolution"] != "resolved" or not target.get("qualname"):
         return UNRESOLVED
-    located = table.project.return_target(target["modulePath"], target["qualname"])
+    located = table.project.return_target(
+        target["modulePath"],
+        target["qualname"],
+        target.get("targetLine"),
+    )
     method_target = table.project.method_target(*located, method) if located else None
     return resolved(*method_target) if method_target else UNRESOLVED
 
