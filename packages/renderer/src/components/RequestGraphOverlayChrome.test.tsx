@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Node } from "@xyflow/react";
 import type { RequestTrace } from "@meridian/core";
 import type { ProjectedRequestNodeEvidence, RequestEventCounts } from "../derive/requestGraphOverlay";
+import { buildRendererReachabilityReport } from "../derive/reachabilityFacts";
 import { freshStore } from "../parity/surfaceFixture";
 import { StoreProvider } from "../state/StoreContext";
 import type { BlueprintState } from "../state/store";
@@ -83,12 +84,7 @@ describe("RequestGraphOverlayPanel", () => {
       telemetrySourceId: null,
       provider: null,
       coverageMode: true,
-      coverage: {
-        summary: { callables: 0, covered: 0, indirect: 0, uncovered: 0, testNodes: 0, unresolvedFromTests: 0, percent: 0 },
-        leaves: {},
-        containers: {},
-        testIds: new Set(),
-      },
+      coverage: buildRendererReachabilityReport([], []),
     });
 
     expect(markup).toContain("right:352px");

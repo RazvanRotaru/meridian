@@ -7,7 +7,7 @@
 import type { ChangedDiffLine, ChangedLineSpan, LineRange } from "@meridian/core";
 import { parseUnifiedDiffBody, type UnifiedDiffEdit } from "../unified-diff";
 import { asObject, numberOr, optionalString, requireNumber, requireString } from "./json-fields";
-import { isAllowedCloneRef } from "./git-ref";
+import { isAllowedBranchRef } from "./git-ref";
 import { WebError } from "./web-error";
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
@@ -172,7 +172,7 @@ export function parseRepoList(json: unknown): RepoSummary[] {
   return json.slice(0, LIST_RESULT_LIMIT).map((item) => toRepoSummary(asObject(item)));
 }
 
-/** A single GitHub branches page, restricted to refs accepted by the clone path. */
+/** A single GitHub branches page, restricted to refs accepted by the repository fetch path. */
 export function parseBranchList(json: unknown): string[] {
   if (!Array.isArray(json)) {
     return [];
@@ -180,7 +180,7 @@ export function parseBranchList(json: unknown): string[] {
   const branches: string[] = [];
   for (const item of json.slice(0, BRANCH_RESULT_LIMIT)) {
     const name = optionalString(asObject(item), "name");
-    if (name && isAllowedCloneRef(name)) {
+    if (name && isAllowedBranchRef(name)) {
       branches.push(name);
     }
   }

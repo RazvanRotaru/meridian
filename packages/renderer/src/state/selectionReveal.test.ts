@@ -41,22 +41,22 @@ const NO_CLUSTER_REASON = "No service cluster owns this selection";
 
 describe("scopeTarget", () => {
   it("enables the Scope button (reason null) for a clustered unit's member", () => {
-    expect(scopeTarget([METHOD], index)).toEqual({ enabled: true, reason: null });
+    expect(scopeTarget([METHOD], index)).toEqual({ availability: "available", enabled: true, reason: null });
   });
 
   it("disables with the exact reason for an unclustered helper", () => {
-    expect(scopeTarget([FORMAT], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
+    expect(scopeTarget([FORMAT], index)).toEqual({ availability: "unavailable", enabled: false, reason: NO_CLUSTER_REASON });
   });
 
   it("disables with the exact reason for a folder with NO clustered units beneath it", () => {
-    expect(scopeTarget(["ts:app/lib"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
+    expect(scopeTarget(["ts:app/lib"], index)).toEqual({ availability: "unavailable", enabled: false, reason: NO_CLUSTER_REASON });
     // A folder OVER clustered units decomposes to them (the folder group-ghost reveal), so it scopes.
-    expect(scopeTarget(["ts:app/src"], index)).toEqual({ enabled: true, reason: null });
+    expect(scopeTarget(["ts:app/src"], index)).toEqual({ availability: "available", enabled: true, reason: null });
   });
 
   it("disables for an empty selection and for an id not in the graph", () => {
     expect(scopeTarget([], index).enabled).toBe(false);
-    expect(scopeTarget(["ts:nope#ghost"], index)).toEqual({ enabled: false, reason: NO_CLUSTER_REASON });
+    expect(scopeTarget(["ts:nope#ghost"], index)).toEqual({ availability: "unavailable", enabled: false, reason: NO_CLUSTER_REASON });
   });
 
   it("enables when ANY anchor of a mixed selection is clustered", () => {
@@ -69,10 +69,28 @@ describe("scopeTarget", () => {
       moduleSelected: new Set(["svc:ts:app/src/orders.ts#OrderService"]),
     });
     expect(anchors).toEqual(["ts:app/src/orders.ts#OrderService"]);
-    expect(scopeTarget(anchors, index)).toEqual({ enabled: true, reason: null });
+    expect(scopeTarget(anchors, index)).toEqual({ availability: "available", enabled: true, reason: null });
   });
 
   it("enables for a FILE anchor, which resolves through its contained clustered units", () => {
-    expect(scopeTarget(["ts:app/src/orders.ts"], index)).toEqual({ enabled: true, reason: null });
+    expect(scopeTarget(["ts:app/src/orders.ts"], index)).toEqual({ availability: "available", enabled: true, reason: null });
+  });
+
+  it("defers eligibility to destination hydration when the bounded Map omits Service facts", () => {
+    const boundedMap = buildGraphIndex(
+      { nodes: NODES, edges: EDGES } as GraphArtifact,
+      {
+        structure: index.structure,
+        graphSummary: index.graphSummary,
+        serviceTopology: null,
+        artifactComplete: false,
+      },
+    );
+
+    expect(scopeTarget([METHOD], boundedMap)).toEqual({
+      availability: "unresolved",
+      enabled: true,
+      reason: null,
+    });
   });
 });

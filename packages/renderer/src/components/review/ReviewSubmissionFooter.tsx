@@ -9,7 +9,11 @@ const SUMMARY_LIMIT = 10_000;
 export function ReviewSubmissionFooter() {
   const count = useBlueprint((state) => state.showTests
     ? state.reviewComments.length
-    : state.reviewComments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length);
+    : state.reviewComments.filter((comment) => !isReviewTestPath(
+        comment.path,
+        state.index,
+        state.prReviewComparison?.index ?? null,
+      )).length);
   const live = useBlueprint((state) => state.prReviewed !== null);
   const status = useBlueprint((state) => state.reviewSubmitStatus);
   const stale = useBlueprint((state) => state.prReviewStale);

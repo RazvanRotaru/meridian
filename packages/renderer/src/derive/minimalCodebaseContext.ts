@@ -5,7 +5,11 @@ import type { GraphIndex } from "../graph/graphIndex";
 import { constructionTarget, type BlockDeps } from "./blockDeps";
 import { emitFlowSteps } from "./flowSteps";
 import type { ModuleGraph } from "./moduleGraph";
-import { deriveModuleTree, type ModuleTree } from "./moduleTree";
+import {
+  deriveModuleTree,
+  deriveModuleTreeFromRootForest,
+  type ModuleTree,
+} from "./moduleTree";
 import {
   minimalCodebaseExpandedPaths,
   minimalCodebaseFocusCandidates,
@@ -61,6 +65,9 @@ export interface MinimalCodebaseContext {
   targetAnchorIds: ReadonlyMap<string, string>;
   /** Canonical root-to-target path, including synthetic step parents absent from GraphIndex. */
   targetPathsById: ReadonlyMap<string, readonly string[]>;
+  /** Resident ownership roots needed when the targets span more than one package tree. This is a
+   * target-scoped forest, never a claim about the complete repository overview. */
+  rootForestIds: readonly string[];
 }
 
 interface CandidateContext {
@@ -102,6 +109,7 @@ export function deriveMinimalCodebaseContext(
   }
 
   const anchorIds = [...new Set(resolvedTargets.map((target) => target.anchorId))];
+  const rootForestIds = targetRootForestIds(resolvedTargets, index);
   const targetExpandedIds = new Set(expandedIds);
   resolvedTargets.forEach((target) => target.expansionGates.forEach((id) => targetExpandedIds.add(id)));
   const contextHiddenIds = hiddenOutsideTargetPaths(anchorIds, hiddenIds, index);
@@ -109,17 +117,29 @@ export function deriveMinimalCodebaseContext(
   let best: CandidateContext | null = null;
   for (const focus of candidates) {
     const expanded = minimalCodebaseExpandedPaths(anchorIds, focus, index, targetExpandedIds);
-    const tree = deriveModuleTree(
-      index,
-      focus,
-      expanded,
-      moduleGraph,
-      blockDeps,
-      flows,
-      EMPTY_IDS,
-      contextHiddenIds,
-      demoteCommons,
-    );
+    const tree = focus === null
+      ? deriveModuleTreeFromRootForest(
+          index,
+          rootForestIds,
+          expanded,
+          moduleGraph,
+          blockDeps,
+          flows,
+          EMPTY_IDS,
+          contextHiddenIds,
+          demoteCommons,
+        )
+      : deriveModuleTree(
+          index,
+          focus,
+          expanded,
+          moduleGraph,
+          blockDeps,
+          flows,
+          EMPTY_IDS,
+          contextHiddenIds,
+          demoteCommons,
+        );
     const visibleIds = new Set(
       tree.nodes.filter((node) => node.kind !== "ghost").map((node) => node.id),
     );
@@ -160,6 +180,7 @@ export function deriveMinimalCodebaseContext(
     unresolvedTargetIds: new Set(normalizedTargetIds.filter((id) => !highlightTargetIds.has(id))),
     targetAnchorIds,
     targetPathsById,
+    rootForestIds,
   };
 }
 
@@ -199,17 +220,29 @@ export function applyMinimalCodebaseExpansionOverrides(
   } = args;
   const knownAnchorIds = [...new Set(context.targetAnchorIds.values())];
   const contextHiddenIds = hiddenOutsideTargetPaths(knownAnchorIds, hiddenIds, index);
-  const tree = deriveModuleTree(
-    index,
-    context.reveal.moduleFocus,
-    expanded,
-    moduleGraph,
-    blockDeps,
-    flows,
-    EMPTY_IDS,
-    contextHiddenIds,
-    demoteCommons,
-  );
+  const tree = context.reveal.moduleFocus === null
+    ? deriveModuleTreeFromRootForest(
+        index,
+        context.rootForestIds,
+        expanded,
+        moduleGraph,
+        blockDeps,
+        flows,
+        EMPTY_IDS,
+        contextHiddenIds,
+        demoteCommons,
+      )
+    : deriveModuleTree(
+        index,
+        context.reveal.moduleFocus,
+        expanded,
+        moduleGraph,
+        blockDeps,
+        flows,
+        EMPTY_IDS,
+        contextHiddenIds,
+        demoteCommons,
+      );
   const visibleIds = new Set(
     tree.nodes.filter((node) => node.kind !== "ghost").map((node) => node.id),
   );
@@ -316,6 +349,24 @@ function resolveTargets(
     const target = resolved.get(id);
     return target === undefined ? [] : [target];
   });
+}
+
+/** The first package/file ownership node on each resolved target path is sufficient to draw a
+ * multi-root context. Keeping this list target-derived prevents a bounded projection from needing
+ * (or pretending to contain) the complete repository overview. */
+function targetRootForestIds(
+  targets: readonly ResolvedTarget[],
+  index: GraphIndex,
+): string[] {
+  const roots = new Set<string>();
+  for (const target of targets) {
+    const rootId = target.path.find((id) => {
+      const kind = index.nodesById.get(id)?.kind;
+      return kind === "package" || kind === "module";
+    });
+    if (rootId !== undefined) roots.add(rootId);
+  }
+  return [...roots].sort();
 }
 
 function syntheticStepPath(

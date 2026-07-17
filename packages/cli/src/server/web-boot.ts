@@ -39,7 +39,7 @@ export function syntheticExecutionBootCapability(
       && syntheticExecutionTrust.provenance.repository === `${source.owner}/${source.repo}`
       && syntheticExecutionTrust.provenance.headSha.length > 0
     );
-  if (!trustMatches) {
+  if (!trustMatches || syntheticScenarios === null || syntheticScenarios.length === 0) {
     return { syntheticExecutionUrl: null, syntheticScenarios: [], syntheticExecutionTrust: null };
   }
   return {
@@ -55,6 +55,7 @@ export function injectViewBoot(
   source: ArtifactSource | undefined,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
   syntheticExecutionTrust: SyntheticExecutionTrust | null = null,
+  preparedReviewUrl: string | null = null,
 ): string {
   // A catalog is a capability, not just display data. Local paths are admitted as before. GitHub
   // sources require an explicit, per-id sandbox trust record created only after the CLI flag and
@@ -66,11 +67,17 @@ export function injectViewBoot(
     syntheticExecutionTrust,
   );
   const boot = {
-    graphUrl: `/api/graph?id=${id}`,
+    projectionGraphId: id,
+    projectionManifestUrl: `/api/graph/manifest?id=${id}`,
+    projectionUrl: `/api/graph/projection?id=${id}`,
+    graphSearchUrl: `/api/graph/search?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
+    // The potentially large two-sided manifest remains behind a validated immutable file URL.
+    // Ordinary graph views carry an explicit null and never infer a review from query parameters.
+    preparedReviewUrl,
     ...syntheticCapability,
     hasOverlay: false,
     overlayKind: null,

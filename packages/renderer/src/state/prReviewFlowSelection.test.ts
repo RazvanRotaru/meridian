@@ -1,11 +1,35 @@
-import { describe, expect, it, vi } from "vitest";
-import type { FlowStep, GraphArtifact, GraphNode, SyntheticExecution } from "@meridian/core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  compareCanonicalPrPreparePaths,
+  type FlowStep,
+  type GraphArtifact,
+  type GraphNode,
+  type SyntheticExecution,
+} from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
+import {
+  canonicalProjectionKey,
+  OVERVIEW_PROJECTION_REQUEST,
+  type GraphProjectionActivateOptions,
+  type GraphProjectionDataSource,
+  type GraphProjectionManifest,
+  type GraphProjectionRequest,
+  type GraphProjectionReviewPairOptions,
+  type LoadedGraphProjection,
+  type LoadedReviewProjection,
+  type StagedGraphProjection,
+  type StagedProjection,
+  type StagedReviewProjection,
+} from "../graph/graphProjectionClient";
 import type { FlowSelectionRef } from "../derive/flowBlocks";
 import { paintMinimalLevel } from "../components/paintMinimal";
 import { createBlueprintStore, type StoreDependencies } from "./store";
-import type { PrSummary } from "./prTypes";
+import type { PrChangedFile, PrSummary } from "./prTypes";
 import type { ReviewFlowSplitView } from "./reviewPreferences";
+import {
+  preparedArtifactReviewFilesForTest,
+  reviewProjectionFactsForTest,
+} from "./reviewProjectionTestSupport";
 
 function node(
   id: string,
@@ -143,6 +167,17 @@ const ARTIFACT: GraphArtifact = {
 } as unknown as GraphArtifact;
 
 const FLOW_SELECTION: FlowSelectionRef = { rootId: ROOT_METHOD, blockPath: [] };
+const HEAD_SHA = "a".repeat(40);
+const BASE_SHA = "b".repeat(40);
+const MERGE_BASE_SHA = "c".repeat(40);
+
+const INITIAL_PROJECTION_REQUEST: GraphProjectionRequest = {
+  ...OVERVIEW_PROJECTION_REQUEST,
+};
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 function syntheticExecution(): SyntheticExecution {
   const traceId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -206,13 +241,26 @@ function pr(number: number): PrSummary {
 }
 
 function freshStore(extra?: Partial<StoreDependencies>) {
-  return createBlueprintStore({
-    artifact: ARTIFACT,
-    index: buildGraphIndex(ARTIFACT),
+  const artifact = extra?.artifact ?? ARTIFACT;
+  const index = extra?.index ?? buildGraphIndex(artifact);
+  const projectionDataSource = new FlowReviewProjectionSource(artifact);
+  const initialProjection = projectionFor(artifact, "artifact-1", INITIAL_PROJECTION_REQUEST);
+  projectionDataSource.seed(initialProjection);
+  const store = createBlueprintStore({
+    artifact,
+    index,
+    projectionDataSource,
+    initialProjection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
-    prSessionSource: { repository: "https://github.com/o/r", subdir: "" },
+    prSessionSource: { repository: "o/r", subdir: "" },
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
@@ -220,7 +268,297 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     prCommentsUrl: "/api/prs/comments?id=artifact-1",
     prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
+    prepareUrl: "/api/pr/prepare",
     ...extra,
+  });
+  if (extra?.projectionDataSource === undefined) {
+    flowReviewProjectionSources.set(store, projectionDataSource);
+  }
+  return store;
+}
+
+const flowReviewProjectionSources = new WeakMap<object, FlowReviewProjectionSource>();
+let preparedReviewSequence = 0;
+
+class FlowReviewProjectionSource implements GraphProjectionDataSource {
+  activeKey: string | undefined;
+  private readonly projections = new Map<string, LoadedGraphProjection>();
+  private readonly reviews = new Map<string, LoadedReviewProjection>();
+  private preparedHead: GraphArtifact | null = null;
+
+  constructor(private readonly mergeBase: GraphArtifact) {}
+
+  seed(projection: LoadedGraphProjection): void {
+    this.projections.set(projection.key, projection);
+    this.activeKey = projection.key;
+  }
+
+  setPreparedHead(artifact: GraphArtifact): void {
+    this.preparedHead = artifact;
+  }
+
+  async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
+    const graphId = graphIdForOptions(options);
+    const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
+    return {
+      version: 6,
+      graphId,
+      contentId: "0".repeat(64),
+      graphSummary: {
+        schemaVersion: artifact.schemaVersion,
+        generatedAt: artifact.generatedAt,
+        nodeCount: artifact.nodes.length,
+        edgeCount: artifact.edges.length,
+      },
+      repositorySummary: buildGraphIndex(artifact).structure.repositorySummary,
+      defaultView: INITIAL_PROJECTION_REQUEST,
+    };
+  }
+
+  async stage(
+    request: GraphProjectionRequest,
+    options: GraphProjectionActivateOptions,
+  ): Promise<StagedGraphProjection> {
+    const projection = this.project(request, options);
+    return valueStage(projection, () => {
+      this.projections.set(projection.key, projection);
+      this.activeKey = projection.key;
+    });
+  }
+
+  async stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection> {
+    const headKey = canonicalProjectionKey(graphIdForOptions(options.head), options.head.request);
+    const mergeBaseKey = canonicalProjectionKey(graphIdForOptions(options.mergeBase), options.mergeBase.request);
+    const cached = this.stageCachedReview(`review-pair\u0000${JSON.stringify([headKey, mergeBaseKey])}`);
+    if (cached !== undefined) return cached;
+    const [head, mergeBase] = await Promise.all([
+      this.project(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
+      this.project(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
+    ]);
+    const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
+    const review = {
+      key,
+      projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
+      head,
+      mergeBase,
+      serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
+      residentBytes: head.residentBytes + mergeBase.residentBytes,
+    } satisfies LoadedReviewProjection;
+    return reviewStage(review, () => {
+      this.projections.set(head.key, head);
+      this.projections.set(mergeBase.key, mergeBase);
+      this.reviews.set(key, review);
+      this.activeKey = key;
+    });
+  }
+
+  stageCached(key: string): StagedGraphProjection | undefined {
+    const projection = this.projections.get(key);
+    return projection === undefined
+      ? undefined
+      : valueStage(projection, () => { this.activeKey = projection.key; });
+  }
+
+  stageCachedReview(key: string): StagedReviewProjection | undefined {
+    const review = this.reviews.get(key);
+    return review === undefined ? undefined : reviewStage(review, () => { this.activeKey = key; });
+  }
+
+  searchSymbols(): Promise<never> {
+    return Promise.reject(new Error("symbol search is not exercised by this projection source"));
+  }
+
+  private project(request: GraphProjectionRequest, options: GraphProjectionActivateOptions): LoadedGraphProjection {
+    options.signal?.throwIfAborted();
+    const graphId = graphIdForOptions(options);
+    const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
+    const cached = this.projections.get(canonicalProjectionKey(graphId, request));
+    if (cached !== undefined) return cached;
+    const projection = projectionFor(artifact, graphId, request);
+    if (request.view !== "review" || request.filePaths.length > 0 || this.preparedHead === null) {
+      return projection;
+    }
+    return {
+      ...projection,
+      review: reviewProjectionFactsForTest(
+        preparedArtifactReviewFilesForTest(this.preparedHead),
+        request,
+        graphId.endsWith("-base") ? "mergeBase" : "head",
+        artifact,
+      ),
+    };
+  }
+}
+
+function reviewStage(review: LoadedReviewProjection, onCommit: () => void): StagedReviewProjection {
+  return valueStage(review, onCommit);
+}
+
+function valueStage<Projection>(
+  projection: Projection,
+  onCommit: () => void,
+): StagedProjection<Projection> {
+  let released = false;
+  let committed = false;
+  const read = () => {
+    if (released) throw new Error("projection stage released");
+    return projection;
+  };
+  return {
+    get projection() { return read(); },
+    commit: () => {
+      const value = read();
+      if (!committed) {
+        committed = true;
+        onCommit();
+      }
+      return value;
+    },
+    release: () => { if (!committed) released = true; },
+  };
+}
+
+function graphIdForOptions(options: GraphProjectionActivateOptions): string {
+  return new URL(options.endpoints.manifestUrl, "http://meridian.local").searchParams.get("id")
+    ?? "artifact-1";
+}
+
+function projectionFor(
+  artifact: GraphArtifact,
+  graphId: string,
+  request: GraphProjectionRequest,
+): LoadedGraphProjection {
+  const key = `${graphId}\u0000${JSON.stringify(request)}`;
+  return {
+    key,
+    projectionId: `projection-${key}`,
+    graphId,
+    request,
+    artifact,
+    index: buildGraphIndex(artifact),
+    reachability: null,
+    review: null,
+    serializedBytes: 100,
+    residentBytes: 300,
+  };
+}
+
+function preparedHeadArtifact(artifact: GraphArtifact, files: readonly PrChangedFile[]): GraphArtifact {
+  const manifest = files.map((file) => ({
+    path: file.path,
+    status: file.status === "removed" ? "deleted" as const : file.status,
+    ...(file.status === "renamed" ? { previousPath: file.previousPath } : {}),
+  }));
+  const ranges = Object.fromEntries(files.map((file) => [
+    file.path,
+    (file.hunks ?? []).map((range) => ({ ...range })),
+  ]));
+  const kinds = Object.fromEntries(files.map((file) => [
+    file.path,
+    file.status === "removed"
+      ? []
+      : (file.hunks ?? []).map((range) => ({
+          ...range,
+          kind: file.status === "added" ? "added" as const : "modified" as const,
+        })),
+  ]));
+  const stats = Object.fromEntries(files.map((file) => [file.path, {
+    added: file.additions,
+    deleted: file.deletions,
+  }]));
+  return {
+    ...artifact,
+    extensions: {
+      ...(artifact.extensions ?? {}),
+      changedSince: {
+        baseRef: "origin/main",
+        manifest,
+        files: ranges,
+        kinds,
+        diffLines: Object.fromEntries(files.map((file) => [file.path, []])),
+        stats,
+      },
+    } as GraphArtifact["extensions"],
+  };
+}
+
+async function enterPreparedReview(store: ReturnType<typeof freshStore>): Promise<void> {
+  const source = flowReviewProjectionSources.get(store);
+  if (source === undefined) throw new Error("missing flow-review projection fixture");
+  const files = [...(store.getState().prFiles ?? [])].sort((left, right) => (
+    compareCanonicalPrPreparePaths(left.path, right.path)
+  ));
+  const graphId = `flow-review-${++preparedReviewSequence}`;
+  source.setPreparedHead(preparedHeadArtifact(store.getState().artifact, files));
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+    const url = input.toString();
+    if (url.includes("/api/pr/prepare")) {
+      return Promise.resolve(preparationResponse(graphId, files));
+    }
+    if (url.includes(`/api/meta?id=${graphId}`)) {
+      return Promise.resolve(Response.json({
+        syntheticExecutionUrl: null,
+        syntheticScenarios: [],
+        syntheticExecutionTrust: null,
+      }));
+    }
+    return Promise.reject(new Error(`Unexpected request: ${url}`));
+  }));
+  await store.getState().reviewPrInGraph();
+  const prepareError = store.getState().prPrepareError;
+  if (prepareError !== null) {
+    throw new Error(prepareError);
+  }
+}
+
+function preparationResponse(graphId: string, files: readonly PrChangedFile[]): Response {
+  const descriptor = (id: string) => ({
+    graphId: id,
+    manifestUrl: `/api/graph/manifest?id=${id}`,
+    projectionUrl: `/api/graph/projection?id=${id}`,
+    searchUrl: `/api/graph/search?id=${id}`,
+    sourceUrl: `/api/source?id=${id}`,
+    metaUrl: `/api/meta?id=${id}`,
+    graphSummary: {
+      schemaVersion: ARTIFACT.schemaVersion,
+      generatedAt: ARTIFACT.generatedAt,
+      nodeCount: ARTIFACT.nodes.length,
+      edgeCount: ARTIFACT.edges.length,
+    },
+  });
+  const records = [
+    { version: 1, type: "progress", stage: "resolve", elapsedMs: 0 },
+    { version: 1, type: "progress", stage: "git", elapsedMs: 1 },
+    { version: 1, type: "progress", stage: "extract-head", elapsedMs: 2 },
+    { version: 1, type: "progress", stage: "extract-merge-base", elapsedMs: 3 },
+    { version: 1, type: "progress", stage: "publish", elapsedMs: 4 },
+    {
+      version: 1,
+      type: "done",
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      mergeBaseSha: MERGE_BASE_SHA,
+      changedFiles: files.map((file) => ({
+        path: file.path,
+        status: file.status === "removed" ? "deleted" : file.status,
+        ...(file.status === "renamed" ? { previousPath: file.previousPath } : {}),
+      })),
+      head: descriptor(graphId),
+      mergeBase: descriptor(`${graphId}-base`),
+      cache: "miss",
+      timings: { resolve: 0, git: 1, "extract-head": 2, "extract-merge-base": 3, publish: 4 },
+      warnings: [],
+      handoff: {
+        id: `handoff-${graphId}`,
+        url: `/api/pr/prepared?id=handoff-${graphId}`,
+        viewUrl: `/view?id=${graphId}&view=modules&prn=17&rev=1&prepared=handoff-${graphId}`,
+      },
+    },
+  ];
+  const body = records.map((record) => `${JSON.stringify(record)}\n`).join("");
+  return new Response(body, {
+    status: 200,
+    headers: { "content-type": "application/x-ndjson" },
   });
 }
 
@@ -246,7 +584,7 @@ async function activeReviewStore(
     ],
   });
 
-  await store.getState().reviewPrInGraph();
+  await enterPreparedReview(store);
   await vi.waitFor(() => {
     expect(store.getState().minimalLayoutStatus).toBe("ready");
   });
@@ -287,7 +625,7 @@ async function impactedFlowReviewStore() {
     ],
   });
 
-  await store.getState().reviewPrInGraph();
+  await enterPreparedReview(store);
   await vi.waitFor(() => {
     expect(store.getState().minimalLayoutStatus).toBe("ready");
   });

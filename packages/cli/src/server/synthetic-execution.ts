@@ -13,8 +13,11 @@ import {
   rmSync,
   statSync,
 } from "node:fs";
+import { spawn } from "node:child_process";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join, posix, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   boundedSyntheticJsonValueSchema,
   SYNTHETIC_MANIFEST_VERSION,
@@ -39,6 +42,10 @@ import { SyntheticExecutionError } from "./synthetic-error";
 import { syntheticSourceFingerprint } from "./synthetic-fingerprint";
 import { discoverSyntheticManifestFiles } from "./synthetic-manifest-files";
 import { compileInstrumentedProject } from "./synthetic-project";
+import {
+  parseSyntheticWorkerError,
+  SYNTHETIC_ARTIFACT_FILE_RESULT_PREFIX,
+} from "./synthetic-worker-job";
 
 export { SyntheticExecutionError } from "./synthetic-error";
 export type { SyntheticExecutionErrorCode } from "./synthetic-error";
@@ -48,6 +55,17 @@ export type { RunSyntheticScenarioInOciRequest } from "./synthetic-oci";
 
 export const SYNTHETIC_MANIFEST_FILE = "meridian.synthetic.json";
 const MAX_MANIFEST_BYTES = 256 * 1024;
+const MAX_ARTIFACT_FILE_JOB_BYTES = 1024 * 1024;
+const MAX_ARTIFACT_FILE_STDOUT_BYTES = 4 * 1024 * 1024;
+const MAX_ARTIFACT_FILE_STDERR_BYTES = 64 * 1024;
+const ARTIFACT_FILE_TIMEOUT_MS = 30_000;
+const ARTIFACT_FILE_TERMINATE_GRACE_MS = 1_000;
+const ARTIFACT_FILE_TREE_WAIT_MS = 5_000;
+const PROCESS_TREE_POLL_MS = 25;
+const SYNTHETIC_EXECUTION_RESULT_KEYS = new Set([
+  "executionVersion", "scenarioId", "rootId", "generatedAt", "input", "outcome", "output",
+  "trace", "snapshots", "inputOverrideResults", "watchHits", "stop", "warnings",
+]);
 
 /** Servers use this to avoid advertising an action that the local runtime cannot isolate. */
 export function syntheticExecutionRuntimeSupported(): boolean {
@@ -78,6 +96,23 @@ export interface RunSyntheticScenarioRequest {
   compilationMode?: "trusted-parent" | "sandboxed-child";
 }
 
+export interface RunSyntheticScenarioFromArtifactFileRequest
+  extends Omit<RunSyntheticScenarioRequest, "artifact" | "compilationMode"> {
+  /** Immutable graph file. Only the short-lived worker opens and validates it. */
+  artifactPath: string;
+  signal?: AbortSignal;
+}
+
+export interface SyntheticArtifactFileWorkerOptions {
+  signal?: AbortSignal;
+  timeoutMs?: number;
+  terminateGraceMs?: number;
+  processTreeWaitMs?: number;
+  /** Focused tests may substitute a worker; production always uses the packaged bundle. */
+  workerPath?: string;
+  workerExecArgv?: readonly string[];
+}
+
 /** Missing configuration is ordinary capability absence; malformed configuration is actionable. */
 export function loadSyntheticScenarios(sourceRoot: string): SyntheticScenarioDescriptor[] {
   const manifest = readManifest(sourceRoot, false);
@@ -86,6 +121,306 @@ export function loadSyntheticScenarios(sourceRoot: string): SyntheticScenarioDes
 
 export async function runSyntheticScenario(request: RunSyntheticScenarioRequest): Promise<SyntheticExecution> {
   return runSyntheticScenarioWithIsolation(request, false);
+}
+
+/** Execute a trusted local scenario without admitting the complete graph to the long-lived server. */
+export async function runSyntheticScenarioFromArtifactFile(
+  request: RunSyntheticScenarioFromArtifactFileRequest,
+  options: SyntheticArtifactFileWorkerOptions = {},
+): Promise<SyntheticExecution> {
+  if (!syntheticExecutionRuntimeSupported()) {
+    throw new SyntheticExecutionError(
+      "unsupported-runtime",
+      422,
+      "Synthetic execution requires Node 25 or newer with filesystem and network permission controls.",
+    );
+  }
+  const sourceRoot = canonicalDirectory(request.sourceRoot);
+  const artifactPath = canonicalArtifactFile(request.artifactPath);
+  const worker = options.workerPath
+    ? { path: options.workerPath, execArgv: options.workerExecArgv ?? [] }
+    : localArtifactWorker();
+  if (worker === null) {
+    throw new SyntheticExecutionError("unsupported-runtime", 422, "Synthetic execution worker is unavailable.");
+  }
+  const {
+    sourceRoot: _sourceRoot,
+    artifactPath: _artifactPath,
+    signal: _signal,
+    ...job
+  } = request;
+  const serialized = JSON.stringify(job);
+  if (Buffer.byteLength(serialized, "utf8") > MAX_ARTIFACT_FILE_JOB_BYTES) {
+    throw new SyntheticExecutionError("invalid-request", 400, "Synthetic execution request is too large.");
+  }
+  const stdout = await runSyntheticArtifactFileWorker(worker.path, sourceRoot, artifactPath, serialized, {
+    ...options,
+    workerExecArgv: worker.execArgv,
+    signal: request.signal ?? options.signal,
+  });
+  return parseSyntheticArtifactFileResult(stdout);
+}
+
+/** Strict worker result boundary, exported for focused protocol tests. */
+export function parseSyntheticArtifactFileResult(stdout: string): SyntheticExecution {
+  const marker = stdout.lastIndexOf(SYNTHETIC_ARTIFACT_FILE_RESULT_PREFIX);
+  if (marker < 0) {
+    throw new SyntheticExecutionError("invalid-result", 500, "Synthetic execution worker returned no result.");
+  }
+  const line = stdout.slice(marker + SYNTHETIC_ARTIFACT_FILE_RESULT_PREFIX.length).split(/\r?\n/, 1)[0];
+  try {
+    const envelope = JSON.parse(line) as unknown;
+    if (!isRecord(envelope)
+      || Object.keys(envelope).length !== 2
+      || envelope.ok !== true
+      || !isRecord(envelope.result)
+      || Object.keys(envelope.result).some((key) => !SYNTHETIC_EXECUTION_RESULT_KEYS.has(key))) throw new Error();
+    const parsed = syntheticExecutionSchema.safeParse(envelope.result);
+    if (!parsed.success) throw new Error();
+    return parsed.data;
+  } catch {
+    throw new SyntheticExecutionError("invalid-result", 500, "Synthetic execution worker returned malformed data.");
+  }
+}
+
+export function runSyntheticArtifactFileWorker(
+  workerPath: string,
+  sourceRoot: string,
+  artifactPath: string,
+  job: string,
+  options: SyntheticArtifactFileWorkerOptions = {},
+): Promise<string> {
+  if (options.signal?.aborted) return Promise.reject(abortReason(options.signal));
+  const timeoutMs = positiveDuration(options.timeoutMs, ARTIFACT_FILE_TIMEOUT_MS);
+  const terminateGraceMs = nonNegativeDuration(options.terminateGraceMs, ARTIFACT_FILE_TERMINATE_GRACE_MS);
+  const processTreeWaitMs = positiveDuration(options.processTreeWaitMs, ARTIFACT_FILE_TREE_WAIT_MS);
+  return new Promise((resolveWorker, rejectWorker) => {
+    const child = spawn(process.execPath, [
+      ...(options.workerExecArgv ?? []),
+      "--max-old-space-size=768",
+      "--disable-proto=delete",
+      workerPath,
+      "run-file",
+      "-",
+      sourceRoot,
+      artifactPath,
+    ], {
+      detached: process.platform !== "win32",
+      cwd: sourceRoot,
+      env: { LANG: "C", LC_ALL: "C", TZ: "UTC", HOME: sourceRoot, TMPDIR: tmpdir() },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderrBytes = 0;
+    let settled = false;
+    let terminalError: unknown;
+    let terminating = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
+    let windowsTreeTermination: Promise<void> | undefined;
+    const terminate = () => {
+      if (terminating) return;
+      terminating = true;
+      if (process.platform === "win32") {
+        windowsTreeTermination = terminateWindowsProcessTree(child);
+        return;
+      }
+      signalProcessTree(child, "SIGTERM");
+      killTimer = setTimeout(() => signalProcessTree(child, "SIGKILL"), terminateGraceMs);
+    };
+    const fail = (error: SyntheticExecutionError) => {
+      if (settled || terminalError !== undefined) return;
+      terminalError = error;
+      terminate();
+    };
+    const abort = () => {
+      if (settled || terminalError !== undefined) return;
+      terminalError = abortReason(options.signal!);
+      terminate();
+    };
+    const timer = setTimeout(() => fail(new SyntheticExecutionError(
+      "execution-failed",
+      422,
+      "Synthetic execution exceeded the 30 second time limit.",
+    )), timeoutMs);
+    timer.unref?.();
+    options.signal?.addEventListener("abort", abort, { once: true });
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+      if (Buffer.byteLength(stdout, "utf8") > MAX_ARTIFACT_FILE_STDOUT_BYTES) {
+        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much output."));
+      }
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderrBytes += chunk.length;
+      if (stderrBytes > MAX_ARTIFACT_FILE_STDERR_BYTES) {
+        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much diagnostic output."));
+      }
+    });
+    child.on("error", () => fail(new SyntheticExecutionError(
+      "execution-failed",
+      500,
+      "Synthetic execution worker could not be started.",
+    )));
+    child.on("close", (code) => {
+      if (settled) return;
+      clearTimeout(timer);
+      if (killTimer) clearTimeout(killTimer);
+      options.signal?.removeEventListener("abort", abort);
+      const treeStopped = windowsTreeTermination ?? killRemainingProcessTree(child, processTreeWaitMs);
+      void treeStopped.then(() => {
+        if (settled) return;
+        settled = true;
+        if (terminalError !== undefined) {
+          rejectWorker(terminalError);
+        } else if (code !== 0) {
+          rejectWorker(parseSyntheticWorkerError(stdout, "compiler")
+            ?? new SyntheticExecutionError("execution-failed", 422, "Synthetic execution failed in the isolated worker."));
+        } else {
+          resolveWorker(stdout);
+        }
+      }, () => {
+        if (settled) return;
+        settled = true;
+        rejectWorker(new SyntheticExecutionError(
+          "execution-failed",
+          500,
+          "Synthetic execution worker process tree could not be terminated.",
+        ));
+      });
+    });
+    child.stdin.on("error", () => fail(new SyntheticExecutionError(
+      "execution-failed",
+      500,
+      "Synthetic execution request could not be delivered to the worker.",
+    )));
+    child.stdin.end(job, "utf8");
+  });
+}
+
+function localArtifactWorker(): { path: string; execArgv: readonly string[] } | null {
+  const bundle = syntheticWorkerBundlePath();
+  if (bundle !== null) return { path: bundle, execArgv: [] };
+  if (!import.meta.url.endsWith(".ts")) return null;
+  try {
+    const path = realpathSync.native(fileURLToPath(new URL("../synthetic-oci-worker.ts", import.meta.url)));
+    const require = createRequire(import.meta.url);
+    return { path, execArgv: ["--import", pathToFileURL(require.resolve("tsx")).href] };
+  } catch {
+    return null;
+  }
+}
+
+function signalProcessTree(child: ReturnType<typeof spawn>, signal: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (!pid || process.platform === "win32") {
+    child.kill(signal);
+    return;
+  }
+  try {
+    process.kill(-pid, signal);
+  } catch {
+    child.kill(signal);
+  }
+}
+
+function terminateWindowsProcessTree(child: ReturnType<typeof spawn>): Promise<void> {
+  const pid = child.pid;
+  if (!pid) {
+    child.kill("SIGKILL");
+    return Promise.resolve();
+  }
+  return new Promise((resolveTermination) => {
+    let finished = false;
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      resolveTermination();
+    };
+    try {
+      const killer = spawn("taskkill.exe", ["/pid", String(pid), "/T", "/F"], {
+        stdio: "ignore",
+        windowsHide: true,
+      });
+      killer.once("error", () => {
+        child.kill("SIGKILL");
+        finish();
+      });
+      killer.once("close", (code) => {
+        if (code !== 0) child.kill("SIGKILL");
+        finish();
+      });
+    } catch {
+      child.kill("SIGKILL");
+      finish();
+    }
+  });
+}
+
+function killRemainingProcessTree(child: ReturnType<typeof spawn>, waitMs: number): Promise<void> {
+  const pid = child.pid;
+  if (!pid || process.platform === "win32") return Promise.resolve();
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch (error) {
+    if (isNoSuchProcess(error)) return Promise.resolve();
+  }
+  const deadline = Date.now() + waitMs;
+  return new Promise((resolveExit, rejectExit) => {
+    const poll = () => {
+      try {
+        process.kill(-pid, 0);
+      } catch (error) {
+        if (isNoSuchProcess(error)) {
+          resolveExit();
+          return;
+        }
+      }
+      if (Date.now() >= deadline) {
+        rejectExit(new Error("synthetic worker process group remained alive after SIGKILL"));
+        return;
+      }
+      setTimeout(poll, PROCESS_TREE_POLL_MS);
+    };
+    poll();
+  });
+}
+
+function isNoSuchProcess(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "ESRCH";
+}
+
+function positiveDuration(value: number | undefined, fallback: number): number {
+  const effective = value ?? fallback;
+  if (!Number.isFinite(effective) || effective <= 0) throw new RangeError("worker duration must be positive");
+  return effective;
+}
+
+function nonNegativeDuration(value: number | undefined, fallback: number): number {
+  const effective = value ?? fallback;
+  if (!Number.isFinite(effective) || effective < 0) throw new RangeError("worker duration must be non-negative");
+  return effective;
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
+function canonicalArtifactFile(path: string): string {
+  try {
+    const canonical = realpathSync.native(resolve(path));
+    const entry = statSync(canonical);
+    if (!entry.isFile() || entry.size < 1) throw new Error();
+    return canonical;
+  } catch {
+    throw new SyntheticExecutionError("invalid-request", 400, "Synthetic execution artifact is unavailable.");
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** Worker-only entry point. The caller must already be inside the hardened OCI boundary. */

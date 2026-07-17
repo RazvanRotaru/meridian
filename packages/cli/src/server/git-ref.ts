@@ -1,12 +1,12 @@
 /**
- * Git's `check-ref-format --branch` rules, plus an explicit leading-dash guard because the branch is
- * passed after `git clone --branch`. The process runner is argv-only, so valid characters such as
- * `+`, `@`, `$`, and Unicode are safe and should not disappear from the branch picker.
+ * Git's `check-ref-format --branch` rules. The explicit leading-dash guard keeps the value safe at
+ * every argv boundary, while valid characters such as `+`, `@`, `$`, and Unicode remain available
+ * to branch pickers and repository-mirror fetches.
  */
 
 const FORBIDDEN_REF_CHARACTER = /[\x00-\x20\x7f~^:?*\[\\]/u;
 
-export function isAllowedCloneRef(value: string): boolean {
+export function isAllowedBranchRef(value: string): boolean {
   if (
     value.length === 0
     || value.startsWith("-")

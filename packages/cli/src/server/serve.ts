@@ -16,6 +16,8 @@ export interface ServeOptions {
   openBrowser: boolean;
   /** Announcement prefix, e.g. "Blueprint web UI" (defaults to the renderer wording). */
   label?: string;
+  /** Explicit async lifecycle close for servers that own persistent background authorities. */
+  shutdown?: () => Promise<void>;
 }
 
 export async function serve(server: Server, options: ServeOptions, reporter: Reporter): Promise<void> {
@@ -25,11 +27,14 @@ export async function serve(server: Server, options: ServeOptions, reporter: Rep
   if (options.openBrowser) {
     openInBrowser(url);
   }
-  installShutdown(server);
+  installShutdown(server, options.shutdown);
 }
 
-function installShutdown(server: Server): void {
-  process.on("SIGINT", () => {
-    server.close(() => process.exit(EXIT.ok));
+function installShutdown(server: Server, shutdown?: () => Promise<void>): void {
+  process.once("SIGINT", () => {
+    const close = shutdown ?? (() => new Promise<void>((resolveClose, rejectClose) => {
+      server.close((error) => error ? rejectClose(error) : resolveClose());
+    }));
+    void close().then(() => process.exit(EXIT.ok), () => process.exit(EXIT.io));
   });
 }

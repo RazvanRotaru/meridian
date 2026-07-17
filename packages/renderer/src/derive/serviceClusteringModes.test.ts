@@ -1,5 +1,4 @@
-import type { GraphNode } from "@meridian/core";
-import type { CouplingEdge, UnitMetrics } from "@meridian/design-metrics";
+import type { CouplingEdge, ServiceMemberFeature, UnitMetrics } from "@meridian/design-metrics";
 import { describe, expect, it } from "vitest";
 import {
   deriveServiceNodeGroups,
@@ -279,7 +278,11 @@ describe("deriveServiceNodeGroups", () => {
 
 function fixture(leads: LeadFixture[], couplings: CouplingEdge[] = []): ServiceClustering {
   return {
-    clusters: leads.map((item) => ({ leadId: item.id, memberIds: [item.id] })),
+    clusters: leads.map((item) => ({
+      leadId: item.id,
+      memberIds: [item.id],
+      provenance: "named-service" as const,
+    })),
     leadOf: new Map(leads.map((item) => [item.id, item.id])),
     metrics: new Map(leads.map((item) => [item.id, metric(item)])),
     membersByUnit: new Map(leads.map((item) => [item.id, methods(item)])),
@@ -325,14 +328,12 @@ function metric(item: LeadFixture): UnitMetrics {
   };
 }
 
-function methods(item: LeadFixture): GraphNode[] {
+function methods(item: LeadFixture): ServiceMemberFeature[] {
   return (item.methods ?? []).map((method, index) => ({
     id: `${item.id}#${method.name}-${index}`,
     kind: "method",
     qualifiedName: `${item.name}.${method.name}`,
     displayName: method.name,
-    parentId: item.id,
-    location: { file: item.path, startLine: index + 1 },
     signature: method.signature,
   }));
 }

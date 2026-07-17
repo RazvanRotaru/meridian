@@ -863,7 +863,7 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(expanded.has(OUTSIDE_FILE)).toBe(true);
   });
 
-  it("clears source inspection and relays out the still-mounted source when extracting", () => {
+  it("clears source inspection and restores the hidden source only after extraction closes", async () => {
     const store = freshStore(ITERATIVE_GHOST_ARTIFACT);
     const inspectionAtRelayout: unknown[] = [];
     const moduleRelayout = vi.fn(async () => {
@@ -880,12 +880,18 @@ describe("minimal-graph overlay (extract selection)", () => {
       minimalRelayout,
     });
 
-    store.getState().buildMinimalGraph();
+    await store.getState().buildMinimalGraph();
 
     expect(store.getState().moduleGhostInspection).toBeNull();
+    // The extracted graph owns the one structural layout lane while visible. Rebuilding the hidden
+    // Map here would retain a second graph scene outside the navigation budget.
+    expect(moduleRelayout).not.toHaveBeenCalled();
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+
+    await store.getState().closeMinimalGraph();
+
     expect(moduleRelayout).toHaveBeenCalledOnce();
     expect(inspectionAtRelayout).toEqual([null]);
-    expect(minimalRelayout).toHaveBeenCalledOnce();
   });
 
   it("bulk expand targets the visible minimal frontier instead of the covered module tree", () => {
@@ -1440,20 +1446,24 @@ describe("minimal-graph overlay (extract selection)", () => {
   it("restores the parent presentation and Codebase disclosure after nested extraction", async () => {
     const store = withBuiltGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    store.getState().setMinimalView("codebase");
+    await store.getState().setMinimalView("codebase");
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
     store.getState().setMinimalCodebaseExpansionOverride("ts:src", false);
     store.getState().setMinimalShowGhostNodes(false);
     store.getState().selectModule(BUILD_ORDERS);
-    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
-    store.getState().buildMinimalGraph();
+    await store.getState().buildMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     expect(store.getState().minimalView).toBe("graph");
     expect(store.getState().minimalShowGhostNodes).toBe(true);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map());
 
-    store.getState().backMinimalGraph();
+    await store.getState().backMinimalGraph();
     expect(store.getState().minimalView).toBe("codebase");
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
     expect(store.getState().minimalShowGhostNodes).toBe(false);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map([["ts:src", false]]));
   });

@@ -4,12 +4,22 @@
  * over a fake ServerResponse that captures status + body, so no socket is opened.
  */
 
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import {
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ServerResponse } from "node:http";
+import { SOURCE_TEXT_HEADERS } from "@meridian/core";
 import { readSourceSlice, sendSource } from "./source-serve";
+import { SourceTextAdmission } from "./source-text-admission";
 import { WebError } from "./web-error";
 
 let root: string;
@@ -27,6 +37,7 @@ beforeAll(() => {
   truncateSync(join(root, "oversized.ts"), 32 * 1024 * 1024 + 1);
   writeFileSync(join(root, "capped-boundary.ts"), `${"x".repeat(1_999_999)}\nrest`);
   writeFileSync(join(root, "big.ts"), Array.from({ length: 2500 }, (_, index) => `line ${index + 1}`).join("\n"));
+  writeFileSync(join(root, "swap.ts"), "original inode");
 });
 
 afterAll(() => rmSync(root, { recursive: true, force: true }));
@@ -172,50 +183,175 @@ describe("resolveWithinRoot symlink containment", () => {
 });
 
 describe("sendSource", () => {
-  it("404s when no source root is configured", () => {
+  it("404s when no source root is configured", async () => {
     const { response, captured } = fakeResponse();
-    sendSource(response, null, new URLSearchParams());
+    await sendSource(response, null, new URLSearchParams(), sourceOptions());
     expect(captured.status).toBe(404);
     expect(JSON.parse(captured.body)).toEqual({ error: "source not available" });
   });
 
-  it("serves a slice as JSON for a valid request", () => {
+  it("serves one strict raw UTF-8 v1 body with exact line and length headers", async () => {
     const { response, captured } = fakeResponse();
-    sendSource(response, root, new URLSearchParams({ file: "sample.ts", start: "2", end: "3" }));
+    await sendSource(response, root, new URLSearchParams({ file: "sample.ts", start: "2", end: "3" }), sourceOptions());
     expect(captured.status).toBe(200);
-    expect(JSON.parse(captured.body)).toMatchObject({ startLine: 2, endLine: 3, code: "two\nthree" });
+    expect(captured.body).toBe("two\nthree");
+    expect(captured.headers).toMatchObject({
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": String(Buffer.byteLength(captured.body)),
+      [SOURCE_TEXT_HEADERS.version]: "1",
+      [SOURCE_TEXT_HEADERS.startLine]: "2",
+      [SOURCE_TEXT_HEADERS.endLine]: "3",
+      [SOURCE_TEXT_HEADERS.lineCount]: "2",
+      [SOURCE_TEXT_HEADERS.truncated]: "0",
+    });
   });
 
-  it("preserves leading and trailing whitespace in a valid Git filename", () => {
+  it("preserves leading and trailing whitespace in a valid Git filename", async () => {
     const { response, captured } = fakeResponse();
-    sendSource(response, root, new URLSearchParams({ file: " spaced.ts " }));
+    await sendSource(response, root, new URLSearchParams({ file: " spaced.ts " }), sourceOptions());
     expect(captured.status).toBe(200);
-    expect(JSON.parse(captured.body)).toMatchObject({ file: " spaced.ts ", code: "whitespace path" });
+    expect(captured.body).toBe("whitespace path");
   });
 
-  it("400s a missing file param and an escaping path, 404s a missing file", () => {
-    expect(statusFor(new URLSearchParams())).toBe(400);
-    expect(statusFor(new URLSearchParams({ file: "../secret.ts" }))).toBe(400);
-    expect(statusFor(new URLSearchParams({ file: "nope.ts" }))).toBe(404);
+  it("400s a missing file param and an escaping path, 404s a missing file", async () => {
+    await expect(statusFor(new URLSearchParams())).resolves.toBe(400);
+    await expect(statusFor(new URLSearchParams({ file: "../secret.ts" }))).resolves.toBe(400);
+    await expect(statusFor(new URLSearchParams({ file: "nope.ts" }))).resolves.toBe(404);
+  });
+
+  it("rejects overload before reading and publishes Retry-After", async () => {
+    const admission = new SourceTextAdmission({ maxActive: 1, memoryBudgetBytes: 1 });
+    const held = admission.tryAcquire(1)!;
+    const { response, captured } = fakeResponse();
+
+    await sendSource(
+      response,
+      root,
+      new URLSearchParams({ file: "sample.ts" }),
+      { admission },
+    );
+
+    expect(captured.status).toBe(503);
+    expect(captured.headers["retry-after"]).toBe("1");
+    expect(JSON.parse(captured.body)).toEqual({ error: "source memory budget is busy; retry later" });
+    held.release();
+  });
+
+  it("reads only the inode that passed containment and size admission", async () => {
+    const admission = new SourceTextAdmission();
+    const originalTryAcquire = admission.tryAcquire.bind(admission);
+    const sourcePath = join(root, "swap.ts");
+    const oldPath = join(root, "swap-old.ts");
+    vi.spyOn(admission, "tryAcquire").mockImplementation((weight) => {
+      renameSync(sourcePath, oldPath);
+      writeFileSync(sourcePath, "replacement inode with different bytes");
+      return originalTryAcquire(weight);
+    });
+    const { response, captured } = fakeResponse();
+    try {
+      await sendSource(response, root, new URLSearchParams({ file: "swap.ts" }), { admission });
+      expect(captured.status).toBe(409);
+      expect(JSON.parse(captured.body)).toEqual({ error: "source file changed while it was being read" });
+      expect(captured.body).not.toContain("replacement inode");
+      expect(admission.snapshot.active).toBe(0);
+    } finally {
+      unlinkSync(sourcePath);
+      renameSync(oldPath, sourcePath);
+    }
+  });
+
+  it("destroys an unstarted response when source ownership is revoked after admission", async () => {
+    const admission = new SourceTextAdmission();
+    const originalTryAcquire = admission.tryAcquire.bind(admission);
+    const controller = new AbortController();
+    vi.spyOn(admission, "tryAcquire").mockImplementation((weight) => {
+      const lease = originalTryAcquire(weight);
+      controller.abort(new Error("source capability ownership expired"));
+      return lease;
+    });
+    const { response, captured } = fakeResponse();
+
+    await sendSource(
+      response,
+      root,
+      new URLSearchParams({ file: "sample.ts" }),
+      { admission, signal: controller.signal },
+    );
+
+    expect(captured.status).toBe(0);
+    expect(captured.body).toBe("");
+    expect(captured.destroyed).toBe(true);
+    expect(admission.snapshot.active).toBe(0);
+  });
+
+  it("yields before the production file read and releases admission on cancellation", async () => {
+    const admission = new SourceTextAdmission();
+    const controller = new AbortController();
+    const { response } = fakeResponse();
+    let eventLoopTurn = false;
+    const pending = sendSource(
+      response,
+      root,
+      new URLSearchParams({ file: "big.ts" }),
+      { admission, signal: controller.signal },
+    );
+    const turn = new Promise<void>((resolveTurn) => setImmediate(() => {
+      eventLoopTurn = true;
+      resolveTurn();
+    }));
+    await turn;
+    expect(eventLoopTurn).toBe(true);
+    controller.abort();
+    await pending;
+    expect(admission.snapshot.active).toBe(0);
   });
 });
 
-function statusFor(query: URLSearchParams): number {
+async function statusFor(query: URLSearchParams): Promise<number> {
   const { response, captured } = fakeResponse();
-  sendSource(response, root, query);
+  await sendSource(response, root, query, sourceOptions());
   return captured.status;
 }
 
-function fakeResponse(): { response: ServerResponse; captured: { status: number; body: string } } {
-  const captured = { status: 0, body: "" };
+function fakeResponse(): {
+  response: ServerResponse;
+  captured: { status: number; body: string; headers: Record<string, string>; destroyed: boolean };
+} {
+  const captured = { status: 0, body: "", headers: {} as Record<string, string>, destroyed: false };
+  const listeners = new Map<string, (...args: unknown[]) => void>();
   const response = {
-    writeHead(status: number) {
+    writeHead(status: number, headers?: Record<string, string>) {
       captured.status = status;
+      captured.headers = { ...captured.headers, ...headers };
       return response;
     },
-    end(body?: string) {
-      captured.body = body ?? "";
+    setHeader(name: string, value: string | number) {
+      captured.headers[name.toLowerCase()] = String(value);
+      return response;
+    },
+    end(body?: string | Buffer, callback?: () => void) {
+      captured.body = Buffer.isBuffer(body) ? body.toString("utf8") : body ?? "";
+      callback?.();
+    },
+    once(event: string, listener: (...args: unknown[]) => void) {
+      listeners.set(event, listener);
+      return response;
+    },
+    off(event: string) {
+      listeners.delete(event);
+      return response;
+    },
+    destroyed: false,
+    writableEnded: false,
+    destroy() {
+      captured.destroyed = true;
+      response.destroyed = true;
+      return response;
     },
   } as unknown as ServerResponse;
   return { response, captured };
+}
+
+function sourceOptions(signal?: AbortSignal) {
+  return { admission: new SourceTextAdmission(), ...(signal === undefined ? {} : { signal }) };
 }

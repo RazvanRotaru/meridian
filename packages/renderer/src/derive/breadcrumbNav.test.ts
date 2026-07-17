@@ -8,7 +8,6 @@
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import { buildModuleGraph } from "./moduleGraph";
 import { levelChildren } from "./breadcrumbNav";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
@@ -38,40 +37,39 @@ const EDGES: GraphEdge[] = [
 ];
 
 function fixture() {
-  const index = buildGraphIndex({ nodes: NODES, edges: EDGES } as GraphArtifact);
-  return { index, graph: buildModuleGraph(index) };
+  return buildGraphIndex({ nodes: NODES, edges: EDGES } as GraphArtifact);
 }
 
 describe("levelChildren", () => {
   it("at the overview (null focus) lists the npm-package cards", () => {
-    const { index, graph } = fixture();
-    expect(levelChildren(index, graph, null)).toEqual([
+    const index = fixture();
+    expect(levelChildren(index, null)).toEqual([
       { id: "ts:pkgA", label: "pkgA" },
       { id: "ts:pkgB", label: "pkgB" },
     ]);
   });
 
   it("inside a package lists its folder/file children (what you can go into)", () => {
-    const { index, graph } = fixture();
-    expect(levelChildren(index, graph, "ts:pkgA/src")).toEqual([
+    const index = fixture();
+    expect(levelChildren(index, "ts:pkgA/src")).toEqual([
       { id: "ts:pkgA/src/index.ts", label: "index.ts" },
       { id: "ts:pkgA/src/api", label: "api" },
     ]);
   });
 
   it("a lone-child package still lists that child", () => {
-    const { index, graph } = fixture();
-    expect(levelChildren(index, graph, "ts:pkgA")).toEqual([{ id: "ts:pkgA/src", label: "src" }]);
+    const index = fixture();
+    expect(levelChildren(index, "ts:pkgA")).toEqual([{ id: "ts:pkgA/src", label: "src" }]);
   });
 
   it("is empty for a file focus (its children are code, not navigation targets)", () => {
-    const { index, graph } = fixture();
-    expect(levelChildren(index, graph, "ts:pkgA/src/index.ts")).toEqual([]);
+    const index = fixture();
+    expect(levelChildren(index, "ts:pkgA/src/index.ts")).toEqual([]);
   });
 
   it("excludes hidden (test) ids so the menu matches the cards the Map actually draws", () => {
-    const { index, graph } = fixture();
-    expect(levelChildren(index, graph, null, new Set(["ts:pkgB"]))).toEqual([{ id: "ts:pkgA", label: "pkgA" }]);
+    const index = fixture();
+    expect(levelChildren(index, null, new Set(["ts:pkgB"]))).toEqual([{ id: "ts:pkgA", label: "pkgA" }]);
   });
 
   it("skips a folder that owns no source file (the Map draws nothing for it)", () => {
@@ -81,7 +79,6 @@ describe("levelChildren", () => {
       node("ts:src/empty", "package", "ts:src", "empty"),
     ];
     const index = buildGraphIndex({ nodes, edges: [] as GraphEdge[] } as GraphArtifact);
-    const graph = buildModuleGraph(index);
-    expect(levelChildren(index, graph, "ts:src")).toEqual([{ id: "ts:src/a.ts", label: "a.ts" }]);
+    expect(levelChildren(index, "ts:src")).toEqual([{ id: "ts:src/a.ts", label: "a.ts" }]);
   });
 });

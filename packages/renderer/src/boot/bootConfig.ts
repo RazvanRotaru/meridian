@@ -12,8 +12,19 @@ import type { SyntheticScenarioDescriptor, TelemetrySourceDescriptor } from "@me
 import type { PrSessionSource } from "../state/prTypes";
 import type { SyntheticExecutionTrust } from "../state/syntheticExecutionTrust";
 
+export type GraphBootSource =
+  | { kind: "dev-sample"; artifactUrl: string }
+  | {
+      kind: "projections";
+      graphId: string;
+      manifestUrl: string;
+      projectionUrl: string;
+      searchUrl: string;
+    };
+
 export interface BootConfig {
-  graphUrl: string;
+  /** The production source is always projection transport; the complete artifact is Vite-only. */
+  graphSource: GraphBootSource;
   metaUrl: string;
   overlayUrl: string;
   /** Request-trace endpoint, separate from the aggregate metrics overlay. */
@@ -37,6 +48,8 @@ export interface BootConfig {
   syntheticScenarios: SyntheticScenarioDescriptor[];
   /** Exact GitHub session source; null for local/plain-view artifacts. */
   githubSource: PrSessionSource | null;
+  /** Immutable v1 review handoff for a server-validated shared review URL; null otherwise. */
+  preparedReviewUrl: string | null;
   defaultEnv: null;
 }
 
@@ -50,29 +63,29 @@ export interface PrApiUrls {
   prCommentsUrl: string;
   /** GET target for the selected PR head commit's check-run rollup. */
   prChecksUrl: string;
-  /** GET base for one changed file's text at the PR head ref (the review code panel). */
+  /** GET base for one changed file's text at the selected PR head ref. */
   prFileUrl: string;
   /** POST target for submitting a review with comments; 404s outside a `web` GitHub session. */
   prReviewUrl: string;
-  /** POST target streaming the PR-head prepare pipeline (the analyze stages). */
-  analyzeUrl: string;
-  /** The server-session artifact id the analyze POST body names; null in a plain `view` session
-   * (which is also what gates reviewPrInGraph to its synchronous fallback). */
-  graphId: string | null;
+  /** Direct POST target streaming immutable head + merge-base graph preparation. */
+  prepareUrl: string;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
-  /** Optional so a renderer cached before the trace endpoint shipped still boots safely. */
-  traceUrl?: unknown;
-  /** Optional for HTML produced before in-app source selection shipped. */
-  telemetrySources?: unknown;
-  preselectedTelemetrySourceId?: unknown;
-  /** Optional for compatibility with renderer HTML cached from before this capability existed. */
-  githubSource?: unknown;
-  /** Optional for compatibility with servers predating opt-in local execution. */
-  syntheticExecutionUrl?: unknown;
-  syntheticExecutionTrust?: unknown;
-  syntheticScenarios?: unknown;
+interface InjectedConfig extends Omit<BootConfig, "graphSource" | "defaultEnv" | "githubSource" | "preparedReviewUrl" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+  /** Every server-rendered session uses the current, strict transport contract. */
+  traceUrl: unknown;
+  telemetrySources: unknown;
+  preselectedTelemetrySourceId: unknown;
+  /** Required for every injected/server session; typed unknown so violations fail explicitly. */
+  projectionGraphId: unknown;
+  projectionManifestUrl: unknown;
+  projectionUrl: unknown;
+  graphSearchUrl: unknown;
+  syntheticExecutionUrl: unknown;
+  syntheticExecutionTrust: unknown;
+  syntheticScenarios: unknown;
+  githubSource: unknown;
+  preparedReviewUrl: unknown;
   defaultEnv: unknown;
 }
 
@@ -83,7 +96,7 @@ declare global {
 }
 
 const DEV_FALLBACK: BootConfig = {
-  graphUrl: "/sample-graph.json",
+  graphSource: { kind: "dev-sample", artifactUrl: "/sample-graph.json" },
   metaUrl: "/api/meta",
   overlayUrl: "/api/overlay",
   traceUrl: "/api/traces",
@@ -110,6 +123,7 @@ const DEV_FALLBACK: BootConfig = {
   syntheticExecutionTrust: null,
   syntheticScenarios: [],
   githubSource: null,
+  preparedReviewUrl: null,
   defaultEnv: null,
 };
 
@@ -121,78 +135,164 @@ export function readBootConfig(): BootConfig {
   return assertNeverDefaulted(injected);
 }
 
-export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
-  const graph = new URL(graphUrl, "http://meridian.local");
-  const id = graph.searchParams.get("id");
+export function prApiUrlsForGraph(graphId: string | null): PrApiUrls {
   return {
-    prsUrl: apiUrl("/api/prs", id),
-    prOneUrl: apiUrl("/api/prs/one", id),
-    prFilesUrl: apiUrl("/api/prs/files", id),
-    prRelatedUrl: apiUrl("/api/prs/related", id),
-    prCommentsUrl: apiUrl("/api/prs/comments", id),
-    prChecksUrl: apiUrl("/api/prs/checks", id),
-    prFileUrl: apiUrl("/api/prs/file", id),
-    prReviewUrl: apiUrl("/api/prs/review", id),
-    analyzeUrl: "/api/pr/analyze",
-    graphId: id,
+    prsUrl: apiUrl("/api/prs", graphId),
+    prOneUrl: apiUrl("/api/prs/one", graphId),
+    prFilesUrl: apiUrl("/api/prs/files", graphId),
+    prRelatedUrl: apiUrl("/api/prs/related", graphId),
+    prCommentsUrl: apiUrl("/api/prs/comments", graphId),
+    prChecksUrl: apiUrl("/api/prs/checks", graphId),
+    prFileUrl: apiUrl("/api/prs/file", graphId),
+    prReviewUrl: apiUrl("/api/prs/review", graphId),
+    prepareUrl: "/api/pr/prepare",
   };
 }
 
 function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
+  requireCurrentInjectedFields(injected);
   if (injected.defaultEnv !== null) {
     throw new Error("boot contract violation: defaultEnv must never be defaulted (always null)");
   }
-  // Cached pre-capability HTML may inject nothing or a legacy boolean — only the session-source
-  // OBJECT counts; anything else normalizes to null (no PR surfaces).
-  const source = injected.githubSource;
-  const githubSource = typeof source === "object" && source !== null ? (source as PrSessionSource) : null;
-  const traceAvailable = typeof injected.traceUrl === "string" && injected.traceUrl.length > 0;
-  const traceUrl = traceAvailable
-    ? injected.traceUrl as string
-    : "/api/traces";
+  const githubSource = parseGithubSource(injected.githubSource);
+  const preparedReviewUrl = parsePreparedReviewUrl(injected.preparedReviewUrl);
+  if (preparedReviewUrl !== null && githubSource === null) {
+    throw new Error("boot contract violation: preparedReviewUrl requires githubSource");
+  }
+  const traceUrl = requiredNonEmptyString(injected.traceUrl, "traceUrl");
   const telemetrySources = normalizeTelemetrySources(injected.telemetrySources);
-  const syntheticExecutionUrl = typeof injected.syntheticExecutionUrl === "string"
-    && injected.syntheticExecutionUrl.trim().length > 0
-    ? injected.syntheticExecutionUrl
-    : null;
-  const syntheticScenarios = normalizeSyntheticScenarios(injected.syntheticScenarios);
-  const syntheticExecutionTrust = normalizeSyntheticExecutionTrust(
+  const syntheticExecutionUrl = nonEmptyString(injected.syntheticExecutionUrl);
+  const parsedSyntheticScenarios = normalizeSyntheticScenarios(injected.syntheticScenarios);
+  const parsedSyntheticExecutionTrust = normalizeSyntheticExecutionTrust(
     injected.syntheticExecutionTrust,
     syntheticExecutionUrl,
   );
-  const explicitTelemetrySourceId = typeof injected.preselectedTelemetrySourceId === "string"
-    && injected.preselectedTelemetrySourceId.trim().length > 0
-    ? injected.preselectedTelemetrySourceId
-    : null;
-  // An old server has no catalog field at all and its single overlay is already an explicit boot
-  // capability. Keep that session selected. A present catalog (including `[]`) uses the new rule:
-  // nothing is active unless preselectedTelemetrySourceId names it.
-  const legacyTelemetrySourceId = injected.telemetrySources === undefined && injected.hasOverlay
-    ? injected.overlayKind
-    : null;
-  const preselectedTelemetrySourceId = explicitTelemetrySourceId ?? legacyTelemetrySourceId;
+  const projectionGraphId = nonEmptyString(injected.projectionGraphId);
+  const projectionManifestUrl = nonEmptyString(injected.projectionManifestUrl);
+  const projectionUrl = nonEmptyString(injected.projectionUrl);
+  const graphSearchUrl = nonEmptyString(injected.graphSearchUrl);
+  if (projectionGraphId === null
+    || projectionManifestUrl === null
+    || projectionUrl === null
+    || graphSearchUrl === null) {
+    throw new Error(
+      "boot contract violation: injected sessions require projectionGraphId, projectionManifestUrl, projectionUrl, and graphSearchUrl",
+    );
+  }
+  const preselectedTelemetrySourceId = parseTelemetrySelection(
+    injected.preselectedTelemetrySourceId,
+    telemetrySources,
+  );
+  // Synthetic metadata is one authority-bearing unit. A malformed/duplicate catalog or invalid
+  // trust claim disables the entire capability rather than preserving a misleading subset.
+  const syntheticCapabilityValid = parsedSyntheticScenarios !== null
+    && (syntheticExecutionUrl === null
+      ? parsedSyntheticExecutionTrust === null && parsedSyntheticScenarios.length === 0
+      : parsedSyntheticExecutionTrust !== null && parsedSyntheticScenarios.length > 0);
+  const effectiveSyntheticExecutionUrl = syntheticCapabilityValid ? syntheticExecutionUrl : null;
+  const syntheticExecutionTrust = syntheticCapabilityValid ? parsedSyntheticExecutionTrust : null;
+  const syntheticScenarios = syntheticCapabilityValid ? parsedSyntheticScenarios! : [];
   return {
-    ...injected,
+    graphSource: {
+      kind: "projections",
+      graphId: projectionGraphId,
+      manifestUrl: projectionManifestUrl,
+      projectionUrl,
+      searchUrl: graphSearchUrl,
+    },
+    metaUrl: injected.metaUrl,
+    overlayUrl: injected.overlayUrl,
     traceUrl,
-    traceAvailable,
+    traceAvailable: true,
+    hasOverlay: injected.hasOverlay,
+    overlayKind: injected.overlayKind,
+    envRequired: injected.envRequired,
+    preselectedEnv: injected.preselectedEnv,
     telemetrySources,
     preselectedTelemetrySourceId,
-    syntheticExecutionUrl,
+    sourceUrl: injected.sourceUrl,
+    syntheticExecutionUrl: effectiveSyntheticExecutionUrl,
     syntheticExecutionTrust,
     syntheticScenarios,
     githubSource,
+    preparedReviewUrl,
     defaultEnv: null,
   };
 }
 
+function requireCurrentInjectedFields(injected: InjectedConfig): void {
+  for (const field of [
+    "projectionGraphId",
+    "projectionManifestUrl",
+    "projectionUrl",
+    "graphSearchUrl",
+    "traceUrl",
+    "telemetrySources",
+    "preselectedTelemetrySourceId",
+    "syntheticExecutionUrl",
+    "syntheticExecutionTrust",
+    "syntheticScenarios",
+    "githubSource",
+    "preparedReviewUrl",
+  ] as const) {
+    if (!Object.prototype.hasOwnProperty.call(injected, field)) {
+      throw new Error(`boot contract violation: missing current field ${field}`);
+    }
+  }
+}
+
+function parsePreparedReviewUrl(value: unknown): string | null {
+  if (value === null) return null;
+  const raw = requiredNonEmptyString(value, "preparedReviewUrl");
+  if (!raw.startsWith("/")) {
+    throw new Error("boot contract violation: preparedReviewUrl must be same-origin");
+  }
+  const parsed = new URL(raw, "http://meridian.local");
+  const keys = [...parsed.searchParams.keys()];
+  if (
+    parsed.origin !== "http://meridian.local"
+    || parsed.pathname !== "/api/pr/prepared"
+    || parsed.hash.length > 0
+    || keys.length !== 1
+    || keys[0] !== "id"
+    || (parsed.searchParams.get("id")?.length ?? 0) === 0
+  ) {
+    throw new Error("boot contract violation: preparedReviewUrl is malformed");
+  }
+  return `${parsed.pathname}${parsed.search}`;
+}
+
+function nonEmptyString(value: unknown): string | null {
+  if (value === null) return null;
+  return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function requiredNonEmptyString(value: unknown, field: string): string {
+  const parsed = nonEmptyString(value);
+  if (parsed === null) throw new Error(`boot contract violation: ${field} must be a non-empty string`);
+  return parsed;
+}
+
+function parseGithubSource(value: unknown): PrSessionSource | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("boot contract violation: githubSource must be an object or null");
+  }
+  const candidate = value as Record<string, unknown>;
+  const repository = requiredNonEmptyString(candidate.repository, "githubSource.repository");
+  const subdir = typeof candidate.subdir === "string" ? candidate.subdir : null;
+  if (!/^[^/\s]+\/[^/\s]+$/.test(repository) || subdir === null) {
+    throw new Error("boot contract violation: githubSource is malformed");
+  }
+  return { repository, subdir };
+}
 function normalizeSyntheticExecutionTrust(
   value: unknown,
   executionUrl: string | null,
 ): SyntheticExecutionTrust | null {
   if (executionUrl === null) return null;
-  // Compatibility for trusted-local servers shipped before the trust descriptor. A server that
-  // does inject the field must provide a valid object; malformed explicit claims fail closed.
-  if (value === undefined) return { mode: "local" };
+  // Trust is server-authored and explicit. Never infer local execution from a URL or session kind.
+  if (value === undefined) return null;
   if (typeof value !== "object" || value === null) return null;
   const candidate = value as { mode?: unknown; provenance?: unknown };
   if (candidate.mode !== "local" && candidate.mode !== "sandboxed-pr") return null;
@@ -218,13 +318,13 @@ function normalizedBoundedString(value: unknown, maxLength: number): string | un
   return normalized.length === 0 || normalized.length > maxLength ? undefined : normalized;
 }
 
-function normalizeSyntheticScenarios(value: unknown): SyntheticScenarioDescriptor[] {
-  if (!Array.isArray(value)) return [];
+function normalizeSyntheticScenarios(value: unknown): SyntheticScenarioDescriptor[] | null {
+  if (!Array.isArray(value)) return null;
   const scenarios: SyntheticScenarioDescriptor[] = [];
   const seen = new Set<string>();
   for (const candidate of value) {
     const parsed = syntheticScenarioDescriptorSchema.safeParse(candidate);
-    if (!parsed.success || seen.has(parsed.data.id)) continue;
+    if (!parsed.success || seen.has(parsed.data.id)) return null;
     seen.add(parsed.data.id);
     scenarios.push(parsed.data);
   }
@@ -232,16 +332,32 @@ function normalizeSyntheticScenarios(value: unknown): SyntheticScenarioDescripto
 }
 
 function normalizeTelemetrySources(value: unknown): TelemetrySourceDescriptor[] {
-  if (!Array.isArray(value)) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("boot contract violation: telemetrySources must be an array");
+  }
   const sources: TelemetrySourceDescriptor[] = [];
   const seen = new Set<string>();
   for (const candidate of value) {
     const parsed = telemetrySourceDescriptorSchema.safeParse(candidate);
-    if (!parsed.success || seen.has(parsed.data.id)) continue;
+    if (!parsed.success || seen.has(parsed.data.id)) {
+      throw new Error("boot contract violation: telemetrySources contains an invalid or duplicate descriptor");
+    }
     seen.add(parsed.data.id);
     sources.push({ ...parsed.data, environments: [...parsed.data.environments] });
   }
   return sources;
+}
+
+function parseTelemetrySelection(
+  value: unknown,
+  sources: readonly TelemetrySourceDescriptor[],
+): string | null {
+  if (value === null) return null;
+  const id = requiredNonEmptyString(value, "preselectedTelemetrySourceId");
+  if (!sources.some((source) => source.id === id)) {
+    throw new Error("boot contract violation: preselectedTelemetrySourceId is not in telemetrySources");
+  }
+  return id;
 }
 
 function apiUrl(path: string, id: string | null): string {

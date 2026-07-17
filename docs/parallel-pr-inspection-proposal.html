@@ -1,0 +1,1467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<title>Meridian Parallel Inspection V5</title>
+<style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
+</head>
+<body>
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Meridian Parallel Inspection V5" srcdoc="&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;
+&lt;head&gt;
+&lt;meta charset=&quot;utf-8&quot;&gt;
+&lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
+&lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
+&lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
+&lt;title&gt;Meridian Parallel Inspection V5&lt;/title&gt;
+&lt;style&gt;:root {
+  color-scheme: light dark;
+  background-color: var(--background) !important;
+
+  /* Agent-facing contract; keep in sync with SKILL.md. */
+  --background: light-dark(rgb(255 255 255), rgb(24 24 24));
+  --foreground: light-dark(rgb(26 28 31), rgb(255 255 255));
+  --card: color-mix(in oklab, var(--foreground) 5%, transparent);
+  --card-foreground: var(--foreground);
+  --popover: light-dark(rgb(255 255 255), rgb(45 45 45));
+  --popover-foreground: var(--foreground);
+  --primary: light-dark(rgb(51 156 255), rgb(131 195 255));
+  --primary-foreground: light-dark(rgb(255 255 255), rgb(13 13 13));
+  --secondary: light-dark(rgb(255 255 255 / 96%), rgb(54 54 54 / 96%));
+  --secondary-foreground: var(--foreground);
+  --muted: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --muted-foreground: light-dark(
+    rgb(26 28 31 / 49.4%),
+    rgb(255 255 255 / 49.8%)
+  );
+  --accent: light-dark(rgb(229 242 255), rgb(13 39 63));
+  --accent-foreground: var(--primary);
+  --destructive: light-dark(rgb(226 85 7), rgb(255 133 73));
+  --border: light-dark(rgb(26 28 31 / 8%), rgb(255 255 255 / 8.2%));
+  --input: light-dark(
+    rgb(26 28 31 / 11.8%),
+    color-mix(in oklab, rgb(0 0 0) 10%, transparent)
+  );
+  --ring: light-dark(rgb(51 156 255), rgb(131 195 255 / 76%));
+  --font-size-base: 14px;
+  --viz-series-1: var(--primary);
+  --viz-series-2: light-dark(rgb(243 136 59), rgb(245 154 86));
+  --viz-series-3: light-dark(rgb(93 201 119), rgb(116 213 139));
+  --viz-series-4: light-dark(rgb(235 119 177), rgb(240 143 192));
+  --viz-series-5: light-dark(rgb(155 121 236), rgb(170 145 239));
+  --viz-series-6: light-dark(rgb(58 185 177), rgb(90 203 194));
+
+  /* Internal implementation variables; not part of the agent contract. */
+  --font-sans: -apple-system, system-ui, &quot;Segoe UI&quot;, sans-serif;
+  --font-mono:
+    ui-monospace, SFMono-Regular, &quot;SF Mono&quot;, Menlo, Consolas, &quot;Liberation Mono&quot;,
+    monospace;
+  --font-size-normal: max(11px, var(--font-size-base));
+  --font-size-tooltip: calc(var(--font-size-base) - 1px);
+  --font-size-small: max(11px, calc(var(--font-size-base) - 2px));
+  --font-size-h1: calc(var(--font-size-normal) * 1.7142857143);
+  --font-size-h2: calc(var(--font-size-normal) * 1.4285714286);
+  --font-size-h3: calc(var(--font-size-normal) * 1.2857142857);
+  --font-weight-normal: 430;
+  --font-weight-medium: 500;
+  --line-height-normal: calc(var(--font-size-normal) * 1.5);
+  --line-height-tooltip: calc(var(--font-size-tooltip) * 1.4285714286);
+  --line-height-small: calc(var(--font-size-small) + 4px);
+  --radius: 12.5px;
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-2xl: calc(var(--radius) * 1.6);
+  --radius-full: 9999px;
+  --shadow-sm: 0 1px 2px -1px rgb(0 0 0 / 8%);
+  --checkmark-image: url(&quot;data:image/svg+xml,%3Csvg xmlns=&#x27;http://www.w3.org/2000/svg&#x27; viewBox=&#x27;0 0 17 17&#x27;%3E%3Cpath d=&#x27;M12.8961 3.64101C13.1297 3.41418 13.4984 3.37523 13.7779 3.56581C14.0571 3.75635 14.1554 4.11331 14.0299 4.41347L13.9615 4.53847L7.71151 13.7045C7.59411 13.8767 7.4063 13.9877 7.19881 14.0072C6.99136 14.0267 6.78564 13.9533 6.63826 13.806L2.88826 10.056L2.79842 9.9457C2.6192 9.67407 2.64927 9.30496 2.88826 9.06581C3.12738 8.82669 3.49647 8.79676 3.76815 8.97597L3.8785 9.06581L7.03084 12.2182L12.8053 3.74941L12.8961 3.64101Z&#x27;/%3E%3C/svg%3E&quot;);
+
+  /* Legacy aliases; not part of the current agent contract. */
+  --viz-bg: transparent;
+  --viz-panel: var(--card);
+  --viz-border: var(--border);
+  --viz-text: var(--foreground);
+  --viz-muted: var(--muted-foreground);
+  --viz-accent: var(--primary);
+  --viz-accent-text: var(--primary-foreground);
+  --viz-accent-bg: var(--accent);
+  --viz-font-size: var(--font-size-base);
+  --viz-warning: var(--destructive);
+  --color-background-primary: var(--background);
+  --color-text-primary: var(--foreground);
+  --color-border-secondary: var(--border);
+}
+
+:root[data-theme=&quot;light&quot;] {
+  color-scheme: light;
+}
+
+:root[data-theme=&quot;dark&quot;] {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html &gt; body {
+  margin: 0;
+  padding: 5px;
+  color: var(--foreground);
+  background: transparent !important;
+  font-family: var(--font-sans);
+  font-size: var(--font-size-normal);
+  font-weight: var(--font-weight-normal);
+  line-height: var(--line-height-normal);
+}
+
+a {
+  color: color-mix(in srgb, var(--viz-accent) 80%, var(--viz-text) 20%);
+  cursor: pointer;
+  font-weight: var(--viz-font-weight-medium);
+  text-decoration: none;
+  text-underline-offset: 2px;
+}
+
+a:is(:hover, :focus-visible) {
+  text-decoration-line: underline;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 0.5px;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6,
+p {
+  margin-block: 0;
+}
+
+h1 {
+  font-size: var(--font-size-h1);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h2 {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+h3,
+h4,
+h5,
+h6 {
+  font-size: var(--font-size-h3);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.3;
+}
+
+b,
+strong,
+th {
+  font-weight: var(--font-weight-medium);
+}
+
+code:not(pre code) {
+  display: inline;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+  word-break: break-word;
+}
+
+#widget {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  padding: 0;
+  background: transparent !important;
+}
+
+.card {
+  min-width: 0;
+  padding: 12px;
+  overflow: hidden;
+  overflow-wrap: break-word;
+  border-radius: var(--radius-2xl);
+  corner-shape: superellipse(1.5);
+  color: var(--card-foreground);
+  background: var(--card);
+}
+
+#widget &gt; :not(.card) {
+  width: 100% !important;
+  max-width: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.tooltip {
+  position: fixed;
+  z-index: 50;
+  top: 0;
+  left: 0;
+  width: max-content;
+  max-width: min(
+    20rem,
+    var(--tooltip-available-width, calc(100vw - 10px)),
+    calc(100vw - 10px)
+  );
+  max-height: min(
+    var(--tooltip-available-height, calc(100vh - 10px)),
+    calc(100vh - 10px)
+  );
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--popover-foreground);
+  background: var(--popover);
+  box-shadow: none;
+  font-size: var(--font-size-tooltip);
+  line-height: var(--line-height-tooltip);
+  overflow-wrap: break-word;
+  white-space: normal;
+  pointer-events: none;
+  user-select: none;
+}
+
+.viz-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(max(180px, 24%), 1fr));
+  gap: 10px;
+}
+
+.viz-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.viz-stat-value {
+  font-size: var(--font-size-h2);
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+}
+
+.viz-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.viz-badge {
+  padding: 3px 8px;
+  border-radius: var(--radius-full);
+  color: var(--accent-foreground);
+  background: var(--accent);
+  font-weight: var(--font-weight-medium);
+}
+
+small,
+.text-small,
+.viz-badge {
+  font-size: var(--font-size-small);
+  line-height: var(--line-height-small);
+}
+
+.text-muted {
+  color: var(--muted-foreground);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.viz-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.viz-controls &gt; .form-label {
+  display: grid;
+  min-width: min(100%, 260px);
+  flex: 1 1 280px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-bottom: 0;
+}
+
+.viz-controls &gt; .form-label &gt; :is(.form-control, .form-range, .form-select) {
+  grid-column: 1 / -1;
+}
+
+.btn,
+.form-check-input,
+.form-control,
+.form-range,
+.form-select {
+  font: inherit;
+}
+
+.btn {
+  appearance: button;
+  display: inline-flex;
+  inline-size: fit-content;
+  max-inline-size: 100%;
+  min-height: 28px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin: 0;
+  padding: 0 8px;
+  -webkit-app-region: no-drag;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: var(--cursor-interaction, pointer);
+  text-align: center;
+  text-decoration: none;
+  white-space: nowrap;
+  user-select: none;
+  -webkit-font-smoothing: antialiased;
+}
+
+.btn:is(.btn-block, .viz-tile) {
+  inline-size: 100%;
+}
+
+.btn.viz-tile {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+a.btn {
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.btn:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn-primary {
+  border-color: transparent;
+  color: var(--primary-foreground);
+  background: var(--foreground);
+  background-clip: padding-box;
+}
+
+.btn-primary .text-muted {
+  color: color-mix(in srgb, var(--primary-foreground) 50%, transparent);
+}
+
+.btn-primary:not(:disabled):hover {
+  background: color-mix(in srgb, var(--foreground) 80%, transparent);
+  background-clip: padding-box;
+}
+
+.btn-ghost {
+  border-color: transparent;
+  color: var(--muted-foreground);
+  background: transparent;
+}
+
+.btn-ghost:not(:disabled):hover {
+  color: var(--foreground);
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+[data-lucide] {
+  stroke-width: 1.6;
+}
+
+.form-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--foreground);
+}
+
+.form-control {
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  padding: 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background: var(--secondary);
+}
+
+.form-control::placeholder {
+  color: var(--muted-foreground);
+}
+
+.form-control[type=&quot;file&quot;] {
+  padding: 0;
+  overflow: hidden;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control[type=&quot;file&quot;]::file-selector-button {
+  min-height: 26px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border: 0;
+  border-right: 1px solid var(--input);
+  color: var(--secondary-foreground);
+  background: var(--secondary);
+  cursor: inherit;
+  font: inherit;
+}
+
+.form-control[type=&quot;file&quot;]:not(:disabled):hover::file-selector-button {
+  background: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-control-color[type=&quot;color&quot;] {
+  width: 40px;
+  height: 28px;
+  padding: 3px;
+  cursor: var(--cursor-interaction, pointer);
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.form-control-color[type=&quot;color&quot;]::-webkit-color-swatch {
+  border: 0;
+  border-radius: calc(var(--radius-lg) - 4px);
+  corner-shape: superellipse(1.5);
+}
+
+textarea.form-control {
+  height: auto;
+  min-height: 72px;
+  padding: 8px 10px;
+  resize: vertical;
+}
+
+.form-control:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-control:disabled,
+.form-select:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.form-select {
+  appearance: none;
+  display: block;
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 32px 0 8px;
+  outline: none;
+  border: 1px solid var(--input);
+  border-radius: var(--radius-lg);
+  corner-shape: superellipse(1.5);
+  color: var(--foreground);
+  background-color: var(--secondary);
+  background-image:
+    linear-gradient(45deg, transparent 50%, var(--muted-foreground) 50%),
+    linear-gradient(135deg, var(--muted-foreground) 50%, transparent 50%);
+  background-position:
+    calc(100% - 14px) 50%,
+    calc(100% - 10px) 50%;
+  background-repeat: no-repeat;
+  background-size: 4px 4px;
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-select:not(:disabled):hover {
+  background-color: color-mix(in srgb, var(--foreground) 6%, var(--secondary));
+}
+
+.form-select:focus-visible {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-check {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  gap: 6px;
+}
+
+.form-check-input {
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  margin: 0;
+  border: 1px solid var(--input);
+  color: var(--primary-foreground);
+  background-color: transparent;
+  cursor: var(--cursor-interaction, default);
+  transition:
+    background-color 150ms,
+    border-color 150ms,
+    box-shadow 150ms;
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;] {
+  border-color: var(--input);
+  border-radius: var(--radius-sm);
+  corner-shape: superellipse(1.5);
+  background-color: var(--secondary);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input:not(:disabled):not(:checked):hover {
+  background-color: var(--card);
+}
+
+.form-check:not(.form-switch) .form-check-input[type=&quot;checkbox&quot;]:checked {
+  border-color: var(--primary);
+  background-color: var(--primary);
+}
+
+.form-check:not(.form-switch)
+  .form-check-input[type=&quot;checkbox&quot;]:checked::before {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--primary-foreground);
+  content: &quot;&quot;;
+  mask: var(--checkmark-image) center / 12px 12px no-repeat;
+}
+
+.form-check-input[type=&quot;radio&quot;] {
+  width: 14px;
+  height: 14px;
+  border-radius: var(--radius-full);
+}
+
+.form-check-input[type=&quot;radio&quot;]:checked {
+  border: 2px solid var(--primary);
+  background:
+    radial-gradient(circle, var(--primary-foreground) 0 2.5px, transparent 3px),
+    var(--primary);
+}
+
+.form-check:not(.form-switch) .form-check-input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.form-check:not(.form-switch) .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+}
+
+.form-switch .form-check-input:disabled,
+.form-switch .form-check-input:disabled + .form-check-label {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.form-check-label {
+  color: var(--foreground);
+  cursor: var(--cursor-interaction, default);
+}
+
+.form-switch .form-check-input {
+  position: relative;
+  width: 32px;
+  height: 20px;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--muted);
+  box-shadow: none;
+  transition: background-color 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input::before {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  border: 1px solid light-dark(var(--primary-foreground), var(--foreground));
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+  box-shadow: var(--shadow-sm);
+  content: &quot;&quot;;
+  transform: translate(2px, -50%);
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+.form-switch .form-check-input:checked {
+  background: var(--primary);
+}
+
+.form-switch .form-check-input:checked::before {
+  transform: translate(14px, -50%);
+}
+
+.form-switch .form-check-input:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+}
+
+.form-range {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 28px;
+  flex: 1;
+  margin: 0;
+  padding: 0;
+  outline: none;
+  border: 0;
+  accent-color: var(--primary);
+  background: linear-gradient(
+      color-mix(in srgb, var(--foreground) 7%, transparent),
+      color-mix(in srgb, var(--foreground) 7%, transparent)
+    )
+    center / 100% 2px no-repeat;
+}
+
+.form-range::-webkit-slider-runnable-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-webkit-slider-thumb {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  margin-top: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-webkit-slider-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range::-moz-range-track {
+  height: 28px;
+  background: transparent;
+}
+
+.form-range::-moz-range-thumb {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: light-dark(var(--primary-foreground), var(--foreground));
+}
+
+.form-range:focus-visible::-moz-range-thumb {
+  border-color: var(--ring);
+  box-shadow: inset 0 0 0 1px var(--ring);
+}
+
+.form-range:disabled {
+  cursor: not-allowed;
+  opacity: 0.4;
+}
+
+.btn:not(.btn-primary, .viz-tile):is(
+    [aria-pressed=&quot;true&quot;],
+    [aria-selected=&quot;true&quot;],
+    .is-selected
+  ) {
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  background: var(--primary);
+}
+
+.btn.viz-tile:is([aria-pressed=&quot;true&quot;], [aria-selected=&quot;true&quot;], .is-selected) {
+  border-color: var(--primary);
+  box-shadow: inset 0 0 0 1px var(--primary);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+#widget &gt; svg {
+  width: 100%;
+}
+
+.text-warning,
+.text-destructive {
+  color: var(--destructive);
+}
+
+html&gt;body{padding:0}&lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+&lt;div id=&quot;meridian-parallel-v5&quot; aria-label=&quot;Meridian parallel pull request inspection architecture report&quot;&gt;
+  &lt;style&gt;
+    #meridian-parallel-v5 {
+      color: var(--foreground);
+      display: grid;
+      gap: 28px;
+      width: 100%;
+    }
+    #meridian-parallel-v5 * { box-sizing: border-box; }
+    #meridian-parallel-v5 header,
+    #meridian-parallel-v5 section { display: grid; gap: 14px; }
+    #meridian-parallel-v5 h2,
+    #meridian-parallel-v5 h3,
+    #meridian-parallel-v5 p { margin: 0; }
+    #meridian-parallel-v5 .eyebrow {
+      color: var(--muted-foreground);
+      font-weight: 500;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    #meridian-parallel-v5 .decision {
+      border-left: 3px solid var(--viz-series-1);
+      padding-left: 14px;
+    }
+    #meridian-parallel-v5 .decision p { max-width: 88ch; }
+    #meridian-parallel-v5 .metrics {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    #meridian-parallel-v5 .viz-stat { min-width: 0; }
+    #meridian-parallel-v5 .viz-stat-value { overflow-wrap: anywhere; }
+    #meridian-parallel-v5 .architecture {
+      width: 100%;
+      height: auto;
+      color: var(--muted-foreground);
+    }
+    #meridian-parallel-v5 .architecture .wire {
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.5;
+      marker-end: url(#mpr-arrow);
+    }
+    #meridian-parallel-v5 .architecture .job-wire {
+      fill: none;
+      stroke: var(--viz-series-2);
+      stroke-width: 2;
+      marker-end: url(#mpr-arrow-job);
+    }
+    #meridian-parallel-v5 .architecture rect {
+      stroke: var(--border);
+      stroke-width: 1;
+      rx: 9;
+    }
+    #meridian-parallel-v5 .architecture .shared { fill: color-mix(in srgb, var(--viz-series-1) 14%, transparent); }
+    #meridian-parallel-v5 .architecture .isolated { fill: color-mix(in srgb, var(--viz-series-2) 13%, transparent); }
+    #meridian-parallel-v5 .architecture .disk { fill: color-mix(in srgb, var(--viz-series-3) 13%, transparent); }
+    #meridian-parallel-v5 .architecture .browser { fill: color-mix(in srgb, var(--viz-series-5) 13%, transparent); }
+    #meridian-parallel-v5 .architecture text { fill: var(--foreground); }
+    #meridian-parallel-v5 .architecture .minor { fill: var(--muted-foreground); }
+    #meridian-parallel-v5 .architecture .lane { font-weight: 500; }
+    #meridian-parallel-v5 .architecture .label { font-weight: 500; }
+    #meridian-parallel-v5 .legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 18px;
+      color: var(--muted-foreground);
+    }
+    #meridian-parallel-v5 .legend span { display: inline-flex; gap: 7px; align-items: center; }
+    #meridian-parallel-v5 .legend i {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--swatch);
+    }
+    #meridian-parallel-v5 .flow-grid,
+    #meridian-parallel-v5 .facts-grid,
+    #meridian-parallel-v5 .decision-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px 24px;
+    }
+    #meridian-parallel-v5 .flow {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 8px;
+      align-items: start;
+    }
+    #meridian-parallel-v5 .step {
+      align-items: center;
+      background: var(--primary);
+      border-radius: 50%;
+      color: var(--primary-foreground);
+      display: inline-flex;
+      height: 24px;
+      justify-content: center;
+      width: 24px;
+    }
+    #meridian-parallel-v5 .flow strong,
+    #meridian-parallel-v5 dt { font-weight: 500; }
+    #meridian-parallel-v5 .flow p,
+    #meridian-parallel-v5 dd { color: var(--muted-foreground); margin: 2px 0 0; }
+    #meridian-parallel-v5 .contract {
+      display: grid;
+      grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr);
+      gap: 20px;
+      align-items: start;
+    }
+    #meridian-parallel-v5 pre {
+      background: var(--muted);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--foreground);
+      margin: 0;
+      padding: 12px;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    #meridian-parallel-v5 ul,
+    #meridian-parallel-v5 ol { margin: 0; padding-left: 20px; }
+    #meridian-parallel-v5 li + li { margin-top: 7px; }
+    #meridian-parallel-v5 .memory {
+      display: grid;
+      gap: 8px;
+    }
+    #meridian-parallel-v5 .memory-row {
+      display: grid;
+      grid-template-columns: minmax(132px, .7fr) minmax(0, 2fr) minmax(92px, .55fr);
+      gap: 10px;
+      align-items: center;
+    }
+    #meridian-parallel-v5 .memory-track {
+      background: var(--muted);
+      border-radius: 999px;
+      height: 14px;
+      overflow: hidden;
+    }
+    #meridian-parallel-v5 .memory-track span {
+      display: block;
+      height: 100%;
+      width: var(--fill);
+      background: var(--series);
+      border-radius: inherit;
+    }
+    #meridian-parallel-v5 .memory-value { text-align: right; }
+    #meridian-parallel-v5 .benchmark-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 24px;
+    }
+    #meridian-parallel-v5 figure { display: grid; gap: 12px; margin: 0; min-width: 0; }
+    #meridian-parallel-v5 figcaption { font-weight: 500; }
+    #meridian-parallel-v5 .bench-group { display: grid; gap: 7px; }
+    #meridian-parallel-v5 .bench-group + .bench-group {
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    #meridian-parallel-v5 .bench-row {
+      display: grid;
+      grid-template-columns: 86px minmax(0, 1fr) 78px;
+      gap: 9px;
+      align-items: center;
+    }
+    #meridian-parallel-v5 .bench-track {
+      background: var(--muted);
+      border-radius: 999px;
+      height: 16px;
+      overflow: hidden;
+    }
+    #meridian-parallel-v5 .bench-bar {
+      background: var(--series);
+      border-radius: inherit;
+      display: block;
+      height: 100%;
+      min-width: 2px;
+      width: var(--fill);
+    }
+    #meridian-parallel-v5 .bench-value { text-align: right; }
+    #meridian-parallel-v5 .methodology {
+      color: var(--muted-foreground);
+      border-top: 1px solid var(--border);
+      padding-top: 10px;
+    }
+    #meridian-parallel-v5 .fact {
+      border-left: 2px solid var(--series);
+      padding-left: 12px;
+    }
+    #meridian-parallel-v5 .fact p { color: var(--muted-foreground); margin-top: 3px; }
+    #meridian-parallel-v5 .timeline {
+      display: grid;
+      gap: 10px;
+    }
+    #meridian-parallel-v5 .timeline-item {
+      display: grid;
+      grid-template-columns: 106px 18px minmax(0, 1fr);
+      gap: 10px;
+      align-items: start;
+    }
+    #meridian-parallel-v5 .timeline-mark {
+      background: var(--viz-series-1);
+      border-radius: 50%;
+      height: 10px;
+      margin-top: 6px;
+      position: relative;
+      width: 10px;
+    }
+    #meridian-parallel-v5 .timeline-item:not(:last-child) .timeline-mark::after {
+      background: var(--border);
+      content: &quot;&quot;;
+      height: 52px;
+      left: 4px;
+      position: absolute;
+      top: 10px;
+      width: 1px;
+    }
+    #meridian-parallel-v5 .timeline-item p { color: var(--muted-foreground); }
+    #meridian-parallel-v5 .gate {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--foreground);
+    }
+    #meridian-parallel-v5 .gate::before {
+      background: var(--viz-series-3);
+      border-radius: 50%;
+      content: &quot;&quot;;
+      height: 9px;
+      width: 9px;
+    }
+    #meridian-parallel-v5 .note {
+      color: var(--muted-foreground);
+      border-top: 1px solid var(--border);
+      padding-top: 12px;
+    }
+    @media (max-width: 620px) {
+      #meridian-parallel-v5 .metrics,
+      #meridian-parallel-v5 .flow-grid,
+      #meridian-parallel-v5 .facts-grid,
+      #meridian-parallel-v5 .decision-grid,
+      #meridian-parallel-v5 .contract,
+      #meridian-parallel-v5 .benchmark-grid { grid-template-columns: 1fr; }
+      #meridian-parallel-v5 .memory-row { grid-template-columns: 1fr; gap: 4px; }
+      #meridian-parallel-v5 .memory-value { text-align: left; }
+      #meridian-parallel-v5 .bench-row { grid-template-columns: 74px minmax(0, 1fr) 68px; }
+      #meridian-parallel-v5 .timeline-item { grid-template-columns: 86px 14px minmax(0, 1fr); }
+    }
+  &lt;/style&gt;
+
+  &lt;header&gt;
+    &lt;p class=&quot;eyebrow&quot;&gt;Architecture decision record · implementation checkpoint&lt;/p&gt;
+    &lt;div class=&quot;decision&quot;&gt;
+      &lt;h2&gt;Decision&lt;/h2&gt;
+      &lt;p&gt;Make every PR inspection an immutable, cancelable job. Reuse repository objects through one managed mirror, isolate mutable checkouts per job, persist content-addressed projections, and let the browser retain only the current view plus a byte-bounded recent-view cache.&lt;/p&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;metrics&quot; aria-label=&quot;Architecture outcome summary&quot;&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Parallelism&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;Up to 2 inspections&lt;/span&gt;
+        &lt;span class=&quot;text-small&quot;&gt;Default ceiling; available memory decides the admitted slot count.&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Browser graph state&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;Current view only&lt;/span&gt;
+        &lt;span class=&quot;text-small&quot;&gt;Three inactive allocations share a 48 MiB LRU.&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Delivery&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;PR #245 first&lt;/span&gt;
+        &lt;span class=&quot;text-small&quot;&gt;The progressive landing client rebases and follows as PR 2.&lt;/span&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/header&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-architecture-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-architecture-heading&quot;&gt;Runtime ownership&lt;/h2&gt;
+    &lt;svg class=&quot;architecture&quot; viewBox=&quot;0 0 960 360&quot; role=&quot;img&quot; aria-labelledby=&quot;mpr-architecture-title mpr-architecture-desc&quot;&gt;
+      &lt;title id=&quot;mpr-architecture-title&quot;&gt;Stateless parallel inspection runtime&lt;/title&gt;
+      &lt;desc id=&quot;mpr-architecture-desc&quot;&gt;Two independent PR jobs share an immutable repository mirror, use isolated worktrees and bounded extraction workers, publish immutable HEAD and merge-base projection bundles, and hydrate only selected bounded views in the browser.&lt;/desc&gt;
+      &lt;defs&gt;
+        &lt;marker id=&quot;mpr-arrow&quot; markerWidth=&quot;7&quot; markerHeight=&quot;7&quot; refX=&quot;6&quot; refY=&quot;3.5&quot; orient=&quot;auto&quot;&gt;&lt;path d=&quot;M0,0 L7,3.5 L0,7 Z&quot; fill=&quot;currentColor&quot;&gt;&lt;/path&gt;&lt;/marker&gt;
+        &lt;marker id=&quot;mpr-arrow-job&quot; markerWidth=&quot;7&quot; markerHeight=&quot;7&quot; refX=&quot;6&quot; refY=&quot;3.5&quot; orient=&quot;auto&quot;&gt;&lt;path d=&quot;M0,0 L7,3.5 L0,7 Z&quot; fill=&quot;var(--viz-series-2)&quot;&gt;&lt;/path&gt;&lt;/marker&gt;
+      &lt;/defs&gt;
+      &lt;text class=&quot;lane&quot; x=&quot;16&quot; y=&quot;31&quot;&gt;REQUESTS&lt;/text&gt;
+      &lt;rect class=&quot;isolated&quot; x=&quot;112&quot; y=&quot;10&quot; width=&quot;165&quot; height=&quot;50&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;194&quot; y=&quot;31&quot; text-anchor=&quot;middle&quot;&gt;PR 41&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;194&quot; y=&quot;48&quot; text-anchor=&quot;middle&quot;&gt;immutable job identity&lt;/text&gt;
+      &lt;rect class=&quot;isolated&quot; x=&quot;295&quot; y=&quot;10&quot; width=&quot;165&quot; height=&quot;50&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;378&quot; y=&quot;31&quot; text-anchor=&quot;middle&quot;&gt;PR 87&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;378&quot; y=&quot;48&quot; text-anchor=&quot;middle&quot;&gt;immutable job identity&lt;/text&gt;
+      &lt;path class=&quot;job-wire&quot; d=&quot;M194 60 V91 H340&quot;&gt;&lt;/path&gt;
+      &lt;path class=&quot;job-wire&quot; d=&quot;M378 60 V91 H340&quot;&gt;&lt;/path&gt;
+
+      &lt;text class=&quot;lane&quot; x=&quot;16&quot; y=&quot;122&quot;&gt;GIT&lt;/text&gt;
+      &lt;rect class=&quot;shared&quot; x=&quot;260&quot; y=&quot;92&quot; width=&quot;260&quot; height=&quot;58&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;390&quot; y=&quot;116&quot; text-anchor=&quot;middle&quot;&gt;Managed bare partial mirror&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;390&quot; y=&quot;135&quot; text-anchor=&quot;middle&quot;&gt;one per repository + security domain&lt;/text&gt;
+      &lt;path class=&quot;wire&quot; d=&quot;M390 150 V180 H210&quot;&gt;&lt;/path&gt;
+      &lt;path class=&quot;wire&quot; d=&quot;M390 150 V180 H570&quot;&gt;&lt;/path&gt;
+
+      &lt;text class=&quot;lane&quot; x=&quot;16&quot; y=&quot;214&quot;&gt;JOBS&lt;/text&gt;
+      &lt;rect class=&quot;isolated&quot; x=&quot;112&quot; y=&quot;181&quot; width=&quot;196&quot; height=&quot;66&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;210&quot; y=&quot;205&quot; text-anchor=&quot;middle&quot;&gt;Detached worktree A&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;210&quot; y=&quot;224&quot; text-anchor=&quot;middle&quot;&gt;HEAD + merge-base worker&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;210&quot; y=&quot;240&quot; text-anchor=&quot;middle&quot;&gt;cancel / teardown owned here&lt;/text&gt;
+      &lt;rect class=&quot;isolated&quot; x=&quot;472&quot; y=&quot;181&quot; width=&quot;196&quot; height=&quot;66&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;570&quot; y=&quot;205&quot; text-anchor=&quot;middle&quot;&gt;Detached worktree B&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;570&quot; y=&quot;224&quot; text-anchor=&quot;middle&quot;&gt;HEAD + merge-base worker&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;570&quot; y=&quot;240&quot; text-anchor=&quot;middle&quot;&gt;independent mutable state&lt;/text&gt;
+      &lt;path class=&quot;wire&quot; d=&quot;M210 247 V278 H390&quot;&gt;&lt;/path&gt;
+      &lt;path class=&quot;wire&quot; d=&quot;M570 247 V278 H390&quot;&gt;&lt;/path&gt;
+
+      &lt;text class=&quot;lane&quot; x=&quot;16&quot; y=&quot;310&quot;&gt;PUBLISH&lt;/text&gt;
+      &lt;rect class=&quot;disk&quot; x=&quot;260&quot; y=&quot;279&quot; width=&quot;260&quot; height=&quot;58&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;390&quot; y=&quot;303&quot; text-anchor=&quot;middle&quot;&gt;Immutable v5 projection bundles&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;390&quot; y=&quot;322&quot; text-anchor=&quot;middle&quot;&gt;HEAD + merge-base · disk-backed facts&lt;/text&gt;
+      &lt;path class=&quot;wire&quot; d=&quot;M520 308 H686&quot;&gt;&lt;/path&gt;
+      &lt;rect class=&quot;browser&quot; x=&quot;687&quot; y=&quot;279&quot; width=&quot;252&quot; height=&quot;58&quot;&gt;&lt;/rect&gt;
+      &lt;text class=&quot;label&quot; x=&quot;813&quot; y=&quot;303&quot; text-anchor=&quot;middle&quot;&gt;Renderer&lt;/text&gt;
+      &lt;text class=&quot;minor&quot; x=&quot;813&quot; y=&quot;322&quot; text-anchor=&quot;middle&quot;&gt;bounded projection + current scene&lt;/text&gt;
+    &lt;/svg&gt;
+    &lt;div class=&quot;legend text-small&quot; aria-label=&quot;Architecture legend&quot;&gt;
+      &lt;span&gt;&lt;i style=&quot;--swatch:var(--viz-series-1)&quot;&gt;&lt;/i&gt;shared immutable accelerator&lt;/span&gt;
+      &lt;span&gt;&lt;i style=&quot;--swatch:var(--viz-series-2)&quot;&gt;&lt;/i&gt;job-owned mutable state&lt;/span&gt;
+      &lt;span&gt;&lt;i style=&quot;--swatch:var(--viz-series-3)&quot;&gt;&lt;/i&gt;content-addressed disk state&lt;/span&gt;
+      &lt;span&gt;&lt;i style=&quot;--swatch:var(--viz-series-5)&quot;&gt;&lt;/i&gt;bounded browser state&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-performance-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-performance-heading&quot;&gt;Measured performance · PR #245&lt;/h2&gt;
+    &lt;div class=&quot;benchmark-grid&quot;&gt;
+      &lt;figure aria-labelledby=&quot;mpr-time-caption&quot;&gt;
+        &lt;figcaption id=&quot;mpr-time-caption&quot;&gt;Preparation wall time&lt;/figcaption&gt;
+        &lt;div class=&quot;bench-group&quot;&gt;
+          &lt;strong&gt;Cold cache&lt;/strong&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Legacy&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;74.479 s&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Direct v1&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:78.68%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;58.602 s&lt;/span&gt;&lt;/div&gt;
+          &lt;span class=&quot;text-small text-muted&quot;&gt;15.877 s saved · 21.3% faster&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;bench-group&quot;&gt;
+          &lt;strong&gt;Warm cache&lt;/strong&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Legacy&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;2.079 s&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Direct v1&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:34.97%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;0.727 s&lt;/span&gt;&lt;/div&gt;
+          &lt;span class=&quot;text-small text-muted&quot;&gt;Median of three direct samples · 65.0% faster&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/figure&gt;
+      &lt;figure aria-labelledby=&quot;mpr-transfer-caption&quot;&gt;
+        &lt;figcaption id=&quot;mpr-transfer-caption&quot;&gt;Graph bytes delivered to the client&lt;/figcaption&gt;
+        &lt;div class=&quot;bench-group&quot;&gt;
+          &lt;strong&gt;Initial HEAD view&lt;/strong&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Full graph&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;54.930 MB&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Projection&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:.325%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;0.178 MB&lt;/span&gt;&lt;/div&gt;
+          &lt;span class=&quot;text-small text-muted&quot;&gt;45 nodes · 21 edges · 99.7% fewer bytes&lt;/span&gt;
+        &lt;/div&gt;
+        &lt;div class=&quot;bench-group&quot;&gt;
+          &lt;strong&gt;Complete review pair&lt;/strong&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Full graphs&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;99.901 MB&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bench-row&quot;&gt;&lt;span&gt;Projections&lt;/span&gt;&lt;span class=&quot;bench-track&quot;&gt;&lt;span class=&quot;bench-bar&quot; style=&quot;--fill:14.27%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bench-value&quot;&gt;14.257 MB&lt;/span&gt;&lt;/div&gt;
+          &lt;span class=&quot;text-small text-muted&quot;&gt;121 comparison paths · complete, with no omissions · 85.7% fewer bytes&lt;/span&gt;
+        &lt;/div&gt;
+      &lt;/figure&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;facts-grid&quot;&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-1)&quot;&gt;&lt;strong&gt;Work eliminated&lt;/strong&gt;&lt;p&gt;The legacy landing path analyzed the base blueprint first, then analyzed HEAD and merge-base. Direct preparation publishes only the required two-sided pair.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-2)&quot;&gt;&lt;strong&gt;Extraction overlaps&lt;/strong&gt;&lt;p&gt;HEAD took 28.607 s and merge-base 54.292 s, but they ran concurrently; the 58.602 s wall time is governed by the slower side rather than their sum.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-3)&quot;&gt;&lt;strong&gt;Control payload&lt;/strong&gt;&lt;p&gt;Strict v1 preparation returned 18.176 KB versus 342.833 KB for legacy generate + analyze responses: 94.7% fewer control-plane bytes.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-5)&quot;&gt;&lt;strong&gt;Resident bound&lt;/strong&gt;&lt;p&gt;The complete review pair declared 42.77 MB resident, within the shared 48 MiB recent-view budget; only its active view is pinned.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-2)&quot;&gt;&lt;strong&gt;Parallel proof&lt;/strong&gt;&lt;p&gt;With two memory-safe worker slots, cold PRs #245 and #237 completed in 66.98 s versus a 99.97 s wall-time sum: 32.99 s of real overlap. Auto admission correctly reduced to one slot when host headroom was insufficient.&lt;/p&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p class=&quot;methodology text-small&quot;&gt;Same repository and PR, exact &lt;code&gt;origin/main@9fad1e1&lt;/code&gt; baseline, isolated servers and cache roots. Cold runs used empty caches; warm runs reused immutable outputs. Times are end-to-end server wall time, not modeled estimates.&lt;/p&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-flow-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-flow-heading&quot;&gt;One inspection, end to end&lt;/h2&gt;
+    &lt;div class=&quot;flow-grid&quot;&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;1&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Resolve exact revisions&lt;/strong&gt;&lt;p&gt;HEAD, base-tip provenance, and merge-base comparison identity are separated.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;2&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Reuse Git objects&lt;/strong&gt;&lt;p&gt;A short mirror mutation lock fetches objects; work proceeds in a detached job worktree.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;3&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Extract behind admission&lt;/strong&gt;&lt;p&gt;Memory-aware scheduling, keyed singleflight, subscriber cancellation, and process-tree teardown bound CPU-heavy work.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;4&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Publish both sides&lt;/strong&gt;&lt;p&gt;HEAD and merge-base descriptors, canonical file statuses, facts, source capabilities, and a restart-safe handoff are committed atomically.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;5&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Hydrate the selected view&lt;/strong&gt;&lt;p&gt;The renderer sends exact focus, expansion, causal, Service, test, and reachability selectors—never the whole artifact.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;flow&quot;&gt;&lt;span class=&quot;step&quot;&gt;6&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Navigate through eviction&lt;/strong&gt;&lt;p&gt;Semantic history remains deep; decoded projections and scenes are disposable accelerators.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-contract-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-contract-heading&quot;&gt;Strict transport contracts&lt;/h2&gt;
+    &lt;div class=&quot;contract&quot;&gt;
+      &lt;div&gt;
+        &lt;h3&gt;Direct PR preparation · v1 NDJSON&lt;/h3&gt;
+        &lt;pre&gt;&lt;code&gt;{ &quot;version&quot;: 1, &quot;type&quot;: &quot;progress&quot;,
+  &quot;stage&quot;: &quot;extract-head&quot;, &quot;elapsedMs&quot;: 842 }
+
+{ &quot;version&quot;: 1, &quot;type&quot;: &quot;done&quot;,
+  &quot;headSha&quot;: &quot;…&quot;, &quot;baseSha&quot;: &quot;…&quot;,
+  &quot;mergeBaseSha&quot;: &quot;…&quot;,
+  &quot;changedFiles&quot;: [
+    { &quot;path&quot;: &quot;src/new.ts&quot;, &quot;status&quot;: &quot;added&quot; },
+    { &quot;path&quot;: &quot;src/old.ts&quot;, &quot;status&quot;: &quot;deleted&quot; },
+    { &quot;path&quot;: &quot;src/new-name.ts&quot;,
+      &quot;previousPath&quot;: &quot;src/old-name.ts&quot;,
+      &quot;status&quot;: &quot;renamed&quot; }
+  ],
+  &quot;head&quot;: { &quot;graphId&quot;: &quot;…&quot;, &quot;metaUrl&quot;: &quot;…&quot; },
+  &quot;mergeBase&quot;: { &quot;graphId&quot;: &quot;…&quot;, &quot;metaUrl&quot;: &quot;…&quot; } }&lt;/code&gt;&lt;/pre&gt;
+      &lt;/div&gt;
+      &lt;div&gt;
+        &lt;h3&gt;Projection query · strict v5&lt;/h3&gt;
+        &lt;ul&gt;
+          &lt;li&gt;Views: modules, service, UI, logic, review.&lt;/li&gt;
+          &lt;li&gt;Exact selectors: file paths, real focus/expanded/extra IDs, causal IDs, Service lead IDs, tests, and reachability.&lt;/li&gt;
+          &lt;li&gt;Caps: 5,000 nodes, 20,000 edges, 16 MiB response, bounded request fields.&lt;/li&gt;
+          &lt;li&gt;Facts: module overview, Service topology, reachability, hierarchy, and completeness.&lt;/li&gt;
+          &lt;li&gt;Comparison is path-addressed; HEAD IDs never leak into merge-base requests.&lt;/li&gt;
+          &lt;li&gt;Missing, corrupt, symlinked, empty, hash-mismatched, or oversized facts fail closed.&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p class=&quot;note&quot;&gt;&lt;strong&gt;No compatibility route:&lt;/strong&gt; &lt;code&gt;/api/pr/analyze&lt;/code&gt;, unversioned responses, graph-ID-only handoffs, nullable comparison descriptors, v3/v4 projection readers, generic radius expansion, and full-artifact browser hydration are intentionally absent.&lt;/p&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-memory-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-memory-heading&quot;&gt;Memory and eviction model&lt;/h2&gt;
+    &lt;div class=&quot;memory&quot; role=&quot;img&quot; aria-label=&quot;Browser and server memory ownership limits&quot;&gt;
+      &lt;div class=&quot;memory-row&quot;&gt;&lt;strong&gt;Current projection&lt;/strong&gt;&lt;div class=&quot;memory-track&quot;&gt;&lt;span style=&quot;--fill:100%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;memory-value&quot;&gt;pinned&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;memory-row&quot;&gt;&lt;strong&gt;Inactive views&lt;/strong&gt;&lt;div class=&quot;memory-track&quot;&gt;&lt;span style=&quot;--fill:48%;--series:var(--viz-series-5)&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;memory-value&quot;&gt;3 / 48 MiB&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;memory-row&quot;&gt;&lt;strong&gt;Server readers&lt;/strong&gt;&lt;div class=&quot;memory-track&quot;&gt;&lt;span style=&quot;--fill:32%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;memory-value&quot;&gt;4 bounded LRU&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;memory-row&quot;&gt;&lt;strong&gt;Whole artifacts&lt;/strong&gt;&lt;div class=&quot;memory-track&quot;&gt;&lt;span style=&quot;--fill:0%;--series:var(--destructive)&quot;&gt;&lt;/span&gt;&lt;/div&gt;&lt;span class=&quot;memory-value&quot;&gt;0 retained&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;facts-grid&quot;&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-1)&quot;&gt;&lt;strong&gt;Active ownership&lt;/strong&gt;&lt;p&gt;Only the current decoded projection and the scene currently on screen are pinned.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-5)&quot;&gt;&lt;strong&gt;Back / forward&lt;/strong&gt;&lt;p&gt;Projection pairs and rendered scenes compete in one byte-charged LRU; a pair evicts atomically and oversize entries are not cached.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-3)&quot;&gt;&lt;strong&gt;Revision-global truth&lt;/strong&gt;&lt;p&gt;Compact module, Service, and reachability facts stay on disk and are co-paged only when requested. The browser never re-derives global claims from a partial slice.&lt;/p&gt;&lt;/div&gt;
+      &lt;div class=&quot;fact&quot; style=&quot;--series:var(--viz-series-2)&quot;&gt;&lt;strong&gt;Concurrent consumers&lt;/strong&gt;&lt;p&gt;Layouts requesting the same coordinate share one hydration and atomic install; a different navigation coordinate cancels and supersedes it.&lt;/p&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-reasoning-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-reasoning-heading&quot;&gt;Why these choices&lt;/h2&gt;
+    &lt;dl class=&quot;decision-grid&quot;&gt;
+      &lt;div&gt;&lt;dt&gt;One mirror, many worktrees&lt;/dt&gt;&lt;dd&gt;Object transfer is shared without sharing mutable checkout state. Clone cost drops while jobs remain isolated.&lt;/dd&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;dt&gt;Merge-base as identity&lt;/dt&gt;&lt;dd&gt;The comparison cache follows what the diff actually compares. The moving base tip remains provenance only.&lt;/dd&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;dt&gt;Two-sided publication&lt;/dt&gt;&lt;dd&gt;Deleted and renamed declarations, base ghosts, changed status, and comparison flows remain correct after every projection swap.&lt;/dd&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;dt&gt;Facts beside slices&lt;/dt&gt;&lt;dd&gt;Small revision-global summaries preserve truthful overview, Service, and coverage UX without retaining an entire graph.&lt;/dd&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;dt&gt;Store-level singleflight&lt;/dt&gt;&lt;dd&gt;Network deduplication alone is insufficient when two layouts can abort each other. Hydration and installation share one coordinate owner.&lt;/dd&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;dt&gt;Strict cutover&lt;/dt&gt;&lt;dd&gt;One contract is easier to secure, cache, test, and operate. Old caches miss and regenerate instead of entering a dual-read path.&lt;/dd&gt;&lt;/div&gt;
+    &lt;/dl&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-plan-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-plan-heading&quot;&gt;Implementation and merge plan&lt;/h2&gt;
+    &lt;div class=&quot;timeline&quot; aria-label=&quot;Implementation and pull request order&quot;&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;Implemented&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Shared mirror + isolated jobs&lt;/strong&gt;&lt;p&gt;Admission, worker pool, singleflight, subscriber cancellation, teardown, disk snapshots, and prepared handoffs.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;Implemented&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Strict v5 projections&lt;/strong&gt;&lt;p&gt;Bounded selectors, status-rich review pairs, compact facts, fail-closed validation, search, and source/meta capabilities.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;Implemented&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Bounded renderer&lt;/strong&gt;&lt;p&gt;Shell-first boot, current-view hydration, shared recent-view budget, semantic history, two-sided atomic install, and same-coordinate hydration sharing.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;PR 1&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Merge #245&lt;/strong&gt;&lt;p&gt;The canonical stateless/projection architecture lands first after CI is green.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;PR 2&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Rebase landing performance work&lt;/strong&gt;&lt;p&gt;Keep progressive PR pagination, call only strict v1 &lt;code&gt;/api/pr/prepare&lt;/code&gt;, and provide no fallback.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;timeline-item&quot;&gt;&lt;strong&gt;Canary&lt;/strong&gt;&lt;span class=&quot;timeline-mark&quot;&gt;&lt;/span&gt;&lt;div&gt;&lt;strong&gt;Tune from timings&lt;/strong&gt;&lt;p&gt;Begin at admission 1, verify correctness and memory, then enable default 2 where measured headroom permits.&lt;/p&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr-observe-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr-observe-heading&quot;&gt;Release evidence and observability&lt;/h2&gt;
+    &lt;div class=&quot;facts-grid&quot;&gt;
+      &lt;div&gt;&lt;span class=&quot;gate&quot;&gt;Build and six package typechecks&lt;/span&gt;&lt;p class=&quot;text-small text-muted&quot;&gt;Production build is clean apart from the existing Vite chunk-size warning.&lt;/p&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;gate&quot;&gt;352 unit-test files&lt;/span&gt;&lt;p class=&quot;text-small text-muted&quot;&gt;3,157 passed, 1 skipped across core, metrics, both extractors, renderer, and CLI.&lt;/p&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;gate&quot;&gt;25 browser journeys&lt;/span&gt;&lt;p class=&quot;text-small text-muted&quot;&gt;All 7 E2E files pass, including projection navigation, two-sided review, deletion parity, persistence, and flow interactions.&lt;/p&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;gate&quot;&gt;Lifecycle stress&lt;/span&gt;&lt;p class=&quot;text-small text-muted&quot;&gt;Worker cancellation, process-tree cleanup, source-child boot, projection corruption, eviction, and two-sided review invariants.&lt;/p&gt;&lt;/div&gt;
+      &lt;div&gt;&lt;span class=&quot;gate&quot;&gt;Phase timings&lt;/span&gt;&lt;p class=&quot;text-small text-muted&quot;&gt;Git, HEAD extraction, merge-base extraction, publication, projection transfer, parse/index, layout, and first usable paint.&lt;/p&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p class=&quot;note&quot;&gt;Operational alerts should cover queue saturation, worker crashes, repeated extraction, projection cap rejection, corrupt sidecars, cancellation leaks, cache churn, and first-usable-paint regressions.&lt;/p&gt;
+  &lt;/section&gt;
+&lt;/div&gt;
+
+&lt;script src=&quot;https://unpkg.com/@floating-ui/core@1.7.3/dist/floating-ui.core.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script src=&quot;https://unpkg.com/@floating-ui/dom@1.7.4/dist/floating-ui.dom.umd.min.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  if (window.FloatingUIDOM == null) {
+    return;
+  }
+  const { autoUpdate, computePosition, flip, offset, shift, size } =
+    window.FloatingUIDOM;
+  const tooltipPlacements = new Set([&quot;top&quot;, &quot;right&quot;, &quot;bottom&quot;, &quot;left&quot;]);
+  const tooltipId = `codex-visualization-tooltip-${
+    window.crypto?.randomUUID?.() ?? Date.now().toString(36)
+  }`;
+  const tooltipGap = 5;
+  const hoverDelay = 700;
+  const skipDelay = 300;
+  let activeTrigger = null;
+  let pendingTrigger = null;
+  let tooltip = null;
+  let openTimeout = null;
+  let autoUpdateCleanup = null;
+  let positionRequest = 0;
+  let skipDelayUntil = 0;
+
+  const getTrigger = (target) =&gt;
+    target?.nodeType === Node.ELEMENT_NODE
+      ? target.closest(&quot;[data-tooltip]&quot;)
+      : null;
+  const containsTarget = (trigger, target) =&gt;
+    target?.nodeType != null &amp;&amp; trigger.contains(target);
+  const getContent = (trigger) =&gt;
+    trigger.getAttribute(&quot;data-tooltip&quot;)?.trim() ?? &quot;&quot;;
+  const getPlacement = (trigger) =&gt; {
+    const placement = trigger.getAttribute(&quot;data-tooltip-placement&quot;);
+    return tooltipPlacements.has(placement) ? placement : &quot;top&quot;;
+  };
+  const getTooltip = () =&gt; {
+    if (tooltip == null) {
+      tooltip = document.createElement(&quot;div&quot;);
+      tooltip.id = tooltipId;
+      tooltip.className = &quot;tooltip&quot;;
+      tooltip.setAttribute(&quot;role&quot;, &quot;tooltip&quot;);
+    }
+    return tooltip;
+  };
+  const setDescribedBy = (trigger, described) =&gt; {
+    const ids = new Set(
+      (trigger.getAttribute(&quot;aria-describedby&quot;) ?? &quot;&quot;)
+        .split(/\s+/)
+        .filter(Boolean),
+    );
+    if (described) {
+      ids.add(tooltipId);
+    } else {
+      ids.delete(tooltipId);
+    }
+    if (ids.size === 0) {
+      trigger.removeAttribute(&quot;aria-describedby&quot;);
+    } else {
+      trigger.setAttribute(&quot;aria-describedby&quot;, [...ids].join(&quot; &quot;));
+    }
+  };
+  const clearOpenTimeout = () =&gt; {
+    if (openTimeout != null) {
+      window.clearTimeout(openTimeout);
+      openTimeout = null;
+    }
+    pendingTrigger = null;
+  };
+  const closeTooltip = (activateSkipDelay = true) =&gt; {
+    clearOpenTimeout();
+    positionRequest += 1;
+    autoUpdateCleanup?.();
+    autoUpdateCleanup = null;
+    if (activeTrigger == null) {
+      return;
+    }
+    setDescribedBy(activeTrigger, false);
+    activeTrigger = null;
+    tooltip?.remove();
+    if (activateSkipDelay) {
+      skipDelayUntil = Date.now() + skipDelay;
+    }
+  };
+  const updatePosition = (trigger, floating) =&gt; {
+    const request = ++positionRequest;
+    void computePosition(trigger, floating, {
+      middleware: [
+        offset(tooltipGap),
+        flip({ padding: tooltipGap }),
+        shift({ padding: tooltipGap }),
+        size({
+          padding: tooltipGap,
+          apply({ availableHeight, availableWidth, elements }) {
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-width&quot;,
+              `${Math.max(0, availableWidth)}px`,
+            );
+            elements.floating.style.setProperty(
+              &quot;--tooltip-available-height&quot;,
+              `${Math.max(0, availableHeight)}px`,
+            );
+          },
+        }),
+      ],
+      placement: getPlacement(trigger),
+      strategy: &quot;fixed&quot;,
+    })
+      .then(({ x, y }) =&gt; {
+        if (activeTrigger !== trigger || request !== positionRequest) {
+          return;
+        }
+        const scale = window.devicePixelRatio || 1;
+        floating.style.transform = `translate(${Math.round(x * scale) / scale}px, ${Math.round(y * scale) / scale}px)`;
+        floating.style.visibility = &quot;visible&quot;;
+      })
+      .catch(() =&gt; {
+        if (activeTrigger === trigger &amp;&amp; request === positionRequest) {
+          closeTooltip(false);
+        }
+      });
+  };
+  const openTooltip = (trigger) =&gt; {
+    const content = getContent(trigger);
+    if (!trigger.isConnected || content.length === 0) {
+      return;
+    }
+    clearOpenTimeout();
+    if (activeTrigger === trigger) {
+      return;
+    }
+    closeTooltip();
+    const floating = getTooltip();
+    floating.textContent = content;
+    floating.style.visibility = &quot;hidden&quot;;
+    floating.style.transform = &quot;translate(0, 0)&quot;;
+    document.body.appendChild(floating);
+    activeTrigger = trigger;
+    setDescribedBy(trigger, true);
+    autoUpdateCleanup = autoUpdate(trigger, floating, () =&gt; {
+      updatePosition(trigger, floating);
+    });
+  };
+  const requestOpen = (trigger, immediate = false) =&gt; {
+    if (
+      getContent(trigger).length === 0 ||
+      activeTrigger === trigger ||
+      pendingTrigger === trigger
+    ) {
+      return;
+    }
+    clearOpenTimeout();
+    pendingTrigger = trigger;
+    const delay =
+      immediate || activeTrigger != null || Date.now() &lt; skipDelayUntil
+        ? 0
+        : hoverDelay;
+    if (delay === 0) {
+      openTooltip(trigger);
+      return;
+    }
+    openTimeout = window.setTimeout(() =&gt; {
+      openTimeout = null;
+      pendingTrigger = null;
+      openTooltip(trigger);
+    }, delay);
+  };
+  const handlePointerOpen = (event) =&gt; {
+    if (event.pointerType === &quot;touch&quot;) {
+      return;
+    }
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    requestOpen(trigger);
+  };
+  const handleLeave = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger == null || containsTarget(trigger, event.relatedTarget)) {
+      return;
+    }
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const handleFocusIn = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (trigger?.matches(&quot;:focus-visible&quot;)) {
+      requestOpen(trigger, true);
+    }
+  };
+  const handleKeyDown = (event) =&gt; {
+    if (event.key === &quot;Escape&quot;) {
+      closeTooltip();
+    }
+  };
+  const handleContextMenu = (event) =&gt; {
+    const trigger = getTrigger(event.target);
+    if (activeTrigger === trigger || pendingTrigger === trigger) {
+      closeTooltip();
+    }
+  };
+  const destroy = () =&gt; {
+    closeTooltip(false);
+    document.removeEventListener(&quot;pointerover&quot;, handlePointerOpen);
+    document.removeEventListener(&quot;pointerout&quot;, handleLeave);
+    document.removeEventListener(&quot;focusin&quot;, handleFocusIn);
+    document.removeEventListener(&quot;focusout&quot;, handleLeave);
+    document.removeEventListener(&quot;keydown&quot;, handleKeyDown);
+    document.removeEventListener(&quot;contextmenu&quot;, handleContextMenu);
+    tooltip = null;
+  };
+
+  document.addEventListener(&quot;pointerover&quot;, handlePointerOpen);
+  document.addEventListener(&quot;pointerout&quot;, handleLeave);
+  document.addEventListener(&quot;focusin&quot;, handleFocusIn);
+  document.addEventListener(&quot;focusout&quot;, handleLeave);
+  document.addEventListener(&quot;keydown&quot;, handleKeyDown);
+  document.addEventListener(&quot;contextmenu&quot;, handleContextMenu);
+  window.addEventListener(&quot;pagehide&quot;, destroy, { once: true });
+})();
+&lt;/script&gt;
+&lt;script id=&quot;codex-visualization-lucide&quot; async src=&quot;https://unpkg.com/lucide@1.17.0/dist/umd/lucide.js&quot;&gt;&lt;/script&gt;
+&lt;script&gt;
+(() =&gt; {
+  const initialize = () =&gt; {
+    globalThis.lucide?.createIcons({ attrs: { width: 16, height: 16 } });
+  };
+  if (globalThis.lucide != null) {
+    initialize();
+    return;
+  }
+  document
+    .getElementById(&quot;codex-visualization-lucide&quot;)
+    ?.addEventListener(&quot;load&quot;, initialize, { once: true });
+})();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;
+"></iframe>
+</body>
+</html>

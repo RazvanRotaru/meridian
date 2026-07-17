@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { isAllowedCloneRef } from "./git-ref";
+import { isAllowedBranchRef } from "./git-ref";
 
-describe("isAllowedCloneRef", () => {
+describe("isAllowedBranchRef", () => {
   it.each([
     "main",
     "feature/dropdown",
@@ -10,7 +10,7 @@ describe("isAllowedCloneRef", () => {
     "release/$next",
     "unicode/ramură",
   ])("accepts Git branch %s", (value) => {
-    expect(isAllowedCloneRef(value)).toBe(true);
+    expect(isAllowedBranchRef(value)).toBe(true);
   });
 
   it.each([
@@ -35,6 +35,6 @@ describe("isAllowedCloneRef", () => {
     "bad[ref",
     "bad\\ref",
   ])("rejects non-branch %s", (value) => {
-    expect(isAllowedCloneRef(value)).toBe(false);
+    expect(isAllowedBranchRef(value)).toBe(false);
   });
 });

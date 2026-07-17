@@ -14,9 +14,12 @@ import type { AddressInfo } from "node:net";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
-import type { GraphArtifact } from "@meridian/core";
+import { EventEmitter } from "node:events";
 import { createWebServer, handleSyntheticExecution } from "./web-server";
-import type { Context } from "./web-server";
+import { defaultGraphProjectionRequest } from "./graph-projection-bundle";
+import type { Context, WebServerHandle } from "./web-server";
+import type { GraphCapabilityHandle } from "./graph-capability-store";
+import { removeEntry } from "./web-cache-storage";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -30,8 +33,17 @@ interface GenerateResult {
   warnings: string[];
 }
 
+interface ProjectionEnvelope {
+  artifact: {
+    schemaVersion: string;
+    target: { language: string };
+    nodes: Array<{ id: string; kind: string; parentId?: string | null }>;
+    edges: Array<{ kind: string; resolution?: string; target: string }>;
+  };
+}
+
 let rendererRoot: string;
-let server: Server;
+let server: WebServerHandle;
 let base: string;
 
 beforeAll(async () => {
@@ -42,13 +54,14 @@ beforeAll(async () => {
     cwd: REPO_ROOT,
     source: "sindresorhus/type-fest",
     allowSyntheticExecution: true,
+    cacheRoot: join(rendererRoot, "cache"),
   });
-  base = await listenEphemeral(server);
+  base = await listenEphemeral(server.server);
 });
 
-afterAll(() => {
-  server.close();
-  rmSync(rendererRoot, { recursive: true, force: true });
+afterAll(async () => {
+  await server.close();
+  removeEntry(rendererRoot);
 });
 
 describe("createWebServer landing + errors", () => {
@@ -118,15 +131,20 @@ describe("createWebServer landing + errors", () => {
   });
 
   it("404s an unknown graph id", async () => {
-    expect((await fetch(`${base}/api/graph?id=nope`)).status).toBe(404);
+    expect((await fetch(`${base}/api/graph/manifest?id=nope`)).status).toBe(404);
     expect((await fetch(`${base}/view?id=nope`)).status).toBe(404);
   });
 
-  it("wires POST /api/pr/analyze: validates refs, then 404s an unknown session id, before any git", async () => {
-    const badRef = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "--evil", headRef: "x" });
+  it("wires only strict POST /api/pr/prepare and removes the legacy analyze route", async () => {
+    const badRef = await post("/api/pr/prepare", {
+      owner: "org", repo: "repo", prNumber: 1, baseRef: "--evil", headRef: "x",
+    });
     expect(badRef.status).toBe(400);
-    const unknownId = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "main", headRef: "x" });
-    expect(unknownId.status).toBe(404);
+    const legacyField = await post("/api/pr/prepare", {
+      id: "nope", owner: "org", repo: "repo", prNumber: 1, baseRef: "main", headRef: "x",
+    });
+    expect(legacyField.status).toBe(400);
+    expect((await post("/api/pr/analyze", {})).status).toBe(404);
   });
 });
 
@@ -136,9 +154,14 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
     expect(result.target).toBe(TS_EXAMPLE);
 
-    const graph = await getJson<{ schemaVersion: string; nodes: unknown[] }>(`${base}/api/graph?id=${result.id}`);
-    expect(graph.schemaVersion).toBeTruthy();
-    expect(graph.nodes.length).toBe(result.counts.nodes);
+    const manifest = await getJson<{ graphId: string; graphSummary: { nodeCount: number } }>(
+      `${base}/api/graph/manifest?id=${result.id}`,
+    );
+    expect(manifest).toMatchObject({ graphId: result.id, graphSummary: { nodeCount: result.counts.nodes } });
+    const projection = await projectionFor(result.id, { depth: 1 });
+    expect(projection.artifact.schemaVersion).toBeTruthy();
+    expect(projection.artifact.nodes.length).toBeGreaterThan(0);
+    expect(projection.artifact.nodes.length).toBeLessThanOrEqual(result.counts.nodes);
 
     const meta = await getJson<{
       hasOverlay: boolean;
@@ -159,11 +182,15 @@ describe("createWebServer generate -> view (offline path source)", () => {
 
     const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
     expect(view).toContain("window.__MERIDIAN__=");
-    expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
     expect(view).toContain(`"overlayUrl":"/api/overlay?id=${result.id}"`);
     expect(view).toContain(`"traceUrl":"/api/traces?id=${result.id}"`);
     expect(view).toContain(`"syntheticExecutionUrl":"/api/synthetic-executions?id=${result.id}"`);
     expect(view).toContain('"id":"place-order-happy"');
+    expect(view).toContain(`"projectionGraphId":"${result.id}"`);
+    expect(view).toContain(`"projectionManifestUrl":"/api/graph/manifest?id=${result.id}"`);
+    expect(view).toContain(`"projectionUrl":"/api/graph/projection?id=${result.id}"`);
+    expect(view).toContain(`"graphSearchUrl":"/api/graph/search?id=${result.id}"`);
+    expect(view).not.toContain('"graphUrl"');
     expect(view).toContain('"hasOverlay":false');
     expect(view).toContain('"telemetrySources":[{"id":"demo"');
     expect(view).toContain('"preselectedTelemetrySourceId":null');
@@ -173,8 +200,8 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(view).toContain('"githubSource":null');
 
     const missingSource = await fetch(`${base}/api/overlay?id=${result.id}&env=demo`);
-    expect(missingSource.status).toBe(404);
-    expect(await missingSource.json()).toEqual({ error: "no overlay for env 'demo'" });
+    expect(missingSource.status).toBe(400);
+    expect(await missingSource.json()).toEqual({ error: "source query parameter is required" });
 
     const missingEnvironment = await fetch(`${base}/api/overlay?id=${result.id}&source=demo`);
     expect(missingEnvironment.status).toBe(400);
@@ -214,12 +241,12 @@ describe("createWebServer generate -> view (offline path source)", () => {
   it("auto-detects Python for a pyproject tree", async () => {
     const result = (await (await post("/api/generate", { kind: "path", value: PY_EXAMPLE })).json()) as GenerateResult;
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
-    const graph = await getJson<{ target: { language: string } }>(`${base}/api/graph?id=${result.id}`);
-    expect(graph.target.language).toBe("python");
+    const projection = await projectionFor(result.id, { depth: 0 });
+    expect(projection.artifact.target.language).toBe("python");
     const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
-    expect(view).toContain(`"syntheticExecutionUrl":"/api/synthetic-executions?id=${result.id}"`);
+    expect(view).toContain('"syntheticExecutionUrl":null');
     expect(view).toContain('"syntheticScenarios":[]');
-    expect(view).toContain('"syntheticExecutionTrust":{"mode":"local"}');
+    expect(view).toContain('"syntheticExecutionTrust":null');
   }, 60_000);
 
   it("keeps and materializes declared external imports for the rendered graph", async () => {
@@ -243,10 +270,7 @@ describe("createWebServer generate -> view (offline path source)", () => {
 
     try {
       const result = (await (await post("/api/generate", { kind: "path", value: root })).json()) as GenerateResult;
-      const graph = await getJson<{
-        nodes: Array<{ id: string; kind: string; parentId?: string | null }>;
-        edges: Array<{ kind: string; resolution: string; target: string }>;
-      }>(`${base}/api/graph?id=${result.id}`);
+      const graph = (await projectionFor(result.id, { depth: 4, includeTests: true })).artifact;
 
       expect(graph.nodes).toContainEqual(expect.objectContaining({
         id: "ext:__external__",
@@ -354,7 +378,8 @@ describe("GitHub synthetic execution admission", () => {
     expect(runInOci).toHaveBeenCalledWith(expect.objectContaining({
       scenarioId: "add-item",
       expectedRootId: rootNodeId,
-      expectedSourceFingerprint: "fingerprint",
+      expectedSourceFingerprint: "f".repeat(64),
+      artifactPath: "/tmp/pr-artifact.json",
     }));
   });
 
@@ -391,6 +416,19 @@ async function getJson<T = Record<string, unknown>>(url: string): Promise<T> {
   return (await (await fetch(url)).json()) as T;
 }
 
+async function projectionFor(
+  id: string,
+  overrides: Partial<{ depth: number; includeTests: boolean }> = {},
+): Promise<ProjectionEnvelope> {
+  const response = await post(`/api/graph/projection?id=${id}`, {
+    ...defaultGraphProjectionRequest(),
+    depth: overrides.depth ?? 1,
+    includeTests: overrides.includeTests ?? false,
+  });
+  expect(response.status).toBe(200);
+  return await response.json() as ProjectionEnvelope;
+}
+
 function writeFakeRenderer(): string {
   const dir = mkdtempSync(join(tmpdir(), "blueprint-web-renderer-"));
   mkdirSync(join(dir, "assets"));
@@ -403,28 +441,91 @@ function githubExecutionCtx(options: { allow: boolean; runtime: boolean; withSce
   ctx: Context;
   runInOci: ReturnType<typeof vi.fn>;
 } {
-  const id = "pr-graph";
   const rootId = "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem";
   const runInOci = vi.fn().mockResolvedValue({ executionVersion: "fixture-oci" });
   const withScenario = options.withScenario !== false;
+  const source = { kind: "github" as const, owner: "octo", repo: "repo" };
+  const scenarios = withScenario ? [{
+    id: "add-item",
+    label: "Add item",
+    rootId,
+    defaultInput: {},
+  }] : [];
+  const trust = {
+    mode: "sandboxed-pr" as const,
+    provenance: { repository: "octo/repo", headSha: "a".repeat(40) },
+  };
+  const capability: GraphCapabilityHandle = {
+    descriptor: {
+      formatVersion: 10,
+      id: "prepared-head",
+      publishedAt: "2026-07-17T00:00:00.000Z",
+      graphSummary: {
+        schemaVersion: "1.1.0",
+        generatedAt: "2026-07-17T00:00:00.000Z",
+        nodeCount: 1,
+        edgeCount: 0,
+      },
+      artifact: {
+        path: "artifacts/pr/generations/head/artifact.json",
+        projectionPath: "artifacts/pr/generations/head/graph-projection",
+        generationPath: "artifacts/pr/generations/head",
+        bytes: 1,
+        sha256: "a".repeat(64),
+        projectionBytes: 1,
+        projectionSha256: "b".repeat(64),
+        projectionContentId: "c".repeat(64),
+        sealSha256: "d".repeat(64),
+        revision: { kind: "git", commit: trust.provenance.headSha },
+        vcsBranch: "feature/review",
+      },
+      source: {
+        kind: "managed-cache",
+        rootPath: "sources/pr",
+        subdir: "",
+        metadata: source,
+        owner: null,
+      },
+      synthetic: {
+        path: "artifacts/pr/generations/head/synthetic-capability.json",
+        sha256: "e".repeat(64),
+        executionTrust: trust,
+      },
+      reviewContext: null,
+    },
+    artifactPath: "/tmp/pr-artifact.json",
+    projectionDirectory: "/tmp/pr-projection",
+    generationDirectory: "/tmp/pr-generation",
+    source: {
+      rootDir: "/tmp/pr-source",
+      sourceDir: "/tmp/pr-source",
+      subdir: "",
+      metadata: source,
+      owner: null,
+    },
+    synthetic: {
+      capability: {
+        version: 1,
+        state: scenarios.length > 0 ? "ready" : "absent",
+        scenarios,
+        sourceFingerprint: scenarios.length > 0 ? "f".repeat(64) : null,
+        artifactCommit: trust.provenance.headSha,
+        warning: null,
+      },
+      executionTrust: trust,
+    },
+    review: null,
+    signal: new AbortController().signal,
+    renew: async () => {},
+    release: async () => {},
+  };
   const ctx = {
-    graphs: new Map([[id, {} as GraphArtifact]]),
-    sourceRoots: new Map([[id, "/tmp/pr-source"]]),
-    sources: new Map([[id, { kind: "github", owner: "octo", repo: "repo" }]]),
-    syntheticScenarios: new Map(withScenario ? [[id, [{
-      id: "add-item",
-      label: "Add item",
-      rootId,
-      defaultInput: {},
-    }]]] : []),
-    syntheticSourceFingerprints: new Map(withScenario ? [[id, "fingerprint"]] : []),
-    syntheticExecutionTrust: new Map([[id, {
-      mode: "sandboxed-pr",
-      provenance: { repository: "octo/repo", headSha: "abc123" },
-    }]]),
+    shutdownSignal: new AbortController().signal,
+    graphCapabilities: { acquire: async () => capability },
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: options.allow,
     syntheticPrSandboxRuntimeSupported: () => options.runtime,
+    runSyntheticScenarioFromArtifactFile: vi.fn(),
     runSyntheticScenarioInOci: runInOci,
   } as unknown as Context;
   return { ctx, runInOci };
@@ -440,7 +541,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
   }))]), { headers }) as unknown as IncomingMessage;
   let status = 0;
   let body = "";
-  const response = {
+  const response = Object.assign(new EventEmitter(), {
     writeHead(code: number) {
       status = code;
       return response;
@@ -448,7 +549,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
     end(chunk?: unknown) {
       body += chunk === undefined ? "" : String(chunk);
     },
-  } as unknown as ServerResponse;
+  }) as unknown as ServerResponse;
 
   await handleSyntheticExecution(ctx, request, response, id);
   return { status, json: JSON.parse(body) as unknown };

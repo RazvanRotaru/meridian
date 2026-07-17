@@ -72,7 +72,9 @@ export function SelectionPanel() {
               active={false}
               indicator="none"
               disabled={!scope.enabled}
-              title={scope.reason ?? "Show only the owning service cluster and its neighbours"}
+              title={scope.availability === "unresolved"
+                ? "Open Service and resolve this selection against its service topology"
+                : scope.reason ?? "Show only the owning service cluster and its neighbours"}
               onClick={openServiceScope}
             >
               Scope Service view

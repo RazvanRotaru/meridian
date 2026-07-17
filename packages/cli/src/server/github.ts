@@ -225,6 +225,7 @@ export interface FileAtRefRequest {
   ref: string;
   path: string;
   token?: string;
+  signal?: AbortSignal;
 }
 
 export interface FileAtRefResult {
@@ -239,14 +240,21 @@ export function fetchFileAtRef(request: FileAtRefRequest): Promise<FileAtRefResu
   return fetchFileAtRefWithFetch(globalThis.fetch, request);
 }
 
-const FILE_AT_REF_MAX_BYTES = 2_000_000;
+export const FILE_AT_REF_MAX_BYTES = 2_000_000;
+/** Includes base64 JSON text, escaping, and the small Contents API metadata envelope. */
+export const FILE_AT_REF_MAX_RESPONSE_BYTES = 3_000_000;
 
 async function fetchFileAtRefWithFetch(fetchImpl: typeof fetch, request: FileAtRefRequest): Promise<FileAtRefResult> {
   // GitHub's Contents API keeps the path segments as `/` (encodeURIComponent per segment) and takes
   // the ref as a query param; a private repo's fetch rides the same token as every other call here.
   const segments = request.path.split("/").filter(Boolean).map(encodeURIComponent).join("/");
   const params = new URLSearchParams({ ref: request.ref });
-  const json = await getApiOrNull(fetchImpl, repoApi(request.owner, request.repo, `/contents/${segments}?${params}`), request.token);
+  const json = await getApiOrNull(
+    fetchImpl,
+    repoApi(request.owner, request.repo, `/contents/${segments}?${params}`),
+    request.token,
+    { signal: request.signal, maxResponseBytes: FILE_AT_REF_MAX_RESPONSE_BYTES },
+  );
   const raw = (json as { content?: unknown; encoding?: unknown } | null) ?? null;
   if (!raw || typeof raw.content !== "string" || raw.encoding !== "base64") {
     // Files over ~1MB come back without inline content; treat as unavailable rather than guessing.
@@ -269,8 +277,15 @@ async function fetchFileAtRefWithFetch(fetchImpl: typeof fetch, request: FileAtR
     // `code === ""` is ambiguous after stripping a complete terminal newline: empty bytes are zero
     // rows, while a file containing only `\n` is one blank row. The original byte length preserves
     // that distinction. A capped prefix is never empty and reports the rows its visible text spans.
-    lineCount: code.length > 0 ? code.split("\n").length : bytes.length > 0 ? 1 : 0,
+    lineCount: code.length > 0 ? countSourceLines(code) : bytes.length > 0 ? 1 : 0,
   };
+}
+
+function countSourceLines(code: string): number {
+  let count = 1;
+  let cursor = -1;
+  while ((cursor = code.indexOf("\n", cursor + 1)) !== -1) count += 1;
+  return count;
 }
 
 function stripTerminalLineEnding(text: string): string {

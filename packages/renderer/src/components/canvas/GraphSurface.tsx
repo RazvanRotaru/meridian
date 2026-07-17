@@ -108,7 +108,10 @@ import {
   deriveRequestGraphOverlay,
   projectRequestGraphOverlay,
 } from "../../derive/requestGraphOverlay";
-import { traceGraphRefMismatches } from "../../derive/requestTimelineModel";
+import {
+  traceGraphRevisionIdentity,
+  traceGraphRefMismatches,
+} from "../../derive/requestTimelineModel";
 import {
   decorateRequestEdges,
   decorateRequestNodes,
@@ -319,8 +322,13 @@ export function GraphSurface(props: GraphSurfaceProps) {
     [telemetryMode, requestTraces, selectedTraceId],
   );
   const requestGraphMismatches = useMemo(
-    () => activeTrace === null ? [] : traceGraphRefMismatches(traceGraphRef, artifact),
-    [activeTrace, traceGraphRef, artifact],
+    () => activeTrace === null
+      ? []
+      : traceGraphRefMismatches(
+        traceGraphRef,
+        traceGraphRevisionIdentity(index.graphSummary, artifact.target),
+      ),
+    [activeTrace, traceGraphRef, index.graphSummary, artifact.target],
   );
   // A graph mismatch keeps the request inspectable in Logic but disables all paint here. Exact
   // derivation stays independent of the visible lens; projection below rolls it into that lens's

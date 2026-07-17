@@ -42,15 +42,78 @@ export async function getApiPage(
   return { json: await response.json(), hasNext: linkHasNext(response.headers.get("link")) };
 }
 
-export async function getApiOrNull(fetchImpl: typeof fetch, url: string, token?: string): Promise<unknown | null> {
-  const response = await apiRequest(fetchImpl, url, token);
+export async function getApiOrNull(
+  fetchImpl: typeof fetch,
+  url: string,
+  token?: string,
+  options: { signal?: AbortSignal; maxResponseBytes?: number } = {},
+): Promise<unknown | null> {
+  const response = await apiRequest(fetchImpl, url, token, undefined, options.signal);
   if (response.status === 404) {
+    await cancelResponseBody(response, "GitHub resource was not found");
     return null;
   }
   if (!response.ok) {
+    await cancelResponseBody(response, "GitHub request failed");
     throw apiError(response.status);
   }
-  return response.json();
+  return options.maxResponseBytes === undefined
+    ? response.json()
+    : readBoundedJson(response, options.maxResponseBytes, options.signal);
+}
+
+async function readBoundedJson(
+  response: Response,
+  maxResponseBytes: number,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) {
+    throw new RangeError("maxResponseBytes must be a positive safe integer");
+  }
+  const advertised = response.headers.get("content-length");
+  if (advertised !== null && /^(?:0|[1-9][0-9]*)$/.test(advertised)
+    && Number(advertised) > maxResponseBytes) {
+    await cancelResponseBody(response, "GitHub response exceeded its source limit");
+    throw new WebError(502, "GitHub source response exceeded the safe size limit");
+  }
+  if (response.body === null) throw new WebError(502, "GitHub returned an invalid source response");
+  const reader = response.body.getReader();
+  const bytes = new Uint8Array(maxResponseBytes);
+  let offset = 0;
+  const onAbort = () => { void reader.cancel(signal?.reason).catch(() => undefined); };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  try {
+    for (;;) {
+      signal?.throwIfAborted();
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (offset + value.byteLength > maxResponseBytes) {
+        await reader.cancel("GitHub response exceeded its source limit");
+        throw new WebError(502, "GitHub source response exceeded the safe size limit");
+      }
+      bytes.set(value, offset);
+      offset += value.byteLength;
+    }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+    reader.releaseLock();
+  }
+  signal?.throwIfAborted();
+  try {
+    const text = new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, offset));
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new WebError(502, "GitHub returned an invalid source response");
+  }
+}
+
+async function cancelResponseBody(response: Response, reason: string): Promise<void> {
+  try {
+    await response.body?.cancel(reason);
+  } catch {
+    // Status/size validation remains authoritative.
+  }
 }
 
 /** JSON POST to the GitHub API for review creation. Same headers/timeout as reads. */
@@ -147,6 +210,7 @@ function apiRequest(
   url: string,
   token?: string,
   init?: { method: "POST" | "PATCH" | "DELETE"; body?: string },
+  signal?: AbortSignal,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
@@ -159,7 +223,7 @@ function apiRequest(
   if (init?.body !== undefined) {
     headers["content-type"] = "application/json";
   }
-  return withTimeout((signal) => fetchImpl(url, { ...init, headers, signal }));
+  return withTimeout((requestSignal) => fetchImpl(url, { ...init, headers, signal: requestSignal }), signal);
 }
 
 function apiError(status: number): WebError {
@@ -223,12 +287,20 @@ function linkHasNext(link: string | null): boolean {
   return link?.split(",").some((part) => /(?:^|;)\s*rel="?next"?(?:;|$)/i.test(part)) ?? false;
 }
 
-async function withTimeout(run: (signal: AbortSignal) => Promise<Response>): Promise<Response> {
+async function withTimeout(
+  run: (signal: AbortSignal) => Promise<Response>,
+  parentSignal?: AbortSignal,
+): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await run(controller.signal);
+    parentSignal?.throwIfAborted();
+    const signal = parentSignal === undefined
+      ? controller.signal
+      : AbortSignal.any([controller.signal, parentSignal]);
+    return await run(signal);
   } catch {
+    parentSignal?.throwIfAborted();
     throw new WebError(504, "GitHub request timed out or could not be reached");
   } finally {
     clearTimeout(timer);

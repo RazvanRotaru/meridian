@@ -1,7 +1,8 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import type { RequestTrace } from "@meridian/core";
-import { ALPHA_RUN, freshIndex, freshStore } from "../../parity/surfaceFixture";
+import type { GraphArtifact, RequestTrace, TimelineEvent } from "@meridian/core";
+import { ALPHA_RUN, ARTIFACT, freshIndex, freshStore } from "../../parity/surfaceFixture";
+import { buildGraphIndex } from "../../graph/graphIndex";
 import { StoreProvider } from "../../state/StoreContext";
 import type { BlueprintState } from "../../state/store";
 import type { TelemetryProvider, TelemetrySourceDescriptor } from "../../telemetry/provider";
@@ -102,6 +103,66 @@ describe("RequestTraceView request navigation", () => {
     expect(markup).toContain("1 of 2");
     expect(markup.indexOf("newer request")).toBeLessThan(markup.indexOf("older request"));
   });
+
+  it("keeps trace event pins operable when graph navigation is outside the bounded slice", () => {
+    const fullIndex = freshIndex();
+    const partialArtifact: GraphArtifact = {
+      ...ARTIFACT,
+      nodes: ARTIFACT.nodes.filter((node) => node.id === ALPHA_RUN),
+      edges: [],
+    };
+    const partialIndex = buildGraphIndex(partialArtifact, { graphSummary: fullIndex.graphSummary });
+    const branch: TimelineEvent = {
+      eventId: "discount-branch",
+      type: "branch.taken",
+      timeUnixNano: "1000500000",
+      siteId: "price:discount",
+      pathId: "else",
+      condition: "!code || !isKnownCode(code)",
+      outcome: false,
+      source: { file: "src/pricing/pricingService.ts", line: 28 },
+      attributes: {},
+    };
+    const request = requestTrace("trace", "1000000000", "request with transitive pricing");
+    request.spans.push({
+      spanId: "pricing-span",
+      parentSpanId: request.rootSpanId,
+      nodeId: "ts:src/pricing/pricingService.ts#PricingService.price",
+      name: "PricingService.price",
+      kind: "internal",
+      startedAtUnixNano: "1000100000",
+      endedAtUnixNano: "1000900000",
+      status: "ok",
+      attributes: {},
+      events: [branch],
+    });
+
+    const markup = renderView({
+      artifact: partialArtifact,
+      index: partialIndex,
+      telemetrySources: [SYNTHETIC_SOURCE],
+      telemetrySourceId: SYNTHETIC_SOURCE.id,
+      provider: PROVIDER,
+      environment: "demo",
+      requestTraces: [request],
+      selectedTraceId: request.traceId,
+      traceSource: "mock",
+      traceGraphRef: {
+        schemaVersion: fullIndex.graphSummary.schemaVersion,
+        generatedAt: fullIndex.graphSummary.generatedAt,
+        nodeCount: fullIndex.graphSummary.nodeCount,
+      },
+    });
+
+    expect(markup).not.toContain("Trace graph reference does not match");
+    const row = markup.match(/<div role="treeitem"[^>]*aria-label="PricingService\.price, unmapped"[^>]*>/)?.[0];
+    expect(row).toBeDefined();
+    expect(row).toContain('data-graph-navigation="unavailable"');
+    expect(row).not.toContain("aria-disabled");
+    const pin = markup.match(/<button[^>]*aria-label="!code \|\| !isKnownCode\(code\) → false at [^"]+"[^>]*>/)?.[0];
+    expect(pin).toBeDefined();
+    expect(pin).not.toContain("disabled");
+  });
 });
 
 function requestTrace(traceId: string, startedAtUnixNano: string, name: string): RequestTrace {
@@ -138,7 +199,7 @@ function renderView(state: Partial<BlueprintState>): string {
     <StoreProvider store={store}>
       <RequestTraceView
         rootId={ALPHA_RUN}
-        index={freshIndex()}
+        index={initial.index}
         selected={null}
         onSelect={() => undefined}
         onDrill={() => undefined}

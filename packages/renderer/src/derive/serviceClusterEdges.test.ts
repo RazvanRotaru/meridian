@@ -75,4 +75,26 @@ describe("clusterCouplingEdges", () => {
     expect(expandServiceSyntheticAnchors([legacyId], index, "dependency").sort()).toEqual([a, b].sort());
     expect(clusterMemberSeeds([legacyId], index, "dependency").sort()).toEqual(["ts:a.ts", "ts:b.ts"]);
   });
+
+  it("carries ordinary ids and service frames without requiring Service facts", () => {
+    const full = buildGraphIndex({
+      nodes: [node("ts:a.ts", "module"), node("ts:a.ts#AService", "class", "ts:a.ts")],
+      edges: [],
+    } as unknown as GraphArtifact);
+    const boundedMap = buildGraphIndex(
+      { nodes: [...full.nodesById.values()], edges: [] } as unknown as GraphArtifact,
+      {
+        structure: full.structure,
+        graphSummary: full.graphSummary,
+        serviceTopology: null,
+        artifactComplete: false,
+      },
+    );
+
+    expect(expandServiceSyntheticAnchors([], boundedMap)).toEqual([]);
+    expect(expandServiceSyntheticAnchors(["ts:a.ts#AService", "ts:a.ts#AService"], boundedMap))
+      .toEqual(["ts:a.ts#AService"]);
+    expect(expandServiceSyntheticAnchors([frameIdOf("ts:a.ts#AService")], boundedMap))
+      .toEqual(["ts:a.ts#AService"]);
+  });
 });

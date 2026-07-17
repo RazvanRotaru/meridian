@@ -1,6 +1,8 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
+import { SOURCE_TEXT_HEADERS } from "@meridian/core";
 import {
   handlePullRequestChecks,
   handlePullRequestCommentMutation,
@@ -16,7 +18,13 @@ import type { ArtifactSource } from "./web-source";
 import { SessionStore, markAuthorized } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
-import { createGitHubClient } from "./github";
+import { createGitHubClient, FILE_AT_REF_MAX_BYTES } from "./github";
+import { PrFilesCache } from "./pr-files-cache";
+import {
+  SourceTextAdmission,
+  createSourceTextAdmission,
+  remoteSourceTextReservationBytes,
+} from "./source-text-admission";
 
 describe("PR routes", () => {
   afterEach(() => {
@@ -107,12 +115,38 @@ describe("PR routes", () => {
     );
 
     expect(captured.status()).toBe(200);
-    expect(JSON.parse(captured.body())).toEqual({
-      file: "src/empty.ts",
-      code: "",
-      truncated: false,
-      lineCount: 0,
+    expect(captured.body()).toBe("");
+    expect(captured.headers()).toMatchObject({
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": "0",
+      [SOURCE_TEXT_HEADERS.version]: "1",
+      [SOURCE_TEXT_HEADERS.startLine]: "1",
+      [SOURCE_TEXT_HEADERS.endLine]: "0",
+      [SOURCE_TEXT_HEADERS.lineCount]: "0",
+      [SOURCE_TEXT_HEADERS.truncated]: "0",
     });
+  });
+
+  it("rejects PR-head source overload before starting the remote body fetch", async () => {
+    const weight = remoteSourceTextReservationBytes(FILE_AT_REF_MAX_BYTES);
+    const admission = new SourceTextAdmission({ maxActive: 1, memoryBudgetBytes: weight });
+    const held = admission.tryAcquire(weight)!;
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    ctx.sourceTextAdmission = admission;
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invoke(
+      handlePullRequestFileContent,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", ref: "head-sha", path: "src/busy.ts" }),
+    );
+
+    expect(captured.status()).toBe(503);
+    expect(captured.headers()["retry-after"]).toBe("1");
+    expect(fetchMock).not.toHaveBeenCalled();
+    held.release();
   });
 
   it("keeps public-repo requests unauthenticated when no token source exists", async () => {
@@ -240,12 +274,16 @@ describe("PR routes", () => {
     expect(second.status()).toBe(200);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(1);
 
-    ctx.sources.set("core-artifact", { kind: "github", owner: "org", repo: "repo", subdir: "packages/core" });
+    const coreCtx = ctxWithSource(
+      { kind: "github", owner: "org", repo: "repo", subdir: "packages/core" },
+      new SessionStore(),
+      ctx.prFilesCache,
+    );
     const otherSubdir = await invoke(
       handleRelatedPullRequests,
-      ctx,
+      coreCtx,
       bodyRequest({ paths: ["outside.ts"] }),
-      new URLSearchParams({ id: "core-artifact" }),
+      new URLSearchParams({ id: "artifact" }),
     );
     expect(JSON.parse(otherSubdir.body())).toEqual({
       results: [
@@ -1124,23 +1162,30 @@ async function invoke(handler: PrHandler, ctx: Context, request: IncomingMessage
   return captured;
 }
 
-function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): Context {
+function ctxWithSource(
+  source: ArtifactSource,
+  sessions = new SessionStore(),
+  prFilesCache = new PrFilesCache(),
+): Context {
   return {
-    graphs: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map([["artifact", source]]),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
-    prFilesCache: new Map(),
-    tempCleanups: new Set(),
+    shutdownSignal: new AbortController().signal,
+    prFilesCache,
+    sourceTextAdmission: createSourceTextAdmission(),
+    graphCapabilities: {
+      acquire: async (id: string | null | undefined) => id === "artifact" ? {
+        descriptor: { source: { metadata: source } },
+        source: { metadata: source },
+        signal: new AbortController().signal,
+        release: async () => {},
+      } : null,
+    },
     rendererIndex: "",
     landingHtml: "",
     staticAssets: { rendererRoot: "", indexHtml: "" },
     cwd: "",
     sessions,
     github: createGitHubClient({ clientId: "Iv1.test" }),
-    allowSyntheticExecution: false,
-  } as Context;
+  } as unknown as Context;
 }
 
 function signedInSession(): { cookie: string; sessions: SessionStore } {
@@ -1152,7 +1197,9 @@ function signedInSession(): { cookie: string; sessions: SessionStore } {
 }
 
 function requestWith(cookie: string | undefined): IncomingMessage {
-  return { headers: cookie ? { cookie } : {} } as IncomingMessage;
+  const request = Readable.from([]) as unknown as IncomingMessage;
+  (request as { headers: Record<string, string> }).headers = cookie ? { cookie } : {};
+  return request;
 }
 
 function stubFetch(body: unknown, seenAuth: string[] = []): void {
@@ -1165,17 +1212,47 @@ function stubFetch(body: unknown, seenAuth: string[] = []): void {
   }) as typeof fetch);
 }
 
-function capturedResponse(): { response: ServerResponse; status: () => number; body: () => string } {
+function capturedResponse(): {
+  response: ServerResponse;
+  status: () => number;
+  body: () => string;
+  headers: () => Record<string, string>;
+} {
   let status = 0;
   let body = "";
+  let writableEnded = false;
+  const headers: Record<string, string> = {};
+  const events = new EventEmitter();
   const response = {
-    writeHead(code: number) {
+    get writableEnded() { return writableEnded; },
+    get destroyed() { return false; },
+    writeHead(code: number, values?: Record<string, string>) {
       status = code;
+      Object.assign(headers, values);
       return response;
     },
-    end(chunk?: unknown) {
-      body = typeof chunk === "string" ? chunk : "";
+    setHeader(name: string, value: string | number) {
+      headers[name.toLowerCase()] = String(value);
+      return response;
+    },
+    end(chunk?: unknown, callback?: () => void) {
+      body = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : typeof chunk === "string" ? chunk : "";
+      writableEnded = true;
+      callback?.();
+    },
+    once(event: string, listener: (...args: unknown[]) => void) {
+      events.once(event, listener);
+      return response;
+    },
+    off(event: string, listener: (...args: unknown[]) => void) {
+      events.off(event, listener);
+      return response;
+    },
+    destroy() {
+      writableEnded = true;
+      events.emit("close");
+      return response;
     },
   } as unknown as ServerResponse;
-  return { response, status: () => status, body: () => body };
+  return { response, status: () => status, body: () => body, headers: () => ({ ...headers }) };
 }

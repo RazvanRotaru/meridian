@@ -7,19 +7,16 @@
  */
 
 import { fileURLToPath } from "node:url";
-import type { GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { resolveAgainst, resolveCwd } from "../paths";
-import { readJsonFile } from "../json-io";
-import { validateOrThrow } from "../validation";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
 import { resolveOverlaySource } from "../server/overlay-source";
 import { createBlueprintServer } from "../server/server";
 import { serve } from "../server/serve";
 import { normalizeTelemetryEnvironment } from "../telemetry-environment";
-import { attachIstanbulCoverage } from "../istanbul-coverage";
 import { isLoopbackHost } from "../server/web-guards";
+import { createStandaloneViewSession } from "../server/standalone-view-session";
 
 export interface ViewOptions extends GlobalOptions {
   port: number;
@@ -37,29 +34,31 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
   const reporter = new Reporter(options);
   const cwd = resolveCwd(options.cwd);
   const env = requireEnvForOverlay(options);
-  const loadedArtifact = loadGraph(graph, cwd);
   const overlay = resolveOverlaySource(options.overlay, cwd);
   const sourceRoot = options.sourceRoot ? resolveAgainst(cwd, options.sourceRoot) : undefined;
-  const coverageRoot = sourceRoot ?? resolveAgainst(cwd, loadedArtifact.target.root);
-  const artifact = options.testCoverage
-    ? validateOrThrow(
-        attachIstanbulCoverage(
-          loadedArtifact,
-          readJsonFile(resolveAgainst(cwd, options.testCoverage)),
-          coverageRoot,
-        ),
-        "graph with test coverage",
-      ).artifact
-    : loadedArtifact;
-  const server = createBlueprintServer({
-    artifact,
-    overlay,
-    preselectedEnv: env,
-    rendererRoot: rendererRoot(),
-    sourceRoot,
-    allowSyntheticExecution: options.allowSyntheticExecution === true,
+  const session = createStandaloneViewSession({
+    graphPath: resolveAgainst(cwd, graph),
+    cwd,
+    sourceRoot: sourceRoot ?? null,
+    ...(options.testCoverage
+      ? { coveragePath: resolveAgainst(cwd, options.testCoverage) }
+      : {}),
   });
-  await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+  try {
+    const server = createBlueprintServer({
+      session,
+      overlay,
+      preselectedEnv: env,
+      rendererRoot: rendererRoot(),
+      allowSyntheticExecution: options.allowSyntheticExecution === true,
+    });
+    await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+  } catch (error) {
+    // Once bound, the server owns cleanup through its `close` event. Startup failures never reach
+    // that event, so release the private artifact/projection session here as well.
+    session.cleanup();
+    throw error;
+  }
 }
 
 function requireLoopbackForSyntheticExecution(host: string, enabled: boolean): void {
@@ -74,11 +73,6 @@ function requireEnvForOverlay(options: ViewOptions): string | null {
     throw new CliError(EXIT.usage, "--env is required with --overlay; blueprint never defaults and never prod");
   }
   return env === null ? null : normalizeTelemetryEnvironment(env);
-}
-
-function loadGraph(graph: string, cwd: string): GraphArtifact {
-  const graphPath = resolveAgainst(cwd, graph);
-  return validateOrThrow(readJsonFile(graphPath), `graph ${graphPath}`).artifact;
 }
 
 /** The renderer bundle sits next to `dist/bin.js` after `copy-renderer`. */

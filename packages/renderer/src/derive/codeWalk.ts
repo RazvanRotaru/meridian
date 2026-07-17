@@ -13,6 +13,7 @@ import { nearestVisible } from "./ghostDeps";
 import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
 
 const MODULE_KIND = "module";
+const DECLARATION_CHILD_KINDS: ReadonlySet<string> = new Set([...UNIT_CARD_KINDS, ...BLOCK_KINDS]);
 
 export interface Skeleton {
   id: string;
@@ -87,7 +88,15 @@ function visitFile(id: string, parentId: string | null, depth: number, ctx: Code
   // A source file is an expandable entity even when extraction found no drawable declarations.
   // `childCount` stays honest; the renderer owns the shared empty-details presentation.
   const isExpanded = ctx.expanded.has(id);
-  walk.skeleton.push({ id, parentId, kind: "file", isContainer: true, isExpanded, depth, childCount: decls.length });
+  walk.skeleton.push({
+    id,
+    parentId,
+    kind: "file",
+    isContainer: true,
+    isExpanded,
+    depth,
+    childCount: ctx.index.childCount(id, DECLARATION_CHILD_KINDS),
+  });
   if (isExpanded) {
     decls.forEach((decl) => visitCode(decl.id, id, depth + 1, ctx, walk));
   }
@@ -98,7 +107,15 @@ function visitFile(id: string, parentId: string | null, depth: number, ctx: Code
 function visitDecl(decl: GraphNode, parentId: string | null, depth: number, ctx: CodeWalkContext, walk: CodeWalk): void {
   const members = memberChildren(ctx.index, decl.id);
   const isExpanded = ctx.expanded.has(decl.id);
-  walk.skeleton.push({ id: decl.id, parentId, kind: "unit", isContainer: true, isExpanded, depth, childCount: members.length });
+  walk.skeleton.push({
+    id: decl.id,
+    parentId,
+    kind: "unit",
+    isContainer: true,
+    isExpanded,
+    depth,
+    childCount: ctx.index.childCount(decl.id, BLOCK_KINDS),
+  });
   if (isExpanded) {
     members.forEach((member) => visitCode(member.id, decl.id, depth + 1, ctx, walk));
   }

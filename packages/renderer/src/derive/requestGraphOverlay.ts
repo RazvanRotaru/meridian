@@ -10,10 +10,12 @@ import type { GraphEdge, RequestTrace, TimelineEvent, TimelineSpan, TimelineSpan
 import type { Node } from "@xyflow/react";
 import type { GraphIndex } from "../graph/graphIndex";
 import { frameIdOf } from "./serviceClusterEdges";
-import { clusteringFor } from "./serviceClusteringCache";
+import { clusteringForIfAvailable } from "./serviceClusteringCache";
 import type { ServiceGroupingMode } from "./serviceClusteringModes";
 import type { ServiceClustering } from "./serviceComposition";
 import { deriveServiceDomains } from "./serviceDomains";
+
+const NO_SERVICE_DOMAINS: ReadonlyMap<string, { id: string }> = new Map();
 
 export type RequestEvidenceStatus = "ok" | "error" | "mixed" | "unset";
 
@@ -266,18 +268,20 @@ export function projectRequestGraphOverlay(
   options: RequestGraphProjectionOptions = {},
 ): Map<string, ProjectedRequestNodeEvidence> {
   const visiblePopulations = visibleNodePopulations(visibleNodes);
-  const clustering = clusteringFor(index);
-  const domains = deriveServiceDomains(
-    clustering,
-    options.serviceGroupingMode,
-    options.serviceGroupingTargetSize,
-  );
+  const clustering = clusteringForIfAvailable(index);
+  const domainByLead = clustering === null
+    ? NO_SERVICE_DOMAINS
+    : deriveServiceDomains(
+        clustering,
+        options.serviceGroupingMode,
+        options.serviceGroupingTargetSize,
+      ).domainByLead;
   const accumulators = new Map<string, ProjectionAccumulator>();
 
   for (const [sourceId, evidence] of overlay.nodesById) {
     const projectedTargets = new Set<string>();
     for (const visibleIds of visiblePopulations.values()) {
-      const target = visibleRepresentative(sourceId, visibleIds, index, clustering, domains.domainByLead);
+      const target = visibleRepresentative(sourceId, visibleIds, index, clustering, domainByLead);
       if (target === null || projectedTargets.has(target)) continue;
       projectedTargets.add(target);
       const direct = target === sourceId;
@@ -457,7 +461,7 @@ function visibleRepresentative(
   sourceId: string,
   visibleIds: ReadonlySet<string>,
   index: GraphIndex,
-  clustering: ServiceClustering,
+  clustering: ServiceClustering | null,
   domainByLead: ReadonlyMap<string, { id: string }>,
 ): string | null {
   if (visibleIds.has(sourceId)) return sourceId;
@@ -469,6 +473,7 @@ function visibleRepresentative(
     ancestor = index.parentOf.get(ancestor) ?? null;
   }
 
+  if (clustering === null) return null;
   const lead = serviceLeadOf(sourceId, index, clustering);
   if (lead === null) return null;
   const frameId = frameIdOf(lead);

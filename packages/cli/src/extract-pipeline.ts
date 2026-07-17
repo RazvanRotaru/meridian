@@ -2,12 +2,20 @@
  * The shared "source directory -> validated GraphArtifact" pipeline.
  *
  * `generate` and `web` both need detect-extractors -> extract -> stamp header -> validate; only
- * their I/O differs (generate writes a file, web keeps the artifact in memory). Centralizing it
- * here means one place enforces the fail-closed rule: a validation error throws before any
- * caller can persist or serve a half-formed graph.
+ * their publication differs (`generate` writes its destination while `web` seals an immutable
+ * cache generation). Centralizing it here means one place enforces the fail-closed rule: a
+ * validation error throws before any caller can persist or serve a half-formed graph.
  */
 
-import { ExtractorRegistry, collectTestIds, materializeBoundaryNodes, materializeChannels, mergeExtractionResults, tagChangedNodes, tagTestNodes } from "@meridian/core";
+import {
+  ExtractorRegistry,
+  collectTestIds,
+  materializeBoundaryNodes,
+  materializeChannels,
+  mergeExtractionResults,
+  tagChangedNodes,
+  tagTestNodes,
+} from "@meridian/core";
 import type {
   ChangedDiffLines,
   ChangedFileManifestEntry,
@@ -33,6 +41,7 @@ const MAX_REPORTED_DIAGNOSTICS = 20;
 export interface PipelineRequest {
   absoluteRoot: string;
   cwd: string;
+  language?: string;
   project?: string;
   include?: string[];
   exclude?: string[];
@@ -41,12 +50,14 @@ export interface PipelineRequest {
   includeUnresolved?: boolean;
   /** Turn retained `ext:` / `unresolved:` targets into renderer-visible boundary nodes. */
   materializeBoundary: boolean;
-  /** Drop test code from the artifact entirely; canonical product analysis keeps and tags it. */
+  /** Drop test code from the artifact entirely (`--exclude-tests`); default is include + tag. */
   excludeTests?: boolean;
-  /** Emit `references` edges for imported symbols used as values; canonical product analysis leaves this off. */
+  /** Emit `references` edges for imported symbols used as values (`--value-refs`); default off. */
   valueRefs?: boolean;
   /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
   changedSince?: string;
+  /** Stable provenance label when the executable ref is a job-private mirror ref. */
+  changedSinceLabel?: string;
   /** Override the changed-since diff timeout for callers that operate on unusually large repos. */
   changedSinceTimeoutMs?: number;
   /** Credential-aware git runner for server-side partial clones; local extraction uses the default. */
@@ -70,20 +81,18 @@ export interface PipelineResult {
 
 export async function extractToArtifact(request: PipelineRequest): Promise<PipelineResult> {
   const changedSince = await changedRangesFor(request);
-  // The canonical manifest is complete even when a diff has no HEAD-side ranges. Only paths that
-  // exist at HEAD can be supplemental extraction inputs; deleted paths remain in artifact metadata
-  // for review projection but must never be handed to a language extractor.
+  // The exact manifest remains complete for deletions and pure renames. Supplemental extraction
+  // inputs are HEAD-side only: deleted paths must stay reviewable metadata, never files to open.
   const changedFiles = changedSince
     ? changedSince.manifest.filter((file) => file.status !== "deleted").map((file) => file.path)
     : [];
-  // Language selection must also see deleted paths and populated-side hints: neither exists in an
-  // intentionally empty checkout, while both still identify which registered extractors own it.
-  // Supplemental extraction inputs remain HEAD-only so deleted paths are never opened as files.
+  // Selection must still see every manifest path plus bounded populated-side hints so an
+  // intentionally empty side can select the same language set without materializing source.
   const selectionHints = [
     ...(changedSince?.manifest.map((file) => file.path) ?? []),
     ...(request.hintedFiles ?? []),
   ];
-  const selectedExtractors = await selectExtractors(request.absoluteRoot, selectionHints);
+  const selectedExtractors = await selectExtractors(request.absoluteRoot, selectionHints, request.language);
   const run = await runExtractors(selectedExtractors, request, changedFiles.length > 0 ? changedFiles : undefined);
   const raw = run.extraction;
   const classified = channelize(
@@ -102,7 +111,7 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     changedSince:
       request.changedSince && changedSince
         ? {
-            baseRef: request.changedSince,
+            baseRef: request.changedSinceLabel ?? request.changedSince,
             files: changedSince.ranges,
             stats: changedSince.stats,
             kinds: changedSince.kinds,
@@ -112,26 +121,32 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
         : undefined,
   });
   const { warnings: validationWarnings } = validateOrThrow(artifact, "generated artifact");
-  return {
-    extractors: run.extractors,
-    extraction,
-    artifact,
-    warnings: mergeWarnings(run.diagnosticWarnings, validationWarnings),
-  };
+  const warnings = mergeWarnings(run.diagnosticWarnings, validationWarnings);
+  return { extractors: run.extractors, extraction, artifact, warnings };
 }
 
-export async function selectExtractors(absoluteRoot: string, hintedFiles: readonly string[] = []): Promise<LanguageExtractor[]> {
+export async function selectExtractors(
+  absoluteRoot: string,
+  hintedFiles: readonly string[] = [],
+  language?: string,
+): Promise<LanguageExtractor[]> {
   const registry = new ExtractorRegistry()
     .register(new TypeScriptExtractor())
     .register(new PythonExtractor());
+  if (language) {
+    const extractor = registry.byLanguage(language);
+    if (extractor) return [extractor];
+    const available = registry.all().map((entry) => entry.language).join(", ");
+    throw new CliError(EXIT.extractor, `no extractor for language '${language}' (available: ${available})`);
+  }
   const detected = await registry.matching(absoluteRoot);
-  const selectedLanguages = new Set(detected.map((extractor) => extractor.language));
+  const languages = new Set(detected.map((extractor) => extractor.language));
   for (const extractor of registry.all()) {
     if (hintedFiles.some((file) => extractor.extensions.some((extension) => hasExtension(file, extension)))) {
-      selectedLanguages.add(extractor.language);
+      languages.add(extractor.language);
     }
   }
-  const extractors = registry.all().filter((extractor) => selectedLanguages.has(extractor.language));
+  const extractors = registry.all().filter((extractor) => languages.has(extractor.language));
   if (extractors.length === 0) {
     const available = registry.all().map((entry) => entry.language).join(", ");
     throw new CliError(EXIT.extractor, `could not detect a language under ${absoluteRoot} (available: ${available})`);
@@ -141,8 +156,7 @@ export async function selectExtractors(absoluteRoot: string, hintedFiles: readon
 
 /**
  * Language-agnostic test classification: tag test-path nodes (any extractor benefits), or —
- * when explicitly requested by a lower-level caller, drop test code plus every edge touching it,
- * restoring a lean
+ * under `--exclude-tests` — drop test code plus every edge touching it, restoring a lean
  * production-only graph.
  */
 function classifyTests(extraction: ExtractionResult, excludeTests: boolean): ExtractionResult {
@@ -161,7 +175,7 @@ function classifyTests(extraction: ExtractionResult, excludeTests: boolean): Ext
 /**
  * Materialize the extractor's IPC ports into the graph: channel pseudo-nodes plus sends/handles
  * edges (language-agnostic — any extractor that reports ports benefits). Ports owned by nodes
- * dropped upstream are dropped with them so the manifest never dangles.
+ * dropped upstream (e.g. --exclude-tests) are dropped with them so the manifest never dangles.
  */
 function channelize(extraction: ExtractionResult): ExtractionResult {
   const rawPorts = extraction.ports ?? [];
@@ -222,8 +236,8 @@ async function runExtractors(
         root: request.absoluteRoot,
         project: request.project,
         include: request.include,
-        // An explicit include is an intentional hard boundary. Otherwise changed-since/PR files must
-        // remain reviewable even when a solution tsconfig forgot to reference their project.
+        // An explicit include is a hard scope boundary. Otherwise admit changed HEAD files even
+        // when a solution config omitted the project that owns them.
         supplementalFiles: request.include ? undefined : changedFiles,
         exclude: request.exclude,
         depth: request.depth,

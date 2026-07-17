@@ -21,6 +21,7 @@ const MAX_JOB_KEYS = 8;
 const MAX_SCENARIO_ID = 256;
 const SHA_256 = /^[0-9a-f]{64}$/;
 export const SYNTHETIC_WORKER_ERROR_PREFIX = "__MERIDIAN_SYNTHETIC_WORKER_ERROR__=";
+export const SYNTHETIC_ARTIFACT_FILE_RESULT_PREFIX = "__MERIDIAN_SYNTHETIC_ARTIFACT_FILE__=";
 
 export interface SyntheticWorkerErrorEnvelope {
   ok: false;
@@ -73,7 +74,6 @@ export interface SyntheticCompilationJob {
 }
 
 export interface SyntheticOciJob {
-  artifact: GraphArtifact;
   scenarioId: string;
   expectedRootId?: string;
   expectedSourceFingerprint: string;
@@ -81,6 +81,8 @@ export interface SyntheticOciJob {
   inputOverrides?: SyntheticInputOverride[];
   watchers?: SyntheticFieldWatcher[];
 }
+
+export type SyntheticArtifactFileJob = SyntheticOciJob;
 
 export function parseSyntheticCompilationJob(value: unknown): SyntheticCompilationJob {
   const record = exactRecord(value, ["artifact", "scenario"]);
@@ -91,8 +93,11 @@ export function parseSyntheticCompilationJob(value: unknown): SyntheticCompilati
 }
 
 export function parseSyntheticOciJob(value: unknown): SyntheticOciJob {
+  return parseSyntheticArtifactFileJob(value);
+}
+
+export function parseSyntheticArtifactFileJob(value: unknown): SyntheticArtifactFileJob {
   const record = exactRecord(value, [
-    "artifact",
     "scenarioId",
     "expectedRootId",
     "expectedSourceFingerprint",
@@ -100,13 +105,10 @@ export function parseSyntheticOciJob(value: unknown): SyntheticOciJob {
     "inputOverrides",
     "watchers",
   ]);
-  const artifact = validateArtifact(record.artifact);
   const input = record.input === undefined ? undefined : boundedSyntheticJsonValueSchema.safeParse(record.input);
   const overrides = syntheticInputOverridesSchema.safeParse(record.inputOverrides ?? []);
   const watchers = syntheticFieldWatchersSchema.safeParse(record.watchers ?? []);
-  if (!artifact.ok
-    || artifact.artifact === undefined
-    || (input !== undefined && !input.success)
+  if ((input !== undefined && !input.success)
     || !overrides.success
     || !watchers.success
     || typeof record.scenarioId !== "string"
@@ -118,7 +120,6 @@ export function parseSyntheticOciJob(value: unknown): SyntheticOciJob {
     invalidJob();
   }
   return {
-    artifact: artifact.artifact,
     scenarioId: record.scenarioId,
     expectedRootId: record.expectedRootId as string | undefined,
     expectedSourceFingerprint: record.expectedSourceFingerprint,

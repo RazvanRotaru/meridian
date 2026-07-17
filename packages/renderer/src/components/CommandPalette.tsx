@@ -15,28 +15,30 @@
  * BlueprintCanvas so the shortcut works everywhere; a pure overlay that only calls store actions.
  */
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
-import type { GraphArtifact, GraphNode, NodeId } from "@meridian/core";
+import type { NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { moduleGraphSurfaceOwner } from "../state/store";
 import type { ViewMode } from "../derive/edgeSelection";
+import {
+  GRAPH_SYMBOL_SEARCH_VERSION,
+  type GraphSymbolEntry as SymbolEntry,
+  type GraphSymbolScopeCounts as SearchScopeCounts,
+  type GraphSymbolSearchScope as SearchScope,
+} from "../graph/graphSymbolSearch";
+
+export {
+  collectSymbols,
+  countSymbolScopes as countSearchScopes,
+  selectSymbolResults as selectResults,
+} from "../graph/graphSymbolSearch";
+export type { GraphSymbolEntry as SymbolEntry, GraphSymbolSearchScope as SearchScope } from "../graph/graphSymbolSearch";
 
 // The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
 const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "ui"]);
-// Map mode searches every navigable node — a bare function resolves to its owning unit/module on pick.
-const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
-// Logic mode: only callables and modules have a meaningful logic flow to open.
-const LOGIC_KINDS = new Set(["function", "method", "module"]);
-// Cap the list so a huge graph never renders thousands of rows into the scroll container.
-const MAX_ROWS = 40;
-
-export type SearchScope = "public" | "all" | "private";
-
-export interface SearchScopeCounts {
-  public: number;
-  all: number;
-  private: number;
-}
+const SEARCH_DEBOUNCE_MS = 120;
+const EMPTY_SCOPE_COUNTS: SearchScopeCounts = { public: 0, all: 0, private: 0 };
 
 const SEARCH_SCOPE_OPTIONS: ReadonlyArray<{ id: SearchScope; label: string }> = [
   { id: "public", label: "Public" },
@@ -44,34 +46,8 @@ const SEARCH_SCOPE_OPTIONS: ReadonlyArray<{ id: SearchScope; label: string }> = 
   { id: "private", label: "Private only" },
 ];
 
-/** One searchable node row, pre-computed once so keystrokes only filter (never re-scan the graph). */
-export interface SymbolEntry {
-  id: NodeId;
-  displayName: string;
-  qualifiedName: string;
-  file: string;
-  kind: string;
-  /** The palette's opt-in private surface: methods whose names begin with Python's `__` prefix. */
-  isPrivateMethod: boolean;
-  /** Steps in this node's logic flow, or null when it ships none (a container, or an empty body). */
-  stepCount: number | null;
-}
-
 export function CommandPalette() {
-  const artifact = useBlueprint((state) => state.artifact);
-  const index = useBlueprint((state) => state.index);
-  const viewMode = useBlueprint((state) => state.viewMode);
-  const { openLogicFlow, revealInView, addToView } = useBlueprintActions();
-  // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
-  const isMap = MAP_VIEWS.has(viewMode);
-
   const [open, setOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(0);
-  const [scope, setScope] = useState<SearchScope>("public");
-  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement | null>(null);
-  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
   // without it the print window steals the keystroke and the palette never opens. Pressing it again
@@ -87,24 +63,70 @@ export function CommandPalette() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // A fresh open starts empty with the top row primed, so the reader never inherits a stale query.
-  useEffect(() => {
-    if (open) {
-      setQuery("");
-      setHighlighted(0);
-      setScope("public");
-      setScopeMenuOpen(false);
-    }
-  }, [open]);
+  // Keep the closed shell independent of artifact/index. Mounting the body only while visible means
+  // its repo-wide searchable collection is released as soon as the palette closes.
+  return open ? <OpenCommandPaletteGate onClose={() => setOpen(false)} /> : null;
+}
 
-  // Rank once per artifact + mode (not on every keystroke): map lists every navigable node by name;
-  // logic ranks flow-bearing symbols first. The order carries through the substring filter below.
-  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, isMap), [artifact, index.nodesById, isMap]);
-  const scopeCounts = useMemo(() => countSearchScopes(symbols), [symbols]);
-  const results = useMemo(
-    () => selectResults(symbols, query, isMap, scope),
-    [symbols, query, isMap, scope],
-  );
+function OpenCommandPaletteGate({ onClose }: { onClose: () => void }) {
+  const enabled = useBlueprint((state) => moduleGraphSurfaceOwner(state) !== "prepared-review-overview");
+  useEffect(() => {
+    if (!enabled) onClose();
+  }, [enabled, onClose]);
+  return enabled ? <OpenCommandPalette onClose={onClose} /> : null;
+}
+
+function OpenCommandPalette(props: { onClose: () => void }) {
+  const viewMode = useBlueprint((state) => state.viewMode);
+  const activeProjectionGraphId = useBlueprint((state) => state.activeProjectionGraphId);
+  const { openPaletteLogicFlow, revealInView, addToView, searchSymbols } = useBlueprintActions();
+  // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
+  const isMap = MAP_VIEWS.has(viewMode);
+  const [query, setQuery] = useState("");
+  const [highlighted, setHighlighted] = useState(0);
+  const [scope, setScope] = useState<SearchScope>("public");
+  const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+  const [results, setResults] = useState<SymbolEntry[]>([]);
+  const [scopeCounts, setScopeCounts] = useState<SearchScopeCounts>(EMPTY_SCOPE_COUNTS);
+  const [searchStatus, setSearchStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [resultGraphId, setResultGraphId] = useState<string | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
+
+  // Server sessions search the immutable repository catalog; local embedders deliberately search
+  // only their already-bounded active projection. Every request is abortable and results live only
+  // for this mounted palette body, so closing the shell releases them immediately.
+  useEffect(() => {
+    const controller = new AbortController();
+    setResults([]);
+    setScopeCounts(EMPTY_SCOPE_COUNTS);
+    setResultGraphId(null);
+    setSearchStatus("loading");
+    setSearchError(null);
+    const timer = window.setTimeout(() => {
+      void searchSymbols({
+        version: GRAPH_SYMBOL_SEARCH_VERSION,
+        query,
+        mode: isMap ? "map" : "logic",
+        scope,
+      }, controller.signal).then((result) => {
+        if (controller.signal.aborted) return;
+        setResults(result.results);
+        setScopeCounts(result.scopeCounts);
+        setResultGraphId(result.graphId);
+        setSearchStatus("ready");
+      }, (error: unknown) => {
+        if (controller.signal.aborted || isAbortError(error)) return;
+        setSearchStatus("error");
+        setSearchError(error instanceof Error ? error.message : "Symbol search is unavailable.");
+      });
+    }, query.trim().length === 0 ? 0 : SEARCH_DEBOUNCE_MS);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [activeProjectionGraphId, isMap, query, scope, searchSymbols]);
 
   // Typing or changing the search scope shifts the result set, so re-prime the highlight.
   useEffect(() => {
@@ -117,24 +139,29 @@ export function CommandPalette() {
     activeRowRef.current?.scrollIntoView({ block: "nearest" });
   }, [highlighted, results]);
 
-  if (!open) {
-    return null;
-  }
-
-  const close = () => setOpen(false);
   // Enter/click a row: a map lens reveals it (go-to / pin+select), logic/ui opens its logic flow. Close.
-  const openPick = (id: NodeId) => {
-    if (isMap) {
-      revealInView(id);
-    } else {
-      openLogicFlow(id);
+  const openPick = async (id: NodeId) => {
+    try {
+      if (isMap) {
+        await revealInView(id, resultGraphId);
+      } else {
+        await openPaletteLogicFlow(id, resultGraphId);
+      }
+      props.onClose();
+    } catch (error) {
+      setSearchStatus("error");
+      setSearchError(error instanceof Error ? error.message : "Could not open this symbol.");
     }
-    close();
   };
   // The "+" (map lenses only): add the node to the visible graph WITHOUT navigating. Stay open so a
   // reader can add several nodes before dismissing to see the result on the canvas.
-  const addPick = (id: NodeId) => {
-    addToView(id);
+  const addPick = async (id: NodeId) => {
+    try {
+      await addToView(id, resultGraphId);
+    } catch (error) {
+      setSearchStatus("error");
+      setSearchError(error instanceof Error ? error.message : "Could not add this symbol.");
+    }
   };
 
   // Arrow keys move the highlight (clamped to the list); Enter reveals it, ⌘/Ctrl+Enter adds it (map
@@ -159,17 +186,17 @@ export function CommandPalette() {
       if (isMap && (event.metaKey || event.ctrlKey)) {
         addPick(pick.id);
       } else {
-        openPick(pick.id);
+        void openPick(pick.id);
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
-      close();
+      props.onClose();
     }
   };
 
   // Backdrop click closes; clicks inside the dialog are swallowed so they don't reach it.
   return (
-    <div style={BACKDROP_STYLE} onClick={close}>
+    <div style={BACKDROP_STYLE} onClick={props.onClose}>
       <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
         <div style={SEARCH_HEADER_STYLE}>
           <input
@@ -190,8 +217,12 @@ export function CommandPalette() {
             onReturnToInput={() => inputRef.current?.focus()}
           />
         </div>
-        <div style={LIST_STYLE}>
-          {results.length > 0 ? (
+        <div style={LIST_STYLE} aria-busy={searchStatus === "loading"}>
+          {searchStatus === "loading" ? (
+            <div style={EMPTY_STYLE} role="status" aria-live="polite">Searching symbols…</div>
+          ) : searchStatus === "error" ? (
+            <div style={EMPTY_STYLE} role="alert">{searchError ?? "Symbol search is unavailable."}</div>
+          ) : results.length > 0 ? (
             results.map((entry, row) => (
               <ResultRow
                 key={entry.id}
@@ -200,8 +231,8 @@ export function CommandPalette() {
                 canAdd={isMap}
                 activeRef={row === highlighted ? activeRowRef : undefined}
                 onHover={() => setHighlighted(row)}
-                onOpen={() => openPick(entry.id)}
-                onAdd={() => addPick(entry.id)}
+                onOpen={() => { void openPick(entry.id); }}
+                onAdd={() => { void addPick(entry.id); }}
               />
             ))
           ) : (
@@ -377,96 +408,10 @@ function ResultRow(props: {
   );
 }
 
-/**
- * The searchable rows for the current mode. Map lenses: every navigable node (function/method/module/
- * package/class/interface/object), sorted by name — a pick resolves to its drawable card on
- * reveal/add. Logic/UI: every function/method/module, flow-bearing first (then alphabetically) so
- * flow-openable symbols rank above those without. Both preserve their order through the substring
- * filter. Dunder methods are classified here, then filtered at query time so the user can opt back
- * into them without rescanning the graph. `logicFlow` is a loose extension record.
- */
-export function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<string, GraphNode>, isMap: boolean): SymbolEntry[] {
-  const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as Record<string, unknown[]>;
-  const kinds = isMap ? MAP_KINDS : LOGIC_KINDS;
-  const entries: SymbolEntry[] = [];
-  for (const node of nodesById.values()) {
-    if (!kinds.has(node.kind)) {
-      continue;
-    }
-    const steps = flows[node.id];
-    entries.push({
-      id: node.id,
-      displayName: node.displayName,
-      qualifiedName: node.qualifiedName,
-      file: node.location?.file ?? "",
-      kind: node.kind,
-      isPrivateMethod: node.kind === "method" && node.displayName.startsWith("__"),
-      // Exit steps are charted control flow, not WORK — the size hint counts only executable steps.
-      stepCount: Array.isArray(steps) ? steps.filter((step) => (step as { kind?: string }).kind !== "exit").length : null,
-    });
-  }
-  entries.sort(isMap ? byName : byFlowThenName);
-  return entries;
-}
-
-// Plain alphabetical, for the map lenses where every row is equally navigable.
-function byName(a: SymbolEntry, b: SymbolEntry): number {
-  return a.displayName.localeCompare(b.displayName);
-}
-
-// Flow-bearing symbols float to the top; ties break alphabetically for a stable, scannable list.
-function byFlowThenName(a: SymbolEntry, b: SymbolEntry): number {
-  const flowRank = Number(b.stepCount !== null) - Number(a.stepCount !== null);
-  return flowRank || a.displayName.localeCompare(b.displayName);
-}
-
-/**
- * The rows to show: dunder methods are filtered by the selected public/all/private scope before the
- * row cap. With no query, a map lens shows the top nodes and logic shows the top flow-bearing symbols;
- * with a query, nodes whose display OR qualified name contains the (lowercased) needle. Capped.
- */
-export function selectResults(
-  symbols: SymbolEntry[],
-  query: string,
-  isMap: boolean,
-  scope: SearchScope = "public",
-): SymbolEntry[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) {
-    const base = symbols.filter(
-      (entry) => isEntryInScope(entry, scope) && (isMap || entry.stepCount !== null),
-    );
-    return base.slice(0, MAX_ROWS);
-  }
-  const matched: SymbolEntry[] = [];
-  for (const entry of symbols) {
-    if (!isEntryInScope(entry, scope)) {
-      continue;
-    }
-    if (entry.displayName.toLowerCase().includes(needle) || entry.qualifiedName.toLowerCase().includes(needle)) {
-      matched.push(entry);
-      if (matched.length >= MAX_ROWS) {
-        break;
-      }
-    }
-  }
-  return matched;
-}
-
-export function countSearchScopes(symbols: readonly SymbolEntry[]): SearchScopeCounts {
-  const privateCount = symbols.reduce((count, entry) => count + Number(entry.isPrivateMethod), 0);
-  return {
-    public: symbols.length - privateCount,
-    all: symbols.length,
-    private: privateCount,
-  };
-}
-
-function isEntryInScope(entry: SymbolEntry, scope: SearchScope): boolean {
-  if (scope === "all") {
-    return true;
-  }
-  return scope === "private" ? entry.isPrivateMethod : !entry.isPrivateMethod;
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException
+    ? error.name === "AbortError"
+    : error instanceof Error && error.name === "AbortError";
 }
 
 // The palette floats above every view (and the code modal at zIndex 30), pinned near the top-center
