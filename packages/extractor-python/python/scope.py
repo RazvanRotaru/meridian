@@ -12,6 +12,7 @@ from project import resolve_from_module_path
 class ScopeBindings:
     from_imports: dict[str, tuple[str, str]] = field(default_factory=dict)
     module_imports: dict[str, str] = field(default_factory=dict)
+    module_import_paths: dict[str, set[str]] = field(default_factory=dict)
     local_types: dict[str, str] = field(default_factory=dict)
     definitions: dict[str, str] = field(default_factory=dict)
     definition_origins: dict[str, int | str] = field(default_factory=dict)
@@ -31,12 +32,13 @@ def scan_imports(nodes: list[ast.AST], module_path: str, scope: ScopeBindings) -
             for alias in node.names:
                 name = alias.asname or alias.name.split(".")[0]
                 target = alias.name if alias.asname else alias.name.split(".")[0]
-                bind_module_import(name, target, scope)
+                bind_module_import(name, target, scope, alias.name)
 
 
 def bind_from_import(name: str, target: tuple[str, str], scope: ScopeBindings) -> None:
     scope.from_imports[name] = target
     scope.module_imports.pop(name, None)
+    scope.module_import_paths.pop(name, None)
     scope.definitions.pop(name, None)
     scope.definition_origins.pop(name, None)
     scope.local_types.pop(name, None)
@@ -44,8 +46,20 @@ def bind_from_import(name: str, target: tuple[str, str], scope: ScopeBindings) -
     scope.shadowed.discard(name)
 
 
-def bind_module_import(name: str, target: str, scope: ScopeBindings) -> None:
+def bind_module_import(
+    name: str,
+    target: str,
+    scope: ScopeBindings,
+    imported_path: str | None = None,
+) -> None:
+    paths = (
+        set(scope.module_import_paths.get(name, ()))
+        if scope.module_imports.get(name) == target
+        else set()
+    )
+    paths.add(imported_path or target)
     scope.module_imports[name] = target
+    scope.module_import_paths[name] = paths
     scope.from_imports.pop(name, None)
     scope.definitions.pop(name, None)
     scope.definition_origins.pop(name, None)
@@ -59,6 +73,7 @@ def bind_local(name: str, type_ref: str | None, scope: ScopeBindings) -> None:
     scope.definition_origins.pop(name, None)
     scope.from_imports.pop(name, None)
     scope.module_imports.pop(name, None)
+    scope.module_import_paths.pop(name, None)
     scope.receivers.pop(name, None)
     scope.shadowed.add(name)
     if type_ref:
@@ -77,6 +92,7 @@ def bind_definition(
     scope.definition_origins[name] = origin if origin is not None else qualname
     scope.from_imports.pop(name, None)
     scope.module_imports.pop(name, None)
+    scope.module_import_paths.pop(name, None)
     scope.local_types.pop(name, None)
     scope.receivers.pop(name, None)
     scope.shadowed.discard(name)
@@ -86,6 +102,7 @@ def clone_scope(scope: ScopeBindings) -> ScopeBindings:
     return ScopeBindings(
         from_imports=dict(scope.from_imports),
         module_imports=dict(scope.module_imports),
+        module_import_paths={name: set(paths) for name, paths in scope.module_import_paths.items()},
         local_types=dict(scope.local_types),
         definitions=dict(scope.definitions),
         definition_origins=dict(scope.definition_origins),

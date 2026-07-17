@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import dataclass
 
 from inference import infer_value_type, params_to_types, type_ref_of
 from project import ProjectIndex
@@ -13,12 +14,21 @@ from scope_flow import bind_body, bind_statement, function_start
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
+@dataclass(frozen=True)
+class TypeIdentity:
+    """Stable identity for an annotated type, whether project-owned or external."""
+
+    resolution: str
+    module: str
+    qualname: str
+
+
 class SymbolTable:
     def __init__(self, module_path: str, project: ProjectIndex) -> None:
         self.module_path = module_path
         self.project = project
         self.module_scope = ScopeBindings()
-        self.class_attr_types: dict[str, dict[str, tuple[str, str]]] = {}
+        self.class_attr_types: dict[str, dict[str, TypeIdentity]] = {}
 
     def scan(self, tree: ast.Module) -> None:
         scope = ScopeBindings()
@@ -35,7 +45,7 @@ class SymbolTable:
         definition_scope: ScopeBindings,
         lexical_scope: ScopeBindings,
     ) -> None:
-        attr_types: dict[str, tuple[str, str]] = {}
+        attr_types: dict[str, TypeIdentity] = {}
         class_scope = clone_scope(lexical_scope)
         for statement in classdef.body:
             if isinstance(statement, FUNCTIONS) and statement.name == "__init__":
@@ -52,7 +62,7 @@ class SymbolTable:
     def scan_init(
         self,
         init: ast.FunctionDef | ast.AsyncFunctionDef,
-        attr_types: dict[str, tuple[str, str]],
+        attr_types: dict[str, TypeIdentity],
         definition_scope: ScopeBindings,
     ) -> None:
         param_refs = params_to_types(init.args)
@@ -76,7 +86,7 @@ class SymbolTable:
     def record_class_annotation(
         self,
         statement: ast.AnnAssign,
-        attr_types: dict[str, tuple[str, str]],
+        attr_types: dict[str, TypeIdentity],
         scope: ScopeBindings,
     ) -> None:
         if isinstance(statement.target, ast.Name):
@@ -102,20 +112,40 @@ class SymbolTable:
         bind_body(function.body, scope, self.module_path, qualname)
         return scope
 
-    def locate_type(self, type_ref: str, scope: ScopeBindings) -> tuple[str, str] | None:
-        if type_ref.split(".", 1)[0] in scope.shadowed:
+    def locate_type(self, type_ref: str, scope: ScopeBindings) -> TypeIdentity | None:
+        parts = type_ref.split(".")
+        root = parts[0]
+        if not type_ref or root in scope.shadowed:
             return None
         definition = scope.definitions.get(type_ref)
         if definition and self.project.kind_of(self.module_path, definition) == "class":
-            return self.module_path, definition
-        if type_ref in scope.from_imports:
-            return self.project.locate_symbol(*scope.from_imports[type_ref])
-        parts = type_ref.split(".")
-        if parts[0] in scope.module_imports:
-            prefix = scope.module_imports[parts[0]]
-            return locate_qualified_type(self.project, prefix, parts[1:])
+            return TypeIdentity("resolved", self.module_path, definition)
+        if root in scope.from_imports:
+            module, imported_name = scope.from_imports[root]
+            imported_qualname = ".".join([imported_name, *parts[1:]])
+            located = locate_imported_type(self.project, module, imported_name, parts[1:])
+            if located:
+                return TypeIdentity("resolved", *located)
+            if self.project.import_target(module) is None:
+                return TypeIdentity("external", module, imported_qualname)
+            return None
+        if root in scope.module_imports:
+            prefix = scope.module_imports[root]
+            located = locate_qualified_type(self.project, prefix, parts[1:])
+            if located:
+                return TypeIdentity("resolved", *located)
+            if parts[1:] and self.project.import_target(prefix) is None:
+                return locate_external_qualified_type(
+                    root,
+                    prefix,
+                    parts[1:],
+                    scope.module_import_paths.get(root, {prefix}),
+                )
+            return None
         located = self.project.locate_symbol(self.module_path, type_ref)
-        return located if located and self.project.kind_of(*located) == "class" else None
+        if located and self.project.kind_of(*located) == "class":
+            return TypeIdentity("resolved", *located)
+        return None
 
 
 def walk_scope(body: list[ast.stmt]):
@@ -137,6 +167,45 @@ def locate_qualified_type(project: ProjectIndex, prefix: str, rest: list[str]) -
             if located and project.kind_of(*located) == "class":
                 return located
     return None
+
+
+def locate_imported_type(
+    project: ProjectIndex,
+    module: str,
+    imported_name: str,
+    rest: list[str],
+) -> tuple[str, str] | None:
+    located = project.locate_symbol(module, imported_name)
+    if not located:
+        return None
+    qualname = ".".join([located[1], *rest])
+    candidate = (located[0], qualname)
+    return candidate if project.kind_of(*candidate) == "class" else None
+
+
+def locate_external_qualified_type(
+    binding: str,
+    runtime_prefix: str,
+    rest: list[str],
+    imported_paths: set[str],
+) -> TypeIdentity:
+    if runtime_prefix != binding:
+        return TypeIdentity("external", runtime_prefix, ".".join(rest))
+    ordered_paths = sorted(
+        imported_paths,
+        key=lambda value: len(value.split(".")),
+        reverse=True,
+    )
+    for imported_path in ordered_paths:
+        module_parts = imported_path.split(".")
+        suffix = module_parts[1:] if module_parts[0] == binding else []
+        if suffix and rest[: len(suffix)] == suffix and len(rest) > len(suffix):
+            return TypeIdentity(
+                "external",
+                imported_path,
+                ".".join(rest[len(suffix) :]),
+            )
+    return TypeIdentity("external", runtime_prefix, ".".join(rest))
 
 
 def is_self_attr(node: ast.expr) -> bool:

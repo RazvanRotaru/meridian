@@ -13,7 +13,7 @@ import type { PipelineResult } from "./extract-pipeline";
 import type { GitDiffExecutor } from "./git-diff";
 
 /** Bump when the fixed product profile or its interpretation changes, invalidating graph caches. */
-export const REPOSITORY_ANALYSIS_VERSION = 4;
+export const REPOSITORY_ANALYSIS_VERSION = 5;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",

@@ -7,7 +7,7 @@ import builtins
 
 from inference import expression_name
 from scope import ScopeBindings
-from symbols import SymbolTable
+from symbols import SymbolTable, TypeIdentity
 
 
 BUILTIN_NAMES = frozenset(dir(builtins))
@@ -109,16 +109,31 @@ def resolve_receiver_field(
 
 
 def resolve_typed_method(
-    type_ref: str | tuple[str, str] | None,
+    type_ref: str | TypeIdentity | None,
     method: str,
     table: SymbolTable,
     scope: ScopeBindings,
 ) -> dict:
-    located = type_ref if isinstance(type_ref, tuple) else table.locate_type(type_ref, scope) if type_ref else None
+    located = (
+        type_ref
+        if isinstance(type_ref, TypeIdentity)
+        else table.locate_type(type_ref, scope) if type_ref else None
+    )
     if not located:
         return UNRESOLVED
-    target = table.project.method_target(*located, method)
+    if located.resolution == "external":
+        return external(located.module, f"{located.qualname}.{method}")
+    target = table.project.method_target(located.module, located.qualname, method)
     return resolved(*target) if target else UNRESOLVED
+
+
+def resolve_type_reference(type_ref: str, table: SymbolTable, scope: ScopeBindings) -> dict:
+    located = table.locate_type(type_ref, scope)
+    if not located:
+        return UNRESOLVED
+    if located.resolution == "external":
+        return external(located.module, located.qualname)
+    return resolved(located.module, located.qualname)
 
 
 def resolve_super_method(method: str, table: SymbolTable, class_name: str | None) -> dict:
