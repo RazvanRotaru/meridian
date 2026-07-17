@@ -11,6 +11,10 @@
     "./mock": {
       "types": "./dist/mock.d.ts",
       "import": "./dist/mock.js"
+    },
+    "./pr-prepare-contract": {
+      "types": "./dist/pr-prepare-contract.d.ts",
+      "import": "./dist/pr-prepare-contract.js"
     }
   },
   "main": "./dist/index.js",

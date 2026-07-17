@@ -5,7 +5,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { chromiumInstalled, listenServer } from "./harness";
+import { PR_PREPARE_CLIENT, chromiumInstalled, listenServer } from "./harness";
 
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const REPOSITORY = "acme/progressive-service";
@@ -62,13 +62,18 @@ describe.skipIf(!chromiumInstalled())("progressive landing PR picker (headless c
     await query.click();
     await query.press("ArrowDown");
     expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
+    await query.press("Enter");
+    await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
+    expect(await query.inputValue()).toContain("#1");
+    await query.click();
+    await query.press("ArrowDown");
+    expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
 
     releaseSecondPage?.();
     await page.getByText("31 open pull requests loaded", { exact: true }).waitFor();
     expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
-    await query.press("Enter");
-    await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
     expect(await query.inputValue()).toContain("#1");
+    await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
     expect(pageErrors).toEqual([]);
   });
 
@@ -88,6 +93,12 @@ describe.skipIf(!chromiumInstalled())("progressive landing PR picker (headless c
       await query.click();
       await query.press("ArrowDown");
       expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
+      await query.press("Enter");
+      await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
+      expect(await query.inputValue()).toContain("#1");
+      await query.click();
+      await query.press("ArrowDown");
+      expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
 
       failureGate.resolve();
       await page.getByText(
@@ -95,10 +106,137 @@ describe.skipIf(!chromiumInstalled())("progressive landing PR picker (headless c
         { exact: true },
       ).waitFor();
       expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-1");
-      await query.press("Enter");
       await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
+      expect(await query.inputValue()).toContain("#1");
     } finally {
       failureGate.resolve();
+      await page.unroute(PULL_REQUEST_ROUTE);
+    }
+  });
+
+  it("inserts later personalized groups in canonical order without retargeting a page-one selection", async () => {
+    const pageGate = deferred();
+    let preparationRequest: Record<string, unknown> | undefined;
+    await page.route("**/api/pr/prepare", async (route) => {
+      preparationRequest = route.request().postDataJSON() as Record<string, unknown>;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "fixture preparation stop" }),
+      });
+    });
+    await page.route(PULL_REQUEST_ROUTE, async (route) => {
+      const requestedPage = Number(new URL(route.request().url()).searchParams.get("page"));
+      if (requestedPage === 2) await pageGate.promise;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(requestedPage === 1
+          ? {
+              prs: [
+                pullRequest(1, { author: "other-author" }),
+                pullRequest(2, { author: "reviewed-author", viewerStatus: { review: "approved" } }),
+              ],
+              hasMore: true,
+              viewerLogin: "fixture-user",
+            }
+          : {
+              prs: [
+                pullRequest(3, { author: "fixture-user" }),
+                pullRequest(4, { author: "requested-author", viewerStatus: { reviewRequested: true } }),
+              ],
+              hasMore: false,
+              viewerLogin: "fixture-user",
+            }),
+      });
+    });
+    try {
+      await openReviewPicker(page);
+      await page.getByText("2 open pull requests loaded · loading more…", { exact: true }).waitFor();
+      const query = page.locator("#pr-query");
+      await query.click();
+      await page.locator("#pr-result-1").click();
+      await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
+      expect(await query.inputValue()).toContain("#1");
+
+      await query.click();
+      await query.press("ArrowDown");
+      expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-2");
+      pageGate.resolve();
+      await page.getByText("4 open pull requests loaded", { exact: true }).waitFor();
+
+      expect(await query.getAttribute("aria-activedescendant")).toBe("pr-result-2");
+      expect(await query.inputValue()).toContain("#1");
+      await page.locator("#pr-preview-number").getByText("#1", { exact: true }).waitFor();
+      expect(await page.locator("#pr-results").evaluate((list) => [...list.children].flatMap((group) => {
+        const label = group.querySelector(".group-label")?.textContent;
+        return [
+          ...(label ? [label] : []),
+          ...[...group.querySelectorAll('[role="option"]')].map((option) => option.id),
+        ];
+      }))).toEqual([
+        "My pull requests",
+        "pr-result-3",
+        "Needs your review",
+        "pr-result-4",
+        "Reviewed by you",
+        "pr-result-2",
+        "Other pull requests",
+        "pr-result-1",
+      ]);
+
+      await page.locator("#submit").click();
+      await page.getByText("fixture preparation stop", { exact: true }).waitFor();
+      expect(preparationRequest).toEqual({
+        owner: "acme",
+        repo: "progressive-service",
+        prNumber: 1,
+        baseRef: "main",
+        headRef: "feature-1",
+      });
+    } finally {
+      pageGate.resolve();
+      await page.unroute("**/api/pr/prepare");
+      await page.unroute(PULL_REQUEST_ROUTE);
+    }
+  });
+
+  it("defers author-menu reconciliation until an open menu releases focus", async () => {
+    const pageGate = deferred();
+    await page.route(PULL_REQUEST_ROUTE, async (route) => {
+      const requestedPage = Number(new URL(route.request().url()).searchParams.get("page"));
+      if (requestedPage === 2) await pageGate.promise;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify(requestedPage === 1
+          ? { prs: [pullRequest(1, { author: "zeta" }), pullRequest(2, { author: "alpha" })], hasMore: true }
+          : { prs: [pullRequest(3, { author: "beta" })], hasMore: false }),
+      });
+    });
+    try {
+      await openReviewPicker(page);
+      await page.getByText("2 open pull requests loaded · loading more…", { exact: true }).waitFor();
+      const trigger = page.locator("#pr-author-trigger");
+      await trigger.press("ArrowDown");
+      await page.locator("#pr-author-options").waitFor({ state: "visible" });
+      await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe("pr-author-option-0");
+      expect(await page.locator("#pr-author-options [role=option]").allTextContents()).toEqual([
+        "All authors", "alpha", "zeta",
+      ]);
+
+      pageGate.resolve();
+      await page.getByText("3 open pull requests loaded", { exact: true }).waitFor();
+      expect(await page.evaluate(() => document.activeElement?.id)).toBe("pr-author-option-0");
+      expect(await page.locator("#pr-author-options [role=option]").allTextContents()).toEqual([
+        "All authors", "alpha", "zeta",
+      ]);
+
+      await page.locator("#pr-author-option-0").press("Escape");
+      await trigger.click();
+      expect(await page.locator("#pr-author-options [role=option]").allTextContents()).toEqual([
+        "All authors", "alpha", "beta", "zeta",
+      ]);
+    } finally {
+      pageGate.resolve();
       await page.unroute(PULL_REQUEST_ROUTE);
     }
   });
@@ -116,11 +254,17 @@ async function openReviewPicker(target: Page): Promise<void> {
 
 function createLandingServer(): Server {
   const landingHtml = readFileSync(WEB_UI, "utf8");
+  const prPrepareClient = readFileSync(PR_PREPARE_CLIENT, "utf8");
   return createServer((request, response) => {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/") {
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(landingHtml);
+      return;
+    }
+    if (request.method === "GET" && url.pathname === "/pr-prepare-client.js") {
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.end(prPrepareClient);
       return;
     }
     if (request.method === "GET" && url.pathname === "/api/auth/session") {
@@ -153,16 +297,20 @@ function repositorySummary(): Record<string, unknown> {
   };
 }
 
-function pullRequest(number: number): Record<string, unknown> {
+function pullRequest(
+  number: number,
+  overrides: { author?: string; viewerStatus?: Record<string, unknown> } = {},
+): Record<string, unknown> {
   return {
     number,
     title: `Progressive review ${number}`,
-    author: "octocat",
+    author: overrides.author ?? "octocat",
     headRef: `feature-${number}`,
     baseRef: "main",
     updatedAt: "2026-07-15T12:00:00Z",
     draft: false,
     state: "open",
+    ...(overrides.viewerStatus ? { viewerStatus: overrides.viewerStatus } : {}),
   };
 }
 
