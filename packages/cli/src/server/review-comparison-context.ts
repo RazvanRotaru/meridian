@@ -76,8 +76,9 @@ export interface ResolvedReviewContextCursor {
   readonly facts: ReviewContextFacts;
   /** Exact server-owned path for a file coordinate; null for overview/page coordinates or absent sides. */
   readonly graphPath: string | null;
-  /** File coordinates suppress the ordinary empty-path changed-set fallback, even on an absent side. */
-  readonly fileSelected: boolean;
+  /** Canonical current path which owns changed-since metadata. Unlike graphPath, this remains
+   * present for a deleted HEAD file and is independent of rename routing on the comparison side. */
+  readonly changedPath: string | null;
 }
 
 export function writeReviewComparisonContext(
@@ -174,7 +175,7 @@ export function resolveReviewContextCursor(
   const indexed = indexedEntry(entry, index);
   return {
     graphPath,
-    fileSelected: true,
+    changedPath: entry.path,
     facts: {
       contextId,
       side,
@@ -297,7 +298,7 @@ function pageCursor(
   if (context.pages.length === 0 && pageIndex === 0) {
     return {
       graphPath: null,
-      fileSelected: false,
+      changedPath: null,
       facts: {
         contextId,
         side,
@@ -313,7 +314,7 @@ function pageCursor(
   const page = context.pages[pageIndex]!;
   return {
     graphPath: null,
-    fileSelected: false,
+    changedPath: null,
     facts: {
       contextId,
       side,

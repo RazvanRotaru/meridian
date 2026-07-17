@@ -3,7 +3,6 @@
  * preparation, streamed progress, comments, URL restore, layered Escape, and bounded resume.
  */
 
-import { rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,6 +10,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
 import { createWebServer, type WebServerHandle } from "../src/server/web-server";
+import { removeEntry } from "../src/server/web-cache-storage";
 import {
   PYTHON_REVIEW_PATH,
   RENDERER_INDEX,
@@ -562,7 +562,10 @@ async function teardown(): Promise<void> {
   restoreGitRedirect?.();
   vi.unstubAllGlobals();
   if (fixture) {
-    rmSync(fixture.dir, { recursive: true, force: true });
+    // Successful graph publication deliberately freezes immutable generation directories at 0500
+    // and their files at 0400. Use the cache owner's cleanup primitive so teardown first restores
+    // only the permissions required to reclaim that exact, already-drained fixture tree.
+    removeEntry(fixture.dir);
   }
 }
 

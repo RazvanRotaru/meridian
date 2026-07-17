@@ -747,10 +747,19 @@ export class GraphProjectionBundle {
     const request = canonicalizeGraphProjectionRequest(input);
     const review = resolveReviewQuery(request, options.review);
     const contentId = this.contentIdFor(options);
-    const reviewPaths = review?.graphPath === null || review?.graphPath === undefined
+    const reviewGraphPaths = review?.graphPath === null || review?.graphPath === undefined
       ? []
       : [review.graphPath];
-    const routingPaths = review === null ? request.filePaths : reviewPaths;
+    const graphRoutingPaths = review === null ? request.filePaths : reviewGraphPaths;
+    // Graph-side presence and canonical diff ownership are separate coordinates. A deleted file has
+    // no HEAD graph path, while its exact diffLines/stats remain authored by the HEAD bundle under
+    // the current manifest path. Likewise, a renamed base graph routes through previousPath without
+    // changing which canonical row owns its review metadata.
+    const changedRoutingPaths = review === null
+      ? request.filePaths
+      : review.changedPath === null
+        ? []
+        : [review.changedPath];
     const cancellation = new ProjectionQueryCancellation(signal);
     let pendingYield = cancellation.checkpoint(true);
     if (pendingYield !== null) await pendingYield;
@@ -947,7 +956,7 @@ export class GraphProjectionBundle {
       }
     }
     if (request.view === "review") {
-      for (const filePath of routingPaths) {
+      for (const filePath of graphRoutingPaths) {
         pendingYield = cancellation.checkpoint();
         if (pendingYield !== null) await pendingYield;
         const entry = this.adjacencyEntry("file-nodes", filePath);
@@ -975,7 +984,7 @@ export class GraphProjectionBundle {
     // a deleted path on HEAD). Never broaden it to every changed node as an implicit fallback.
     if (!moduleOverviewRequested
       && seeds.size === 0
-      && routingPaths.length === 0
+      && graphRoutingPaths.length === 0
       && review === null
       && request.view !== "service"
       && request.view !== "ui") {
@@ -1184,7 +1193,7 @@ export class GraphProjectionBundle {
         reasons.add("extension-byte-limit");
       }
 
-      const relevantPaths = new Set(routingPaths);
+      const relevantPaths = new Set(changedRoutingPaths);
       if (relevantPaths.size === 0) {
         for (const node of nodes.values()) {
           pendingYield = cancellation.checkpoint();

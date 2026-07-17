@@ -65,6 +65,8 @@ describe("review comparison context", () => {
     const base = resolveReviewContextCursor(context, first.sha256, "mergeBase", reviewFileCursor(renamedIndex));
     expect(head.graphPath).toBe("src/z-new.ts");
     expect(base.graphPath).toBe("src/z-old.ts");
+    expect(head.changedPath).toBe("src/z-new.ts");
+    expect(base.changedPath).toBe("src/z-new.ts");
   });
 
   it("retains a valid 4096-byte path as metadata without putting it in a transport cursor", () => {

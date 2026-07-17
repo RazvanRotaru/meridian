@@ -225,6 +225,17 @@ async function focusReviewFile(page: Page, path: string): Promise<void> {
     return;
   }
   const projected = page.getByTitle(`${path} — click to reveal on the graph`, { exact: true });
+  const unloaded = page.getByTitle(`${path} — click to load its graph`, { exact: true });
+  if (await unloaded.count() > 0) {
+    await unloaded.first().click();
+    // A prepared review deliberately starts as a source-only manifest. The click is the public
+    // transition which fetches and atomically commits this file's HEAD + merge-base projections;
+    // require the row to reach one honest committed state before any graph/source assertion runs.
+    const committed = sourceOnly.or(projected);
+    await committed.first().waitFor({ state: "visible", timeout: 120_000 });
+    expect(await committed.count(), `${path} must commit exactly one prepared-file projection state`).toBe(1);
+    return;
+  }
   await projected.first().waitFor();
   await projected.first().click();
 }

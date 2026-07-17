@@ -655,6 +655,9 @@ describe("GraphProjectionBundle", () => {
     expect(addedBase.completeness.complete).toBe(true);
     expect(deletedHead.artifact.nodes).toEqual([]);
     expect(deletedHead.viewFacts.review?.selection?.graphPath).toBeNull();
+    expect((deletedHead.artifact.extensions?.changedSince as Record<string, unknown>).diffLines).toEqual({
+      "src/b.ts": [{ kind: "deleted", oldLine: 1, newLine: null, beforeNewLine: 1, text: "removed" }],
+    });
     expect(deletedBase.viewFacts.review?.selection).toMatchObject({ graphPath: "src/b.ts", graphMatched: true });
     expect(renamedHead.viewFacts.review?.selection).toMatchObject({ graphPath: "src/a.ts", graphMatched: true });
     expect(renamedBase.viewFacts.review?.selection).toMatchObject({ graphPath: "src/old.ts", graphMatched: true });
