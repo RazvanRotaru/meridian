@@ -1685,6 +1685,9 @@
       let pullRequests = [];
       let selectedPrNumber = null;
       let prSearchQuery = "";
+      let pullRequestsLoading = false;
+      let pullRequestLoadWarning = null;
+      let pullRequestAuthorsDirty = false;
 
       // Branch discovery is intentionally GitHub-only even though the clone endpoint accepts a
       // broader set of git URLs. An unrecognised source still generates with its remote default.
@@ -2111,6 +2114,9 @@
       function resetPullRequests(message, clearFilters) {
         prRequest++;
         pullRequests = [];
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = null;
+        pullRequestAuthorsDirty = false;
         if (clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
@@ -2118,6 +2124,8 @@
         clearPullRequestSelection(false);
         renderMenu("pr-author", [{ value: "", label: "All authors" }], () => {}, true);
         $("pr-query").disabled = true;
+        $("pr-query").removeAttribute("aria-busy");
+        $("pr-results").replaceChildren();
         hidePullRequestResults();
         $("pr-status").textContent = message || "Choose a repository to load its pull requests.";
       }
@@ -2143,6 +2151,15 @@
           },
           pullRequests.length === 0,
         );
+        pullRequestAuthorsDirty = false;
+      }
+
+      function refreshPullRequestAuthors() {
+        if ($("pr-author-trigger").getAttribute("aria-expanded") === "true") {
+          pullRequestAuthorsDirty = true;
+          return;
+        }
+        renderPullRequestAuthors();
       }
 
       function matchesPullRequest(pr, query, author) {
@@ -2233,16 +2250,23 @@
 
       function renderPullRequestStatus(filtered) {
         const state = $("pr-state").value;
+        const suffix = pullRequestLoadSuffix();
         if (pullRequests.length === 0) {
-          $("pr-status").textContent = "No " + state + " pull requests.";
+          $("pr-status").textContent = "No " + state + " pull requests." + suffix;
         } else if (filtered.length === 0) {
           const query = prSearchQuery.trim();
-          $("pr-status").textContent = query ? "No PRs match “" + query + "”." : "No PRs match the current filters.";
+          $("pr-status").textContent = (query ? "No loaded PRs match “" + query + "”." : "No loaded PRs match the current filters.") + suffix;
         } else {
           const loaded = pullRequests.length + " " + state + (pullRequests.length === 1 ? " pull request" : " pull requests") + " loaded";
           $("pr-status").textContent = loaded
-            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown");
+            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown")
+            + suffix;
         }
+      }
+
+      function pullRequestLoadSuffix() {
+        if (pullRequestsLoading) return " · loading more…";
+        return pullRequestLoadWarning ? " · " + pullRequestLoadWarning : "";
       }
 
       function renderPullRequestResults(show) {
@@ -2267,8 +2291,46 @@
         $("pr-query").removeAttribute("aria-activedescendant");
       }
 
+      function appendPullRequestResults(requests) {
+        const matching = requests.filter((pr) => matchesPullRequest(pr, prSearchQuery, $("pr-author").value));
+        const list = $("pr-results");
+        if (matching.length > 0 && list.querySelector(".group-note")) list.replaceChildren();
+        for (const pr of matching) list.appendChild(pullRequestResultItem(pr));
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
       function showPullRequestError(message) {
         resetPullRequests(message, false);
+      }
+
+      function showPullRequestPaginationError(message) {
+        if (pullRequests.length === 0) {
+          showPullRequestError(message);
+          return;
+        }
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = message;
+        $("pr-query").setAttribute("aria-busy", "false");
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
+      function publishPullRequestPage(byNumber, hasMore) {
+        const previousNumbers = new Set(pullRequests.map((pr) => pr.number));
+        const resultsOpen = !$("pr-results").hidden;
+        pullRequests = [...byNumber.values()];
+        const added = pullRequests.filter((pr) => !previousNumbers.has(pr.number));
+        pullRequestsLoading = hasMore;
+        pullRequestLoadWarning = null;
+        refreshPullRequestAuthors();
+        $("pr-query").disabled = pullRequests.length === 0;
+        $("pr-query").setAttribute("aria-busy", String(hasMore));
+        if (resultsOpen) appendPullRequestResults(added);
+        else {
+          renderPullRequestPreview();
+          renderPullRequestStatus(matchingPullRequests());
+        }
       }
 
       async function loadRepoPullRequests(value, options) {
@@ -2277,6 +2339,8 @@
         const request = ++prRequest;
         const state = $("pr-state").value;
         pullRequests = [];
+        pullRequestsLoading = true;
+        pullRequestLoadWarning = null;
         if (options && options.clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
@@ -2285,15 +2349,15 @@
         $("pr-author-trigger").disabled = true;
         closeMenu("pr-author", false);
         $("pr-query").disabled = true;
+        $("pr-query").setAttribute("aria-busy", "true");
         hidePullRequestResults();
         $("pr-status").textContent = "Loading " + state + " pull requests…";
         const byNumber = new Map();
         let hasMore = true;
         let page = 1;
         try {
-          // Review mode promises one picker over the whole state-specific queue, so keep following
-          // GitHub's pages until it is exhausted. A repo/intent/auth change increments `prRequest`;
-          // the stale guard after every page then abandons this loop before it can repaint the UI.
+          // Publish each page before asking GitHub for the next one. The first page makes the picker
+          // usable; remaining pages expand the same queue without blocking selection.
           while (hasMore) {
             const response = await apiGet(
               "/api/repos/pulls?repo=" + encodeURIComponent(repo)
@@ -2304,7 +2368,11 @@
             if (request !== prRequest) return;
             if (!response.ok) {
               const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
-              showPullRequestError("Could not load pull requests" + detail + " Sign in for private repositories.");
+              showPullRequestPaginationError(
+                pullRequests.length === 0
+                  ? "Could not load pull requests" + detail + " Sign in for private repositories."
+                  : "Could not load more pull requests" + detail,
+              );
               return;
             }
             if (data) rememberViewerLogin(data.viewerLogin);
@@ -2314,17 +2382,19 @@
               if (pr) byNumber.set(pr.number, pr);
             }
             hasMore = data && data.hasMore === true;
+            publishPullRequestPage(byNumber, hasMore);
             page++;
           }
         } catch {
-          if (request === prRequest) showPullRequestError("Could not reach GitHub for pull requests.");
+          if (request === prRequest) {
+            showPullRequestPaginationError(
+              pullRequests.length === 0
+                ? "Could not reach GitHub for pull requests."
+                : "Could not reach GitHub for more pull requests.",
+            );
+          }
           return;
         }
-        if (request !== prRequest) return;
-        pullRequests = [...byNumber.values()];
-        renderPullRequestAuthors();
-        $("pr-query").disabled = pullRequests.length === 0;
-        renderPullRequestResults(false);
       }
 
       function scheduleRepoPullRequests() {
@@ -2396,6 +2466,17 @@
 
       $("pr-state-open").addEventListener("click", () => setPullRequestState("open"));
       $("pr-state-closed").addEventListener("click", () => setPullRequestState("closed"));
+
+      function flushPullRequestAuthorsBeforeOpen() {
+        if (pullRequestAuthorsDirty && $("pr-author-trigger").getAttribute("aria-expanded") !== "true") {
+          renderPullRequestAuthors();
+        }
+      }
+
+      $("pr-author-trigger").addEventListener("click", flushPullRequestAuthorsBeforeOpen, true);
+      $("pr-author-trigger").addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") flushPullRequestAuthorsBeforeOpen();
+      }, true);
 
       $("pr-query").addEventListener("input", () => {
         selectedPrNumber = null;
