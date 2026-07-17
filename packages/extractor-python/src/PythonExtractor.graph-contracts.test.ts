@@ -36,6 +36,21 @@ function findEdge(
   );
 }
 
+function findExternalEdge(
+  result: ExtractionResult,
+  kind: GraphEdge["kind"],
+  source: string,
+  target: string,
+): GraphEdge | undefined {
+  return result.edges.find(
+    (edge) =>
+      edge.kind === kind &&
+      edge.resolution === "external" &&
+      edge.source === source &&
+      edge.target === target,
+  );
+}
+
 describe("PythonExtractor graph contracts", () => {
   it("keeps external edges without counting any as dropped when includeExternal is enabled", async () => {
     await withProject(
@@ -54,6 +69,95 @@ describe("PythonExtractor graph contracts", () => {
         ]);
         expect(result.stats.edgeCountByResolution.external).toBe(2);
         expect(result.stats.externalCallsDropped).toBe(0);
+      },
+    );
+  });
+
+  it("uses public external type identities for annotations and typed receiver calls", async () => {
+    await withProject(
+      {
+        "agent.py": [
+          "from langgraph.graph.state import CompiledStateGraph as StateGraph",
+          "import langgraph.graph.state",
+          "",
+          "class Agent:",
+          "    _graph: StateGraph",
+          "",
+          "    async def astream(self, state: dict[str, object]):",
+          "        return self._graph.astream(state)",
+          "",
+          "def invoke(graph: StateGraph):",
+          "    return graph.ainvoke({})",
+          "",
+          "def invoke_qualified(graph: langgraph.graph.state.CompiledStateGraph):",
+          "    return graph.ainvoke({})",
+          "",
+        ].join("\n"),
+      },
+      async (root) => {
+        const result = await extract(root, { includeExternal: true });
+        const graphModule = "ext:python/langgraph.graph.state";
+        const graphType = `${graphModule}#CompiledStateGraph`;
+        const streamMethod = `${graphType}.astream`;
+        const invokeMethod = `${graphType}.ainvoke`;
+
+        expect(findExternalEdge(result, "imports", "py:agent", graphType)).toBeDefined();
+        expect(findExternalEdge(result, "imports", "py:agent", graphModule)).toBeDefined();
+        expect(findExternalEdge(result, "references", "py:agent#Agent", graphType)).toBeDefined();
+        expect(findExternalEdge(result, "references", "py:agent#invoke", graphType)).toBeDefined();
+        expect(findExternalEdge(result, "references", "py:agent#invoke_qualified", graphType)).toBeDefined();
+        expect(findExternalEdge(result, "calls", "py:agent#Agent.astream", streamMethod)).toBeDefined();
+        expect(findExternalEdge(result, "calls", "py:agent#invoke", invokeMethod)).toBeDefined();
+        expect(findExternalEdge(result, "calls", "py:agent#invoke_qualified", invokeMethod)).toBeDefined();
+        expect(result.edges.some((edge) => /#StateGraph(?:\.|$)/.test(edge.target))).toBe(false);
+
+        expect(result.flows?.["py:agent#Agent.astream"]).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ kind: "call", target: streamMethod, resolution: "external" }),
+          ]),
+        );
+      },
+    );
+  });
+
+  it("keeps internal annotated receivers resolved and broken local types unresolved", async () => {
+    await withProject(
+      {
+        "dependency.py": [
+          "class Graph:",
+          "    def run(self):",
+          "        return 1",
+          "",
+        ].join("\n"),
+        "consumer.py": [
+          "from dependency import Graph, Missing",
+          "",
+          "class UsesGraph:",
+          "    graph: Graph",
+          "    def run(self):",
+          "        return self.graph.run()",
+          "",
+          "class Broken:",
+          "    graph: Missing",
+          "    def run(self):",
+          "        return self.graph.run()",
+          "",
+        ].join("\n"),
+      },
+      async (root) => {
+        const result = await extract(root, { includeExternal: true, includeUnresolved: true });
+
+        expect(findEdge(result, "references", "py:consumer#UsesGraph", "py:dependency#Graph")).toBeDefined();
+        expect(findEdge(result, "calls", "py:consumer#UsesGraph.run", "py:dependency#Graph.run")).toBeDefined();
+        expect(result.edges.some((edge) => edge.target.startsWith("ext:python/dependency#Missing"))).toBe(false);
+        expect(
+          result.edges.some(
+            (edge) =>
+              edge.kind === "calls" &&
+              edge.source === "py:consumer#Broken.run" &&
+              edge.resolution === "unresolved",
+          ),
+        ).toBe(true);
       },
     );
   });

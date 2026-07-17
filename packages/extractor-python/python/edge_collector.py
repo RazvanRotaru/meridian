@@ -1,4 +1,4 @@
-"""AST traversal that emits calls, inheritance, imports, and value references."""
+"""AST traversal that emits calls, inheritance, imports, and type/value references."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ import ast
 
 from bindings import bound_names
 from definitions import FUNCTIONS, qualify
-from inference import parameter_names
+from inference import expression_name, parameter_names
 from project import resolve_from_module_path
-from resolve import external, resolve_base, resolve_callee, resolved
+from resolve import external, resolve_base, resolve_callee, resolve_type_reference, resolved
 from scope import ScopeBindings, bind_local, clone_scope
 from scope_flow import bind_simple, bind_statement, function_start, merge_scopes
 from symbols import SymbolTable
@@ -125,6 +125,8 @@ class EdgeCollector:
                     case.body, source, method_class, branch, closure_scope, definition_owner
                 )
             return
+        if isinstance(statement, ast.AnnAssign):
+            self.collect_annotation_references(statement.annotation, source, scope)
         self.collect_calls(statement, source, method_class, scope)
         self.visit_nested_definitions(
             statement, source, definition_owner, scope, closure_scope
@@ -157,6 +159,8 @@ class EdgeCollector:
         enclosing_scope: ScopeBindings,
     ) -> None:
         self.collect_definition_time_calls(function, qualname, definition_scope)
+        for annotation in callable_annotations(function):
+            self.collect_annotation_references(annotation, qualname, definition_scope)
         final_scope = self.table.scope_for(function, qualname, enclosing_scope, method_class)
         scope = function_start(
             function, enclosing_scope, method_class, self.table.module_scope
@@ -263,6 +267,17 @@ class EdgeCollector:
         for child in ast.iter_child_nodes(node):
             self.collect_references(child, source, class_name, scope)
 
+    def collect_annotation_references(
+        self,
+        annotation: ast.expr,
+        source: str | None,
+        scope: ScopeBindings,
+    ) -> None:
+        for type_ref, site in annotation_references(annotation):
+            target = resolve_type_reference(type_ref, self.table, scope)
+            if target["resolution"] != "unresolved":
+                self.append("reference", source, site, target)
+
     def collect_imports(self, tree: ast.Module) -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -271,7 +286,13 @@ class EdgeCollector:
             elif isinstance(node, ast.ImportFrom):
                 module = resolve_from_module_path(self.table.module_path, node)
                 if module:
-                    self.append("imports", None, node, module_target(module, self.table))
+                    target = module_target(module, self.table)
+                    if target["resolution"] == "resolved":
+                        self.append("imports", None, node, target)
+                    else:
+                        for alias in node.names:
+                            name = None if alias.name == "*" else alias.name
+                            self.append("imports", None, node, external(module, name))
 
     def append(self, kind: str, source: str | None, site: ast.AST, target: dict) -> None:
         self.edges.append(
@@ -300,6 +321,62 @@ def is_callable_target(target: dict, table: SymbolTable) -> bool:
     if target["resolution"] != "resolved" or not target.get("qualname"):
         return False
     return table.project.kind_of(target["modulePath"], target["qualname"]) in {"class", "function", "method"}
+
+
+def callable_annotations(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> list[ast.expr]:
+    positional = [*function.args.posonlyargs, *function.args.args, *function.args.kwonlyargs]
+    annotations = [parameter.annotation for parameter in positional if parameter.annotation]
+    if function.args.vararg and function.args.vararg.annotation:
+        annotations.append(function.args.vararg.annotation)
+    if function.args.kwarg and function.args.kwarg.annotation:
+        annotations.append(function.args.kwarg.annotation)
+    if function.returns:
+        annotations.append(function.returns)
+    return annotations
+
+
+def annotation_references(
+    annotation: ast.expr,
+    anchor: ast.AST | None = None,
+) -> list[tuple[str, ast.AST]]:
+    site = anchor or annotation
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        try:
+            parsed = ast.parse(annotation.value, mode="eval")
+        except SyntaxError:
+            return []
+        return annotation_references(parsed.body, site)  # type: ignore[attr-defined]
+    if isinstance(annotation, (ast.Name, ast.Attribute)):
+        name = expression_name(annotation)
+        return [(name, site)] if name else []
+    if isinstance(annotation, ast.BinOp) and isinstance(annotation.op, ast.BitOr):
+        return [
+            *annotation_references(annotation.left, anchor),
+            *annotation_references(annotation.right, anchor),
+        ]
+    if isinstance(annotation, ast.Subscript):
+        references = annotation_references(annotation.value, anchor)
+        wrapper = expression_name(annotation.value)
+        wrapper_name = wrapper.split(".")[-1] if wrapper else ""
+        if wrapper_name == "Literal":
+            return references
+        elements = annotation.slice.elts if isinstance(annotation.slice, ast.Tuple) else [annotation.slice]
+        if wrapper_name == "Annotated":
+            elements = elements[:1]
+        for element in elements:
+            references.extend(annotation_references(element, anchor))
+        return references
+    if isinstance(annotation, (ast.Tuple, ast.List)):
+        return [
+            reference
+            for element in annotation.elts
+            for reference in annotation_references(element, anchor)
+        ]
+    if isinstance(annotation, ast.Starred):
+        return annotation_references(annotation.value, anchor)
+    return []
 
 
 def source_range(node: ast.AST) -> dict:

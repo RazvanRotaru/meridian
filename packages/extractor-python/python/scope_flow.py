@@ -163,7 +163,15 @@ def branch_scope(base: ScopeBindings, body: list[ast.stmt], module_path: str, pa
 
 
 def binding_names(scope: ScopeBindings) -> set[str]:
-    return set().union(scope.from_imports, scope.module_imports, scope.local_types, scope.definitions, scope.shadowed, scope.receivers)
+    return set().union(
+        scope.from_imports,
+        scope.module_imports,
+        scope.module_import_paths,
+        scope.local_types,
+        scope.definitions,
+        scope.shadowed,
+        scope.receivers,
+    )
 
 
 def binding_fact(scope: ScopeBindings, name: str):
@@ -176,14 +184,24 @@ def binding_fact(scope: ScopeBindings, name: str):
     if name in scope.from_imports:
         return "from", scope.from_imports[name]
     if name in scope.module_imports:
-        return "module", scope.module_imports[name]
+        return (
+            "module",
+            scope.module_imports[name],
+            frozenset(scope.module_import_paths.get(name, ())),
+        )
     return ("shadowed",) if name in scope.shadowed else ("missing",)
 
 
 def replace_scope(target: ScopeBindings, source: ScopeBindings) -> None:
     for field in (
-        "from_imports", "module_imports", "local_types", "definitions",
-        "definition_origins", "shadowed", "receivers",
+        "from_imports",
+        "module_imports",
+        "module_import_paths",
+        "local_types",
+        "definitions",
+        "definition_origins",
+        "shadowed",
+        "receivers",
     ):
         setattr(target, field, getattr(source, field))
 
@@ -227,6 +245,9 @@ def copy_binding(name: str, source: ScopeBindings, target: ScopeBindings) -> Non
         bind_from_import(name, source.from_imports[name], target)
     elif name in source.module_imports:
         bind_module_import(name, source.module_imports[name], target)
+        target.module_import_paths[name] = set(
+            source.module_import_paths.get(name, (source.module_imports[name],))
+        )
 
 
 def walk_binding_nodes(root: ast.AST):
