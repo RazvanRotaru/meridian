@@ -60,7 +60,9 @@ export class RecentAllocationBudget {
     this.allocations.set(handle, { residentBytes: bytes, evict });
     this.residentBytes += bytes;
     this.evictToLimits();
-    return handle;
+    // A newly registered allocation can itself be the oldest entry (notably when the budget is
+    // zero) and therefore be evicted synchronously. Never hand its caller a dead reservation.
+    return this.allocations.has(handle) ? handle : undefined;
   }
 
   /** Promote an inactive allocation to the global MRU end. Unknown/released handles are ignored. */
@@ -189,6 +191,23 @@ export class RecentViewProjectionCache<Key, Projection> {
   }
 
   /**
+   * Make a retained projection active while permanently releasing the previously active view.
+   *
+   * Back-only navigation uses this ownership transfer because the view being left has been popped
+   * from its history and can no longer be reached. On a cache miss, the previous active view is
+   * still discarded so the caller can rebuild the requested coordinate without temporarily
+   * pinning an unreachable decoded scene outside the inactive allocation budget.
+   */
+  activateAndDiscardPrevious(key: Key): Projection | undefined {
+    if (this.isActive(key)) {
+      return this.activeEntry?.projection;
+    }
+    const next = this.removeRecent(key);
+    this.activeEntry = next;
+    return next?.projection;
+  }
+
+  /**
    * Install a freshly decoded response as the active projection. `residentBytes` is an explicit,
    * conservative heap estimate supplied by the decoder (for example response bytes multiplied by
    * an empirically chosen expansion factor that includes the decoded projection and its indexes).
@@ -236,6 +255,11 @@ export class RecentViewProjectionCache<Key, Projection> {
     const active = this.activeEntry;
     this.activeEntry = undefined;
     if (active !== undefined) this.addRecent(active);
+  }
+
+  /** Permanently release the active projection without offering it to the inactive LRU. */
+  discardActive(): void {
+    this.activeEntry = undefined;
   }
 
   /** Release the active projection and every decoded recent view. */

@@ -1,15 +1,19 @@
-/** One-request child entry for full-artifact mock overlay/trace derivation. */
+/**
+ * One-request child entry for full-artifact mock overlay/trace derivation.
+ *
+ * This entry deliberately has no runtime imports from CLI TypeScript modules. Newer Node runtimes
+ * can therefore execute the source with native type stripping; older supported runtimes use the
+ * tsx loader. Packaged execution always uses the bundled JavaScript entry.
+ */
 
-import { writeFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { buildMockOverlay, buildMockTraceBundle } from "@meridian/core/mock";
-import { telemetryEnvironmentSchema } from "@meridian/core";
-import { readJsonFile } from "../json-io";
-import { validateOrThrow } from "../validation";
+import { telemetryEnvironmentSchema, validateArtifact } from "@meridian/core";
 import {
   isStandaloneMockWorkerRequest,
   MAX_STANDALONE_MOCK_RESPONSE_BYTES,
   type StandaloneMockWorkerResponse,
-} from "./standalone-view-mock-worker";
+} from "./standalone-view-mock-worker-protocol.js";
 
 let finished = false;
 
@@ -34,8 +38,12 @@ async function handle(value: unknown): Promise<void> {
     reply({ type: "error", reason: "invalid-request" });
     return;
   }
+  const artifact = await readArtifact(value.artifactPath);
+  if (!artifact) {
+    reply({ type: "error", reason: "invalid-artifact" });
+    return;
+  }
   try {
-    const artifact = validateOrThrow(readJsonFile(value.artifactPath), "standalone view artifact").artifact;
     const body = value.kind === "overlay"
       ? buildMockOverlay(artifact, environment.data)
       : buildMockTraceBundle(artifact, environment.data);
@@ -48,7 +56,16 @@ async function handle(value: unknown): Promise<void> {
     await writeFile(value.outputPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
     reply({ type: "result", outputPath: value.outputPath, bytes });
   } catch {
-    reply({ type: "error", reason: "invalid-artifact" });
+    reply({ type: "error", reason: "internal" });
+  }
+}
+
+async function readArtifact(path: string) {
+  try {
+    const validation = validateArtifact(JSON.parse(await readFile(path, "utf8")));
+    return validation.ok ? validation.artifact : undefined;
+  } catch {
+    return undefined;
   }
 }
 

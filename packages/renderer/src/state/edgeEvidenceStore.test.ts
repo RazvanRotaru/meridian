@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, GraphNode } from "@meridian/core";
+import { SOURCE_TEXT_HEADERS, type GraphArtifact, type GraphNode } from "@meridian/core";
 import type { EdgeEvidenceContext } from "../graph/edgeEvidence";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore, EDGE_EVIDENCE_CONTEXT_LINES, type StoreDependencies } from "./store";
@@ -59,6 +59,28 @@ function context(
   };
 }
 
+function sourceResponse(payload: {
+  code: string;
+  startLine?: number;
+  lineCount?: number;
+  truncated?: boolean;
+}): Response {
+  const startLine = payload.startLine ?? 1;
+  const lineCount = payload.lineCount ?? (payload.code.length === 0 ? 0 : payload.code.split("\n").length);
+  const body = new TextEncoder().encode(payload.code);
+  return new Response(body, {
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": String(body.byteLength),
+      [SOURCE_TEXT_HEADERS.version]: "1",
+      [SOURCE_TEXT_HEADERS.startLine]: String(startLine),
+      [SOURCE_TEXT_HEADERS.endLine]: String(lineCount === 0 ? startLine - 1 : startLine + lineCount - 1),
+      [SOURCE_TEXT_HEADERS.lineCount]: String(lineCount),
+      [SOURCE_TEXT_HEADERS.truncated]: payload.truncated === true ? "1" : "0",
+    },
+  });
+}
+
 beforeEach(() => {
   vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
 });
@@ -69,7 +91,7 @@ afterEach(() => {
 
 describe("edge source evidence store", () => {
   it("opens contextual source with generous context and exact focused rows", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({
       code: Array.from({ length: 163 }, (_, index) => `line ${index + 20}`).join("\n"),
       startLine: 20,
       truncated: false,
@@ -96,7 +118,7 @@ describe("edge source evidence store", () => {
   });
 
   it("navigates between same-edge occurrences and loads the selected file on demand", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "one\ntwo\nthree", truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "one\ntwo\nthree", truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     const contexts = [context(), context("src/b.ts", 12, 12, "registers")];
@@ -114,7 +136,7 @@ describe("edge source evidence store", () => {
   });
 
   it("maps base-projection evidence into current PR-head coordinates before highlighting", async () => {
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({
       code: Array.from({ length: 400 }, (_, index) => `head ${index + 1}`).join("\n"),
       truncated: false,
     }));
@@ -151,7 +173,7 @@ describe("edge source evidence store", () => {
   });
 
   it("closes edge evidence without dismissing an unrelated source panel", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", truncated: false })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sourceResponse({ code: "one", truncated: false })));
     const store = freshStore();
     await store.getState().showEdgeEvidence([context()]);
 
@@ -171,7 +193,7 @@ describe("edge source evidence store", () => {
   });
 
   it("vetoes dock unmount until its dirty line composer is discarded", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", startLine: 100, truncated: false })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sourceResponse({ code: "one", startLine: 100, truncated: false })));
     const store = freshStore();
     store.setState({
       review: {
@@ -202,20 +224,26 @@ describe("edge source evidence store", () => {
 
   it("cannot resurrect contextual source after the dock closes during a request", async () => {
     let resolve!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise<Response>((done) => { resolve = done; })));
+    let transportSignal: AbortSignal | undefined;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((_input: RequestInfo | URL, init?: RequestInit) => {
+      transportSignal = init?.signal ?? undefined;
+      return new Promise<Response>((done) => { resolve = done; });
+    }));
     const store = freshStore();
 
     const pending = store.getState().showEdgeEvidence([context()]);
     expect(store.getState().codeView?.loading).toBe(true);
+    await vi.waitFor(() => expect(transportSignal).toBeDefined());
     store.getState().closeEdgeEvidence();
-    resolve(Response.json({ code: "late", truncated: false }));
+    await vi.waitFor(() => expect(transportSignal?.aborted).toBe(true));
+    resolve(sourceResponse({ code: "late", truncated: false }));
     await pending;
 
     expect(store.getState().codeView).toBeNull();
   });
 
   it("clears prior contextual source when the newly inspected wire has no source sites", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", truncated: false })));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sourceResponse({ code: "one", truncated: false })));
     const store = freshStore();
     await store.getState().showEdgeEvidence([context()]);
 

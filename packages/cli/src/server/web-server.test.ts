@@ -14,8 +14,12 @@ import type { AddressInfo } from "node:net";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
+import { EventEmitter } from "node:events";
 import { createWebServer, handleSyntheticExecution } from "./web-server";
-import type { Context } from "./web-server";
+import { defaultGraphProjectionRequest } from "./graph-projection-bundle";
+import type { Context, WebServerHandle } from "./web-server";
+import type { GraphCapabilityHandle } from "./graph-capability-store";
+import { removeEntry } from "./web-cache-storage";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -39,7 +43,7 @@ interface ProjectionEnvelope {
 }
 
 let rendererRoot: string;
-let server: Server;
+let server: WebServerHandle;
 let base: string;
 
 beforeAll(async () => {
@@ -50,13 +54,14 @@ beforeAll(async () => {
     cwd: REPO_ROOT,
     source: "sindresorhus/type-fest",
     allowSyntheticExecution: true,
+    cacheRoot: join(rendererRoot, "cache"),
   });
-  base = await listenEphemeral(server);
+  base = await listenEphemeral(server.server);
 });
 
-afterAll(() => {
-  server.close();
-  rmSync(rendererRoot, { recursive: true, force: true });
+afterAll(async () => {
+  await server.close();
+  removeEntry(rendererRoot);
 });
 
 describe("createWebServer landing + errors", () => {
@@ -181,8 +186,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(view).toContain(`"traceUrl":"/api/traces?id=${result.id}"`);
     expect(view).toContain(`"syntheticExecutionUrl":"/api/synthetic-executions?id=${result.id}"`);
     expect(view).toContain('"id":"place-order-happy"');
+    expect(view).toContain(`"projectionGraphId":"${result.id}"`);
     expect(view).toContain(`"projectionManifestUrl":"/api/graph/manifest?id=${result.id}"`);
     expect(view).toContain(`"projectionUrl":"/api/graph/projection?id=${result.id}"`);
+    expect(view).toContain(`"graphSearchUrl":"/api/graph/search?id=${result.id}"`);
     expect(view).not.toContain('"graphUrl"');
     expect(view).toContain('"hasOverlay":false');
     expect(view).toContain('"telemetrySources":[{"id":"demo"');
@@ -414,13 +421,8 @@ async function projectionFor(
   overrides: Partial<{ depth: number; includeTests: boolean }> = {},
 ): Promise<ProjectionEnvelope> {
   const response = await post(`/api/graph/projection?id=${id}`, {
-    view: "modules",
-    filePaths: [],
-    focusIds: [],
-    expandedIds: [],
-    extraIds: [],
+    ...defaultGraphProjectionRequest(),
     depth: overrides.depth ?? 1,
-    radius: 0,
     includeTests: overrides.includeTests ?? false,
   });
   expect(response.status).toBe(200);
@@ -453,25 +455,73 @@ function githubExecutionCtx(options: { allow: boolean; runtime: boolean; withSce
     mode: "sandboxed-pr" as const,
     provenance: { repository: "octo/repo", headSha: "a".repeat(40) },
   };
-  const ctx = {
-    localGraphFiles: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map(),
-    inspectionSnapshots: {
-      resolveArtifact: () => ({ path: "/tmp/pr-artifact.json", descriptor: { source: { metadata: source } } }),
-      resolveSource: () => ({ sourceDir: "/tmp/pr-source", metadata: source }),
-      resolveSyntheticCapability: () => ({
-        capability: {
-          version: 1,
-          state: scenarios.length > 0 ? "ready" : "absent",
-          scenarios,
-          sourceFingerprint: scenarios.length > 0 ? "f".repeat(64) : null,
-          artifactCommit: trust.provenance.headSha,
-          warning: null,
-        },
+  const capability: GraphCapabilityHandle = {
+    descriptor: {
+      formatVersion: 10,
+      id: "prepared-head",
+      publishedAt: "2026-07-17T00:00:00.000Z",
+      graphSummary: {
+        schemaVersion: "1.1.0",
+        generatedAt: "2026-07-17T00:00:00.000Z",
+        nodeCount: 1,
+        edgeCount: 0,
+      },
+      artifact: {
+        path: "artifacts/pr/generations/head/artifact.json",
+        projectionPath: "artifacts/pr/generations/head/graph-projection",
+        generationPath: "artifacts/pr/generations/head",
+        bytes: 1,
+        sha256: "a".repeat(64),
+        projectionBytes: 1,
+        projectionSha256: "b".repeat(64),
+        projectionContentId: "c".repeat(64),
+        sealSha256: "d".repeat(64),
+        revision: { kind: "git", commit: trust.provenance.headSha },
+        vcsBranch: "feature/review",
+      },
+      source: {
+        kind: "managed-cache",
+        rootPath: "sources/pr",
+        subdir: "",
+        metadata: source,
+        owner: null,
+      },
+      synthetic: {
+        path: "artifacts/pr/generations/head/synthetic-capability.json",
+        sha256: "e".repeat(64),
         executionTrust: trust,
-      }),
+      },
+      reviewContext: null,
     },
+    artifactPath: "/tmp/pr-artifact.json",
+    projectionDirectory: "/tmp/pr-projection",
+    generationDirectory: "/tmp/pr-generation",
+    source: {
+      rootDir: "/tmp/pr-source",
+      sourceDir: "/tmp/pr-source",
+      subdir: "",
+      metadata: source,
+      owner: null,
+    },
+    synthetic: {
+      capability: {
+        version: 1,
+        state: scenarios.length > 0 ? "ready" : "absent",
+        scenarios,
+        sourceFingerprint: scenarios.length > 0 ? "f".repeat(64) : null,
+        artifactCommit: trust.provenance.headSha,
+        warning: null,
+      },
+      executionTrust: trust,
+    },
+    review: null,
+    signal: new AbortController().signal,
+    renew: async () => {},
+    release: async () => {},
+  };
+  const ctx = {
+    shutdownSignal: new AbortController().signal,
+    graphCapabilities: { acquire: async () => capability },
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: options.allow,
     syntheticPrSandboxRuntimeSupported: () => options.runtime,
@@ -491,7 +541,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
   }))]), { headers }) as unknown as IncomingMessage;
   let status = 0;
   let body = "";
-  const response = {
+  const response = Object.assign(new EventEmitter(), {
     writeHead(code: number) {
       status = code;
       return response;
@@ -499,7 +549,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
     end(chunk?: unknown) {
       body += chunk === undefined ? "" : String(chunk);
     },
-  } as unknown as ServerResponse;
+  }) as unknown as ServerResponse;
 
   await handleSyntheticExecution(ctx, request, response, id);
   return { status, json: JSON.parse(body) as unknown };

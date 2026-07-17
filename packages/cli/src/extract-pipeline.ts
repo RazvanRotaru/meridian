@@ -2,9 +2,9 @@
  * The shared "source directory -> validated GraphArtifact" pipeline.
  *
  * `generate` and `web` both need detect-extractors -> extract -> stamp header -> validate; only
- * their I/O differs (generate writes a file, web keeps the artifact in memory). Centralizing it
- * here means one place enforces the fail-closed rule: a validation error throws before any
- * caller can persist or serve a half-formed graph.
+ * their publication differs (`generate` writes its destination while `web` seals an immutable
+ * cache generation). Centralizing it here means one place enforces the fail-closed rule: a
+ * validation error throws before any caller can persist or serve a half-formed graph.
  */
 
 import {

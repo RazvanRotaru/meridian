@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readBootConfig } from "./bootConfig";
+import { prApiUrlsForGraph, readBootConfig } from "./bootConfig";
 
 const BASE_CONFIG = {
+  projectionGraphId: "graph-1",
   projectionManifestUrl: "/api/graph/manifest?id=graph-1",
   projectionUrl: "/api/graph/projection?id=graph-1",
+  graphSearchUrl: "/api/graph/search?id=graph-1",
   metaUrl: "/api/meta?id=graph-1",
   overlayUrl: "/api/overlay?id=graph-1",
   traceUrl: "/api/traces?id=graph-1",
@@ -240,6 +242,14 @@ describe("telemetry boot config", () => {
 });
 
 describe("graph projection boot config", () => {
+  it("binds PR APIs to the explicit graph identity without inspecting endpoint URLs", () => {
+    expect(prApiUrlsForGraph("graph-explicit")).toMatchObject({
+      prsUrl: "/api/prs?id=graph-explicit",
+      prFilesUrl: "/api/prs/files?id=graph-explicit",
+      prReviewUrl: "/api/prs/review?id=graph-explicit",
+    });
+  });
+
   it("accepts only a same-origin prepared-review endpoint in a GitHub session", () => {
     const githubSource = { repository: "acme/shop", subdir: "packages/api" };
     vi.stubGlobal("window", {
@@ -266,25 +276,40 @@ describe("graph projection boot config", () => {
     }
   });
 
-  it("requires both projection endpoints in every injected session", () => {
+  it("requires every projection capability endpoint in an injected session", () => {
     vi.stubGlobal("window", {
       __MERIDIAN__: {
         ...BASE_CONFIG,
         projectionManifestUrl: "/api/graph/manifest?id=graph-1",
         projectionUrl: "/api/graph/projection?id=graph-1",
+        graphSearchUrl: "/api/graph/search?id=graph-1",
       },
     });
 
     expect(readBootConfig().graphSource).toEqual({
       kind: "projections",
+      graphId: "graph-1",
       manifestUrl: "/api/graph/manifest?id=graph-1",
       projectionUrl: "/api/graph/projection?id=graph-1",
+      searchUrl: "/api/graph/search?id=graph-1",
     });
 
     const { projectionUrl: _projectionUrl, ...missingProjectionUrl } = BASE_CONFIG;
     vi.stubGlobal("window", { __MERIDIAN__: missingProjectionUrl });
     expect(() => readBootConfig()).toThrow(
       "missing current field projectionUrl",
+    );
+
+    const { graphSearchUrl: _graphSearchUrl, ...missingSearchUrl } = BASE_CONFIG;
+    vi.stubGlobal("window", { __MERIDIAN__: missingSearchUrl });
+    expect(() => readBootConfig()).toThrow(
+      "missing current field graphSearchUrl",
+    );
+
+    const { projectionGraphId: _projectionGraphId, ...missingGraphId } = BASE_CONFIG;
+    vi.stubGlobal("window", { __MERIDIAN__: missingGraphId });
+    expect(() => readBootConfig()).toThrow(
+      "missing current field projectionGraphId",
     );
   });
 });

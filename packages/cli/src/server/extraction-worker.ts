@@ -44,11 +44,15 @@ const DEFAULT_EXTRACTION_TIMEOUT_MS = 20 * 60_000;
 export interface ExtractionWorkerOptions {
   /** Caller-owned unpublished path. The child creates this file and the caller publishes it. */
   artifactOutputPath: string;
+  /** Production cache root whose lifecycle authority protects the unpublished output stage. */
+  lifecycleCacheRoot: string;
   /** Ephemeral credential sent only in the first private IPC message. */
   token?: string;
   signal?: AbortSignal;
-  /** Internal: this extraction already owns a bounded outer PR lifecycle slot. */
+  /** Internal: this extraction already owns a bounded upstream lifecycle slot. */
   admitted?: boolean;
+  /** Internal, non-secret scheduler identity. Never sent to the child process. */
+  schedulingGroup?: string;
   /** Test/dev override. Production resolves the colocated built worker automatically. */
   workerEntry?: string | URL;
   /** Test/dev override for loading a source worker; never put credentials here. */
@@ -62,7 +66,10 @@ export interface ExtractionWorkerOptions {
 
 export type ExtractionWorkerRunner = (
   request: SerializablePipelineRequest,
-  options: Pick<ExtractionWorkerOptions, "artifactOutputPath" | "token" | "signal" | "admitted">,
+  options: Pick<
+    ExtractionWorkerOptions,
+    "artifactOutputPath" | "token" | "signal" | "admitted" | "schedulingGroup"
+  >,
 ) => Promise<ExtractionWorkerResult>;
 
 /** Fork one worker, send one request, and wait for both its response and process exit. */
@@ -77,6 +84,7 @@ export function runExtractionWorker(
     type: "extract",
     request: serializableRequest(request),
     artifactOutputPath: options.artifactOutputPath,
+    lifecycleCacheRoot: options.lifecycleCacheRoot,
     ...(options.token ? { token: options.token } : {}),
   };
   return runExtractionProcess(
@@ -138,6 +146,7 @@ function runExtractionProcess(
     let terminating = false;
     let settled = false;
     let stderrTail: Buffer = Buffer.alloc(0);
+    const callerSignal = options.signal;
 
     const terminate = () => {
       if (terminating) return;
@@ -152,7 +161,8 @@ function runExtractionProcess(
       killTimer = setTimeout(() => signalProcessTree(child, "SIGKILL"), terminateGraceMs);
     };
     const abort = () => {
-      terminalReason = abortReason(options.signal!);
+      if (callerSignal === undefined) return;
+      terminalReason = abortReason(callerSignal);
       terminate();
     };
     const failTransport = (message: string) => {
@@ -162,12 +172,12 @@ function runExtractionProcess(
     const cleanup = () => {
       if (killTimer) clearTimeout(killTimer);
       if (timeoutTimer) clearTimeout(timeoutTimer);
-      options.signal?.removeEventListener("abort", abort);
+      callerSignal?.removeEventListener("abort", abort);
       // The captured tail is deliberately not logged or returned: child stderr is untrusted and
       // may contain source or credentials. Retaining only a tail prevents memory amplification.
       stderrTail = Buffer.alloc(0);
     };
-    options.signal?.addEventListener("abort", abort, { once: true });
+    callerSignal?.addEventListener("abort", abort, { once: true });
     timeoutTimer = setTimeout(() => {
       if (terminalReason !== undefined || settled) return;
       terminalReason = new CliError(

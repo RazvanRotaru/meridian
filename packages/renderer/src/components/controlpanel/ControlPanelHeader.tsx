@@ -6,8 +6,6 @@
 
 import { useMemo } from "react";
 import type { GraphIndex } from "../../graph/graphIndex";
-import { frontierRoots } from "../../derive/moduleFrontier";
-import { buildModuleGraph } from "../../derive/moduleGraph";
 import { useBlueprint } from "../../state/StoreContext";
 import { TOKENS } from "./panelKit";
 
@@ -37,11 +35,10 @@ interface Counts {
 // other languages are counted together. Package-less module fallback cards remain files, not
 // pretend packages.
 export function countKinds(index: GraphIndex): Counts {
-  const graph = buildModuleGraph(index);
-  const packages = frontierRoots(index, null, graph)
-    .filter((id) => index.nodesById.get(id)?.kind === "package")
-    .length;
-  return { packages, files: graph.fileIds.size };
+  return {
+    packages: index.structure.repositorySummary.overviewPackageCount,
+    files: index.structure.repositorySummary.sourceFileCount,
+  };
 }
 
 function subtitle(counts: Counts): string {

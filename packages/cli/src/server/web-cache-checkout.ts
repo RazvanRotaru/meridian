@@ -1,14 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, realpathSync, renameSync, statSync, utimesSync } from "node:fs";
-import { dirname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import {
-  buildCloneArgs,
   canonicalRepositoryUrl,
   gitTokenForRemote,
   parseGitHubSource,
-} from "./clone";
+} from "./repository-source";
 import type { GenerateRequest } from "./web-request";
-import { runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import { WebError } from "./web-error";
 import {
   createPrivateDirectory,
@@ -20,10 +19,16 @@ import {
   touchMetadata,
   writePrivateJson,
 } from "./web-cache-storage";
-import { RepositoryMirrorStore, repositoryMirrorSecurityKey } from "./repository-mirror";
-import type { RepositoryWorktreeLease } from "./repository-mirror";
+import { repositoryMirrorSecurityKey } from "./repository-mirror";
+import type {
+  PrepareRepositoryWorktree,
+  RepositorySourceOperationLease,
+  RepositorySourceLeaseReference,
+  RepositoryWorktreeLease,
+} from "./repository-mirror";
+import { withOwnershipCleanup } from "./ownership-cleanup";
 
-const CHECKOUT_FORMAT_VERSION = 3;
+const CHECKOUT_FORMAT_VERSION = 4;
 // This version belongs to repository identity, not checkout metadata; changing it intentionally
 // moves repositories into a new cache namespace.
 const REPOSITORY_IDENTITY_VERSION = 2;
@@ -31,6 +36,7 @@ const CHECKOUT_LOCK_TIMEOUT_MS = 30_000;
 const CHECKOUT_LOCK_POLL_MS = 25;
 const CHECKOUT_LOCK_STALE_MS = 10 * 60_000;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+const CHECKOUT_ALIAS_TTL_MS = 30 * 24 * 60 * 60_000;
 
 export interface CachedCheckout {
   branch?: string;
@@ -39,6 +45,26 @@ export interface CachedCheckout {
   repoDir: string;
   repositoryKey: string;
   remoteUrl: string;
+  sourceLease: RepositorySourceLeaseReference;
+  /** Transient owner held through extraction and capability adoption. */
+  sourceOperation: RepositorySourceOperationLease;
+}
+
+/** The checkout cache depends only on the lease-producing mirror boundary. */
+export interface RepositoryMirrorPreparer {
+  prepare(request: PrepareRepositoryWorktree): Promise<RepositoryWorktreeLease>;
+  retainSource(
+    reference: RepositorySourceLeaseReference,
+    expectedWorktreeDir: string,
+    owner: string,
+    retainedUntilMs: number,
+  ): Promise<boolean>;
+  acquireSource(
+    reference: RepositorySourceLeaseReference,
+    expectedWorktreeDir: string,
+    purpose: string,
+    signal?: AbortSignal,
+  ): Promise<RepositorySourceOperationLease>;
 }
 
 interface CheckoutMetadata {
@@ -46,8 +72,14 @@ interface CheckoutMetadata {
   repositoryKey: string;
   commit: string;
   remoteUrl: string;
-  sourceRoot?: string;
-  leaseMetadata?: string;
+  sourceRoot: string;
+  leaseMetadata: string;
+  sourceLease: RepositorySourceLeaseReference;
+}
+
+interface ValidCheckout {
+  repoDir: string;
+  sourceLease: RepositorySourceLeaseReference;
 }
 
 interface AdvertisedRevision {
@@ -60,10 +92,10 @@ export async function checkoutFor(
   cacheRoot: string,
   request: GenerateRequest,
   cwd: string,
+  repositoryMirrors: RepositoryMirrorPreparer,
   token?: string,
-  onClone: () => void | Promise<void> = () => {},
+  onPrepare: () => void | Promise<void> = () => {},
   tokenIsExplicit = false,
-  repositoryMirrors?: RepositoryMirrorStore,
   signal?: AbortSignal,
 ): Promise<CachedCheckout> {
   const { advertised, gitToken, parent, remoteUrl, repositoryKey } = await checkoutIdentity(
@@ -74,13 +106,30 @@ export async function checkoutFor(
     cacheRoot, advertisedEntry, repositoryKey, advertised.commit, remoteUrl, signal,
   );
   if (cachedRepo) {
+    const sourceOperation = await retainCheckoutSource(
+      repositoryMirrors,
+      cachedRepo.sourceLease,
+      cachedRepo.repoDir,
+      repositoryKey,
+      advertised.commit,
+      signal,
+    );
     touchMetadata(join(advertisedEntry, "metadata.json"));
-    touchMetadata(cachedRepo);
-    return { branch: advertised.branch, commit: advertised.commit, cache: "hit", repoDir: cachedRepo, repositoryKey, remoteUrl };
+    touchMetadata(cachedRepo.repoDir);
+    return {
+      branch: advertised.branch,
+      commit: advertised.commit,
+      cache: "hit",
+      repoDir: cachedRepo.repoDir,
+      repositoryKey,
+      remoteUrl,
+      sourceLease: cachedRepo.sourceLease,
+      sourceOperation,
+    };
   }
-  await onClone();
-  return cloneCheckout(
-    cacheRoot, parent, repositoryKey, remoteUrl, request.ref, advertised, gitToken, repositoryMirrors, signal,
+  await onPrepare();
+  return prepareCheckout(
+    cacheRoot, parent, repositoryKey, remoteUrl, advertised, gitToken, repositoryMirrors, signal,
   );
 }
 
@@ -88,6 +137,7 @@ export async function probeCheckout(
   cacheRoot: string,
   request: GenerateRequest,
   cwd: string,
+  repositoryMirrors: RepositoryMirrorPreparer,
   token?: string,
   tokenIsExplicit = false,
 ): Promise<CachedCheckout | null> {
@@ -100,8 +150,24 @@ export async function probeCheckout(
     return null;
   }
   touchMetadata(join(entry, "metadata.json"));
-  touchMetadata(repoDir);
-  return { branch: advertised.branch, commit: advertised.commit, cache: "hit", repoDir, repositoryKey, remoteUrl };
+  touchMetadata(repoDir.repoDir);
+  const sourceOperation = await retainCheckoutSource(
+    repositoryMirrors,
+    repoDir.sourceLease,
+    repoDir.repoDir,
+    repositoryKey,
+    advertised.commit,
+  );
+  return {
+    branch: advertised.branch,
+    commit: advertised.commit,
+    cache: "hit",
+    repoDir: repoDir.repoDir,
+    repositoryKey,
+    remoteUrl,
+    sourceLease: repoDir.sourceLease,
+    sourceOperation,
+  };
 }
 
 async function checkoutIdentity(
@@ -130,64 +196,62 @@ async function checkoutIdentity(
   };
 }
 
-async function cloneCheckout(
+async function prepareCheckout(
   cacheRoot: string,
   parent: string,
   repositoryKey: string,
   remoteUrl: string,
-  ref: string | undefined,
   advertised: AdvertisedRevision,
   token: string | undefined,
-  repositoryMirrors?: RepositoryMirrorStore,
+  repositoryMirrors: RepositoryMirrorPreparer,
   signal?: AbortSignal,
 ): Promise<CachedCheckout> {
   const stage = createStageDirectory(parent);
-  let stagedRepo = join(stage, "repo");
+  const destination = join(parent, advertised.commit);
   let mirrorLease: RepositoryWorktreeLease | undefined;
+  let sourceOperation: RepositorySourceOperationLease | undefined;
+  let wonPublication = false;
   try {
-    if (repositoryMirrors) {
-      const mirrorRemoteUrl = canonicalRepositoryUrl(remoteUrl);
-      mirrorLease = await repositoryMirrors.prepare({
-        repositoryKey: repositoryMirrorSecurityKey(repositoryCacheKey(mirrorRemoteUrl), token),
-        remoteUrl: mirrorRemoteUrl,
-        head: { ref: advertised.remoteRef, oid: advertised.commit },
-        base: { ref: advertised.remoteRef, oid: advertised.commit },
-        jobId: `base:${advertised.commit}`,
-        token,
-        ...(signal ? { signal } : {}),
-      });
-      stagedRepo = mirrorLease.worktreeDir;
-    } else {
-      await runGitClone(buildCloneArgs(remoteUrl, stagedRepo, { ref, token }), token, {
-        ...(signal ? { signal } : {}),
-      });
-    }
+    const mirrorRemoteUrl = canonicalRepositoryUrl(remoteUrl);
+    mirrorLease = await repositoryMirrors.prepare({
+      repositoryKey: repositoryMirrorSecurityKey(repositoryCacheKey(mirrorRemoteUrl), token),
+      remoteUrl: mirrorRemoteUrl,
+      head: { ref: advertised.remoteRef, oid: advertised.commit },
+      base: { ref: advertised.remoteRef, oid: advertised.commit },
+      jobId: `base:${advertised.commit}`,
+      token,
+      ...(signal ? { signal } : {}),
+    });
+    const stagedRepo = mirrorLease.worktreeDir;
     const commit = requireCommit((await runGit(["rev-parse", "HEAD"], {
       cwd: stagedRepo,
       ...(signal ? { signal } : {}),
     })).trim());
+    if (commit !== advertised.commit) {
+      throw new WebError(409, "repository mirror prepared an unexpected revision");
+    }
     const metadata: CheckoutMetadata = {
       formatVersion: CHECKOUT_FORMAT_VERSION,
       repositoryKey,
       commit,
       remoteUrl,
-      ...(mirrorLease ? {
-        sourceRoot: cacheRelativePath(cacheRoot, mirrorLease.worktreeDir),
-        leaseMetadata: cacheRelativePath(
-          cacheRoot,
-          join(dirname(dirname(mirrorLease.worktreeDir)), "leases", `${mirrorLease.leaseId}.json`),
-        ),
-      } : {}),
+      sourceRoot: cacheRelativePath(cacheRoot, mirrorLease.worktreeDir),
+      leaseMetadata: cacheRelativePath(
+        cacheRoot,
+        join(dirname(dirname(mirrorLease.worktreeDir)), "leases", `${mirrorLease.leaseId}.json`),
+      ),
+      sourceLease: {
+        repositoryDigest: mirrorLease.repositoryDigest,
+        leaseId: mirrorLease.leaseId,
+      },
     };
     writePrivateJson(join(stage, "metadata.json"), metadata);
-    const destination = join(parent, commit);
-    let wonPublication = false;
     const repoDir = await withCheckoutEntryLock(destination, signal, async () => {
       const existing = await validCheckout(cacheRoot, destination, repositoryKey, commit, remoteUrl, signal);
       if (existing) return existing;
 
-      // Only the lock owner may repair or publish this immutable entry. Clone/fetch happened
-      // above, so the critical section is limited to revalidation and atomic publication.
+      // Only the lock owner may repair or publish this immutable entry. Mirror preparation
+      // happened above, so the critical section is limited to revalidation and atomic publication.
       removeEntry(destination);
       wonPublication = publishImmutable(stage, destination);
       const published = await validCheckout(cacheRoot, destination, repositoryKey, commit, remoteUrl, signal);
@@ -197,15 +261,42 @@ async function cloneCheckout(
       }
       return published;
     });
-    if (!wonPublication) {
-      removeEntry(stage);
-      await mirrorLease?.release();
-    }
-    return { branch: advertised.branch, cache: "miss", commit, repoDir, repositoryKey, remoteUrl };
-  } catch (error) {
-    await mirrorLease?.release().catch(() => undefined);
+    sourceOperation = await retainCheckoutSource(
+      repositoryMirrors,
+      repoDir.sourceLease,
+      repoDir.repoDir,
+      repositoryKey,
+      commit,
+      signal,
+    );
     removeEntry(stage);
-    throw error;
+    // Transfer the local reference before awaiting release. If release fails, that exact failure is
+    // already authoritative and the outer cleanup must release only the source ownership that can
+    // no longer be returned; it must not issue a duplicate mirror release attempt.
+    const completedMirrorLease = mirrorLease;
+    mirrorLease = undefined;
+    await completedMirrorLease.release();
+    return {
+      branch: advertised.branch,
+      cache: "miss",
+      commit,
+      repoDir: repoDir.repoDir,
+      repositoryKey,
+      remoteUrl,
+      sourceLease: repoDir.sourceLease,
+      sourceOperation,
+    };
+  } catch (error) {
+    return withOwnershipCleanup(
+      () => { throw error; },
+      [
+        () => sourceOperation?.release(),
+        () => mirrorLease?.release(),
+        () => { if (wonPublication) removeEntry(destination); },
+        () => removeEntry(stage),
+      ],
+      "checkout preparation",
+    );
   }
 }
 
@@ -216,7 +307,7 @@ async function validCheckout(
   commit: string,
   remoteUrl: string,
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<ValidCheckout | null> {
   try {
     const metadata = readJson(join(entry, "metadata.json")) as Partial<CheckoutMetadata>;
     if (
@@ -227,20 +318,62 @@ async function validCheckout(
     ) {
       return null;
     }
-    const repoDir = metadata.sourceRoot
-      ? resolveCacheRelativePath(cacheRoot, metadata.sourceRoot)
-      : join(entry, "repo");
-    if (!repoDir || !isDirectory(repoDir)) return null;
+    if (typeof metadata.sourceRoot !== "string"
+      || typeof metadata.leaseMetadata !== "string"
+      || !validSourceLease(metadata.sourceLease)) return null;
+    const repoDir = resolveCacheRelativePath(cacheRoot, metadata.sourceRoot);
+    const leaseMetadata = resolveCacheRelativePath(cacheRoot, metadata.leaseMetadata);
+    if (!repoDir || !isDirectory(repoDir) || !leaseMetadata || !statSync(leaseMetadata).isFile()) return null;
+    const expectedLeaseMetadata = join(dirname(dirname(repoDir)), "leases", `${basename(repoDir)}.json`);
+    if (leaseMetadata !== expectedLeaseMetadata
+      || metadata.sourceLease.leaseId !== basename(repoDir)
+      || metadata.sourceLease.repositoryDigest !== basename(dirname(dirname(repoDir)))) return null;
     return requireCommit((await runGit(["rev-parse", "HEAD"], {
       cwd: repoDir,
       ...(signal ? { signal } : {}),
     })).trim()) === commit
-      ? repoDir
+      ? { repoDir, sourceLease: metadata.sourceLease }
       : null;
   } catch (error) {
     if (signal?.aborted) throw signal.reason ?? error;
     return null;
   }
+}
+
+async function retainCheckoutSource(
+  repositoryMirrors: RepositoryMirrorPreparer,
+  sourceLease: RepositorySourceLeaseReference,
+  repoDir: string,
+  repositoryKey: string,
+  commit: string,
+  signal?: AbortSignal,
+): Promise<RepositorySourceOperationLease> {
+  const cacheOwner = `checkout-cache:${repositoryKey}:${commit}`;
+  await repositoryMirrors.retainSource(
+    sourceLease,
+    repoDir,
+    cacheOwner,
+    Date.now() + CHECKOUT_ALIAS_TTL_MS,
+  );
+  try {
+    return await repositoryMirrors.acquireSource(
+      sourceLease,
+      repoDir,
+      `checkout:${repositoryKey}:${commit}`,
+      signal,
+    );
+  } catch (error) {
+    // The cache owner deliberately remains: the immutable alias is still a valid soft root and a
+    // later read may retry. Its bounded deadline is renewed only by successful alias reads.
+    throw error;
+  }
+}
+
+function validSourceLease(value: unknown): value is RepositorySourceLeaseReference {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const lease = value as Partial<RepositorySourceLeaseReference>;
+  return typeof lease.repositoryDigest === "string" && /^[0-9a-f]{64}$/.test(lease.repositoryDigest)
+    && typeof lease.leaseId === "string" && /^[0-9a-f]{64}$/.test(lease.leaseId);
 }
 
 async function remoteCommit(
@@ -301,7 +434,7 @@ async function reusableCheckout(
   commit: string,
   remoteUrl: string,
   signal?: AbortSignal,
-): Promise<string | null> {
+): Promise<ValidCheckout | null> {
   const cached = await validCheckout(cacheRoot, entry, repositoryKey, commit, remoteUrl, signal);
   if (cached) return cached;
   return withCheckoutEntryLock(entry, signal, async () => {

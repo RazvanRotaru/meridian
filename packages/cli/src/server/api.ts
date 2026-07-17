@@ -9,7 +9,7 @@
 import type { ServerResponse } from "node:http";
 import { telemetryEnvironmentSchema, telemetrySourceAllowsEnvironment } from "@meridian/core";
 import { sendJson } from "./http-response";
-import type { InspectionGraphSummary } from "./inspection-snapshot-store";
+import type { GraphGenerationSummary } from "./graph-generation-contract";
 import { hasOverlay, resolveTelemetrySource, telemetrySourceDescriptors } from "./overlay-source";
 import type { OverlaySource, TelemetrySourceEntry } from "./overlay-source";
 import {
@@ -27,7 +27,7 @@ export interface FileBackedMockTelemetryContext {
 
 export function sendMeta(
   response: ServerResponse,
-  graph: InspectionGraphSummary,
+  graph: GraphGenerationSummary,
   overlay: OverlaySource,
   explicitEnvironment: string | null = null,
   warnings: readonly string[] = [],

@@ -7,3 +7,4 @@
 export * from "./composition";
 export * from "./composition-graph";
 export * from "./compositionAdvice";
+export * from "./service-topology";

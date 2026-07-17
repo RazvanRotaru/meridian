@@ -36,10 +36,30 @@ export class InspectionQueueFullError extends Error {
   }
 }
 
+export class InspectionSchedulerClosedError extends Error {
+  constructor() {
+    super("inspection scheduler is closed");
+    this.name = "InspectionSchedulerClosedError";
+  }
+}
+
 export interface InspectionScheduleOptions<Progress = never> {
   /** Cancels only this subscription unless it is the last subscriber for the keyed execution. */
   readonly signal?: AbortSignal;
   readonly onProgress?: (progress: Progress) => void;
+  /**
+   * Stable, non-secret identity for related jobs which share a constrained downstream resource.
+   * Queued groups are served round-robin. This affects start order only; singleflight identity is
+   * still defined exclusively by `key`, and an omitted group participates as the default group.
+   */
+  readonly fairnessGroup?: string;
+  /**
+   * Keep a cancelled resource-owning call pending until the shared executor has physically
+   * settled. Cancellation still removes this subscriber immediately and aborts the executor when
+   * it was the final subscriber; only the returned promise is joined to the executor drain. This
+   * is required when caller cleanup would otherwise release files still used by a child process.
+   */
+  readonly awaitExecutorDrain?: boolean;
   /**
    * The job already consumed a bounded upstream lifecycle slot, so it must be allowed to wait for
    * this nested resource even when the ordinary queue is full. Only bounded internal schedulers
@@ -67,12 +87,19 @@ interface Subscriber<Output, Progress> {
 interface InspectionJob<Key, Input, Output, Progress> {
   readonly key: Key;
   readonly input: Input;
+  readonly fairnessGroup: FairnessGroup;
   readonly controller: AbortController;
   readonly subscribers: Set<Subscriber<Output, Progress>>;
+  /** Resolves only after this exact executor has stopped (or a queued job was cancelled). */
+  readonly drained: Promise<void>;
+  readonly resolveDrained: () => void;
   /** A cancelled executor with the same key must physically drain before this successor starts. */
   readonly blockedBy?: InspectionJob<Key, Input, Output, Progress>;
   state: JobState;
 }
+
+const DEFAULT_FAIRNESS_GROUP = Symbol("inspection-default-fairness-group");
+type FairnessGroup = string | typeof DEFAULT_FAIRNESS_GROUP;
 
 /**
  * Runs at most `concurrency` distinct keyed jobs and singleflights concurrent calls for one key.
@@ -83,8 +110,12 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
   private readonly execute: InspectionExecutor<Key, Input, Output, Progress>;
   private readonly maxQueuedJobs: number;
   private readonly jobs = new Map<Key, InspectionJob<Key, Input, Output, Progress>>();
+  private readonly activeJobs = new Set<InspectionJob<Key, Input, Output, Progress>>();
   private readonly queue: Array<InspectionJob<Key, Input, Output, Progress>> = [];
+  private lastDispatchedGroup: FairnessGroup | undefined;
   private running = 0;
+  private closed = false;
+  private closePromise: Promise<void> | undefined;
 
   constructor(options: InspectionSchedulerOptions<Key, Input, Output, Progress>) {
     if (!Number.isSafeInteger(options.concurrency) || options.concurrency < 1) {
@@ -122,9 +153,9 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
 
   /** Whether a new subscription can be admitted right now without mutating scheduler state. */
   canSchedule(key: Key): boolean {
-    return this.jobs.has(key)
+    return !this.closed && (this.jobs.has(key)
       || this.running < this.concurrencyLimit
-      || this.queue.length < this.maxQueuedJobs;
+      || this.queue.length < this.maxQueuedJobs);
   }
 
   /**
@@ -135,6 +166,7 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
    * rejects only that subscriber. The executor's signal is aborted once no subscribers remain.
    */
   schedule(key: Key, input: Input, options: InspectionScheduleOptions<Progress> = {}): Promise<Output> {
+    if (this.closed) throw new InspectionSchedulerClosedError();
     const { signal } = options;
     if (signal?.aborted) {
       return Promise.reject(abortReason(signal));
@@ -159,15 +191,23 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
         // streaming response. Existing-key subscribers are checked above and still singleflight.
         throw new InspectionQueueFullError();
       }
+      let resolveDrained!: () => void;
+      const drained = new Promise<void>((resolve) => { resolveDrained = resolve; });
       job = {
         key,
         input,
+        fairnessGroup: options.fairnessGroup && options.fairnessGroup.length > 0
+          ? options.fairnessGroup
+          : DEFAULT_FAIRNESS_GROUP,
         controller: new AbortController(),
         subscribers: new Set(),
+        drained,
+        resolveDrained,
         ...(predecessor ? { blockedBy: predecessor } : {}),
         state: "queued",
       };
       this.jobs.set(key, job);
+      this.activeJobs.add(job);
       this.queue.push(job);
     }
 
@@ -175,7 +215,30 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
     if (created) {
       this.drain();
     }
-    return promise;
+    if (options.awaitExecutorDrain !== true) return promise;
+    return promise.catch(async (error) => {
+      await job.drained;
+      throw error;
+    });
+  }
+
+  /**
+   * Stop admission, cancel every subscription, and resolve only after all executors physically
+   * stop. This is the scheduler's process-lifecycle boundary; no result values are retained.
+   */
+  close(reason: unknown = schedulerClosedReason()): Promise<void> {
+    if (this.closePromise) return this.closePromise;
+    this.closed = true;
+    const jobs = [...this.activeJobs];
+    for (const job of jobs) {
+      for (const subscriber of [...job.subscribers]) {
+        this.cancelSubscriber(job, subscriber, reason);
+      }
+      if (job.state === "running" && !job.controller.signal.aborted) {
+        job.controller.abort(reason);
+      }
+    }
+    return this.closePromise = Promise.all(jobs.map((job) => job.drained)).then(() => undefined);
   }
 
   private subscribe(
@@ -206,9 +269,7 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
 
   private drain(): void {
     while (this.running < this.concurrencyLimit && this.queue.length > 0) {
-      const runnableIndex = this.queue.findIndex((candidate) =>
-        candidate.state === "queued" && (!candidate.blockedBy || candidate.blockedBy.state === "settled")
-      );
+      const runnableIndex = this.nextRunnableIndex();
       if (runnableIndex < 0) return;
       const [job] = this.queue.splice(runnableIndex, 1);
       if (job === undefined || job.state !== "queued") {
@@ -216,9 +277,35 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
       }
 
       job.state = "running";
+      this.lastDispatchedGroup = job.fairnessGroup;
       this.running += 1;
       this.start(job);
     }
+  }
+
+  /** Pick the next runnable group after the one most recently dispatched, then retain FIFO order
+   * inside that group. A group with two sides can consume spare slots immediately, but once capacity
+   * is saturated it cannot monopolize the next released slot while another group is waiting. */
+  private nextRunnableIndex(): number {
+    const groups: FairnessGroup[] = [];
+    const seen = new Set<FairnessGroup>();
+    for (const candidate of this.queue) {
+      if (!isRunnable(candidate) || seen.has(candidate.fairnessGroup)) continue;
+      seen.add(candidate.fairnessGroup);
+      groups.push(candidate.fairnessGroup);
+    }
+    if (groups.length === 0) return -1;
+
+    let selectedGroup = groups[0]!;
+    if (this.lastDispatchedGroup !== undefined) {
+      const previousIndex = groups.indexOf(this.lastDispatchedGroup);
+      if (previousIndex >= 0 && groups.length > 1) {
+        selectedGroup = groups[(previousIndex + 1) % groups.length]!;
+      }
+    }
+    return this.queue.findIndex((candidate) => (
+      isRunnable(candidate) && candidate.fairnessGroup === selectedGroup
+    ));
   }
 
   private start(job: InspectionJob<Key, Input, Output, Progress>): void {
@@ -267,6 +354,8 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
         this.queue.splice(queueIndex, 1);
       }
       job.state = "settled";
+      this.activeJobs.delete(job);
+      job.resolveDrained();
     }
     // A running executor retains both its slot and a same-key tombstone until it actually settles.
     // A later subscriber may queue one blocked successor, but can never overlap the draining job.
@@ -290,6 +379,7 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
 
     job.state = "settled";
     this.running -= 1;
+    this.activeJobs.delete(job);
     this.deleteJobIfCurrent(job);
 
     const subscribers = [...job.subscribers];
@@ -298,6 +388,7 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
       this.settleSubscriber(subscriber, succeeded, result);
     }
 
+    job.resolveDrained();
     this.drain();
   }
 
@@ -338,6 +429,18 @@ export class InspectionScheduler<Key, Input, Output, Progress = never> {
     }
     this.jobs.delete(job.key);
   }
+}
+
+function schedulerClosedReason(): Error {
+  const error = new Error("inspection scheduler closed");
+  error.name = "AbortError";
+  return error;
+}
+
+function isRunnable<Key, Input, Output, Progress>(
+  job: InspectionJob<Key, Input, Output, Progress>,
+): boolean {
+  return job.state === "queued" && (!job.blockedBy || job.blockedBy.state === "settled");
 }
 
 function abortReason(signal: AbortSignal): unknown {

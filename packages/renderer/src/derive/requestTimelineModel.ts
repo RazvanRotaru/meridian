@@ -59,22 +59,37 @@ export function requestEventKey(spanId: string, eventId: string): string {
   return `${spanId}\u0000${eventId}`;
 }
 
-/** Explain every reason a trace bundle cannot be joined safely to the graph currently on screen.
- * An empty result is the sole condition under which span-to-graph navigation may be enabled. */
-export function traceGraphRefMismatches(ref: TraceGraphRef | null, artifact: GraphArtifact): string[] {
+/** Build the immutable graph identity used to join telemetry with a complete revision. */
+export function traceGraphRevisionIdentity(
+  summary: Pick<TraceGraphRef, "schemaVersion" | "generatedAt" | "nodeCount">,
+  target: GraphArtifact["target"],
+): TraceGraphRef {
+  const commit = target.vcs?.commit;
+  return {
+    schemaVersion: summary.schemaVersion,
+    generatedAt: summary.generatedAt,
+    nodeCount: summary.nodeCount,
+    ...(commit === undefined ? {} : { commit }),
+  };
+}
+
+/** Compare telemetry provenance with the immutable identity of the complete graph revision.
+ * `revision` must come from projection-manifest metadata; a bounded projection's node array is
+ * intentionally incomplete and therefore cannot establish revision identity. */
+export function traceGraphRefMismatches(ref: TraceGraphRef | null, revision: TraceGraphRef): string[] {
   if (ref === null) return ["trace bundle has no graph reference"];
   const mismatches: string[] = [];
-  if (ref.schemaVersion !== artifact.schemaVersion) {
-    mismatches.push(`schema ${ref.schemaVersion} ≠ ${artifact.schemaVersion}`);
+  if (ref.schemaVersion !== revision.schemaVersion) {
+    mismatches.push(`schema ${ref.schemaVersion} ≠ ${revision.schemaVersion}`);
   }
-  if (ref.generatedAt !== artifact.generatedAt) {
-    mismatches.push(`generatedAt ${ref.generatedAt} ≠ ${artifact.generatedAt}`);
+  if (ref.generatedAt !== revision.generatedAt) {
+    mismatches.push(`generatedAt ${ref.generatedAt} ≠ ${revision.generatedAt}`);
   }
-  if (ref.nodeCount !== artifact.nodes.length) {
-    mismatches.push(`node count ${ref.nodeCount} ≠ ${artifact.nodes.length}`);
+  if (ref.nodeCount !== revision.nodeCount) {
+    mismatches.push(`node count ${ref.nodeCount} ≠ ${revision.nodeCount}`);
   }
-  if (ref.commit !== undefined && ref.commit !== artifact.target.vcs?.commit) {
-    mismatches.push(`commit ${ref.commit} ≠ ${artifact.target.vcs?.commit ?? "unavailable"}`);
+  if (ref.commit !== undefined && ref.commit !== revision.commit) {
+    mismatches.push(`commit ${ref.commit} ≠ ${revision.commit ?? "unavailable"}`);
   }
   return mismatches;
 }

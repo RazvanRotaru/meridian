@@ -3,7 +3,6 @@
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { performance } from "node:perf_hooks";
-import { dirname, join } from "node:path";
 import { CliError } from "../errors";
 import { sendHtml, sendJson } from "./http-response";
 import { telemetrySourceDescriptors } from "./overlay-source";
@@ -14,6 +13,7 @@ import {
 import { githubTokenFor } from "./web-auth";
 import { injectViewBoot, syntheticExecutionBootCapability } from "./web-boot";
 import { WebError } from "./web-error";
+import { cancelWhenClientLeaves } from "./web-cancellation";
 import { generateGraph } from "./web-generation";
 import type { GenerateResult, GenerateStage } from "./web-generation";
 import { webAnalysisKey } from "./web-cache";
@@ -22,30 +22,30 @@ import type { GenerateRequest } from "./web-request";
 import type { Context } from "./web-server";
 import { InspectionQueueFullError } from "./inspection-scheduler";
 import {
-  GRAPH_PROJECTION_DIRECTORY,
+  BoundedGraphProjectionPageCache,
+  defaultGraphProjectionRequest,
   GraphProjectionBundle,
-  GraphProjectionRequestError,
   GraphSymbolSearchRequestError,
   readGraphProjectionManifest,
-  type GraphProjectionRequest,
+  type GraphProjectionCacheStats,
+  type GraphProjectionQueryOptions,
   type GraphSymbolSearchRequest,
 } from "./graph-projection-bundle";
-import {
-  inspectSyntheticCapabilitySidecar,
-  syntheticCapabilitySidecarPath,
-} from "./synthetic-capability-sidecar";
+import { handleGraphProjectionRequest } from "./graph-projection-response";
 import type { ArtifactSource } from "./web-source";
 import type { SyntheticExecutionTrust } from "./web-boot";
+import type { GraphCapabilityHandle } from "./graph-capability-store";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const stream = acceptsNdjson(request);
-  const parsed = parseGenerateRequest(await readJsonBody(request));
-  const token = githubTokenFor(ctx, request, parsed.token);
   const cancellation = cancelWhenClientLeaves(request, response);
+  const operationSignal = AbortSignal.any([cancellation.signal, ctx.shutdownSignal]);
   try {
+    const parsed = parseGenerateRequest(await readJsonBody({ request, signal: operationSignal }));
+    const token = githubTokenFor(ctx, request, parsed.token);
     let pending: Promise<GenerateResult>;
     try {
-      pending = scheduleGeneration(ctx, parsed, token, cancellation.signal, stream
+      pending = scheduleGeneration(ctx, parsed, token, operationSignal, stream
         ? (stage) => {
             // Scheduler progress callbacks are intentionally synchronous. Observe the transport
             // promise explicitly so a disconnect cannot become an unhandled rejection, and cancel
@@ -66,7 +66,7 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     try {
       await writeLine(response, { stage: "done", ...await pending });
     } catch (error) {
-      if (!cancellation.signal.aborted) {
+      if (!operationSignal.aborted) {
         await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
       }
     } finally {
@@ -157,85 +157,102 @@ function safeGenerateMessage(error: unknown): string {
   return "internal error while generating the blueprint";
 }
 
-function cancelWhenClientLeaves(
+function graphRequestLifecycle(
+  ctx: Context,
   request: IncomingMessage,
   response: ServerResponse,
-): { signal: AbortSignal; abort(reason?: unknown): void; dispose(): void } {
-  const controller = new AbortController();
-  const abort = (reason?: unknown) => {
-    if (controller.signal.aborted) return;
-    if (reason !== undefined) {
-      controller.abort(reason);
-      return;
-    }
-    const disconnect = new Error("The client closed the request");
-    disconnect.name = "AbortError";
-    controller.abort(disconnect);
+  message: string,
+): { signal: AbortSignal; dispose(): void } {
+  const client = cancelWhenClientLeaves(request, response, message);
+  const signal = AbortSignal.any([client.signal, ctx.shutdownSignal]);
+  const destroyRequest = () => {
+    if (!request.destroyed) request.destroy();
   };
-  const onAborted = () => abort();
-  request.once("aborted", onAborted);
-  const responseEvents = response as ServerResponse & {
-    once?: (event: string, listener: () => void) => unknown;
-    off?: (event: string, listener: () => void) => unknown;
-  };
-  const onClose = () => {
-    if (!response.writableEnded) abort();
-  };
-  responseEvents.once?.("close", onClose);
-  if (request.aborted || response.destroyed) abort();
+  signal.addEventListener("abort", destroyRequest, { once: true });
+  if (signal.aborted) destroyRequest();
   return {
-    signal: controller.signal,
-    abort,
+    signal,
     dispose() {
-      request.off("aborted", onAborted);
-      responseEvents.off?.("close", onClose);
+      signal.removeEventListener("abort", destroyRequest);
+      client.dispose();
     },
   };
 }
 
-export function sendMeta(ctx: Context, response: ServerResponse, id: string | null): void {
-  const localFile = id ? ctx.localGraphFiles?.get(id) : undefined;
-  if (localFile) {
-    const graphId = id as string;
-    const capability = resolveSyntheticCapability(ctx, graphId);
-    sendJson(response, 200, {
-      schemaVersion: localFile.graphSummary.schemaVersion,
-      generatedAt: localFile.graphSummary.generatedAt,
-      nodeCount: localFile.graphSummary.nodeCount,
-      hasOverlay: false,
-      environments: [],
-      telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
-      ...syntheticExecutionBootCapability(
-        graphId,
-        capability?.source ?? ctx.sources.get(graphId),
-        capability?.scenarios ?? null,
-        capability?.trust ?? null,
-      ),
+interface OwnedResource {
+  release(): Promise<void>;
+}
+
+async function withOwnedResource<Resource extends OwnedResource, Result>(
+  resource: Resource,
+  label: string,
+  use: (resource: Resource) => Promise<Result>,
+): Promise<Result> {
+  let failed = false;
+  let failure: unknown;
+  try {
+    return await use(resource);
+  } catch (error) {
+    failed = true;
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await resource.release();
+    } catch (releaseError) {
+      if (failed) {
+        throw new AggregateError([failure, releaseError], `${label} operation and release both failed`);
+      }
+      throw releaseError;
+    }
+  }
+}
+
+async function releaseAfterFailure(resource: OwnedResource, error: unknown, label: string): Promise<never> {
+  try {
+    await resource.release();
+  } catch (releaseError) {
+    throw new AggregateError([error, releaseError], `${label} verification and release both failed`);
+  }
+  throw error;
+}
+
+export async function sendMeta(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  id: string | null,
+): Promise<void> {
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the graph metadata request");
+  try {
+    const handle = id ? await ctx.graphCapabilities.acquire(id, { signal: lifecycle.signal }) : null;
+    if (!handle) {
+      sendJson(response, 404, { error: "unknown graph id" });
+      return;
+    }
+    await withOwnedResource(handle, "graph metadata capability", async () => {
+      lifecycle.signal.throwIfAborted();
+      const summary = handle.descriptor.graphSummary;
+      const graphId = id as string;
+      const capability = syntheticCapabilityFromHandle(ctx, handle);
+      sendJson(response, 200, {
+        schemaVersion: summary.schemaVersion,
+        generatedAt: summary.generatedAt,
+        nodeCount: summary.nodeCount,
+        hasOverlay: false,
+        environments: [],
+        telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
+        ...syntheticExecutionBootCapability(
+          graphId,
+          capability?.source ?? handle.descriptor.source.metadata,
+          capability?.scenarios ?? null,
+          capability?.trust ?? null,
+        ),
+      });
     });
-    return;
+  } finally {
+    lifecycle.dispose();
   }
-  const snapshot = id ? ctx.inspectionSnapshots.resolveArtifact(id) : null;
-  if (!snapshot) {
-    sendJson(response, 404, { error: "unknown graph id" });
-    return;
-  }
-  const summary = snapshot.descriptor.graphSummary;
-  const graphId = id as string;
-  const capability = resolveSyntheticCapability(ctx, graphId);
-  sendJson(response, 200, {
-    schemaVersion: summary.schemaVersion,
-    generatedAt: summary.generatedAt,
-    nodeCount: summary.nodeCount,
-    hasOverlay: false,
-    environments: [],
-    telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
-    ...syntheticExecutionBootCapability(
-      graphId,
-      capability?.source ?? snapshot.descriptor.source.metadata,
-      capability?.scenarios ?? null,
-      capability?.trust ?? null,
-    ),
-  });
 }
 
 export interface PreparedReviewViewQuery {
@@ -245,45 +262,62 @@ export interface PreparedReviewViewQuery {
   readonly view: string | null;
 }
 
-export function sendView(
+export async function sendView(
   ctx: Context,
+  request: IncomingMessage,
   response: ServerResponse,
   id: string | null,
   preparedQuery?: PreparedReviewViewQuery,
-): void {
-  if (id === null) {
-    sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
-    return;
-  }
-  const bundleRoot = projectionBundleRoot(ctx, id);
-  if (!bundleRoot || !readGraphProjectionManifest(bundleRoot)) {
-    sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
-    return;
-  }
-  let preparedReviewUrl: string | null = null;
-  const preparedId = preparedQuery?.preparedId ?? null;
-  if (preparedId !== null) {
-    const handoff = ctx.preparedReviewHandoffs.resolve(preparedId);
-    if (!handoff
-      || preparedQuery?.revision !== "1"
-      || preparedQuery.view !== "modules"
-      || preparedQuery.prNumber !== String(handoff.document.request.prNumber)
-      || handoff.document.head.graphId !== id) {
-      sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown prepared review.</p>", 404);
+): Promise<void> {
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the graph view request");
+  try {
+    if (id === null) {
+      sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
       return;
     }
-    preparedReviewUrl = `/api/pr/prepared?id=${encodeURIComponent(preparedId)}`;
+    const graphHandle = await ctx.graphCapabilities.acquire(id, { signal: lifecycle.signal });
+    if (!graphHandle) {
+      sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
+      return;
+    }
+    await withOwnedResource(graphHandle, "graph view capability", async () => {
+      if (!readGraphProjectionManifest(graphHandle.projectionDirectory)) {
+        sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
+        return;
+      }
+      let preparedReviewUrl: string | null = null;
+      const preparedId = preparedQuery?.preparedId ?? null;
+      if (preparedId !== null) {
+        lifecycle.signal.throwIfAborted();
+        const handoff = await ctx.preparedReviewHandoffs.resolve(preparedId, {
+          signal: lifecycle.signal,
+        });
+        lifecycle.signal.throwIfAborted();
+        if (!handoff
+          || preparedQuery?.revision !== "1"
+          || preparedQuery.view !== "modules"
+          || preparedQuery.prNumber !== String(handoff.document.request.prNumber)
+          || handoff.document.head.graphId !== id) {
+          sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown prepared review.</p>", 404);
+          return;
+        }
+        preparedReviewUrl = `/api/pr/prepared?id=${encodeURIComponent(preparedId)}`;
+      }
+      lifecycle.signal.throwIfAborted();
+      const source = graphHandle.descriptor.source.metadata;
+      const capability = syntheticCapabilityFromHandle(ctx, graphHandle);
+      sendHtml(response, injectViewBoot(
+        ctx.rendererIndex,
+        id,
+        source,
+        capability?.scenarios ?? null,
+        capability?.trust ?? null,
+        preparedReviewUrl,
+      ));
+    });
+  } finally {
+    lifecycle.dispose();
   }
-  const source = ctx.sources.get(id) ?? ctx.inspectionSnapshots.resolveDescriptor(id)?.source.metadata;
-  const capability = resolveSyntheticCapability(ctx, id);
-  sendHtml(response, injectViewBoot(
-    ctx.rendererIndex,
-    id,
-    source,
-    capability?.scenarios ?? null,
-    capability?.trust ?? null,
-    preparedReviewUrl,
-  ));
 }
 
 export interface ResolvedWebSyntheticCapability {
@@ -293,80 +327,98 @@ export interface ResolvedWebSyntheticCapability {
   scenarios: import("@meridian/core").SyntheticScenarioDescriptor[];
   sourceFingerprint: string | null;
   trust: SyntheticExecutionTrust;
+  signal: AbortSignal;
+  release(): Promise<void>;
 }
 
-/** Resolve bounded, digest-checked capability metadata without opening artifact.json. */
-export function resolveSyntheticCapability(
+function syntheticCapabilityFromHandle(
   ctx: Context,
-  id: string | null,
+  handle: GraphCapabilityHandle,
 ): ResolvedWebSyntheticCapability | null {
-  if (id === null) return null;
-  const local = ctx.localGraphFiles.get(id);
-  const localSourceRoot = ctx.sourceRoots.get(id);
-  const localSource = ctx.sources.get(id);
-  if (local && localSourceRoot && localSource?.kind === "path") {
-    if (!ctx.allowSyntheticExecution || !syntheticExecutionRuntimeSupported()) return null;
-    const inspected = inspectSyntheticCapabilitySidecar(syntheticCapabilitySidecarPath(local.artifactPath));
-    if (!inspected
-      || inspected.capability.state !== "ready"
-      || inspected.capability.scenarios.length === 0
-      || inspected.capability.sourceFingerprint === null) return null;
-    return {
-      artifactPath: local.artifactPath,
-      sourceRoot: localSourceRoot,
-      source: localSource,
-      scenarios: inspected.capability.scenarios,
-      sourceFingerprint: inspected.capability.sourceFingerprint,
-      trust: { mode: "local" },
-    };
-  }
-
-  const artifact = ctx.inspectionSnapshots.resolveArtifact(id);
-  const source = ctx.inspectionSnapshots.resolveSource(id);
-  const synthetic = ctx.inspectionSnapshots.resolveSyntheticCapability(id);
-  const trust = synthetic?.executionTrust;
-  if (!artifact || !source || !synthetic
+  const synthetic = handle.synthetic;
+  if (!synthetic
     || synthetic.capability.state !== "ready"
     || synthetic.capability.scenarios.length === 0
-    || synthetic.capability.sourceFingerprint === null
-    || source.metadata.kind !== "github"
-    || trust?.mode !== "sandboxed-pr"
-    || !ctx.allowSyntheticPrExecution
-    || !ctx.syntheticPrSandboxRuntimeSupported()) return null;
+    || synthetic.capability.sourceFingerprint === null) return null;
+  let trust: SyntheticExecutionTrust;
+  if (handle.source.metadata.kind === "path") {
+    if (!ctx.allowSyntheticExecution || !syntheticExecutionRuntimeSupported()) return null;
+    trust = { mode: "local" };
+  } else {
+    const storedTrust = synthetic.executionTrust;
+    if (handle.source.metadata.kind !== "github"
+      || storedTrust?.mode !== "sandboxed-pr"
+      || !ctx.allowSyntheticPrExecution
+      || !ctx.syntheticPrSandboxRuntimeSupported()) return null;
+    trust = storedTrust;
+  }
   return {
-    artifactPath: artifact.path,
-    sourceRoot: source.sourceDir,
-    source: source.metadata,
+    artifactPath: handle.artifactPath,
+    sourceRoot: handle.source.sourceDir,
+    source: handle.source.metadata,
     scenarios: synthetic.capability.scenarios,
     sourceFingerprint: synthetic.capability.sourceFingerprint,
     trust,
+    signal: handle.signal,
+    release: handle.release,
   };
 }
 
-/** Advertise projection capability only when the immutable bundle is complete and readable. */
-export function sendProjectionManifest(ctx: Context, response: ServerResponse, id: string | null): void {
-  const bundleRoot = projectionBundleRoot(ctx, id);
-  const manifest = bundleRoot ? readGraphProjectionManifest(bundleRoot) : null;
-  if (!manifest || id === null) {
-    sendJson(response, 404, { error: "graph projections are unavailable" });
-    return;
+/** Resolve bounded, digest-checked capability metadata without opening artifact.json. */
+export async function resolveSyntheticCapability(
+  ctx: Context,
+  id: string | null,
+  signal: AbortSignal,
+): Promise<ResolvedWebSyntheticCapability | null> {
+  if (id === null) return null;
+  const handle = await ctx.graphCapabilities.acquire(id, { signal });
+  if (!handle) return null;
+  let capability: ResolvedWebSyntheticCapability | null;
+  try {
+    signal.throwIfAborted();
+    capability = syntheticCapabilityFromHandle(ctx, handle);
+  } catch (error) {
+    return releaseAfterFailure(handle, error, "synthetic graph capability");
   }
-  sendJson(response, 200, {
-    version: manifest.formatVersion,
-    graphId: id,
-    contentId: manifest.contentId,
-    graphSummary: manifest.graphSummary,
-    defaultView: {
-      view: "modules",
-      filePaths: [],
-      focusIds: [],
-      expandedIds: [],
-      extraIds: [],
-      depth: 1,
-      radius: 0,
-      includeTests: false,
-    },
-  });
+  if (!capability) {
+    await handle.release();
+    return null;
+  }
+  return { ...capability, release: handle.release };
+}
+
+/** Advertise projection capability only when the immutable bundle is complete and readable. */
+export async function sendProjectionManifest(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  id: string | null,
+): Promise<void> {
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the graph manifest request");
+  try {
+    const acquired = await acquireProjectionBundle(ctx, id, lifecycle.signal);
+    if (!acquired || id === null) {
+      sendJson(response, 404, { error: "graph projections are unavailable" });
+      return;
+    }
+    await withOwnedResource(acquired, "graph projection manifest capability", async () => {
+      lifecycle.signal.throwIfAborted();
+      const bundle = projectionRegistry(ctx).get(id, acquired.root);
+      const manifest = bundle.manifest;
+      sendJson(response, 200, {
+        version: manifest.formatVersion,
+        graphId: id,
+        contentId: bundle.contentIdFor(projectionQueryOptions(acquired)),
+        graphSummary: manifest.graphSummary,
+        repositorySummary: manifest.repositorySummary,
+        defaultView: acquired.review === null
+          ? defaultGraphProjectionRequest()
+          : { ...defaultGraphProjectionRequest(), view: "review" as const },
+      });
+    });
+  } finally {
+    lifecycle.dispose();
+  }
 }
 
 /** Materialize one bounded current-view projection from immutable disk shards. */
@@ -374,34 +426,25 @@ export async function handleGraphProjection(
   ctx: Context,
   request: IncomingMessage,
   response: ServerResponse,
-  id: string | null,
+  searchParams: URLSearchParams,
 ): Promise<void> {
-  if (id === null) throw new WebError(400, "graph id is required");
-  const bundleRoot = projectionBundleRoot(ctx, id);
-  if (!bundleRoot) throw new WebError(404, "graph projections are unavailable");
-  const body = await readJsonBody(request);
-  if (typeof body !== "object" || body === null || Array.isArray(body)) {
-    throw new WebError(400, "graph projection request must be an object");
-  }
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the graph projection request");
   try {
-    const queryStarted = performance.now();
-    const result = projectionRegistry(ctx).get(id, bundleRoot).query(body as GraphProjectionRequest);
-    const queryMs = performance.now() - queryStarted;
-    const serializationStarted = performance.now();
-    const serialized = JSON.stringify(result);
-    const serializationMs = performance.now() - serializationStarted;
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "content-length": Buffer.byteLength(serialized),
-      "x-meridian-projection-id": result.projectionId,
-      "x-meridian-resident-bytes": String(result.residentBytes),
-      "server-timing": `projection_query;dur=${queryMs.toFixed(2)}, projection_serialize;dur=${serializationMs.toFixed(2)}`,
+    const id = requiredGraphId(searchParams, "graph projection");
+    const acquired = await acquireProjectionBundle(ctx, id, lifecycle.signal);
+    if (!acquired) throw new WebError(404, "graph projections are unavailable");
+    await withOwnedResource(acquired, "graph projection capability", async () => {
+      await handleGraphProjectionRequest({
+        admission: ctx.graphProjectionAdmission,
+        bundle: projectionRegistry(ctx).get(id, acquired.root),
+        request,
+        response,
+        lifecycleSignal: AbortSignal.any([lifecycle.signal, acquired.signal]),
+        queryOptions: projectionQueryOptions(acquired),
+      });
     });
-    response.end(serialized);
-  } catch (error) {
-    if (error instanceof GraphProjectionRequestError) throw new WebError(error.status, error.message);
-    throw error;
+  } finally {
+    lifecycle.dispose();
   }
 }
 
@@ -412,72 +455,118 @@ export async function handleGraphSymbolSearch(
   response: ServerResponse,
   searchParams: URLSearchParams,
 ): Promise<void> {
-  const id = requiredGraphSearchId(searchParams);
-  const bundleRoot = projectionBundleRoot(ctx, id);
-  if (!bundleRoot) throw new WebError(404, "graph symbol search is unavailable");
-  const body = await readJsonBody(request);
-  const cancellation = cancelWhenClientLeaves(request, response);
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the graph search request");
   try {
-    const queryStarted = performance.now();
-    const result = await projectionRegistry(ctx).get(id, bundleRoot).search(
-      body as GraphSymbolSearchRequest,
-      cancellation.signal,
-    );
-    cancellation.signal.throwIfAborted();
-    const queryMs = performance.now() - queryStarted;
-    const serializationStarted = performance.now();
-    const serialized = JSON.stringify({ ...result, graphId: id });
-    const serializationMs = performance.now() - serializationStarted;
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "content-length": Buffer.byteLength(serialized),
-      "server-timing": `symbol_search;dur=${queryMs.toFixed(2)}, symbol_serialize;dur=${serializationMs.toFixed(2)}`,
+    const id = requiredGraphId(searchParams, "graph symbol search");
+    const acquired = await acquireProjectionBundle(ctx, id, lifecycle.signal);
+    if (!acquired) throw new WebError(404, "graph symbol search is unavailable");
+    await withOwnedResource(acquired, "graph search capability", async () => {
+      try {
+        const operationSignal = AbortSignal.any([lifecycle.signal, acquired.signal]);
+        const body = await readJsonBody({ request, signal: operationSignal });
+        const queryStarted = performance.now();
+        const result = await projectionRegistry(ctx).get(id, acquired.root).search(
+          body as GraphSymbolSearchRequest,
+          operationSignal,
+          projectionQueryOptions(acquired),
+        );
+        operationSignal.throwIfAborted();
+        const queryMs = performance.now() - queryStarted;
+        const serializationStarted = performance.now();
+        const serialized = JSON.stringify({ ...result, graphId: id });
+        const serializationMs = performance.now() - serializationStarted;
+        response.writeHead(200, {
+          "content-type": "application/json; charset=utf-8",
+          "cache-control": "no-store",
+          "content-length": Buffer.byteLength(serialized),
+          "server-timing": `symbol_search;dur=${queryMs.toFixed(2)}, symbol_serialize;dur=${serializationMs.toFixed(2)}`,
+        });
+        response.end(serialized);
+      } catch (error) {
+        if (error instanceof GraphSymbolSearchRequestError) throw new WebError(error.status, error.message);
+        throw error;
+      }
     });
-    response.end(serialized);
-  } catch (error) {
-    if (error instanceof GraphSymbolSearchRequestError) throw new WebError(error.status, error.message);
-    throw error;
   } finally {
-    cancellation.dispose();
+    lifecycle.dispose();
   }
 }
 
-function requiredGraphSearchId(searchParams: URLSearchParams): string {
+function requiredGraphId(searchParams: URLSearchParams, label: string): string {
   const keys = [...searchParams.keys()];
   const ids = searchParams.getAll("id");
   if (keys.length !== 1 || keys[0] !== "id" || ids.length !== 1) {
-    throw new WebError(400, "graph symbol search requires exactly one id query parameter");
+    throw new WebError(400, `${label} requires exactly one id query parameter`);
   }
   const id = ids[0] ?? "";
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(id)) {
-    throw new WebError(400, "graph symbol search id is invalid");
+    throw new WebError(400, `${label} id is invalid`);
   }
   return id;
 }
 
-function projectionBundleRoot(ctx: Context, id: string | null): string | null {
+interface AcquiredProjectionBundle {
+  readonly root: string;
+  readonly review: GraphCapabilityHandle["review"];
+  readonly signal: AbortSignal;
+  release(): Promise<void>;
+}
+
+async function acquireProjectionBundle(
+  ctx: Context,
+  id: string | null,
+  signal: AbortSignal,
+): Promise<AcquiredProjectionBundle | null> {
   if (id === null) return null;
-  const localPath = ctx.localGraphFiles?.get(id)?.artifactPath;
-  const artifactPath = localPath ?? ctx.inspectionSnapshots.resolveArtifact(id)?.path;
-  return artifactPath ? join(dirname(artifactPath), GRAPH_PROJECTION_DIRECTORY) : null;
+  const handle = await ctx.graphCapabilities.acquire(id, { signal });
+  return handle ? {
+    root: handle.projectionDirectory,
+    review: handle.review,
+    signal: handle.signal,
+    release: handle.release,
+  } : null;
+}
+
+function projectionQueryOptions(
+  acquired: AcquiredProjectionBundle,
+): GraphProjectionQueryOptions {
+  return acquired.review === null ? {} : { review: acquired.review };
 }
 
 const PROJECTION_READER_COUNT = 4;
-const PROJECTION_READER_BYTES = 8 * 1024 * 1024;
-const projectionRegistries = new WeakMap<object, ProjectionRegistry>();
+const PROJECTION_CACHE_BYTES = 32 * 1024 * 1024;
+const PROJECTION_CACHE_ENTRIES = 128;
 
-function projectionRegistry(ctx: Context): ProjectionRegistry {
-  const existing = projectionRegistries.get(ctx);
-  if (existing) return existing;
-  const created = new ProjectionRegistry();
-  projectionRegistries.set(ctx, created);
-  return created;
+function projectionRegistry(ctx: Context): GraphProjectionRegistry {
+  return ctx.graphProjectionRegistry;
 }
 
-/** Four readers each receive an 8 MiB charged-data budget plus a bounded shard-entry count. */
-class ProjectionRegistry {
+export interface GraphProjectionRegistryOptions {
+  maxReaders?: number;
+  maxCacheBytes?: number;
+  maxCacheEntries?: number;
+}
+
+/**
+ * Keeps a small LRU of bundle readers while one server-owned LRU owns their parsed-page memory.
+ * Evicting a reader facade never exempts an in-flight query from the aggregate memory ceiling.
+ */
+export class GraphProjectionRegistry {
   private readonly readers = new Map<string, { root: string; bundle: GraphProjectionBundle }>();
+  private readonly maxReaders: number;
+  private readonly pageCache: BoundedGraphProjectionPageCache;
+
+  constructor(options: GraphProjectionRegistryOptions = {}) {
+    this.maxReaders = positiveRegistryLimit(options.maxReaders, PROJECTION_READER_COUNT, "maxReaders");
+    this.pageCache = new BoundedGraphProjectionPageCache({
+      maxBytes: nonNegativeRegistryLimit(options.maxCacheBytes, PROJECTION_CACHE_BYTES, "maxCacheBytes"),
+      maxEntries: nonNegativeRegistryLimit(
+        options.maxCacheEntries,
+        PROJECTION_CACHE_ENTRIES,
+        "maxCacheEntries",
+      ),
+    });
+  }
 
   get(id: string, root: string): GraphProjectionBundle {
     const current = this.readers.get(id);
@@ -487,20 +576,39 @@ class ProjectionRegistry {
       return current.bundle;
     }
     if (current) {
-      current.bundle.clearMemoryCache();
       this.readers.delete(id);
     }
-    const bundle = new GraphProjectionBundle(root, {
-      maxCacheBytes: PROJECTION_READER_BYTES,
-      maxCacheEntries: 32,
-    });
+    const bundle = new GraphProjectionBundle(root, { pageCache: this.pageCache });
     this.readers.set(id, { root, bundle });
-    while (this.readers.size > PROJECTION_READER_COUNT) {
-      const oldest = this.readers.entries().next().value as [string, { bundle: GraphProjectionBundle }] | undefined;
+    while (this.readers.size > this.maxReaders) {
+      const oldest = this.readers.entries().next().value as [string, unknown] | undefined;
       if (!oldest) break;
-      oldest[1].bundle.clearMemoryCache();
       this.readers.delete(oldest[0]);
     }
     return bundle;
   }
+
+  cacheStats(): GraphProjectionCacheStats {
+    return this.pageCache.stats();
+  }
+
+  /** Release every reader facade and parsed page owned by this server instance. */
+  dispose(): void {
+    this.readers.clear();
+    this.pageCache.clear();
+  }
+}
+
+function positiveRegistryLimit(value: number | undefined, fallback: number, label: string): number {
+  const effective = nonNegativeRegistryLimit(value, fallback, label);
+  if (effective === 0) throw new RangeError(`${label} must be positive`);
+  return effective;
+}
+
+function nonNegativeRegistryLimit(value: number | undefined, fallback: number, label: string): number {
+  const effective = value ?? fallback;
+  if (!Number.isSafeInteger(effective) || effective < 0) {
+    throw new RangeError(`${label} must be a non-negative safe integer`);
+  }
+  return effective;
 }

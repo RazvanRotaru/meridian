@@ -10,6 +10,9 @@ import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces } from "./api";
 import { WebError } from "./web-error";
+import { cancelWhenClientLeaves } from "./web-cancellation";
+import { createSourceTextAdmission, type SourceTextAdmission } from "./source-text-admission";
+import { createGraphProjectionAdmission } from "./graph-projection-response";
 import { injectPrefill } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
@@ -27,6 +30,7 @@ import {
   handleRepoSearch,
 } from "./web-auth";
 import {
+  GraphProjectionRegistry,
   handleGenerate,
   handleGraphProjection,
   handleGraphSymbolSearch,
@@ -50,9 +54,8 @@ import { handlePrPrepare } from "./web-pr-prepare";
 import { sendPreparedReviewHandoff } from "./web-pr-prepared";
 import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
-import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
-import { cachedPrPreparation } from "./web-pr-cache";
+import { cachedPrPreparation, PrBaseInspectionCoordinator } from "./web-pr-cache";
 import type {
   CachedPrPreparation,
   PrPreparationInputs,
@@ -68,7 +71,10 @@ import {
   syntheticPrSandboxRuntimeSupported,
 } from "./synthetic-execution";
 import { InspectionQueueFullError, InspectionScheduler } from "./inspection-scheduler";
-import { InspectionSnapshotStore } from "./inspection-snapshot-store";
+import { GraphCapabilityStore } from "./graph-capability-store";
+import { GraphGenerationLifecycle } from "./graph-generation-lifecycle";
+import { GraphGenerationGarbageCollector } from "./graph-generation-gc";
+import { GraphGenerationMaintenanceCoordinator } from "./graph-generation-maintenance";
 import { RepositoryMirrorStore } from "./repository-mirror";
 import { extractionWorkerHeapMb, runExtractionWorker } from "./extraction-worker";
 import type {
@@ -76,12 +82,16 @@ import type {
   ExtractionWorkerRunner,
   SerializablePipelineRequest,
 } from "./extraction-worker";
-import { resolveInspectionConcurrency } from "./inspection-capacity";
-import type { InspectionGraphSummary } from "./inspection-snapshot-store";
+import {
+  resolveExtractionWorkerConcurrency,
+  resolveGenerationConcurrency,
+  resolvePrInspectionConcurrency,
+} from "./inspection-capacity";
 import {
   PreparedReviewHandoffStore,
   type PreparedReviewHandoffStoreOptions,
 } from "./prepared-review-handoff-store";
+import { PrFilesCache } from "./pr-files-cache";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 const API_METHODS = new Map<string, readonly ("GET" | "POST")[]>([
@@ -115,6 +125,19 @@ const API_METHODS = new Map<string, readonly ("GET" | "POST")[]>([
   ["/api/repos/search", ["GET"]],
   ["/api/repos/mine", ["GET"]],
 ]);
+const GRAPH_CAPABILITY_API_PATHS = new Set([
+  "/api/generate",
+  "/api/graph/projection",
+  "/api/graph/search",
+  "/api/graph/manifest",
+  "/api/pr/prepare",
+  "/api/pr/prepared",
+  "/api/synthetic-executions",
+  "/api/meta",
+  "/api/overlay",
+  "/api/traces",
+  "/api/source",
+]);
 
 export interface WebServerConfig {
   rendererRoot: string;
@@ -145,33 +168,43 @@ export interface WebServerConfig {
   allowSyntheticPrExecution?: boolean;
 }
 
+/** Explicit ownership boundary for the HTTP listener and its persistent lifecycle authorities. */
+export interface WebServerHandle {
+  readonly server: Server;
+  close(): Promise<void>;
+}
+
 export interface Context {
-  /** File-backed local results; the server reads only their projection bundle and summary. */
-  localGraphFiles: Map<string, {
-    artifactPath: string;
-    graphSummary: InspectionGraphSummary;
-    projectionDirectory: string;
-  }>;
-  /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
-  sourceRoots: Map<string, string>;
-  /** Per-id original source metadata retained for GitHub PR listing. */
-  sources: Map<string, ArtifactSource>;
+  /** Process-local shutdown ownership propagated into every graph lifecycle request. */
+  shutdownSignal: AbortSignal;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
-  prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
-  /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
-  tempCleanups: Set<() => void>;
+  prFilesCache: PrFilesCache;
   /** All cold PR inspections pass through one bounded, cancellable singleflight boundary. */
   prInspectionScheduler: InspectionScheduler<string, PrPreparationInputs, CachedPrPreparation, PrPrepareProgress>;
+  /** Owns merge-base singleflights after individual subscribers stop waiting. */
+  prBaseInspectionCoordinator: PrBaseInspectionCoordinator;
   /** Base/local generation lifecycle admission; extraction still shares the stricter worker pool. */
   generationScheduler: InspectionScheduler<string, GenerationLifecycleJob, unknown, string>;
-  /** Restart-safe id resolver and bounded descriptor-only cache for immutable inspections. */
-  inspectionSnapshots: InspectionSnapshotStore;
+  /** Sole durable authority for coherent graph/generation/source capabilities. */
+  graphCapabilities: GraphCapabilityStore;
+  /** Durable publication/read pins shared with immutable-generation collection. */
+  graphGenerationLifecycle: GraphGenerationLifecycle;
+  /** Per-server recurring owner for disk-bounded immutable-generation collection. */
+  graphGenerationMaintenance: GraphGenerationMaintenanceCoordinator;
   /** Restart-safe, file-backed prepared-review navigation metadata; never an in-memory registry. */
   preparedReviewHandoffs: PreparedReviewHandoffStore;
   /** Node-local bare object cache and isolated detached worktree allocator. */
   repositoryMirrors: RepositoryMirrorStore;
+  /** Ordered startup reconciliation; remote capability routes fail closed until it completes. */
+  lifecycleReady: Promise<void>;
   /** One process-wide pool bounds every CPU-heavy extraction, including base/local generation. */
   extractionScheduler: InspectionScheduler<string, ExtractionJob, ExtractionWorkerResult>;
+  /** Aggregate transient projection result + transport memory; completed projections are not cached. */
+  graphProjectionAdmission: ReturnType<typeof createGraphProjectionAdmission>;
+  /** Per-server bounded parsed-page cache; disposed only after the request registry is drained. */
+  graphProjectionRegistry: GraphProjectionRegistry;
+  /** Per-server count/weight boundary for raw source reads and response bodies. */
+  sourceTextAdmission: SourceTextAdmission;
   runExtraction: ExtractionWorkerRunner;
   cacheRoot: string;
   refreshCache: boolean;
@@ -195,14 +228,182 @@ export interface Context {
   runSyntheticScenarioInOci: typeof runSyntheticScenarioInOci;
 }
 
-export function createWebServer(config: WebServerConfig): Server {
-  const ctx = buildContext(config);
-  return createServer((request, response) => {
-    handle(ctx, request, response).catch((error) => sendError(response, error));
+class RequestTaskRegistry {
+  private readonly tasks = new Set<Promise<void>>();
+  private sealed = false;
+
+  admit(request: IncomingMessage, response: ServerResponse, operation: () => Promise<void>): void {
+    if (this.sealed) {
+      request.destroy();
+      response.destroy();
+      return;
+    }
+    let task!: Promise<void>;
+    let pending: Promise<void>;
+    try {
+      pending = operation();
+    } catch (error) {
+      pending = Promise.reject(error);
+    }
+    task = pending.finally(() => this.tasks.delete(task));
+    this.tasks.add(task);
+  }
+
+  seal(): void {
+    this.sealed = true;
+  }
+
+  async drain(): Promise<void> {
+    if (!this.sealed) throw new Error("request task registry must be sealed before drain");
+    while (this.tasks.size > 0) {
+      await Promise.allSettled([...this.tasks]);
+    }
+  }
+}
+
+export function createWebServer(config: WebServerConfig): WebServerHandle {
+  const shutdown = new AbortController();
+  const ctx = buildContext(config, shutdown.signal);
+  const requestTasks = new RequestTaskRegistry();
+  const server = createServer((request, response) => {
+    requestTasks.admit(request, response, () => handle(ctx, request, response)
+      .catch((error) => sendError(response, error)));
+  });
+  let closePromise: Promise<void> | undefined;
+  return Object.freeze({
+    server,
+    close(): Promise<void> {
+      if (closePromise === undefined) {
+        // Seal synchronously: a parser callback already queued on a keep-alive socket must not
+        // enter after the close call has established the shutdown boundary.
+        requestTasks.seal();
+        closePromise = closeWebServer(server, ctx, requestTasks, shutdown);
+      }
+      return closePromise;
+    },
   });
 }
 
-function buildContext(config: WebServerConfig): Context {
+async function closeWebServer(
+  server: Server,
+  ctx: Context,
+  requestTasks: RequestTaskRegistry,
+  shutdown: AbortController,
+): Promise<void> {
+  const errors: unknown[] = [];
+  const listenerClosed = server.listening
+    ? new Promise<void>((resolveClose, rejectClose) => {
+        server.close((error) => error ? rejectClose(error) : resolveClose());
+        server.closeIdleConnections?.();
+      })
+    : Promise.resolve();
+
+  // Closing each scheduler synchronously seals its admission boundary. Only then broadcast the
+  // server abort to request-owned projection/preparation work; the promises below remain the
+  // physical drain joins rather than merely subscriber cancellation acknowledgements.
+  const schedulerDrains = beginShutdownOperations(errors, [
+    () => ctx.generationScheduler.close(),
+    () => ctx.prInspectionScheduler.close(),
+  ]);
+  if (!shutdown.signal.aborted) shutdown.abort(webServerClosingError());
+  const maintenanceDrain = beginShutdownOperations(errors, [
+    () => ctx.graphGenerationMaintenance.close(ctx.shutdownSignal.reason),
+  ]);
+  await collectShutdownErrors(errors, schedulerDrains);
+  await collectShutdownErrors(errors, maintenanceDrain);
+  await runShutdownOperations(errors, [
+    () => ctx.prBaseInspectionCoordinator.close(ctx.shutdownSignal.reason),
+  ]);
+  await runShutdownOperations(errors, [() => ctx.extractionScheduler.close()]);
+  await collectShutdownErrors(errors, [requestTasks.drain()]);
+  await runShutdownOperations(errors, [async () => ctx.graphProjectionRegistry.dispose()]);
+  // Connections that become idle only after their request task drains were not eligible for the
+  // initial closeIdleConnections call above. Retire them now so shutdown never waits out Node's
+  // keep-alive timeout after all owned work is already complete.
+  server.closeIdleConnections?.();
+  await collectShutdownErrors(errors, [listenerClosed]);
+  await collectShutdownErrors(errors, [ctx.lifecycleReady]);
+  await runShutdownOperations(errors, [() => ctx.repositoryMirrors.close()]);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "web server shutdown failed");
+}
+
+async function collectShutdownErrors(errors: unknown[], operations: readonly Promise<unknown>[]): Promise<void> {
+  for (const result of await Promise.allSettled(operations)) {
+    if (result.status === "rejected") errors.push(result.reason);
+  }
+}
+
+function beginShutdownOperations(
+  errors: unknown[],
+  operations: readonly (() => Promise<unknown>)[],
+): Promise<unknown>[] {
+  const pending: Promise<unknown>[] = [];
+  for (const operation of operations) {
+    try {
+      pending.push(operation());
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  return pending;
+}
+
+async function runShutdownOperations(
+  errors: unknown[],
+  operations: readonly (() => Promise<unknown>)[],
+): Promise<void> {
+  await collectShutdownErrors(errors, beginShutdownOperations(errors, operations));
+}
+
+async function withReleasedResource<Resource extends { release(): Promise<void> }, Result>(
+  resource: Resource,
+  label: string,
+  operation: (resource: Resource) => Promise<Result>,
+): Promise<Result> {
+  let failed = false;
+  let failure: unknown;
+  try {
+    return await operation(resource);
+  } catch (error) {
+    failed = true;
+    failure = error;
+    throw error;
+  } finally {
+    try {
+      await resource.release();
+    } catch (releaseError) {
+      if (failed) {
+        throw new AggregateError([failure, releaseError], `${label} operation and release both failed`);
+      }
+      throw releaseError;
+    }
+  }
+}
+
+function serverRequestLifecycle(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  message: string,
+): { signal: AbortSignal; dispose(): void } {
+  const client = cancelWhenClientLeaves(request, response, message);
+  const signal = AbortSignal.any([client.signal, ctx.shutdownSignal]);
+  const destroyRequest = () => {
+    if (!request.destroyed) request.destroy();
+  };
+  signal.addEventListener("abort", destroyRequest, { once: true });
+  if (signal.aborted) destroyRequest();
+  return {
+    signal,
+    dispose() {
+      signal.removeEventListener("abort", destroyRequest);
+      client.dispose();
+    },
+  };
+}
+
+function buildContext(config: WebServerConfig, shutdownSignal: AbortSignal): Context {
   const indexPath = join(config.rendererRoot, "index.html");
   if (!existsSync(indexPath)) {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
@@ -211,17 +412,16 @@ function buildContext(config: WebServerConfig): Context {
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
   const repositoryMirrors = new RepositoryMirrorStore({ cacheRoot });
-  // Crash-orphaned detached worktrees and private refs must not accumulate forever. Scavenging is
-  // lock-coordinated inside the mirror store and deliberately does not delay server readiness.
-  void repositoryMirrors.scavenge().catch(() => {
-    // Best effort: a later process/startup pass can retry, while live inspection remains usable.
-  });
-  const concurrency = inspectionConcurrency();
+  const prBaseInspectionCoordinator = new PrBaseInspectionCoordinator();
+  const workerConcurrency = extractionWorkerConcurrency();
+  const prConcurrency = resolvePrInspectionConcurrency(process.env.MERIDIAN_PR_INSPECTION_CONCURRENCY);
+  const generationConcurrency = resolveGenerationConcurrency(process.env.MERIDIAN_GENERATION_CONCURRENCY);
   const extractionScheduler = new InspectionScheduler<string, ExtractionJob, ExtractionWorkerResult>({
-    concurrency,
-    maxQueued: inspectionQueueLimit(concurrency),
+    concurrency: workerConcurrency,
+    maxQueued: queueLimit(process.env.MERIDIAN_EXTRACTION_QUEUE_LIMIT, workerConcurrency),
     execute: ({ input, signal }) => runExtractionWorker(input.request, {
       artifactOutputPath: input.artifactOutputPath,
+      lifecycleCacheRoot: cacheRoot,
       token: input.token,
       signal,
     }),
@@ -231,53 +431,89 @@ function buildContext(config: WebServerConfig): Context {
       return extractionScheduler.schedule(
         extractionJobKey(request, options.artifactOutputPath, options.token),
         { kind: "extract", request, artifactOutputPath: options.artifactOutputPath, token: options.token },
-        { signal: options.signal, admitted: options.admitted },
+        {
+          signal: options.signal,
+          admitted: options.admitted,
+          fairnessGroup: options.schedulingGroup,
+          // The PR cache owns the worker's checkout lease. Do not let cancellation unwind that
+          // owner until the child process has physically drained from the scheduler.
+          awaitExecutorDrain: true,
+        },
       );
     } catch (error) {
       if (error instanceof InspectionQueueFullError) throw new WebError(error.status, error.message);
       throw error;
     }
   };
-  let inspectionSnapshots: InspectionSnapshotStore | undefined;
-  let preparedReviewHandoffs: PreparedReviewHandoffStore | undefined;
-  const generationConcurrency = Math.max(4, concurrency * 2);
+  const graphCapabilities = new GraphCapabilityStore({ cacheRoot, repositoryMirrors });
+  const graphGenerationLifecycle = new GraphGenerationLifecycle({ cacheRoot });
+  const graphGenerationGarbageCollector = new GraphGenerationGarbageCollector({
+    cacheRoot,
+    lifecycle: graphGenerationLifecycle,
+    repositoryMirrors,
+  });
+  const preparedReviewHandoffs = new PreparedReviewHandoffStore({
+    cacheRoot,
+    graphCapabilities,
+    ...config.preparedReviewHandoffLimits,
+  });
+  const graphGenerationMaintenance = new GraphGenerationMaintenanceCoordinator({
+    collector: graphGenerationGarbageCollector,
+    roots: graphCapabilities,
+    shutdownSignal,
+  });
+  const lifecycleReady = (async () => {
+    shutdownSignal.throwIfAborted();
+    await graphCapabilities.reconcile({ signal: shutdownSignal });
+    shutdownSignal.throwIfAborted();
+    await preparedReviewHandoffs.reconcile({ signal: shutdownSignal });
+    shutdownSignal.throwIfAborted();
+    await graphCapabilities.scavenge({ signal: shutdownSignal });
+    shutdownSignal.throwIfAborted();
+    await graphGenerationMaintenance.start();
+    shutdownSignal.throwIfAborted();
+    await repositoryMirrors.scavenge({ signal: shutdownSignal });
+    shutdownSignal.throwIfAborted();
+  })()
+    .catch((error: unknown) => {
+      if (expectedShutdownError(error, shutdownSignal)) return;
+      throw error;
+    });
   const ctx: Context = {
-    localGraphFiles: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map(),
-    prFilesCache: new Map(),
-    tempCleanups: new Set(),
+    shutdownSignal,
+    prFilesCache: new PrFilesCache(),
     extractionScheduler,
+    graphProjectionAdmission: createGraphProjectionAdmission(),
+    graphProjectionRegistry: new GraphProjectionRegistry(),
+    sourceTextAdmission: createSourceTextAdmission(),
     runExtraction,
     generationScheduler: new InspectionScheduler({
       concurrency: generationConcurrency,
-      maxQueued: inspectionQueueLimit(generationConcurrency),
+      maxQueued: queueLimit(process.env.MERIDIAN_GENERATION_QUEUE_LIMIT, generationConcurrency),
       execute: ({ input, signal, reportProgress }) => input.run(signal, reportProgress),
     }),
     prInspectionScheduler: new InspectionScheduler({
-      concurrency,
-      maxQueued: inspectionQueueLimit(concurrency),
-      execute: ({ input, signal, reportProgress }) => cachedPrPreparation({
+      concurrency: prConcurrency,
+      maxQueued: queueLimit(process.env.MERIDIAN_PR_INSPECTION_QUEUE_LIMIT, prConcurrency),
+      execute: ({ key, input, signal, reportProgress }) => cachedPrPreparation({
         ...input,
         signal,
         extractionAdmitted: true,
+        extractionSchedulingGroup: key,
         onProgress: reportProgress,
         repositoryMirrors,
+        baseInspectionCoordinator: prBaseInspectionCoordinator,
+        generationLifecycle: graphGenerationLifecycle,
         runExtraction,
       }),
     }),
-    get inspectionSnapshots() {
-      // Most web sessions never inspect a PR. Keep boot and local-only generation free of cache
-      // filesystem writes; the first immutable-id read or publication initializes the resolver.
-      return inspectionSnapshots ??= new InspectionSnapshotStore({ cacheRoot });
-    },
-    get preparedReviewHandoffs() {
-      return preparedReviewHandoffs ??= new PreparedReviewHandoffStore({
-        cacheRoot,
-        ...config.preparedReviewHandoffLimits,
-      });
-    },
+    prBaseInspectionCoordinator,
+    graphCapabilities,
+    graphGenerationLifecycle,
+    graphGenerationMaintenance,
+    preparedReviewHandoffs,
     repositoryMirrors,
+    lifecycleReady,
     cacheRoot,
     refreshCache: config.refreshCache === true,
     rendererIndex: readFileSync(indexPath, "utf8"),
@@ -295,8 +531,24 @@ function buildContext(config: WebServerConfig): Context {
     runSyntheticScenarioFromArtifactFile,
     runSyntheticScenarioInOci,
   };
-  cleanRetainedSourcesOnExit(ctx);
+  // Observe rejection so server construction remains synchronous; every remote route awaits the
+  // same promise and fails closed with the original reconciliation error.
+  void lifecycleReady.catch(() => undefined);
   return ctx;
+}
+
+function webServerClosingError(): Error {
+  const error = new Error("The web server is closing");
+  error.name = "AbortError";
+  return error;
+}
+
+function expectedShutdownError(error: unknown, signal: AbortSignal): boolean {
+  if (!signal.aborted) return false;
+  if (error === signal.reason) return true;
+  return !(error instanceof AggregateError)
+    && error instanceof Error
+    && error.name === "AbortError";
 }
 
 interface ExtractionJob {
@@ -319,31 +571,21 @@ function extractionJobKey(
   return createHash("sha256").update(JSON.stringify({ request, artifactOutputPath, credential })).digest("hex");
 }
 
-function inspectionQueueLimit(concurrency: number): number {
-  const configured = Number.parseInt(process.env.MERIDIAN_INSPECTION_QUEUE_LIMIT ?? "", 10);
+function queueLimit(value: string | undefined, concurrency: number): number {
+  const configured = Number.parseInt(value ?? "", 10);
   return Number.isSafeInteger(configured) && configured >= 0 ? configured : concurrency;
 }
 
-function inspectionConcurrency(): number {
+function extractionWorkerConcurrency(): number {
   const bytesPerMb = 1024 ** 2;
   const availableBytes = typeof process.availableMemory === "function" ? process.availableMemory() : totalmem();
-  return resolveInspectionConcurrency({
+  return resolveExtractionWorkerConcurrency({
     totalMemoryMb: totalmem() / bytesPerMb,
     availableMemoryMb: availableBytes / bytesPerMb,
     parentHeapMb: getHeapStatistics().heap_size_limit / bytesPerMb,
     workerHeapMb: extractionWorkerHeapMb(),
-    requestedConcurrency: process.env.MERIDIAN_INSPECTION_CONCURRENCY,
-    memoryBudgetMb: process.env.MERIDIAN_INSPECTION_MEMORY_BUDGET_MB,
-  });
-}
-
-// A successful generate keeps its temp clone alive so `/api/source` can serve file slices; this
-// exit hook still removes every retained clone on shutdown so `web` never leaks temp directories.
-function cleanRetainedSourcesOnExit(ctx: Context): void {
-  process.once("exit", () => {
-    for (const cleanup of ctx.tempCleanups) {
-      cleanup();
-    }
+    requestedConcurrency: process.env.MERIDIAN_EXTRACTION_WORKER_CONCURRENCY,
+    memoryBudgetMb: process.env.MERIDIAN_EXTRACTION_MEMORY_BUDGET_MB,
   });
 }
 
@@ -354,7 +596,8 @@ async function handle(ctx: Context, request: IncomingMessage, response: ServerRe
     return;
   }
   if (url.pathname === "/view") {
-    sendView(ctx, response, url.searchParams.get("id"), {
+    await ctx.lifecycleReady;
+    await sendView(ctx, request, response, url.searchParams.get("id"), {
       preparedId: url.searchParams.get("prepared"),
       prNumber: url.searchParams.get("prn"),
       revision: url.searchParams.get("rev"),
@@ -383,6 +626,7 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
     sendJson(response, 405, { error: "method not allowed" }, { allow: allowed.join(", ") });
     return;
   }
+  if (GRAPH_CAPABILITY_API_PATHS.has(url.pathname)) await ctx.lifecycleReady;
   if (method === "POST") {
     assertJsonContentType(request);
     await handleApiPost(ctx, request, response, url);
@@ -398,7 +642,7 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     return;
   }
   if (pathname === "/api/graph/projection") {
-    await handleGraphProjection(ctx, request, response, url.searchParams.get("id"));
+    await handleGraphProjection(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/graph/search") {
@@ -447,120 +691,139 @@ export async function handleSyntheticExecution(
   id: string | null,
 ): Promise<void> {
   assertLoopbackHost(request);
-  const capability = resolveSyntheticCapability(ctx, id);
-  if (!capability
-    || capability.scenarios.length === 0
-    || capability.sourceFingerprint === null) {
-    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
-    return;
-  }
-  const sandboxedPrAdmission = capability.trust.mode === "sandboxed-pr";
-  if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
-    sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
-    return;
-  }
-  const body = parseSyntheticExecutionRequest(await readJsonBody(request));
-  const scenario = capability.scenarios.find((candidate) => candidate.id === body.scenarioId);
-  if (scenario === undefined) {
-    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
-    return;
-  }
-  if (scenario.rootId !== body.rootNodeId) {
-    throw new WebError(409, "selected flow no longer matches the synthetic scenario");
-  }
-  const cancellation = cancelSyntheticWhenClientLeaves(request, response);
+  const lifecycle = serverRequestLifecycle(
+    ctx,
+    request,
+    response,
+    "The client closed the synthetic execution request",
+  );
   try {
-    const executionRequest = {
-      sourceRoot: capability.sourceRoot,
-      artifactPath: capability.artifactPath,
-      scenarioId: body.scenarioId,
-      expectedRootId: body.rootNodeId,
-      expectedSourceFingerprint: capability.sourceFingerprint,
-      input: body.input,
-      inputOverrides: body.inputOverrides,
-      watchers: body.watchers,
-      signal: cancellation.signal,
-    };
-    const execution = sandboxedPrAdmission
-      ? await ctx.runSyntheticScenarioInOci(executionRequest)
-      : await ctx.runSyntheticScenarioFromArtifactFile(executionRequest);
-    sendJson(response, 200, execution);
+    const capability = await resolveSyntheticCapability(ctx, id, lifecycle.signal);
+    if (!capability
+      || capability.scenarios.length === 0
+      || capability.sourceFingerprint === null) {
+      sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+      return;
+    }
+    const sourceFingerprint = capability.sourceFingerprint;
+    await withReleasedResource(capability, "synthetic graph capability", async () => {
+      const sandboxedPrAdmission = capability.trust.mode === "sandboxed-pr";
+      if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
+        sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
+        return;
+      }
+      const operationSignal = AbortSignal.any([lifecycle.signal, capability.signal]);
+      const body = parseSyntheticExecutionRequest(await readJsonBody({ request, signal: operationSignal }));
+      const scenario = capability.scenarios.find((candidate) => candidate.id === body.scenarioId);
+      if (scenario === undefined) {
+        sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+        return;
+      }
+      if (scenario.rootId !== body.rootNodeId) {
+        throw new WebError(409, "selected flow no longer matches the synthetic scenario");
+      }
+      const executionRequest = {
+        sourceRoot: capability.sourceRoot,
+        artifactPath: capability.artifactPath,
+        scenarioId: body.scenarioId,
+        expectedRootId: body.rootNodeId,
+        expectedSourceFingerprint: sourceFingerprint,
+        input: body.input,
+        inputOverrides: body.inputOverrides,
+        watchers: body.watchers,
+        signal: operationSignal,
+      };
+      const execution = sandboxedPrAdmission
+        ? await ctx.runSyntheticScenarioInOci(executionRequest)
+        : await ctx.runSyntheticScenarioFromArtifactFile(executionRequest);
+      sendJson(response, 200, execution);
+    });
   } finally {
-    cancellation.dispose();
+    lifecycle.dispose();
   }
-}
-
-function cancelSyntheticWhenClientLeaves(
-  request: IncomingMessage,
-  response: ServerResponse,
-): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const abort = () => {
-    if (controller.signal.aborted) return;
-    const error = new Error("The client closed the synthetic execution request");
-    error.name = "AbortError";
-    controller.abort(error);
-  };
-  request.once("aborted", abort);
-  const events = response as ServerResponse & {
-    once?: (event: string, listener: () => void) => unknown;
-    off?: (event: string, listener: () => void) => unknown;
-  };
-  const onClose = () => {
-    if (!response.writableEnded) abort();
-  };
-  events.once?.("close", onClose);
-  return {
-    signal: controller.signal,
-    dispose() {
-      request.off("aborted", abort);
-      events.off?.("close", onClose);
-    },
-  };
 }
 
 async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
   if (pathname === "/api/graph/manifest") {
-    sendProjectionManifest(ctx, response, url.searchParams.get("id"));
+    await sendProjectionManifest(ctx, request, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/pr/prepared") {
-    await sendPreparedReviewHandoff(ctx, response, url.searchParams.get("id"));
+    await sendPreparedReviewHandoff(ctx, request, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/meta") {
-    sendMeta(ctx, response, url.searchParams.get("id"));
+    await sendMeta(ctx, request, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/overlay") {
-    const artifactPath = telemetryArtifactPath(ctx, response, url.searchParams.get("id"));
-    if (artifactPath === null) return;
-    await sendTelemetryOverlay(
-      response,
-      WEB_TELEMETRY_SOURCE,
-      url.searchParams.get("env"),
-      url.searchParams.get("source"),
-      { artifactPath, scratchRoot: join(ctx.cacheRoot, "web-telemetry") },
-    );
+    const lifecycle = serverRequestLifecycle(ctx, request, response, "The client closed the overlay request");
+    try {
+      const artifact = await acquireArtifact(ctx, response, url.searchParams.get("id"), lifecycle.signal);
+      if (artifact === null) return;
+      await withReleasedResource(artifact, "overlay graph capability", async () => {
+        const operationSignal = AbortSignal.any([lifecycle.signal, artifact.signal]);
+        operationSignal.throwIfAborted();
+        await sendTelemetryOverlay(
+          response,
+          WEB_TELEMETRY_SOURCE,
+          url.searchParams.get("env"),
+          url.searchParams.get("source"),
+          { artifactPath: artifact.path, scratchRoot: join(ctx.cacheRoot, "web-telemetry"), signal: operationSignal },
+        );
+      });
+    } finally {
+      lifecycle.dispose();
+    }
     return;
   }
   if (pathname === "/api/traces") {
-    const artifactPath = telemetryArtifactPath(ctx, response, url.searchParams.get("id"));
-    if (artifactPath === null) return;
-    await sendTelemetryTraces(
-      response,
-      WEB_TELEMETRY_SOURCE,
-      url.searchParams.get("env"),
-      url.searchParams.get("source"),
-      { artifactPath, scratchRoot: join(ctx.cacheRoot, "web-telemetry") },
-    );
+    const lifecycle = serverRequestLifecycle(ctx, request, response, "The client closed the traces request");
+    try {
+      const artifact = await acquireArtifact(ctx, response, url.searchParams.get("id"), lifecycle.signal);
+      if (artifact === null) return;
+      await withReleasedResource(artifact, "traces graph capability", async () => {
+        const operationSignal = AbortSignal.any([lifecycle.signal, artifact.signal]);
+        operationSignal.throwIfAborted();
+        await sendTelemetryTraces(
+          response,
+          WEB_TELEMETRY_SOURCE,
+          url.searchParams.get("env"),
+          url.searchParams.get("source"),
+          { artifactPath: artifact.path, scratchRoot: join(ctx.cacheRoot, "web-telemetry"), signal: operationSignal },
+        );
+      });
+    } finally {
+      lifecycle.dispose();
+    }
     return;
   }
   if (pathname === "/api/source") {
+    const lifecycle = serverRequestLifecycle(ctx, request, response, "The client closed the source request");
     const id = url.searchParams.get("id") ?? "";
-    const sourceRoot = ctx.sourceRoots.get(id) ?? ctx.inspectionSnapshots.resolveSource(id)?.sourceDir ?? null;
-    sendSource(response, sourceRoot, url.searchParams);
+    try {
+      const handle = await ctx.graphCapabilities.acquire(id, { signal: lifecycle.signal });
+      if (!handle) {
+        await sendSource(response, null, url.searchParams, {
+          admission: ctx.sourceTextAdmission,
+          signal: lifecycle.signal,
+        });
+        return;
+      }
+      await withReleasedResource(handle, "source graph capability", async () => {
+        const operationSignal = AbortSignal.any([lifecycle.signal, handle.signal]);
+        operationSignal.throwIfAborted();
+        await sendSource(
+          response,
+          handle.source.sourceDir,
+          url.searchParams,
+          { admission: ctx.sourceTextAdmission, signal: operationSignal },
+        );
+      });
+    } finally {
+      lifecycle.dispose();
+    }
     return;
   }
   if (pathname === "/api/prs") {
@@ -618,19 +881,26 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
-function telemetryArtifactPath(ctx: Context, response: ServerResponse, id: string | null): string | null {
-  const artifactPath = id === null
-    ? undefined
-    : ctx.localGraphFiles.get(id)?.artifactPath ?? ctx.inspectionSnapshots.resolveArtifact(id)?.path;
-  if (artifactPath === undefined) {
+async function acquireArtifact(
+  ctx: Context,
+  response: ServerResponse,
+  id: string | null,
+  signal: AbortSignal,
+): Promise<{ path: string; signal: AbortSignal; release(): Promise<void> } | null> {
+  if (id === null) {
     sendJson(response, 404, { error: "unknown graph id" });
     return null;
   }
-  return artifactPath;
+  const handle = await ctx.graphCapabilities.acquire(id, { signal });
+  if (!handle) {
+    sendJson(response, 404, { error: "unknown graph id" });
+    return null;
+  }
+  return { path: handle.artifactPath, signal: handle.signal, release: handle.release };
 }
 
 function sendError(response: ServerResponse, error: unknown): void {
-  if (response.headersSent) {
+  if (response.headersSent || response.writableEnded || response.destroyed) {
     response.end();
     return;
   }

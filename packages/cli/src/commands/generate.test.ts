@@ -8,20 +8,25 @@ import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSy
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildProgram } from "../program";
-import { runExtractionWorker } from "../server/extraction-worker";
+import { runExtractionWorker, type ExtractionWorkerRunner } from "../server/extraction-worker";
 import { generateGraph } from "../server/web-generation";
 import type { Context } from "../server/web-server";
+import { GraphCapabilityStore } from "../server/graph-capability-store";
+import { GraphGenerationLifecycle } from "../server/graph-generation-lifecycle";
+import { removeEntry } from "../server/web-cache-storage";
 import { runGenerate, type GenerateOptions } from "./generate";
 
 describe("generate canonical repository analysis", () => {
   let root: string;
+  let cacheRoot: string;
 
   beforeEach(() => {
     // Canonicalize macOS's /var -> /private/var temp path so workspace roots and ts-morph source
     // files stay under the same real path during discovery.
     root = realpathSync(mkdtempSync(join(tmpdir(), "meridian-generate-workspace-")));
+    cacheRoot = realpathSync(mkdtempSync(join(tmpdir(), "meridian-generate-cache-")));
     write("tsconfig.json", JSON.stringify({ files: [], references: [{ path: "./workspace" }] }));
     write("workspace/package.json", JSON.stringify({ private: true, workspaces: ["packages/*"] }));
     write("workspace/packages/alpha/package.json", JSON.stringify({ name: "@fixture/alpha" }));
@@ -42,7 +47,10 @@ describe("generate canonical repository analysis", () => {
     write("backend/orders.py", "def calculate_total(quantity: int) -> int:\n    return quantity * 2\n");
   });
 
-  afterEach(() => rmSync(root, { recursive: true, force: true }));
+  afterEach(() => {
+    removeEntry(cacheRoot);
+    rmSync(root, { recursive: true, force: true });
+  });
 
   it("uses workspace discovery even when a root tsconfig exists", { timeout: 20_000 }, async () => {
     const discoveredOut = join(root, "discovered.graph.json");
@@ -56,24 +64,29 @@ describe("generate canonical repository analysis", () => {
       "ts:workspace/packages/alpha/src/index.ts->ts:workspace/packages/beta/src/index.ts",
     );
 
-    const localGraphFiles = new Map<string, {
-      artifactPath: string;
-      graphSummary: { schemaVersion: string; generatedAt: string; nodeCount: number; edgeCount: number };
-      projectionDirectory: string;
-    }>();
+    const graphCapabilities = new GraphCapabilityStore({
+      cacheRoot,
+      repositoryMirrors: {
+        retainSource: async () => true,
+        releaseSource: async () => {},
+      },
+    });
     const context = {
       cwd: root,
-      cacheRoot: join(root, ".meridian-test-cache"),
-      localGraphFiles,
-      sourceRoots: new Map(),
-      sources: new Map(),
-      tempCleanups: new Set(),
-      runExtraction: runExtractionWorker,
+      cacheRoot,
+      graphCapabilities,
+      graphGenerationLifecycle: new GraphGenerationLifecycle({ cacheRoot }),
+      graphGenerationMaintenance: { notePublication: vi.fn() },
+      runExtraction: ((request, options) => runExtractionWorker(request, {
+        ...options,
+        lifecycleCacheRoot: cacheRoot,
+      })) satisfies ExtractionWorkerRunner,
     } as unknown as Context;
     const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
-    const generatedFile = localGraphFiles.get(generated.id);
-    expect(generatedFile).toBeDefined();
-    const webArtifact = readArtifact(generatedFile!.artifactPath);
+    const generatedCapability = await graphCapabilities.acquire(generated.id);
+    expect(generatedCapability).not.toBeNull();
+    const webArtifact = readArtifact(generatedCapability!.artifactPath);
+    await generatedCapability?.release();
     const cliArtifact = readArtifact(discoveredOut);
     expect(cliArtifact.target.language).toBe("mixed");
     expect(cliArtifact.nodes.some((node) => node.id.startsWith("ts:"))).toBe(true);

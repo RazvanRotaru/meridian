@@ -8,6 +8,7 @@ import { buildGraphIndex } from "../graph/graphIndex";
 import {
   GraphProjectionClient,
   type GraphProjectionDataSource,
+  type GraphProjectionEndpoints,
   type LoadedGraphProjection,
 } from "../graph/graphProjectionClient";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
@@ -18,7 +19,7 @@ import {
   RecentAllocationBudget,
 } from "../state/recentViewProjectionCache";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
-import { prApiUrlsFromProjectionManifest, readBootConfig, type BootConfig } from "./bootConfig";
+import { prApiUrlsForGraph, readBootConfig, type BootConfig } from "./bootConfig";
 import { loadDevSampleArtifact } from "./loadDevSampleArtifact";
 import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
 
@@ -51,8 +52,8 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
       : telemetrySources.find((source) => source.id === boot.preselectedTelemetrySourceId) ?? null;
-    const prApi = prApiUrlsFromProjectionManifest(
-      boot.graphSource.kind === "projections" ? boot.graphSource.manifestUrl : null,
+    const prApi = prApiUrlsForGraph(
+      boot.graphSource.kind === "projections" ? boot.graphSource.graphId : null,
     );
     const store = createBlueprintStore({
       artifact,
@@ -81,8 +82,10 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
       recentAllocationBudget,
       projectionEndpoints: boot.graphSource.kind === "projections"
         ? {
+            graphId: boot.graphSource.graphId,
             manifestUrl: boot.graphSource.manifestUrl,
             projectionUrl: boot.graphSource.projectionUrl,
+            searchUrl: boot.graphSource.searchUrl,
           }
         : null,
     });
@@ -110,13 +113,6 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
   }
 }
 
-/** Non-React embedders keep the prior all-in-one convenience entry point. */
-export async function bootstrap(): Promise<BootResult> {
-  const prepared = await prepareBootstrap();
-  await prepared.hydrate();
-  return { store: prepared.store, boot: prepared.boot };
-}
-
 interface LoadedBootGraph {
   artifact: Awaited<ReturnType<typeof loadDevSampleArtifact>>;
   index: ReturnType<typeof buildGraphIndex>;
@@ -134,13 +130,21 @@ export async function loadBootGraph(
     const artifact = await loadDevSampleArtifact(boot.graphSource.artifactUrl);
     return { artifact, index: buildGraphIndex(artifact), dataSource: null, projection: null };
   }
-  const client = new GraphProjectionClient(
-    boot.graphSource.manifestUrl,
-    boot.graphSource.projectionUrl,
-    { recentBudget },
-  );
-  const manifest = await client.loadManifest();
-  const projection = await client.activate(manifest.defaultView);
+  const endpoints: GraphProjectionEndpoints = {
+    graphId: boot.graphSource.graphId,
+    manifestUrl: boot.graphSource.manifestUrl,
+    projectionUrl: boot.graphSource.projectionUrl,
+    searchUrl: boot.graphSource.searchUrl,
+  };
+  const client = new GraphProjectionClient({ recentBudget });
+  const manifest = await client.loadManifest({ endpoints });
+  const staged = await client.stage(manifest.defaultView, { endpoints });
+  let projection: LoadedGraphProjection;
+  try {
+    projection = staged.commit();
+  } finally {
+    staged.release();
+  }
   return {
     artifact: projection.artifact,
     index: projection.index,

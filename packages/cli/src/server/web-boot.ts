@@ -67,8 +67,10 @@ export function injectViewBoot(
     syntheticExecutionTrust,
   );
   const boot = {
+    projectionGraphId: id,
     projectionManifestUrl: `/api/graph/manifest?id=${id}`,
     projectionUrl: `/api/graph/projection?id=${id}`,
+    graphSearchUrl: `/api/graph/search?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,

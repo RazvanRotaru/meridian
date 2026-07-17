@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import {
   editPullRequestComment,
+  FILE_AT_REF_MAX_BYTES,
   fetchCommitChecks,
   fetchFileAtRef,
   fetchPullRequest,
@@ -16,6 +17,9 @@ import {
   type ReviewFileCommentInput,
 } from "./github-review";
 import { sendJson } from "./http-response";
+import { sendSourceText } from "./source-serve";
+import { remoteSourceTextReservationBytes } from "./source-text-admission";
+import { cancelWhenClientLeaves } from "./web-cancellation";
 import { githubTokenFor, githubUserFor } from "./web-auth";
 import { WebError } from "./web-error";
 import { readJsonBody } from "./web-request";
@@ -39,7 +43,7 @@ export async function handlePullRequests(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
@@ -78,12 +82,12 @@ export async function handleRelatedPullRequests(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const requested = parseRelatedPaths(await readJsonBody(request), source.subdir);
+  const requested = parseRelatedPaths(await readJsonBody({ request, signal: ctx.shutdownSignal }), source.subdir);
   if (requested.size === 0) {
     sendJson(response, 200, { results: [], scanned: 0, hasMore: false, skipped: 0 });
     return;
@@ -137,7 +141,7 @@ async function relatedPathsForPr(
 ): Promise<string[]> {
   const key = `${source.owner}/${source.repo}#${pr.number}`;
   const cached = ctx.prFilesCache.get(key);
-  let repoPaths: string[];
+  let repoPaths: readonly string[];
   if (cached?.updatedAt === pr.updatedAt && cached.headSha === pr.headSha) {
     repoPaths = cached.paths;
   } else {
@@ -211,7 +215,7 @@ export async function handlePullRequestFiles(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
@@ -234,7 +238,7 @@ export async function handlePullRequestOne(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
@@ -251,7 +255,7 @@ export async function handlePullRequestComments(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
@@ -268,12 +272,12 @@ export async function handlePullRequestCommentMutation(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const body = parseCommentMutationBody(await readJsonBody(request));
+  const body = parseCommentMutationBody(await readJsonBody({ request, signal: ctx.shutdownSignal }));
   const token = githubTokenFor(ctx, request);
   if (!token) {
     throw new WebError(401, "editing or replying to a comment requires a GitHub sign-in");
@@ -320,7 +324,7 @@ export async function handlePullRequestChecks(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
@@ -344,19 +348,45 @@ export async function handlePullRequestFileContent(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
-  if (!source) {
-    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
-    return;
+  const cancellation = cancelWhenClientLeaves(request, response);
+  let sourceLease: ReturnType<Context["sourceTextAdmission"]["tryAcquire"]> = null;
+  try {
+  const source = await githubSource(ctx, request, response, query.get("id"));
+    if (!source) {
+      sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+      return;
+    }
+    const ref = query.get("ref");
+    const file = query.get("path");
+    if (!ref || ref.length > 200 || !file || file.split("/").includes("..")) {
+      throw new WebError(400, "ref and path are required");
+    }
+    cancellation.signal.throwIfAborted();
+    sourceLease = ctx.sourceTextAdmission.tryAcquire(remoteSourceTextReservationBytes(FILE_AT_REF_MAX_BYTES));
+    if (sourceLease === null) {
+      response.setHeader("retry-after", "1");
+      throw new WebError(503, "source memory budget is busy; retry later");
+    }
+    const repoPath = restoreExtractionSubdir(file, source.subdir);
+    const result = await fetchFileAtRef({
+      owner: source.owner,
+      repo: source.repo,
+      ref,
+      path: repoPath,
+      token: githubTokenFor(ctx, request),
+      signal: cancellation.signal,
+    });
+    await sendSourceText(response, {
+      startLine: 1,
+      endLine: result.lineCount,
+      lineCount: result.lineCount,
+      code: result.code,
+      truncated: result.truncated,
+    }, cancellation.signal);
+  } finally {
+    sourceLease?.release();
+    cancellation.dispose();
   }
-  const ref = query.get("ref");
-  const file = query.get("path");
-  if (!ref || ref.length > 200 || !file || file.split("/").includes("..")) {
-    throw new WebError(400, "ref and path are required");
-  }
-  const repoPath = restoreExtractionSubdir(file, source.subdir);
-  const result = await fetchFileAtRef({ owner: source.owner, repo: source.repo, ref, path: repoPath, token: githubTokenFor(ctx, request) });
-  sendJson(response, 200, { file, ...result });
 }
 
 interface CommentMutationBody {
@@ -398,12 +428,12 @@ export async function handleSubmitReview(
   response: ServerResponse,
   query: URLSearchParams,
 ): Promise<void> {
-  const source = githubSource(ctx, query.get("id"));
+  const source = await githubSource(ctx, request, response, query.get("id"));
   if (!source) {
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const body = parseSubmitReviewBody(await readJsonBody(request));
+  const body = parseSubmitReviewBody(await readJsonBody({ request, signal: ctx.shutdownSignal }));
   const token = githubTokenFor(ctx, request);
   if (!token) {
     throw new WebError(401, "submitting a review requires a GitHub sign-in");
@@ -526,11 +556,47 @@ function isFilledString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function githubSource(ctx: Context, id: string | null): Extract<ArtifactSource, { kind: "github" }> | null {
-  const source = id
-    ? (ctx.sources.get(id) ?? ctx.inspectionSnapshots?.resolveDescriptor(id)?.source.metadata)
-    : undefined;
-  return source?.kind === "github" ? source : null;
+async function githubSource(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  id: string | null,
+): Promise<Extract<ArtifactSource, { kind: "github" }> | null> {
+  if (!id) return null;
+  const client = cancelWhenClientLeaves(request, response, "The client closed the GitHub graph request");
+  const signal = AbortSignal.any([client.signal, ctx.shutdownSignal]);
+  const destroyRequest = () => {
+    if (!request.destroyed) request.destroy();
+  };
+  signal.addEventListener("abort", destroyRequest, { once: true });
+  if (signal.aborted) destroyRequest();
+  try {
+    const handle = await ctx.graphCapabilities.acquire(id, { signal });
+    if (!handle) return null;
+    let failed = false;
+    let failure: unknown;
+    try {
+      signal.throwIfAborted();
+      handle.signal.throwIfAborted();
+      return handle.source.metadata.kind === "github" ? handle.source.metadata : null;
+    } catch (error) {
+      failed = true;
+      failure = error;
+      throw error;
+    } finally {
+      try {
+        await handle.release();
+      } catch (releaseError) {
+        if (failed) {
+          throw new AggregateError([failure, releaseError], "GitHub graph capability read and release both failed");
+        }
+        throw releaseError;
+      }
+    }
+  } finally {
+    signal.removeEventListener("abort", destroyRequest);
+    client.dispose();
+  }
 }
 
 function parseState(state: string | null): "open" | "closed" {

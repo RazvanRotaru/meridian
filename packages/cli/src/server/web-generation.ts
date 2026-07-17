@@ -1,12 +1,25 @@
-import { join } from "node:path";
-import { resolveSource } from "./clone";
+import { createHash } from "node:crypto";
+import { dirname, join } from "node:path";
+import { resolveLocalSource } from "./repository-source";
 import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { artifactId, remoteArtifactId } from "./web-request";
 import type { GenerateRequest } from "./web-request";
 import type { Context } from "./web-server";
 import { artifactSourceFor } from "./web-source";
-import { createStageDirectory, removeEntry } from "./web-cache-storage";
+import { createPrivateDirectory } from "./web-cache-storage";
 import type { SerializablePipelineRequest } from "./extraction-worker";
+import { GRAPH_PROJECTION_DIRECTORY } from "./graph-projection-bundle";
+import {
+  finalizedGenerationDirectory,
+  localArtifactGenerations,
+} from "./graph-cache-layout";
+import {
+  freezeGraphGenerationDirectory,
+  sealGraphGeneration,
+  verifyExistingGraphGeneration,
+} from "./graph-generation-verifier";
+import type { GraphGenerationLease } from "./graph-generation-lifecycle";
+import { withOwnershipCleanup } from "./ownership-cleanup";
 
 export interface GenerateResult {
   id: string;
@@ -55,9 +68,10 @@ async function generateRemote(
     tokenIsExplicit: request.token !== undefined,
     repositoryMirrors: ctx.repositoryMirrors,
     runExtraction: ctx.runExtraction,
+    generationLifecycle: ctx.graphGenerationLifecycle,
     signal,
     extractionAdmitted,
-    onClone: () => onStage("source"),
+    onPrepareSource: () => onStage("source"),
     onExtract: () => onStage("extract"),
   });
   const id = remoteArtifactId(
@@ -67,23 +81,33 @@ async function generateRemote(
     cached.generationId,
     cached.checkout.branch ?? "",
   );
-  ctx.inspectionSnapshots.publish({
-    id,
-    artifactPath: cached.artifactPath,
-    graphSummary: cached.graphSummary,
-    vcsBranch: cached.checkout.branch,
-    sourceRoot: cached.checkout.repoDir,
-    sourceSubdir: request.subdir,
-    source: artifactSourceFor(request),
-  });
-  return {
-    id,
-    target: cached.target,
-    counts: { nodes: cached.graphSummary.nodeCount, edges: cached.graphSummary.edgeCount },
-    warnings: cached.warnings,
-    cache: cached.cache,
-    checkoutCache: cached.checkout.cache,
-  };
+  return withOwnershipCleanup(
+    async () => {
+      await ctx.graphCapabilities.publish({
+        id,
+        generation: cached.verifiedGeneration,
+        vcsBranch: cached.checkout.branch,
+        sourceRoot: cached.checkout.repoDir,
+        sourceSubdir: request.subdir,
+        source: artifactSourceFor(request),
+        sourceLease: cached.checkout.sourceLease,
+      }, { signal });
+      if (cached.cache === "miss") ctx.graphGenerationMaintenance.notePublication();
+      return {
+        id,
+        target: cached.target,
+        counts: { nodes: cached.graphSummary.nodeCount, edges: cached.graphSummary.edgeCount },
+        warnings: cached.warnings,
+        cache: cached.cache,
+        checkoutCache: cached.checkout.cache,
+      };
+    },
+    [
+      () => cached.generationLease.release(),
+      () => cached.checkout.sourceOperation.release(),
+    ],
+    "remote graph publication",
+  );
 }
 
 async function generateLocal(
@@ -94,10 +118,16 @@ async function generateLocal(
   extractionAdmitted: boolean,
 ): Promise<GenerateResult> {
   await onStage("source");
-  const source = await resolveSource(request, ctx.cwd);
-  let retained = false;
-  const outputDirectory = createStageDirectory(join(ctx.cacheRoot, "local-artifacts"));
-  const artifactOutputPath = join(outputDirectory, "artifact.json");
+  const source = resolveLocalSource(request.value, ctx.cwd);
+  const generationsRoot = localArtifactGenerations(ctx.cacheRoot);
+  createPrivateDirectory(generationsRoot);
+  const stage = await ctx.graphGenerationLifecycle.reserveStage(signal);
+  const artifactOutputPath = join(stage.directory, "artifact.json");
+  let generationLease: GraphGenerationLease | undefined;
+  let publishedNewGeneration = false;
+  let result: GenerateResult | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     await onStage("extract");
     const extractionRequest: SerializablePipelineRequest = {
@@ -114,23 +144,67 @@ async function generateLocal(
       signal,
       admitted: extractionAdmitted,
     });
-    if (extracted.artifactPath !== artifactOutputPath) throw new Error("local extraction wrote outside its cache stage");
-    // Local sources have no commit/generation id, so the analysis key is part of their durable
-    // identity. Otherwise two concurrent language/settings variants overwrite the same graph id.
-    const id = artifactId(request, "", webAnalysisKey(request));
-    ctx.localGraphFiles.set(id, {
-      artifactPath: artifactOutputPath,
-      graphSummary: extracted.graphSummary,
+    if (extracted.artifactPath !== artifactOutputPath
+      || extracted.projectionDirectory !== join(stage.directory, GRAPH_PROJECTION_DIRECTORY)) {
+      throw new Error("local extraction wrote outside its cache stage");
+    }
+    const revision = { kind: "content", contentId: extracted.projectionContentId } as const;
+    const sealed = await sealGraphGeneration({
+      cacheRoot: ctx.cacheRoot,
+      stage,
+      artifactPath: extracted.artifactPath,
       projectionDirectory: extracted.projectionDirectory,
+      artifactBytes: extracted.artifactBytes,
+      artifactSha256: extracted.artifactSha256,
+      projectionBytes: extracted.projectionBytes,
+      projectionSha256: extracted.projectionSha256,
+      projectionContentId: extracted.projectionContentId,
+      graphSummary: extracted.graphSummary,
+      revision,
+    }, signal);
+    const generationId = createHash("sha256").update(JSON.stringify({
+      artifactSha256: sealed.artifactSha256,
+      projectionSha256: sealed.projectionSha256,
+      projectionContentId: sealed.projectionContentId,
+    })).digest("hex");
+    const generationDirectory = finalizedGenerationDirectory(
+      dirname(generationsRoot),
+      generationId,
+    );
+    generationLease = await ctx.graphGenerationLifecycle.acquire(generationDirectory, {
+      purpose: "publication",
+      allowMissing: true,
+      signal,
     });
-    ctx.sourceRoots.set(id, source.dir);
-    ctx.sources.set(id, artifactSourceFor(request));
-    ctx.tempCleanups.add(() => {
-      source.cleanup();
-      removeEntry(outputDirectory);
-    });
-    retained = true;
-    return {
+    // A collision is the expected content-addressed deduplication path. In either case, only the
+    // exact sealed final generation is adopted below; stage bytes are never used after publication.
+    publishedNewGeneration = await stage.publish(generationLease, signal);
+    if (publishedNewGeneration) {
+      freezeGraphGenerationDirectory(ctx.cacheRoot, generationDirectory);
+    }
+    const generation = await verifyExistingGraphGeneration({
+      cacheRoot: ctx.cacheRoot,
+      artifactPath: join(generationDirectory, "artifact.json"),
+      projectionDirectory: join(generationDirectory, GRAPH_PROJECTION_DIRECTORY),
+      artifactBytes: sealed.artifactBytes,
+      artifactSha256: sealed.artifactSha256,
+      projectionBytes: sealed.projectionBytes,
+      projectionSha256: sealed.projectionSha256,
+      projectionContentId: sealed.projectionContentId,
+      graphSummary: sealed.graphSummary,
+      revision,
+    }, signal);
+    // The graph id names the exact sealed content, so a local directory that changes produces a
+    // new immutable capability instead of rebinding a process-local session entry.
+    const id = artifactId(request, generationId, webAnalysisKey(request));
+    await ctx.graphCapabilities.publish({
+      id,
+      generation,
+      sourceRoot: source.dir,
+      source: artifactSourceFor(request),
+    }, { signal });
+    if (publishedNewGeneration) ctx.graphGenerationMaintenance.notePublication();
+    result = {
       id,
       target: source.target,
       counts: { nodes: extracted.graphSummary.nodeCount, edges: extracted.graphSummary.edgeCount },
@@ -138,10 +212,27 @@ async function generateLocal(
       cache: "bypass",
       checkoutCache: "bypass",
     };
-  } finally {
-    if (!retained) {
-      source.cleanup();
-      removeEntry(outputDirectory);
+  } catch (error) {
+    operationFailed = true;
+    operationError = error;
+  }
+
+  const errors: unknown[] = operationFailed ? [operationError] : [];
+  try {
+    await stage.release();
+  } catch (error) {
+    errors.push(error);
+  }
+  if (generationLease) {
+    try {
+      await generationLease.release();
+    } catch (error) {
+      errors.push(error);
     }
   }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) {
+    throw new AggregateError(errors, "local generation and lifecycle cleanup failed");
+  }
+  return result!;
 }

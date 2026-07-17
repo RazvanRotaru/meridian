@@ -1,22 +1,16 @@
 /**
- * Resolving a user-supplied source (GitHub repo or local path) to a directory to extract from.
+ * Canonical repository identity, checkout containment, and local-source resolution.
  *
  * Security is the whole point of this module: GitHub input is parsed to an https URL through a
  * strict allowlist (owner/repo or an http(s) git URL — never ssh, file://, or shell
- * metacharacters), git runs via an argv array so nothing is shell-interpreted, and any auth
- * token travels only in an `http.extraHeader` (never the URL, never a log, never a response).
- * The spawn itself and stderr-scrubbing live in `git-exec`.
+ * metacharacters). Remote materialization belongs exclusively to `RepositoryMirrorStore`; this
+ * module never creates an independent clone.
  */
 
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { resolveAgainst } from "../paths";
 import { WebError } from "./web-error";
-import { base64Auth, runGitClone } from "./git-exec";
-import { isAllowedCloneRef } from "./git-ref";
-
-export { base64Auth };
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SHELL_METACHARS = /[\s;&|`$<>()]/;
@@ -28,13 +22,11 @@ export interface SourceRequest {
   subdir?: string;
 }
 
-export interface ResolvedSource {
-  /** The directory to extract from (clone root joined with any sanitized subdir). */
+export interface ResolvedLocalSource {
+  /** The existing local directory to extract from. */
   dir: string;
   /** A human label for the artifact — never carries credentials. */
   target: string;
-  /** Remove any temp clone; a no-op for local paths. */
-  cleanup(): void;
 }
 
 /** owner/repo or an http(s) git URL -> a clone URL. Everything else is rejected. */
@@ -110,33 +102,13 @@ function canonicalGitHubCloneUrl(url: URL): string {
   return url.toString();
 }
 
-/**
- * The full argv passed after `git`. A token becomes a `-c http.extraHeader` (placed before the
- * subcommand, as git requires) so it never lands in the URL; `--` fences the URL from option
- * parsing. This is pure so the auth-arg construction can be unit-tested without a network.
- */
-export function buildCloneArgs(url: string, targetDir: string, opts: { ref?: string; token?: string }): string[] {
-  const args: string[] = [];
-  if (opts.token) {
-    args.push("-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(opts.token)}`);
-  }
-  // Windows checkout dies at MAX_PATH (260 chars) without this; git on other platforms ignores it.
-  args.push("-c", "core.longpaths=true");
-  args.push("clone", "--depth", "1", "--single-branch");
-  if (opts.ref) {
-    args.push("--branch", opts.ref);
-  }
-  args.push("--", url, targetDir);
-  return args;
-}
-
-/** Resolve an existing subdir to a canonical directory contained by the canonical clone root.
+/** Resolve an existing subdir to a canonical directory contained by the canonical checkout root.
  * The second containment check is essential: a repository-controlled symlink can be lexically
  * inside the checkout while resolving to an arbitrary host path. */
-export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
+export function sanitizeSubdir(checkoutDir: string, subdir?: string): string {
   let root: string;
   try {
-    root = realpathSync.native(resolve(cloneDir));
+    root = realpathSync.native(resolve(checkoutDir));
     if (!statSync(root).isDirectory()) throw new Error("not a directory");
   } catch {
     throw new WebError(400, "repository checkout is unavailable");
@@ -159,51 +131,17 @@ export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
   return candidate;
 }
 
-/** Backwards-compatible name used by the remote cache path. `sanitizeSubdir` now performs both
- * lexical and canonical containment checks itself. */
-export function resolveExtractionSubdir(cloneDir: string, subdir?: string): string {
-  return sanitizeSubdir(cloneDir, subdir);
-}
-
 function isPathWithin(root: string, candidate: string): boolean {
   const rel = relative(root, candidate);
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-export async function resolveSource(request: SourceRequest, cwd: string, token?: string): Promise<ResolvedSource> {
-  if (request.kind === "path") {
-    return resolveLocalPath(request.value, cwd);
-  }
-  return cloneGitHub(request, token);
-}
-
-function resolveLocalPath(value: string, cwd: string): ResolvedSource {
+export function resolveLocalSource(value: string, cwd: string): ResolvedLocalSource {
   const dir = resolveAgainst(cwd, value.trim());
   if (!isDirectory(dir)) {
     throw new WebError(400, `local path is not a directory: ${value}`);
   }
-  return { dir, target: value.trim(), cleanup: () => {} };
-}
-
-async function cloneGitHub(request: SourceRequest, token?: string): Promise<ResolvedSource> {
-  if (request.ref && !isAllowedCloneRef(request.ref)) {
-    throw new WebError(400, "branch contains illegal characters");
-  }
-  const url = parseGitHubSource(request.value);
-  // realpath expands Windows 8.3 short names (a short-form %TEMP% is common). A short-name root
-  // makes ts-morph's long-name file paths look outside the project, and extraction finds nothing.
-  const tmpRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "blueprint-clone-")));
-  const removeTmp = () => rmSync(tmpRoot, { recursive: true, force: true });
-  // Any failure past the mkdtemp — clone, subdir escape, missing subdir — must remove the temp
-  // clone; only a successful resolve hands the cleanup responsibility back to the caller.
-  try {
-    await runGitClone(buildCloneArgs(url, tmpRoot, { ref: request.ref, token }), token);
-    const dir = resolveExtractionSubdir(tmpRoot, request.subdir);
-    return { dir, target: sourceLabel(request.value, request.subdir), cleanup: removeTmp };
-  } catch (error) {
-    removeTmp();
-    throw error;
-  }
+  return { dir, target: value.trim() };
 }
 
 /** The human label for the artifact: the repo the reader entered, plus the analyzed subfolder when

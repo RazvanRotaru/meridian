@@ -7,20 +7,23 @@
  */
 
 import { existsSync, readFileSync } from "node:fs";
-import { createServer } from "node:http";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import { Server } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { performance } from "node:perf_hooks";
 import { join } from "node:path";
 import type { SyntheticScenarioDescriptor } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { injectBootScript } from "./boot-script";
 import {
+  defaultGraphProjectionRequest,
   GraphProjectionBundle,
-  GraphProjectionRequestError,
   GraphSymbolSearchRequestError,
-  type GraphProjectionRequest,
   type GraphSymbolSearchRequest,
 } from "./graph-projection-bundle";
+import {
+  createGraphProjectionAdmission,
+  handleGraphProjectionRequest,
+} from "./graph-projection-response";
 import type { OverlaySource } from "./overlay-source";
 import { sendMeta, sendOverlay, sendTraces } from "./api";
 import { sendJson } from "./http-response";
@@ -35,11 +38,27 @@ import {
   syntheticExecutionRuntimeSupported,
 } from "./synthetic-execution";
 import { WebError } from "./web-error";
+import { createSourceTextAdmission, type SourceTextAdmission } from "./source-text-admission";
+import { cancelWhenClientLeaves } from "./web-cancellation";
 import { assertJsonContentType, assertLoopbackHost, assertSameOrigin } from "./web-guards";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
 
 const PROJECTION_CACHE_BYTES = 8 * 1024 * 1024;
 const PROJECTION_CACHE_ENTRIES = 32;
+
+class ShutdownOwnedServer extends Server {
+  constructor(
+    private readonly shutdown: AbortController,
+    requestListener: (request: IncomingMessage, response: ServerResponse) => void,
+  ) {
+    super(requestListener);
+  }
+
+  override close(callback?: (error?: Error) => void): this {
+    if (!this.shutdown.signal.aborted) this.shutdown.abort(standaloneServerClosingError());
+    return super.close(callback) as this;
+  }
+}
 
 export interface ServerConfig {
   session: StandaloneViewSession;
@@ -59,32 +78,39 @@ interface SyntheticCapability {
 }
 
 interface ServerState {
+  readonly shutdownSignal: AbortSignal;
   readonly session: StandaloneViewSession;
   readonly overlay: OverlaySource;
   readonly preselectedEnv: string | null;
   readonly projection: GraphProjectionBundle;
+  readonly graphProjectionAdmission: ReturnType<typeof createGraphProjectionAdmission>;
+  readonly sourceTextAdmission: SourceTextAdmission;
   readonly graphId: string;
   readonly synthetic: SyntheticCapability | null;
   readonly runSyntheticScenarioFromArtifactFile: typeof runSyntheticScenarioFromArtifactFile;
 }
 
 export function createBlueprintServer(config: ServerConfig): Server {
+  const shutdown = new AbortController();
   const projection = new GraphProjectionBundle(config.session.projectionDirectory, {
     maxCacheBytes: PROJECTION_CACHE_BYTES,
     maxCacheEntries: PROJECTION_CACHE_ENTRIES,
   });
   const state: ServerState = {
+    shutdownSignal: shutdown.signal,
     session: config.session,
     overlay: config.overlay,
     preselectedEnv: config.preselectedEnv,
     projection,
+    graphProjectionAdmission: createGraphProjectionAdmission(),
+    sourceTextAdmission: createSourceTextAdmission(),
     graphId: `standalone-${projection.manifest.contentId}`,
     synthetic: syntheticCapability(config),
     runSyntheticScenarioFromArtifactFile:
       config.runSyntheticScenarioFromArtifactFile ?? runSyntheticScenarioFromArtifactFile,
   };
-  const assets = loadAssets(config, state.synthetic?.scenarios ?? null);
-  const server = createServer((request, response) => {
+  const assets = loadAssets(config, state.graphId, state.synthetic?.scenarios ?? null);
+  const server = new ShutdownOwnedServer(shutdown, (request, response) => {
     void route(state, assets, request, response).catch((error) => sendRouteError(response, error));
   });
   server.once("close", () => {
@@ -92,6 +118,12 @@ export function createBlueprintServer(config: ServerConfig): Server {
     config.session.cleanup();
   });
   return server;
+}
+
+function standaloneServerClosingError(): Error {
+  const error = new Error("The standalone view server is closing");
+  error.name = "AbortError";
+  return error;
 }
 
 function syntheticCapability(config: ServerConfig): SyntheticCapability | null {
@@ -109,6 +141,7 @@ function syntheticCapability(config: ServerConfig): SyntheticCapability | null {
 
 function loadAssets(
   config: ServerConfig,
+  projectionGraphId: string,
   syntheticScenarios: readonly SyntheticScenarioDescriptor[] | null,
 ): StaticAssets {
   const indexPath = join(config.rendererRoot, "index.html");
@@ -121,6 +154,7 @@ function loadAssets(
   const rawHtml = readFileSync(indexPath, "utf8");
   const indexHtml = injectBootScript(
     rawHtml,
+    projectionGraphId,
     config.overlay,
     config.preselectedEnv,
     config.session.sourceRoot,
@@ -206,7 +240,15 @@ async function route(
   }
   if (url.pathname === "/api/source") {
     if (!requireMethod(response, method, "GET")) return;
-    sendSource(response, state.session.sourceRoot, url.searchParams);
+    const cancellation = cancelWhenClientLeaves(request, response);
+    try {
+      await sendSource(response, state.session.sourceRoot, url.searchParams, {
+        admission: state.sourceTextAdmission,
+        signal: cancellation.signal,
+      });
+    } finally {
+      cancellation.dispose();
+    }
     return;
   }
   if (url.pathname === "/api/synthetic-executions") {
@@ -227,16 +269,8 @@ function sendProjectionManifest(state: ServerState, response: ServerResponse): v
     graphId: state.graphId,
     contentId: manifest.contentId,
     graphSummary: manifest.graphSummary,
-    defaultView: {
-      view: "modules",
-      filePaths: [],
-      focusIds: [],
-      expandedIds: [],
-      extraIds: [],
-      depth: 1,
-      radius: 0,
-      includeTests: false,
-    },
+    repositorySummary: manifest.repositorySummary,
+    defaultView: defaultGraphProjectionRequest(),
   });
 }
 
@@ -245,27 +279,13 @@ async function sendProjection(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const body = await readJsonBody(request);
-  try {
-    const queryStarted = performance.now();
-    const result = state.projection.query(body as GraphProjectionRequest);
-    const queryMs = performance.now() - queryStarted;
-    const serializationStarted = performance.now();
-    const serialized = JSON.stringify(result);
-    const serializationMs = performance.now() - serializationStarted;
-    response.writeHead(200, {
-      "content-type": "application/json; charset=utf-8",
-      "cache-control": "no-store",
-      "content-length": Buffer.byteLength(serialized),
-      "x-meridian-projection-id": result.projectionId,
-      "x-meridian-resident-bytes": String(result.residentBytes),
-      "server-timing": `projection_query;dur=${queryMs.toFixed(2)}, projection_serialize;dur=${serializationMs.toFixed(2)}`,
-    });
-    response.end(serialized);
-  } catch (error) {
-    if (error instanceof GraphProjectionRequestError) throw new WebError(error.status, error.message);
-    throw error;
-  }
+  await handleGraphProjectionRequest({
+    admission: state.graphProjectionAdmission,
+    bundle: state.projection,
+    request,
+    response,
+    lifecycleSignal: state.shutdownSignal,
+  });
 }
 
 async function sendSymbolSearch(
@@ -273,12 +293,13 @@ async function sendSymbolSearch(
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const body = await readJsonBody(request);
+  const body = await readJsonBody({ request, signal: state.shutdownSignal });
   const cancellation = cancelWhenClientLeaves(request, response);
+  const operationSignal = AbortSignal.any([cancellation.signal, state.shutdownSignal]);
   try {
     const queryStarted = performance.now();
-    const result = await state.projection.search(body as GraphSymbolSearchRequest, cancellation.signal);
-    cancellation.signal.throwIfAborted();
+    const result = await state.projection.search(body as GraphSymbolSearchRequest, operationSignal);
+    operationSignal.throwIfAborted();
     const queryMs = performance.now() - queryStarted;
     const serializationStarted = performance.now();
     const serialized = JSON.stringify({ ...result, graphId: state.graphId });
@@ -311,7 +332,7 @@ async function handleSyntheticExecution(
     sendJson(response, 404, { error: "synthetic execution is not enabled for this local view" });
     return;
   }
-  const body = parseSyntheticExecutionRequest(await readJsonBody(request));
+  const body = parseSyntheticExecutionRequest(await readJsonBody({ request, signal: state.shutdownSignal }));
   const scenario = state.synthetic.scenarios.find((candidate) => candidate.id === body.scenarioId);
   if (scenario === undefined) {
     throw new WebError(404, "synthetic scenario not found");
@@ -320,6 +341,7 @@ async function handleSyntheticExecution(
     throw new WebError(409, "selected flow no longer matches the synthetic scenario");
   }
   const cancellation = cancelWhenClientLeaves(request, response);
+  const operationSignal = AbortSignal.any([cancellation.signal, state.shutdownSignal]);
   const execution = await state.runSyntheticScenarioFromArtifactFile({
     sourceRoot: state.synthetic.sourceRoot,
     artifactPath: state.session.artifactPath,
@@ -329,7 +351,7 @@ async function handleSyntheticExecution(
     input: body.input,
     inputOverrides: body.inputOverrides,
     watchers: body.watchers,
-    signal: cancellation.signal,
+    signal: operationSignal,
   }).finally(() => cancellation.dispose());
   sendJson(response, 200, execution);
 }
@@ -342,32 +364,6 @@ function requireMethod(response: ServerResponse, actual: string, expected: "GET"
 
 function rejectQuery(url: URL, label: string): void {
   if (url.search.length > 0) throw new WebError(400, `${label} endpoint does not accept query parameters`);
-}
-
-function cancelWhenClientLeaves(
-  request: IncomingMessage,
-  response: ServerResponse,
-): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const abort = () => {
-    if (controller.signal.aborted) return;
-    const error = new Error("The client closed the request");
-    error.name = "AbortError";
-    controller.abort(error);
-  };
-  const onClose = () => {
-    if (!response.writableEnded) abort();
-  };
-  request.once("aborted", abort);
-  response.once("close", onClose);
-  if (request.aborted || response.destroyed) abort();
-  return {
-    signal: controller.signal,
-    dispose() {
-      request.off("aborted", abort);
-      response.off("close", onClose);
-    },
-  };
 }
 
 function sendRouteError(response: ServerResponse, error: unknown): void {

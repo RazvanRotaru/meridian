@@ -130,6 +130,9 @@ function responseWith(
       artifactBytes: 1,
       artifactSha256: "a".repeat(64),
       projectionDirectory: "/tmp/graph-projections",
+      projectionBytes: 1,
+      projectionSha256: "b".repeat(64),
+      projectionContentId: "c".repeat(64),
       graphSummary: {
         schemaVersion: "1.0.0",
         generatedAt: "2026-07-15T00:00:00.000Z",

@@ -19,7 +19,7 @@ import {
   readGraphProjectionManifest,
   writeGraphProjectionBundle,
 } from "./graph-projection-bundle";
-import type { InspectionGraphSummary } from "./inspection-snapshot-store";
+import type { GraphGenerationSummary } from "./graph-generation-contract";
 import {
   readSyntheticCapabilitySidecar,
   syntheticCapabilitySidecarPath,
@@ -39,7 +39,7 @@ export interface StandaloneViewSession {
   readonly root: string;
   readonly artifactPath: string;
   readonly projectionDirectory: string;
-  readonly graphSummary: InspectionGraphSummary;
+  readonly graphSummary: GraphGenerationSummary;
   /** Resolved local source boundary used by source reads and optional synthetic execution. */
   readonly sourceRoot: string | null;
   readonly syntheticCapabilityPath: string;
@@ -52,7 +52,7 @@ interface StandaloneSessionMetadata {
   formatVersion: typeof SESSION_FORMAT_VERSION;
   projectionFormatVersion: typeof GRAPH_PROJECTION_FORMAT_VERSION;
   projectionContentId: string;
-  graphSummary: InspectionGraphSummary;
+  graphSummary: GraphGenerationSummary;
 }
 
 export function createStandaloneViewSession(request: StandaloneViewSessionRequest): StandaloneViewSession {

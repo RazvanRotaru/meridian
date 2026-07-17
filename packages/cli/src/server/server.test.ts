@@ -7,8 +7,9 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import type { Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import type { IncomingMessage, Server } from "node:http";
+import { createConnection } from "node:net";
+import type { AddressInfo, Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,10 @@ import { traceBundleSchema } from "@meridian/core";
 import { buildMockOverlay } from "@meridian/core/mock";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { SyntheticExecutionError } from "./synthetic-execution";
+import {
+  defaultGraphProjectionRequest,
+  GRAPH_PROJECTION_FORMAT_VERSION,
+} from "./graph-projection-bundle";
 import { createBlueprintServer } from "./server";
 import type { StandaloneViewSession } from "./standalone-view-session";
 import { createStandaloneViewSession } from "./standalone-view-session";
@@ -79,36 +84,77 @@ afterAll(async () => {
 });
 
 describe("createBlueprintServer", () => {
+  it.each([
+    ["graph projection", "/api/graph/projection", false],
+    ["graph search", "/api/graph/search", false],
+    ["synthetic execution", "/api/synthetic-executions", true],
+  ])("closes with a partial %s JSON body", { timeout: 15_000 }, async (_label, path, synthetic) => {
+    const target = createBlueprintServer({
+      session: sessionFor(artifact, synthetic ? ORDERS_SOURCE : undefined),
+      overlay: { kind: "none" },
+      preselectedEnv: null,
+      rendererRoot,
+      allowSyntheticExecution: synthetic,
+    });
+    const targetBase = await listenEphemeral(target);
+    const socket = await openPartialJsonPost(target, targetBase, path);
+    const socketClosed = new Promise<void>((resolveClose) => socket.once("close", () => resolveClose()));
+
+    const close = closeServerWithoutForcingConnections(target);
+    const closedPromptly = await settlesWithin(close, 5_000, () => socket.destroy());
+    await socketClosed;
+
+    expect(closedPromptly).toBe(true);
+    expect(socket.destroyed).toBe(true);
+  });
+
   it("serves only strict projection transport and bounded metadata", async () => {
     const manifestResponse = await fetch(`${base}/api/graph/manifest`);
     expect(manifestResponse.headers.get("cache-control")).toBe("no-store");
     expect(await manifestResponse.json()).toMatchObject({
-      version: 3,
+      version: GRAPH_PROJECTION_FORMAT_VERSION,
       graphId: expect.stringMatching(/^standalone-[0-9a-f]{64}$/),
       contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
       graphSummary: { nodeCount: 1, edgeCount: 0 },
-      defaultView: { view: "modules", filePaths: [], radius: 0 },
+      repositorySummary: { overviewPackageCount: 0, sourceFileCount: 0, testSourceFileCount: 0 },
+      defaultView: defaultGraphProjectionRequest(),
     });
 
     const projectionResponse = await fetch(`${base}/api/graph/projection`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
-        view: "modules",
-        filePaths: [],
+        ...defaultGraphProjectionRequest(),
         focusIds: [artifact.nodes[0]!.id],
-        expandedIds: [],
-        extraIds: [],
         depth: 0,
-        radius: 0,
-        includeTests: false,
       }),
     });
-    expect(projectionResponse.headers.get("server-timing")).toMatch(/projection_query.*projection_serialize/);
-    expect(await projectionResponse.json()).toMatchObject({
+    expect(projectionResponse.headers.get("server-timing")).toMatch(/^projection_query;dur=/);
+    expect(projectionResponse.headers.has("content-length")).toBe(false);
+    const projectionText = await projectionResponse.text();
+    const projection = JSON.parse(projectionText) as Record<string, unknown> & {
+      projectionId: string;
+      residentBytes: number;
+    };
+    expect(projectionResponse.headers.get("x-meridian-projection-id")).toBe(projection.projectionId);
+    expect(projectionResponse.headers.get("x-meridian-resident-bytes")).toBe(String(projection.residentBytes));
+    expect(projection).toMatchObject({
+      version: GRAPH_PROJECTION_FORMAT_VERSION,
+      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
       request: { view: "modules", depth: 0 },
       completeness: { complete: true },
       artifact: { nodes: [{ id: artifact.nodes[0]!.id }], edges: [] },
+      hierarchy: {
+        moduleOverviewRootIds: [],
+        nodes: {
+          [artifact.nodes[0]!.id]: {
+            isTest: false,
+            childKindCounts: {},
+            descendantSourceFileCount: 0,
+            ownedSourceFileCount: 0,
+          },
+        },
+      },
     });
 
     const searchResponse = await fetch(`${base}/api/graph/search`, {
@@ -168,7 +214,9 @@ describe("createBlueprintServer", () => {
       body: JSON.stringify({ view: "modules", legacyGraph: true }),
     });
     expect(unknownField.status).toBe(400);
-    expect(await unknownField.json()).toMatchObject({ error: expect.stringContaining("unknown") });
+    expect(await unknownField.json()).toMatchObject({
+      error: expect.stringContaining(`v${GRAPH_PROJECTION_FORMAT_VERSION} contract`),
+    });
 
     const malformedSearch = await fetch(`${base}/api/graph/search`, {
       method: "POST",
@@ -253,8 +301,10 @@ describe("createBlueprintServer", () => {
   it("injects projection-only boot fields and never defaults an environment", async () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain("window.__MERIDIAN__=");
+    expect(html).toContain('"projectionGraphId":"standalone-');
     expect(html).toContain('"projectionManifestUrl":"/api/graph/manifest"');
     expect(html).toContain('"projectionUrl":"/api/graph/projection"');
+    expect(html).toContain('"graphSearchUrl":"/api/graph/search"');
     expect(html).not.toContain('"graphUrl"');
     expect(html).toContain('"traceUrl":"/api/traces"');
     expect(html).toContain('"syntheticExecutionUrl":null');
@@ -427,4 +477,60 @@ function closeServer(target: Server): Promise<void> {
     target.closeAllConnections();
     target.close((error) => error ? rejectClose(error) : resolveClose());
   });
+}
+
+function closeServerWithoutForcingConnections(target: Server): Promise<void> {
+  return new Promise((resolveClose, rejectClose) => {
+    target.close((error) => error ? rejectClose(error) : resolveClose());
+  });
+}
+
+async function openPartialJsonPost(target: Server, baseUrl: string, path: string): Promise<Socket> {
+  let resolveRequest!: (request: IncomingMessage) => void;
+  const seen = new Promise<IncomingMessage>((resolveSeen) => { resolveRequest = resolveSeen; });
+  const onRequest = (request: IncomingMessage) => {
+    if (request.url === path) resolveRequest(request);
+  };
+  target.on("request", onRequest);
+  const baseUrlValue = new URL(baseUrl);
+  const socket = createConnection({ host: baseUrlValue.hostname, port: Number(baseUrlValue.port) });
+  socket.on("error", () => undefined);
+  await new Promise<void>((resolveConnect) => socket.once("connect", resolveConnect));
+  socket.write([
+    `POST ${path} HTTP/1.1`,
+    `Host: ${baseUrlValue.host}`,
+    "Content-Type: application/json",
+    "Content-Length: 1024",
+    "Connection: keep-alive",
+    "",
+    "{",
+  ].join("\r\n"));
+  const incoming = await seen;
+  target.off("request", onRequest);
+  const deadline = Date.now() + 5_000;
+  while (incoming.listenerCount("data") === 0) {
+    if (Date.now() >= deadline) throw new Error("request body reader did not start");
+    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
+  }
+  return socket;
+}
+
+async function settlesWithin(
+  promise: Promise<void>,
+  milliseconds: number,
+  onTimeout: () => void,
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const settled = await Promise.race([
+    promise.then(() => true),
+    new Promise<false>((resolveTimeout) => {
+      timer = setTimeout(() => resolveTimeout(false), milliseconds);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  if (!settled) {
+    onTimeout();
+    await promise;
+  }
+  return settled;
 }

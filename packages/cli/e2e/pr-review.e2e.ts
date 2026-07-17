@@ -5,12 +5,12 @@
 
 import { rmSync } from "node:fs";
 import type { Server } from "node:http";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
-import { createWebServer } from "../src/server/web-server";
+import { createWebServer, type WebServerHandle } from "../src/server/web-server";
 import {
   PYTHON_REVIEW_PATH,
   RENDERER_INDEX,
@@ -19,7 +19,7 @@ import {
   ensureBuilt,
   listenServer,
   startSmartGitServer,
-  verifySmartHttpClone,
+  verifySmartHttpMirrorTransport,
   type PrReviewFixture,
 } from "./harness";
 
@@ -36,7 +36,6 @@ const SOURCE_COMMENT_LINE = 2;
 const LOYALTY_RETURN_LINE = 3;
 const EXISTING_COMMENT_LINE = LOYALTY_RETURN_LINE;
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
-const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
 const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
 const EXECUTION_GALLERY_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/showcase/executionGraphGallery.ts" });
 const LOYALTY_TIERS_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/loyaltyTiers.ts" });
@@ -62,12 +61,13 @@ interface SubmittedReview {
 
 let fixture: PrReviewFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: Server | undefined;
+let webServer: WebServerHandle | undefined;
 let browser: Browser | undefined;
 let page: Page;
 let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const submittedReviews: SubmittedReview[] = [];
+const rendererDiagnostics: string[] = [];
 
 describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)", () => {
   beforeAll(setup, 180_000);
@@ -105,24 +105,42 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { exact: true },
     );
     await syncProvenance.waitFor({ timeout: 120_000 });
-    await page.getByRole("region", { name: "Extracted graph" }).waitFor();
+    const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
+    await extractedReviewSurface.waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
+    // Preparation lands on an honest manifest overview. No changed-file graph is resident until
+    // the reader selects one, and graph-only actions stay unavailable on that zero-node surface.
+    expect(await extractedReviewSurface.locator(".react-flow__node").count()).toBe(0);
+    const codebaseButton = page.getByRole("button", { name: "Highlight code in codebase" });
+    expect(await codebaseButton.getAttribute("aria-disabled")).toBe("true");
+    let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
+    await addedFile.getByText("load graph", { exact: true }).waitFor();
+    await addedFile.click();
+    const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    await loyaltyTierNode.waitFor({ timeout: 30_000 });
+    expect(await codebaseButton.getAttribute("aria-disabled")).toBeNull();
+
     // The bounded codebase context is an alternate read-only surface, not a review close/reopen:
-    // the prepared HEAD artifact, change colours, and review rail stay live, while its chevrons
-    // disclose only the relevant ancestor/sibling projection without changing the hidden extracted
-    // graph's expansion state.
-    await page.getByRole("button", { name: "Highlight code in codebase" }).click();
+    // only the currently selected file projection is widened. Other changed files remain absent
+    // rather than being retained together behind the current view.
+    await codebaseButton.click();
     const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
-    await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
+    try {
+      await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
+    } catch (error) {
+      const body = (await page.locator("body").innerText()).slice(0, 6_000);
+      throw new Error(
+        `Codebase context did not open. Visible UI:\n${body}\nRenderer diagnostics:\n${rendererDiagnostics.join("\n")}`,
+        { cause: error },
+      );
+    }
     await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
-    await codebaseContext.locator(`.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
     const unchangedModule = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_SERVICE_MODULE_ID}"]`);
     await unchangedModule.waitFor();
     const changedFunction = codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await changedFunction.waitFor();
-    const contextPythonRisk = codebaseContext.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
-    await contextPythonRisk.waitFor();
+    expect(await codebaseContext.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`).count()).toBe(0);
     await expect.poll(
       () => changedFunction.evaluate((element) => {
         const root = element.firstElementChild;
@@ -151,21 +169,23 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await codePreview.waitFor({ state: "detached" });
 
     const expansionParam = new URL(page.url()).searchParams.get("mexp");
-    const pricingContext = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_PACKAGE_ID}"]`);
-    await pricingContext.getByRole("button", { name: "Collapse" }).click();
-    await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor({ state: "detached" });
-    await codebaseContext.locator(`.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
-    await pricingContext.getByRole("button", { name: "Expand" }).click();
-    await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
+    // Disclosure in the bounded context belongs to a container guaranteed by the current file
+    // coordinate. Ancestor packages may be compacted out of a narrow projection and are not a
+    // stable interaction target.
+    const loyaltyModuleContext = codebaseContext.locator(
+      `.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`,
+    );
+    await loyaltyModuleContext.getByRole("button", { name: "Collapse" }).click();
+    await changedFunction.waitFor({ state: "detached" });
+    await loyaltyModuleContext.getByRole("button", { name: "Expand" }).click();
     await changedFunction.waitFor();
     expect(new URL(page.url()).searchParams.get("mexp")).toBe(expansionParam);
     await page.getByRole("button", { name: "Back to extracted graph" }).click();
     await page.getByRole("region", { name: "Extracted graph" }).waitFor();
     await syncProvenance.waitFor();
 
-    // 4c — both added languages' files are immediately in the prepared HEAD graph with reviewable
-    // units. The deeply nested Python callable opens the actual head source.
-    const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
+    // 4c — additions to the current graph remain bounded to that file coordinate. Navigating to a
+    // later changed file replaces the resident graph; navigating back reactivates it from cache.
     const paletteAddition = extractedReviewSurface.locator(
       `.react-flow__node:not(.react-flow__node-ghost)[data-id="${EXECUTION_GALLERY_MODULE_ID}"]`,
     );
@@ -180,16 +200,12 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.keyboard.press("Control+P");
     await palette.waitFor({ state: "detached" });
 
+    const pythonFile = reviewFileButton(page, PYTHON_REVIEW_PATH);
+    await pythonFile.getByText("load graph", { exact: true }).waitFor();
+    await pythonFile.click();
     const pythonRiskNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
     await pythonRiskNode.waitFor();
-    let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
-    let addedBlock = addedFile.locator("xpath=../..");
-    const addedUnits = addedBlock.getByTitle("Mark as reviewed");
-    await addedUnits.first().waitFor();
-    expect(await addedUnits.count()).toBeGreaterThan(0);
-    expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
-
-    const pythonFile = reviewFileButton(page, PYTHON_REVIEW_PATH);
+    await loyaltyTierNode.waitFor({ state: "detached" });
     const pythonUnits = pythonFile.locator("xpath=../..").getByTitle("Mark as reviewed");
     await pythonUnits.first().waitFor();
     expect(await pythonUnits.count()).toBeGreaterThan(0);
@@ -200,10 +216,19 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.keyboard.press("Escape");
     await pythonSourceDialog.waitFor({ state: "detached" });
 
+    await addedFile.click();
+    await loyaltyTierNode.waitFor();
+    await pythonRiskNode.waitFor({ state: "detached" });
+    await pythonFile.getByText("load graph", { exact: true }).waitFor();
+    addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
+    const addedBlock = addedFile.locator("xpath=../..");
+    const addedUnits = addedBlock.getByTitle("Mark as reviewed");
+    await addedUnits.first().waitFor();
+    expect(await addedUnits.count()).toBeGreaterThan(0);
+    expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
+
     // 4d — existing GitHub comments live on their HEAD source line in both canvas code hosts;
     // the review-panel control hides and restores that layer without disabling either host.
-    const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
-    await loyaltyTierNode.waitFor();
     const loyaltyCommentIndicator = extractedReviewSurface
       .locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`)
       .getByRole("button", { name: "1 review comment" });
@@ -431,13 +456,20 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 60_000 });
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
+    const restoredExtractedSurface = page.getByRole("region", { name: "Extracted graph" });
+    expect(await restoredExtractedSurface.locator(".react-flow__node").count()).toBe(0);
+    const orderFile = reviewFileButton(page, "src/services/orderService.ts");
+    await orderFile.getByText("load graph", { exact: true }).waitFor();
+    await orderFile.click();
+    await restoredExtractedSurface.locator(
+      `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`,
+    ).waitFor({ timeout: 60_000 });
 
     // 4h — Escape closes the source modal only; repeated Escape and outward zoom leave the review
-    // overlay in place, while explicit Close parks it for the text-only Resume chip. The source
-    // graph stays mounted beneath Minimal Graph, but an active PR review is its own navigation root.
-    // Scope this raw CSS locator to the extracted surface rather than matching the intentionally
-    // retained source copy of the same file card.
-    const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
+    // projection in place, while explicit Close parks its semantic return coordinate for the
+    // text-only Resume chip. No decoded source graph is mounted behind the active review surface.
+    // Scope this raw CSS locator to the extracted surface that owns the current file projection.
+    const extractedSurface = restoredExtractedSurface;
     const codeButton = extractedSurface.locator(
       `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"] button[aria-label="View source"]`,
     );
@@ -482,7 +514,7 @@ async function setup(): Promise<void> {
   fixture = buildPrReviewFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
-  await verifySmartHttpClone(smartGit.repoUrl);
+  await verifySmartHttpMirrorTransport(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
 
   vi.stubGlobal("fetch", fakeGitHub(fixture, submittedReviews));
@@ -490,21 +522,42 @@ async function setup(): Promise<void> {
     rendererRoot: dirname(RENDERER_INDEX),
     webUiPath: WEB_UI,
     cwd: REPO_ROOT,
+    cacheRoot: join(fixture.dir, "cache"),
     githubClientId: "Iv1.meridian-e2e",
     fallbackToken: "meridian-e2e-token",
     fallbackUser: { login: "e2e-reviewer", avatarUrl: null },
   });
-  const baseUrl = await listenServer(webServer);
+  const baseUrl = await listenServer(webServer.server);
   const generated = await generateSession(baseUrl);
   viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
 
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  page.on("console", (message) => {
+    if (message.type() === "error" || message.type() === "warning") {
+      rendererDiagnostics.push(`console ${message.type()}: ${message.text()}`);
+    }
+  });
+  page.on("pageerror", (error) => {
+    rendererDiagnostics.push(`pageerror: ${error.stack ?? error.message}`);
+  });
+  page.on("response", (response) => {
+    const url = response.url();
+    if (!url.includes("/api/") || (response.ok() && !url.includes("projection"))) return;
+    void response.text().then(
+      (body) => rendererDiagnostics.push(
+        `response ${response.status()} ${url}: ${body.slice(0, 2_000)}`,
+      ),
+      (error) => rendererDiagnostics.push(
+        `response ${response.status()} ${url}: <body unavailable: ${String(error)}>`,
+      ),
+    );
+  });
 }
 
 async function teardown(): Promise<void> {
   await browser?.close();
-  await closeServer(webServer);
+  await webServer?.close();
   await closeServer(smartGitServer);
   restoreGitRedirect?.();
   vi.unstubAllGlobals();

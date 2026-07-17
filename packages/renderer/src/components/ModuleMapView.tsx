@@ -56,13 +56,14 @@ import { accentForKind } from "../theme/kindColors";
 import type { BlockData, UnitCardData } from "../derive/moduleLevel";
 import { clusteringFor } from "../derive/serviceClusteringCache";
 import { serviceClusterCount } from "../derive/serviceComposition";
+import { moduleGraphOverlayIsOpen, reviewSurfaceIsOpen } from "../state/store";
 
 const PACKAGE_KIND = "package";
 const SERVICE_DOMAIN_KIND = "serviceDomain";
 
 export function ModuleMapView() {
-  const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
-  const reviewActive = useBlueprint((state) => state.review !== null);
+  const minimalOpen = useBlueprint(moduleGraphOverlayIsOpen);
+  const reviewActive = useBlueprint(reviewSurfaceIsOpen);
   const reviewPanelHidden = useBlueprint((state) => state.reviewPanelHidden);
   const minimalView = useBlueprint((state) => state.minimalView);
   const { setMinimalView } = useBlueprintActions();

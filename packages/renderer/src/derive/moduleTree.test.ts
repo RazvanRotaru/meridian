@@ -6,7 +6,7 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { materializeBoundaryNodes, type GraphArtifact, type GraphEdge, type GraphNode, type LogicFlows } from "@meridian/core";
+import { deriveGraphStructure, materializeBoundaryNodes, type GraphArtifact, type GraphEdge, type GraphNode, type LogicFlows } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
 import { buildBlockDeps } from "./blockDeps";
@@ -159,6 +159,59 @@ describe("deriveModuleTree — package focus", () => {
     // Frontier children in source order (index, util, cli); all top-level (no drawn parent).
     expect(tree.nodes.map((n) => n.id)).toEqual(["ts:pkgA/src/index.ts", "ts:pkgA/src/util.ts", "ts:pkgA/src/cli"]);
     expect(tree.nodes.every((n) => n.parentId === null)).toBe(true);
+  });
+
+  it("keeps a bounded package frontier navigable when its file descendants are not loaded", () => {
+    const fullNodes = [
+      node("ts:src", "package", undefined, "src"),
+      node("ts:src/services", "package", "ts:src", "services"),
+      node("ts:src/app.ts", "module", "ts:src", "app.ts"),
+      node("ts:src/services/orders.ts", "module", "ts:src/services", "orders.ts"),
+    ];
+    const full = deriveGraphStructure(fullNodes, []);
+    const projectedNodes = fullNodes.slice(0, 3);
+    const structure = {
+      ...full,
+      moduleOverviewRootIds: [],
+      hierarchyById: new Map(projectedNodes.map((entry) => [entry.id, full.hierarchyById.get(entry.id)!])),
+    };
+    const index = buildGraphIndex({ nodes: projectedNodes, edges: [] } as unknown as GraphArtifact, { structure });
+    const tree = deriveModuleTree(
+      index,
+      "ts:src",
+      new Set(),
+      buildModuleGraph(index),
+      buildBlockDeps(index),
+      {},
+    );
+    const services = tree.nodes.find((entry) => entry.id === "ts:src/services");
+
+    expect(services).toMatchObject({ isContainer: true, childCount: 1 });
+    expect((services?.data as ModuleGroupData).fileCount).toBe(1);
+  });
+
+  it("does not chain-collapse through an undisclosed projection boundary", () => {
+    const fullNodes = [
+      node("ts:src", "package", undefined, "src"),
+      node("ts:src/services", "package", "ts:src", "services"),
+      node("ts:src/services/orders.ts", "module", "ts:src/services", "orders.ts"),
+    ];
+    const full = deriveGraphStructure(fullNodes, []);
+    const projectedNodes = fullNodes.slice(0, 2);
+    const index = buildGraphIndex(
+      { nodes: projectedNodes, edges: [] } as unknown as GraphArtifact,
+      {
+        structure: {
+          ...full,
+          moduleOverviewRootIds: [],
+          hierarchyById: new Map(projectedNodes.map((entry) => [entry.id, full.hierarchyById.get(entry.id)!])),
+        },
+      },
+    );
+    const tree = deriveModuleTree(index, "ts:src", new Set(), buildModuleGraph(index), buildBlockDeps(index), {});
+
+    expect(tree.effectiveFocus).toBe("ts:src");
+    expect(tree.nodes.map((entry) => entry.id)).toEqual(["ts:src/services"]);
   });
 });
 

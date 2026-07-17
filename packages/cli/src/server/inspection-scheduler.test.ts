@@ -68,6 +68,92 @@ describe("InspectionScheduler", () => {
     expect(scheduler.counts).toEqual({ queued: 0, running: 0 });
   });
 
+  it("overlaps two PR lifecycles while one worker alternates their queued sides", async () => {
+    const sideNames = ["A1", "A2", "B1", "B2"] as const;
+    const gates = new Map(sideNames.map((side) => [side, deferred<string>()]));
+    const started = new Map(sideNames.map((side) => [side, deferred<void>()]));
+    const starts: string[] = [];
+    let activeWorkers = 0;
+    let maximumWorkers = 0;
+    const workers = new InspectionScheduler<string, string, string>({
+      concurrency: 1,
+      maxQueued: 0,
+      execute: ({ input }) => {
+        starts.push(input);
+        activeWorkers += 1;
+        maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+        started.get(input as typeof sideNames[number])!.resolve();
+        return gates.get(input as typeof sideNames[number])!.promise.finally(() => {
+          activeWorkers -= 1;
+        });
+      },
+    });
+    const lifecycles = new InspectionScheduler<string, readonly string[], readonly string[]>({
+      concurrency: 2,
+      maxQueued: 0,
+      execute: ({ key, input, signal }) => Promise.all(input.map((side) => workers.schedule(
+        side,
+        side,
+        { signal, admitted: true, fairnessGroup: key },
+      ))),
+    });
+
+    const inspectionA = lifecycles.schedule("pr-a", ["A1", "A2"]);
+    const inspectionB = lifecycles.schedule("pr-b", ["B1", "B2"]);
+    await started.get("A1")!.promise;
+
+    expect(lifecycles.counts).toEqual({ running: 2, queued: 0 });
+    expect(workers.counts).toEqual({ running: 1, queued: 3 });
+    gates.get("A1")!.resolve("A1");
+    await started.get("B1")!.promise;
+    gates.get("B1")!.resolve("B1");
+    await started.get("A2")!.promise;
+    gates.get("A2")!.resolve("A2");
+    await started.get("B2")!.promise;
+    gates.get("B2")!.resolve("B2");
+
+    await expect(Promise.all([inspectionA, inspectionB])).resolves.toEqual([
+      ["A1", "A2"],
+      ["B1", "B2"],
+    ]);
+    expect(starts).toEqual(["A1", "B1", "A2", "B2"]);
+    expect(maximumWorkers).toBe(1);
+    expect(workers.counts).toEqual({ running: 0, queued: 0 });
+  });
+
+  it("uses spare worker slots for both sides of one PR", async () => {
+    const firstGate = deferred<string>();
+    const secondGate = deferred<string>();
+    const firstStarted = deferred<void>();
+    const secondStarted = deferred<void>();
+    const starts: string[] = [];
+    let activeWorkers = 0;
+    let maximumWorkers = 0;
+    const workers = new InspectionScheduler<string, undefined, string>({
+      concurrency: 2,
+      maxQueued: 0,
+      execute: ({ key }) => {
+        starts.push(key);
+        activeWorkers += 1;
+        maximumWorkers = Math.max(maximumWorkers, activeWorkers);
+        (key === "head" ? firstStarted : secondStarted).resolve();
+        return (key === "head" ? firstGate : secondGate).promise.finally(() => {
+          activeWorkers -= 1;
+        });
+      },
+    });
+
+    const head = workers.schedule("head", undefined, { admitted: true, fairnessGroup: "pr-a" });
+    const mergeBase = workers.schedule("merge-base", undefined, { admitted: true, fairnessGroup: "pr-a" });
+    await Promise.all([firstStarted.promise, secondStarted.promise]);
+
+    expect(starts).toEqual(["head", "merge-base"]);
+    expect(maximumWorkers).toBe(2);
+    firstGate.resolve("head");
+    secondGate.resolve("merge-base");
+    await expect(Promise.all([head, mergeBase])).resolves.toEqual(["head", "merge-base"]);
+  });
+
   it("singleflights a key while keeping subscriber cancellation independent", async () => {
     const gate = deferred<number>();
     const firstController = new AbortController();
@@ -164,6 +250,76 @@ describe("InspectionScheduler", () => {
     expect(executorSignal?.reason).toBe(lastReason);
     await expect(outcomes).resolves.toEqual([firstReason, lastReason]);
     await flushMicrotasks();
+    expect(scheduler.counts).toEqual({ queued: 0, running: 0 });
+  });
+
+  it("joins resource-owning cancellation to the physical executor drain", async () => {
+    const executorGate = deferred<void>();
+    const controller = new AbortController();
+    const reason = new Error("inspection owner left");
+    let executorSignal: AbortSignal | undefined;
+    const scheduler = new InspectionScheduler<string, undefined, never>({
+      concurrency: 1,
+      execute: async ({ signal }) => {
+        executorSignal = signal;
+        await executorGate.promise;
+        throw signal.reason;
+      },
+    });
+
+    const inspection = scheduler.schedule("resource", undefined, {
+      signal: controller.signal,
+      awaitExecutorDrain: true,
+    });
+    let returned = false;
+    void inspection.catch(() => { returned = true; });
+    await flushMicrotasks();
+
+    controller.abort(reason);
+    await flushMicrotasks();
+
+    expect(executorSignal?.aborted).toBe(true);
+    expect(executorSignal?.reason).toBe(reason);
+    expect(returned).toBe(false);
+    expect(scheduler.counts).toEqual({ queued: 0, running: 1 });
+
+    executorGate.resolve();
+    await expect(inspection).rejects.toBe(reason);
+    expect(returned).toBe(true);
+    expect(scheduler.counts).toEqual({ queued: 0, running: 0 });
+  });
+
+  it("stops admission and waits for every running executor to drain on close", async () => {
+    const gate = deferred<void>();
+    const started = deferred<void>();
+    const scheduler = new InspectionScheduler<string, undefined, void>({
+      concurrency: 1,
+      execute: async ({ signal }) => {
+        started.resolve();
+        await gate.promise;
+        signal.throwIfAborted();
+      },
+    });
+    const running = scheduler.schedule("running", undefined);
+    const queued = scheduler.schedule("queued", undefined);
+    const outcomes = Promise.all([
+      running.catch((error: unknown) => error),
+      queued.catch((error: unknown) => error),
+    ]);
+    await started.promise;
+
+    let closed = false;
+    const closing = scheduler.close().then(() => { closed = true; });
+    await flushMicrotasks();
+    expect(closed).toBe(false);
+    expect(() => scheduler.schedule("later", undefined)).toThrow(/closed/);
+    await expect(outcomes).resolves.toEqual([
+      expect.objectContaining({ name: "AbortError" }),
+      expect.objectContaining({ name: "AbortError" }),
+    ]);
+
+    gate.resolve();
+    await closing;
     expect(scheduler.counts).toEqual({ queued: 0, running: 0 });
   });
 

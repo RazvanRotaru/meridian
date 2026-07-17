@@ -10,7 +10,6 @@
 
 import {
   collectChangedIds,
-  computeCoverage,
   syntheticScenarioDescriptorSchema,
 } from "@meridian/core";
 import type {
@@ -22,10 +21,12 @@ import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
 import type {
   GraphProjectionEndpoints,
   GraphProjectionRequest,
-  LoadedReviewProjection,
+  StagedReviewProjection,
 } from "../graph/graphProjectionClient";
 import type { BlueprintState } from "./store";
+import type { PrChangedFile } from "./prTypes";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
+import { withReachabilityTestIds } from "../derive/reachabilityFacts";
 
 export interface PreparedSyntheticCapability {
   syntheticExecutionUrl: string | null;
@@ -76,43 +77,64 @@ export async function fetchPreparedSyntheticCapability(
 export function swapToPreparedReviewProjection(
   get: () => BlueprintState,
   set: (partial: Partial<BlueprintState>) => void,
-  prepared: LoadedReviewProjection,
+  staged: StagedReviewProjection,
   invalidateArtifactCaches: () => void,
+  headEndpoints: GraphProjectionEndpoints,
   capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
-  headEndpoints: GraphProjectionEndpoints = conventionalProjectionEndpoints(prepared.head.graphId),
+  commitState: Partial<BlueprintState> = {},
 ): void {
-  const state = get();
-  const baseline = state.prReviewBaseline ?? activeBaseline(state);
-  const head = prepared.head;
-  invalidateArtifactCaches();
-  set({
-    artifact: head.artifact,
-    index: head.index,
-    activeProjectionGraphId: head.graphId,
-    activeProjectionRequest: head.request,
-    activeProjectionKey: prepared.key,
-    activeProjectionId: prepared.projectionId,
-    activeProjectionEndpoints: headEndpoints,
-    prReviewComparison: prepared.mergeBase,
-    prReviewBaseline: baseline,
-    prPreparedArtifactCurrent: true,
-    reviewHeadRef: null,
-    reviewDiffByFile: {},
-    syntheticExecutionUrl: capability.syntheticExecutionUrl,
-    syntheticScenarios: [...capability.syntheticScenarios],
-    syntheticExecutionTrust: capability.syntheticExecutionTrust,
-    ...resetSyntheticRunState(state),
-    reviewBaseNodeIds: new Set<string>(),
-    reviewDeletedNodeIds: new Set<string>(),
-    reviewBaseSpanByHeadId: new Map<string, LineRange>(),
-    // The cached coverage report belongs to the outgoing artifact: recompute for the head graph
-    // when coverage mode is showing, else drop it so the next toggle recomputes lazily.
-    coverage: state.coverageMode ? computeCoverage(head.artifact.nodes, head.artifact.edges) : null,
-    // An open code panel shows the outgoing artifact's node/lines — stale against the new graph.
-    codeView: null,
-    // Preview roots belong to the outgoing artifact/projection and must never cross the swap.
-    moduleGhostInspection: null,
-  });
+  try {
+    const state = get();
+    const baseline = state.prReviewBaseline ?? activeBaseline(state);
+    const prepared = staged.projection;
+    const head = prepared.head;
+    // First entry retains the exact pre-review coordinate as its return target. On Resume/Refresh,
+    // however, the currently mounted base/review projection may be a transient derivative of that
+    // saved coordinate. It has no durable navigation owner once the prepared pair becomes active,
+    // so supersede it atomically instead of leaking it into the recent-view LRU.
+    const supersededCurrent = state.prReviewBaseline !== null
+      && state.activeProjectionKey !== null
+      && state.activeProjectionKey !== baseline.projectionKey
+      ? [state.activeProjectionKey]
+      : [];
+    staged.commit({ supersededKeys: supersededCurrent });
+    invalidateArtifactCaches();
+    set({
+      artifact: head.artifact,
+      index: head.index,
+      activeProjectionGraphId: head.graphId,
+      activeProjectionRequest: head.request,
+      activeProjectionKey: prepared.key,
+      activeProjectionId: prepared.projectionId,
+      activeProjectionEndpoints: headEndpoints,
+      prReviewComparison: prepared.mergeBase,
+      prReviewBaseline: baseline,
+      prPreparedArtifactCurrent: true,
+      reviewHeadRef: null,
+      reviewDiffByFile: {},
+      syntheticExecutionUrl: capability.syntheticExecutionUrl,
+      syntheticScenarios: [...capability.syntheticScenarios],
+      syntheticExecutionTrust: capability.syntheticExecutionTrust,
+      ...resetSyntheticRunState(state),
+      reviewBaseNodeIds: new Set<string>(),
+      reviewDeletedNodeIds: new Set<string>(),
+      reviewBaseSpanByHeadId: new Map<string, LineRange>(),
+      // The outgoing report belongs to another revision. Prepared projections carry repository-wide
+      // claims plus paint facts for this exact HEAD slice; never recompute claims from partial nodes.
+      coverage: state.coverageMode && head.reachability !== null
+        ? withReachabilityTestIds(head.reachability, head.index.testIds)
+        : null,
+      // An open code panel shows the outgoing artifact's node/lines — stale against the new graph.
+      codeView: null,
+      // Preview roots belong to the outgoing artifact/projection and must never cross the swap.
+      moduleGhostInspection: null,
+      // Descriptor/cursor state which identifies this exact pair publishes with the graph. Callers
+      // must never expose a new projection beneath the prior review coordinate.
+      ...commitState,
+    });
+  } finally {
+    staged.release();
+  }
 }
 
 /**
@@ -150,6 +172,8 @@ export function restorePrReviewBaseline(
   const restoredSession: Partial<BlueprintState> = {
     prPreparedArtifactCurrent: false,
     prReviewComparison: null,
+    prPreparedFileProjectionPending: null,
+    prPreparedFileProjectionError: null,
     reviewBaseNodeIds: new Set<string>(),
     reviewDeletedNodeIds: new Set<string>(),
     reviewBaseSpanByHeadId: new Map<string, LineRange>(),
@@ -161,9 +185,32 @@ export function restorePrReviewBaseline(
     ...resetSyntheticRunState(get()),
   };
   if (!endSession) {
-    // Soft close: the review stays fully populated (chip + resume). The overlay's own arrays are
-    // reset by closeMinimalGraph, and moduleFocus/Selected/Expanded stay so a resume replays them.
-    set(restoredSession);
+    // Park only restart coordinates and user progress. ReviewData owns the artifact's LogicFlows,
+    // while file/checklist/diff derivations retain graph-shaped presentation data; none may outlive
+    // the projection cache's active/recent allocation. Resume reloads the immutable pair and derives
+    // all of them again from a status-rich, detail-free file manifest.
+    const parkedSource = state.prReviewSource === null
+      ? null
+      : { ...state.prReviewSource, files: lightweightReviewFiles(state.prReviewSource.files) };
+    set({
+      ...restoredSession,
+      review: null,
+      reviewAffectedIds: new Set<string>(),
+      reviewFiles: [],
+      reviewFileDelta: {},
+      reviewGroups: null,
+      reviewFocusedSubgraph: null,
+      reviewAllSeedIds: [],
+      reviewDiffByFile: {},
+      reviewDiffLinesByFile: {},
+      reviewCommentRangesByFile: {},
+      reviewRemovedByFile: {},
+      reviewRemovedTruncatedByFile: {},
+      prReviewSource: parkedSource,
+      ...(parkedSource !== null && state.prSelected === parkedSource.number
+        ? { prFiles: parkedSource.files }
+        : {}),
+    });
     return true;
   }
   set({
@@ -212,7 +259,10 @@ export function restorePrReviewBaseline(
     prReviewBaseline: null,
     prPreparedHead: null,
     prPreparedMergeBase: null,
-    prPreparedFilePaths: [],
+    prPreparedReviewCursor: null,
+    prPreparedFileProjectionPending: null,
+    prPreparedFileProjectionError: null,
+    prPreparedChangedFiles: [],
     prPreparedHeadSha: null,
     prPreparedMergeBaseSha: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
@@ -230,6 +280,20 @@ export function restorePrReviewBaseline(
     minimalLayoutStatus: "idle",
   });
   return true;
+}
+
+/** Keep only canonical PR membership/provenance while parked. Patch bodies, ranges, removed text,
+ * and line maps are reconstituted from the immutable prepared projection on Resume. */
+function lightweightReviewFiles(files: readonly PrChangedFile[]): PrChangedFile[] {
+  return files.map((file) => ({
+    path: file.path,
+    status: file.status,
+    additions: file.additions,
+    deletions: file.deletions,
+    ...(file.status === "renamed" && file.previousPath !== undefined
+      ? { previousPath: file.previousPath }
+      : {}),
+  }));
 }
 
 function currentSyntheticCapability(state: BlueprintState): PreparedSyntheticCapability {
@@ -389,13 +453,5 @@ function activeBaseline(state: BlueprintState): PrReviewBaseline {
     syntheticExecutionUrl: state.syntheticExecutionUrl,
     syntheticScenarios: [...state.syntheticScenarios],
     syntheticExecutionTrust: state.syntheticExecutionTrust,
-  };
-}
-
-function conventionalProjectionEndpoints(graphId: string): GraphProjectionEndpoints {
-  const id = encodeURIComponent(graphId);
-  return {
-    manifestUrl: `/api/graph/manifest?id=${id}`,
-    projectionUrl: `/api/graph/projection?id=${id}`,
   };
 }

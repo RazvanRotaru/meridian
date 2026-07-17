@@ -1,5 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, GraphNode, SyntheticExecution, SyntheticScenarioDescriptor } from "@meridian/core";
+import {
+  buildReachabilityProjection,
+  compareCanonicalPrPreparePaths,
+  deriveGraphStructure,
+  graphProjectionIdentityPreimage,
+  SOURCE_TEXT_HEADERS,
+  type GraphArtifact,
+  type GraphNode,
+  type SyntheticExecution,
+  type SyntheticScenarioDescriptor,
+} from "@meridian/core";
+import { deriveSerializedServiceTopology } from "@meridian/design-metrics";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
@@ -7,20 +18,38 @@ import { PrReviewNavigation } from "../components/controlpanel/PrReviewNavigatio
 import { countTestFiles } from "../components/controlpanel/OverlaysSection";
 import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
-import type {
-  GraphProjectionActivateOptions,
-  GraphProjectionDataSource,
-  GraphProjectionManifest,
-  GraphProjectionRequest,
-  GraphProjectionReviewPairOptions,
-  LoadedGraphProjection,
-  LoadedReviewProjection,
+import {
+  GraphProjectionClient,
+  canonicalProjectionKey,
+  canonicalizeProjectionRequest,
+  OVERVIEW_PROJECTION_REQUEST,
+  type GraphProjectionActivateOptions,
+  type GraphProjectionDataSource,
+  type GraphProjectionManifest,
+  type GraphProjectionRequest,
+  type GraphProjectionReviewPairOptions,
+  type LoadedGraphProjection,
+  type LoadedReviewProjection,
+  type StagedGraphProjection,
+  type StagedProjection,
+  type StagedReviewProjection,
 } from "../graph/graphProjectionClient";
 import { restorePrReviewBaseline, swapToPreparedReviewProjection } from "./prReviewSession";
+import type { PreparedChangedFile } from "./prPreparation";
+import { DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS } from "./minimalGraphHistory";
 import { RecentAllocationBudget } from "./recentViewProjectionCache";
-import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
+import {
+  createBlueprintStore,
+  reviewSurfaceIsOpen,
+  selectedPrSummary,
+  type StoreDependencies,
+} from "./store";
 import { StoreProvider } from "./StoreContext";
 import type { PrChangedFile, PrGitHubComment, PrSummary } from "./prTypes";
+import {
+  preparedArtifactReviewFilesForTest,
+  reviewProjectionFactsForTest,
+} from "./reviewProjectionTestSupport";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
   return {
@@ -155,6 +184,12 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
     index,
     projectionDataSource,
     initialProjection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
@@ -177,7 +212,7 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
 }
 
 function seedStaleSyntheticSession(store: ReturnType<typeof freshStore>): void {
-  const staleExecution = { rootId: METHOD_ID } as SyntheticExecution;
+  const staleExecution = syntheticExecutionFixture(METHOD_ID);
   store.setState({
     flowSelection: { rootId: METHOD_ID, blockPath: [] },
     flowPaneOrigin: "synthetic",
@@ -206,6 +241,45 @@ function seedStaleSyntheticSession(store: ReturnType<typeof freshStore>): void {
     syntheticFlowPresentation: "overview",
     flowPaneLayoutStatus: "ready",
   });
+}
+
+function syntheticExecutionFixture(rootId: string): SyntheticExecution {
+  const traceId = "1".repeat(32);
+  const spanId = "1".repeat(16);
+  return {
+    executionVersion: "1.0.0",
+    scenarioId: "stale-review-run",
+    rootId,
+    generatedAt: "2026-07-08T00:00:01.000Z",
+    input: {},
+    outcome: "completed",
+    output: null,
+    trace: {
+      traceId,
+      name: "Stale review run",
+      rootSpanId: spanId,
+      startedAtUnixNano: "1000000000",
+      endedAtUnixNano: "1001000000",
+      status: "ok",
+      attributes: {},
+      spans: [{
+        spanId,
+        nodeId: rootId,
+        name: rootId,
+        kind: "internal",
+        startedAtUnixNano: "1000000000",
+        endedAtUnixNano: "1001000000",
+        status: "ok",
+        attributes: {},
+        events: [],
+      }],
+      completeness: { complete: true, droppedSpans: 0, droppedEvents: 0, droppedValues: 0 },
+    },
+    snapshots: [],
+    inputOverrideResults: [],
+    watchHits: [],
+    warnings: [],
+  };
 }
 
 function expectSyntheticSessionReset(store: ReturnType<typeof freshStore>): void {
@@ -475,7 +549,7 @@ describe("PR store slice", () => {
     expect(changedSince?.files?.["repo/src/a.ts"]).toEqual([{ start: 1, end: 1 }]);
     expect(changedSince?.kinds?.["repo/src/a.ts"]).toEqual([{ start: 1, end: 1, kind: "modified" }]);
 
-    store.getState().closeMinimalGraph();
+    await store.getState().closeMinimalGraph();
     await vi.waitFor(() => expect(moduleRelayout).toHaveBeenCalledOnce());
     expect(store.getState().minimalSeedIds).toEqual([]);
   });
@@ -587,6 +661,7 @@ describe("PR store slice", () => {
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().minimalLayoutStatus).toBe("ready");
     expect(relayout).not.toHaveBeenCalled();
+    expect(budget.inactiveEntryCount).toBe(0);
 
     // The older scene was evicted, but its lightweight coordinate remains and reconstructs once.
     await store.getState().backMinimalGraph();
@@ -594,6 +669,35 @@ describe("PR store slice", () => {
     expect(store.getState().minimalLayoutStatus).toBe("ready");
     expect(relayout).toHaveBeenCalledTimes(1);
     expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: FILE_ID }));
+    expect(budget.inactiveEntryCount).toBe(0);
+  });
+
+  it("bounds arbitrarily deep semantic graph history while keeping the newest Back window usable", async () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
+    });
+    await enterPreparedReview(store);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    for (let depth = 0; depth < DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS.maxEntries + 4; depth += 1) {
+      store.getState().selectModule(METHOD_ID);
+      await store.getState().buildMinimalGraph();
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    }
+
+    expect(store.getState().minimalGraphHistory).toHaveLength(
+      DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS.maxEntries,
+    );
+    await store.getState().backMinimalGraph();
+    expect(store.getState().minimalGraphHistory).toHaveLength(
+      DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS.maxEntries - 1,
+    );
+    expect(store.getState().minimalLayoutStatus).toBe("ready");
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: METHOD_ID }));
   });
 
   it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
@@ -614,8 +718,8 @@ describe("PR store slice", () => {
 
     expect(store.getState().showTests).toBe(false);
     expect(store.getState().review?.context.changedFiles.map((file) => file.path)).toEqual([
-      "src/a.ts",
       "src/a.test.ts",
+      "src/a.ts",
     ]);
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
@@ -738,7 +842,7 @@ describe("PR store slice", () => {
     store.getState().selectFlowEntry({ rootId: TEST_METHOD_ID, blockPath: [] });
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     expect(store.getState().moduleSelected).toEqual(new Set([TEST_METHOD_ID, METHOD_ID]));
-    const staleExecution = { rootId: TEST_METHOD_ID } as SyntheticExecution;
+    const staleExecution = syntheticExecutionFixture(TEST_METHOD_ID);
     store.setState({
       flowPaneOrigin: "synthetic",
       syntheticExecution: staleExecution,
@@ -1576,7 +1680,7 @@ describe("PR store slice", () => {
     expect(expanded.has(METHOD_ID)).toBe(false);
   });
 
-  it("waits for the selected PR's files, then keeps a zero-match review on the PRs page", async () => {
+  it("does not synthesize a zero-match blocker while the selected PR transaction is still loading", async () => {
     let resolveFiles!: (response: Response) => void;
     const filesResponse = new Promise<Response>((resolve) => {
       resolveFiles = resolve;
@@ -1610,19 +1714,18 @@ describe("PR store slice", () => {
     await Promise.all([selection, review]);
 
     expect(store.getState().viewMode).toBe("prs");
-    expect(store.getState().prReviewed).toBe(null);
+    expect(store.getState().prReviewed).toBeNull();
     expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().reviewAllSeedIds).toEqual([]);
-    expect(store.getState().prReviewBlocked).toEqual({
-      number: 7,
-      reason: "None of this PR's 1 changed files match this session's graph",
-    });
+    expect(store.getState().prReviewBlocked).toBeNull();
   });
 
   it("keeps Resume review available on the PR page even when cached seeds were cleared", async () => {
     const { store } = await swappedReviewStore();
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
-    store.getState().closeMinimalGraph();
+    expect(reviewSurfaceIsOpen(store.getState())).toBe(true);
+    await store.getState().closeMinimalGraph();
+    expect(reviewSurfaceIsOpen(store.getState())).toBe(false);
     store.setState({ reviewAllSeedIds: [] });
     store.getInitialState = store.getState;
     const renderSection = () => renderToStaticMarkup(
@@ -1635,10 +1738,11 @@ describe("PR store slice", () => {
     expect(parked).toContain("Resume review #7");
 
     await store.getState().resumePrReview();
+    expect(reviewSurfaceIsOpen(store.getState())).toBe(true);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
   });
 
-  it("renders the Resume chip only for a saved review payload and never replaces the queue row", () => {
+  it("renders the Resume chip only for complete lightweight restart metadata and never replaces the queue row", () => {
     const store = freshStore();
     store.setState({
       viewMode: "modules",
@@ -1660,18 +1764,7 @@ describe("PR store slice", () => {
     const files = [{ path: "src/a.ts", status: "modified" as const, additions: 1, deletions: 0 }];
     store.setState({
       viewMode: "prs",
-      review: {
-        context: {
-          changedFiles: files,
-          baseRef: "main",
-          baseSha: null,
-          headRef: "feature",
-          reviewKey: "pr#7",
-          warnings: [],
-        },
-        rows: [],
-        flows: {},
-      },
+      review: null,
       prReviewSource: {
         number: 7,
         files,
@@ -1679,6 +1772,23 @@ describe("PR store slice", () => {
         total: 1,
         outside: 0,
         suggestedSubdir: "",
+      },
+      prPreparedHead: preparedDescriptor("pr-head-7"),
+      prPreparedMergeBase: preparedDescriptor("pr-base-7"),
+      prReviewBaseline: {
+        graphId: "artifact-1",
+        projectionKey: "boot-projection",
+        projectionId: "boot-projection-id",
+        request: BASE_PROJECTION_REQUEST,
+        endpoints: {
+          graphId: "artifact-1",
+          manifestUrl: "/api/graph/manifest?id=artifact-1",
+          projectionUrl: "/api/graph/projection?id=artifact-1",
+          searchUrl: "/api/graph/search?id=artifact-1",
+        },
+        syntheticExecutionUrl: null,
+        syntheticScenarios: [],
+        syntheticExecutionTrust: null,
       },
     });
     const withSeeds = renderSection();
@@ -1765,7 +1875,7 @@ describe("PR store slice", () => {
 
   it("keeps the old source mounted until a dirty cross-file transition is discarded", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "next one\nnext two", startLine: 1, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "next one\nnext two", startLine: 1, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
     const method = store.getState().index.nodesById.get(METHOD_ID)!;
@@ -1813,7 +1923,7 @@ describe("PR store slice", () => {
     expect(store.getState().reviewLineComposer).toBeNull();
   });
 
-  it("drops an older whole-file response for the same node after a newer slice owns the composer", async () => {
+  it("cancels an older whole-file read before a newer slice owns the composer", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const resolveResponse: Array<(response: Response) => void> = [];
     vi.stubGlobal("fetch", vi.fn().mockImplementation(() => new Promise<Response>((resolve) => {
@@ -1838,14 +1948,13 @@ describe("PR store slice", () => {
 
     const olderWholeFile = store.getState().showCode(method, { wholeFile: true, mode: "modal" });
     const newerSlice = store.getState().showCode(method, { mode: "modal" });
-    expect(resolveResponse).toHaveLength(2);
+    await vi.waitFor(() => expect(resolveResponse).toHaveLength(1));
 
-    resolveResponse[1]!(Response.json({ code: "new ten\nnew eleven\nnew twelve", startLine: 10, lineCount: 3, truncated: false }));
+    resolveResponse[0]!(sourceResponse({ code: "new ten\nnew eleven\nnew twelve", startLine: 10, lineCount: 3, truncated: false }));
     await newerSlice;
     store.getState().openReviewLineComposer("src/a.ts", 10);
     store.getState().setReviewLineComposerBody("Stay with the winning slice");
 
-    resolveResponse[0]!(Response.json({ code: "stale whole file", startLine: 1, lineCount: 1, truncated: false }));
     await olderWholeFile;
 
     expect(store.getState().codeView).toMatchObject({
@@ -1954,7 +2063,7 @@ describe("PR store slice", () => {
 
   it("loads an isolated hover preview without replacing the open code modal", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
     const method = store.getState().index.nodesById.get(METHOD_ID)!;
@@ -1972,7 +2081,7 @@ describe("PR store slice", () => {
   it("maps a structural preview focus into displayed PR-head lines without narrowing its declaration", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fullCode = Array.from({ length: 24 }, (_value, index) => `line${index + 1}`).join("\n");
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: fullCode, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1", prFileUrl: "/api/prs/file?id=artifact-1" });
     store.setState({
@@ -2001,7 +2110,7 @@ describe("PR store slice", () => {
 
   it("falls back to the parent preview when a structural anchor names another file", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sourceResponse({
       code: "line10\nline11\nline12",
       startLine: 10,
       truncated: false,
@@ -2020,7 +2129,7 @@ describe("PR store slice", () => {
   it("gives hover and modal the same canonical diff rows from one source request", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     const fullCode = Array.from({ length: 20 }, (_value, index) => `line${index + 1}`).join("\n");
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: fullCode, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: fullCode, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
     const diffLines = [
@@ -2049,7 +2158,7 @@ describe("PR store slice", () => {
 
   it("carries exact comparison spans into declaration previews but leaves module previews file-wide", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "line10\nline11\nline12", startLine: 10, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
     const comparison = testProjection(ARTIFACT, "pr-base-boundary", {
@@ -2102,7 +2211,7 @@ describe("PR store slice", () => {
     { label: "renamed", path: "repo/src/new-name.ts", status: "renamed" as const, code: "export const renamed = true;" },
   ])("opens $label files through the current PR-head source contract", async ({ path, status, code }) => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ prFileUrl: "/api/prs/file?id=artifact-1" });
     store.setState({
@@ -2131,7 +2240,7 @@ describe("PR store slice", () => {
 
   it("preserves an explicit zero-row current PR-head response for an emptied file", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "", lineCount: 0, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "", lineCount: 0, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const path = "repo/src/emptied.ts";
     const store = freshStore({ prFileUrl: "/api/prs/file?id=artifact-1" });
@@ -2161,7 +2270,7 @@ describe("PR store slice", () => {
 
   it("opens the prepared HEAD source for a changed file that has no graph node", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "export const added = true;", truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "export const added = true;", truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     const path = "repo/src/added.ts";
@@ -2197,7 +2306,7 @@ describe("PR store slice", () => {
 
   it("preserves an explicit zero-row prepared HEAD response for a file emptied by the change", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "", lineCount: 0, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "", lineCount: 0, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore();
     const path = "repo/src/emptied.ts";
@@ -2240,7 +2349,7 @@ describe("PR store slice", () => {
 
   it("reads a removed file from the prepared merge-base source", async () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({ code: "old10\nold11\nold12", startLine: 10, truncated: false }));
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({ code: "old10\nold11\nold12", startLine: 10, truncated: false }));
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({ sourceUrl: "/api/source?id=artifact-1" });
     store.setState({
@@ -2305,7 +2414,48 @@ const HEAD_ARTIFACT: GraphArtifact = {
         ],
       },
     },
-  } as GraphArtifact["extensions"],
+  } as unknown as GraphArtifact["extensions"],
+};
+
+const SECOND_FILE_ID = "ts:src/b.ts";
+const SECOND_METHOD_ID = `${SECOND_FILE_ID}#run`;
+const TWO_FILE_MANIFEST: readonly PreparedChangedFile[] = [
+  { path: "src/a.ts", status: "modified" },
+  { path: "src/b.ts", status: "modified" },
+];
+const TWO_FILE_HEAD_ARTIFACT: GraphArtifact = {
+  ...HEAD_ARTIFACT,
+  nodes: [
+    ...HEAD_ARTIFACT.nodes,
+    node(SECOND_FILE_ID, "module", "src/b.ts", PACKAGE_ID),
+    node(SECOND_METHOD_ID, "function", "src/b.ts", SECOND_FILE_ID, { start: 5, end: 8 }),
+  ],
+  extensions: {
+    changedSince: {
+      baseRef: "origin/main",
+      manifest: [...TWO_FILE_MANIFEST],
+      files: {
+        "src/a.ts": [{ start: 20, end: 21 }],
+        "src/b.ts": [{ start: 5, end: 6 }],
+      },
+      kinds: {
+        "src/a.ts": [{ start: 20, end: 21, kind: "modified" }],
+        "src/b.ts": [{ start: 5, end: 6, kind: "modified" }],
+      },
+      stats: {
+        "src/a.ts": { added: 2, deleted: 1 },
+        "src/b.ts": { added: 1, deleted: 1 },
+      },
+    },
+  } as unknown as GraphArtifact["extensions"],
+};
+const TWO_FILE_BASE_ARTIFACT: GraphArtifact = {
+  ...ARTIFACT,
+  nodes: [
+    ...ARTIFACT.nodes,
+    node(SECOND_FILE_ID, "module", "src/b.ts", PACKAGE_ID),
+    node(SECOND_METHOD_ID, "function", "src/b.ts", SECOND_FILE_ID, { start: 5, end: 8 }),
+  ],
 };
 
 const BOOT_SYNTHETIC_SCENARIO: SyntheticScenarioDescriptor = {
@@ -2374,14 +2524,7 @@ const REFRESHED_HEAD_ARTIFACT: GraphArtifact = {
 };
 
 const BASE_PROJECTION_REQUEST: GraphProjectionRequest = {
-  view: "modules",
-  filePaths: [],
-  focusIds: [],
-  expandedIds: [],
-  extraIds: [],
-  depth: 1,
-  radius: 0,
-  includeTests: false,
+  ...OVERVIEW_PROJECTION_REQUEST,
 };
 
 class TestProjectionSource implements GraphProjectionDataSource {
@@ -2396,6 +2539,8 @@ class TestProjectionSource implements GraphProjectionDataSource {
   constructor(
     private readonly baseArtifact: GraphArtifact,
     private resolvePrepared?: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact>,
+    private readonly strictReviewSlices = false,
+    private readonly preparedManifest: readonly PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }],
   ) {}
 
   setPreparedResolver(
@@ -2415,14 +2560,14 @@ class TestProjectionSource implements GraphProjectionDataSource {
     this.activeKey = undefined;
   }
 
-  async loadManifest(options: GraphProjectionActivateOptions = {}): Promise<GraphProjectionManifest> {
+  async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
     return testManifest(graphIdFromOptions(options));
   }
 
-  async activate(
+  async stage(
     request: GraphProjectionRequest,
-    options: GraphProjectionActivateOptions = {},
-  ): Promise<LoadedGraphProjection> {
+    options: GraphProjectionActivateOptions,
+  ): Promise<StagedGraphProjection> {
     this.activationCalls.push({ request, options });
     options.signal?.throwIfAborted();
     const graphId = graphIdFromOptions(options);
@@ -2436,25 +2581,87 @@ class TestProjectionSource implements GraphProjectionDataSource {
           ? REFRESHED_HEAD_ARTIFACT
           : HEAD_ARTIFACT;
     const projection = testProjection(artifact, graphId, request);
-    this.cached.set(projection.key, projection);
-    this.activeKey = projection.key;
-    return projection;
+    return detachedGraphStage(projection, () => {
+      this.cached.set(projection.key, projection);
+      this.activeKey = projection.key;
+    });
   }
 
-  activateCached(key: string): LoadedGraphProjection | undefined {
+  stageCached(key: string): StagedGraphProjection | undefined {
     const projection = this.cached.get(key);
-    if (projection !== undefined) this.activeKey = key;
-    return projection;
+    return projection === undefined
+      ? undefined
+      : detachedGraphStage(projection, () => { this.activeKey = key; });
   }
 
-  async activateReviewPair(options: GraphProjectionReviewPairOptions): Promise<LoadedReviewProjection> {
-    const head = await this.activate(options.head.request, { endpoints: options.head.endpoints, signal: options.signal });
-    const mergeBase = await this.activate(options.mergeBase.request, {
+  async stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection> {
+    const headKey = canonicalProjectionKey(graphIdFromOptions(options.head), options.head.request);
+    const mergeBaseKey = canonicalProjectionKey(graphIdFromOptions(options.mergeBase), options.mergeBase.request);
+    const reviewKey = `review-pair\u0000${JSON.stringify([headKey, mergeBaseKey])}`;
+    const cachedReview = this.stageCachedReview(reviewKey);
+    if (cachedReview !== undefined) return cachedReview;
+    const loadSide = async (
+      request: GraphProjectionRequest,
+      activateOptions: GraphProjectionActivateOptions,
+    ): Promise<LoadedGraphProjection> => {
+      this.activationCalls.push({ request, options: activateOptions });
+      activateOptions.signal?.throwIfAborted();
+      const graphId = graphIdFromOptions(activateOptions);
+      const cached = this.cached.get(canonicalProjectionKey(graphId, request));
+      if (cached !== undefined) return cached;
+      const artifact = graphId === "artifact-1"
+        ? this.baseArtifact
+        : this.resolvePrepared
+          ? await abortableProjection(this.resolvePrepared(graphId, activateOptions.signal), activateOptions.signal)
+          : graphId.endsWith("-base")
+            ? this.baseArtifact
+            : graphId === REFRESHED_GRAPH_ID
+              ? REFRESHED_HEAD_ARTIFACT
+              : HEAD_ARTIFACT;
+      return testProjection(artifact, graphId, request);
+    };
+    const rawHead = await loadSide(options.head.request, { endpoints: options.head.endpoints, signal: options.signal });
+    const rawMergeBase = await loadSide(options.mergeBase.request, {
       endpoints: options.mergeBase.endpoints,
       signal: options.signal,
     });
+    const files = preparedArtifactReviewFilesForTest(rawHead.artifact, this.preparedManifest);
+    const headFacts = reviewProjectionFactsForTest(files, rawHead.request, "head", rawHead.artifact);
+    const mergeBaseFacts = reviewProjectionFactsForTest(
+      files,
+      rawMergeBase.request,
+      "mergeBase",
+      rawMergeBase.artifact,
+    );
+    const headProjection = this.strictReviewSlices
+      ? testProjection(
+          reviewSliceArtifactForTest(rawHead.artifact, headFacts.selection?.graphPath ?? null),
+          rawHead.graphId,
+          rawHead.request,
+        )
+      : rawHead;
+    const mergeBaseProjection = this.strictReviewSlices
+      ? testProjection(
+          reviewSliceArtifactForTest(rawMergeBase.artifact, mergeBaseFacts.selection?.graphPath ?? null),
+          rawMergeBase.graphId,
+          rawMergeBase.request,
+        )
+      : rawMergeBase;
+    const head = {
+      ...headProjection,
+      review: reviewProjectionFactsForTest(files, headProjection.request, "head", headProjection.artifact),
+    };
+    const mergeBase = {
+      ...mergeBaseProjection,
+      review: reviewProjectionFactsForTest(
+        files,
+        mergeBaseProjection.request,
+        "mergeBase",
+        mergeBaseProjection.artifact,
+      ),
+    };
     const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
-    const projection: LoadedReviewProjection = {
+    const projection = this.cachedReviews.get(key) ?? {
       key,
       projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
       head,
@@ -2462,15 +2669,19 @@ class TestProjectionSource implements GraphProjectionDataSource {
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     };
-    this.cachedReviews.set(key, projection);
-    this.activeKey = key;
-    return projection;
+    return detachedReviewStage(projection, () => {
+      this.cached.set(head.key, head);
+      this.cached.set(mergeBase.key, mergeBase);
+      this.cachedReviews.set(key, projection);
+      this.activeKey = key;
+    });
   }
 
-  activateCachedReview(key: string): LoadedReviewProjection | undefined {
+  stageCachedReview(key: string): StagedReviewProjection | undefined {
     const projection = this.cachedReviews.get(key);
-    if (projection !== undefined) this.activeKey = key;
-    return projection;
+    return projection === undefined
+      ? undefined
+      : detachedReviewStage(projection, () => { this.activeKey = key; });
   }
 
   searchSymbols(): Promise<never> {
@@ -2480,14 +2691,74 @@ class TestProjectionSource implements GraphProjectionDataSource {
 
 const testProjectionSources = new WeakMap<object, TestProjectionSource>();
 
+function misroutePreparedReviewHead(
+  store: ReturnType<typeof freshStore>,
+  graphId: string,
+): void {
+  const source = testProjectionSources.get(store);
+  if (source === undefined) throw new Error("missing projection source fixture");
+  const stageReviewPair = source.stageReviewPair.bind(source);
+  vi.spyOn(source, "stageReviewPair").mockImplementation(async (options) => {
+    const staged = await stageReviewPair(options);
+    const pair = { ...staged.projection, head: { ...staged.projection.head, graphId } };
+    return {
+      get projection() { return pair; },
+      commit: () => {
+        staged.commit();
+        return pair;
+      },
+      release: () => staged.release(),
+    };
+  });
+}
+
+function detachedReviewStage(
+  projection: LoadedReviewProjection,
+  onCommit: () => void = () => {},
+): StagedReviewProjection {
+  return detachedStage(projection, onCommit);
+}
+
+function detachedGraphStage(
+  projection: LoadedGraphProjection,
+  onCommit: () => void = () => {},
+): StagedGraphProjection {
+  return detachedStage(projection, onCommit);
+}
+
+function detachedStage<Projection>(
+  projection: Projection,
+  onCommit: () => void,
+): StagedProjection<Projection> {
+  let released = false;
+  let committed = false;
+  const read = () => {
+    if (released) throw new Error("test review stage was released");
+    return projection;
+  };
+  return {
+    get projection() { return read(); },
+    commit: () => {
+      const value = read();
+      if (!committed) {
+        committed = true;
+        onCommit();
+      }
+      return value;
+    },
+    release: () => {
+      if (!committed) released = true;
+    },
+  };
+}
+
 function graphIdFromOptions(options: GraphProjectionActivateOptions): string {
-  const url = options.endpoints?.manifestUrl;
-  return url ? new URL(url, "http://meridian.local").searchParams.get("id") ?? "artifact-1" : "artifact-1";
+  return options.endpoints.graphId;
 }
 
 function testManifest(graphId: string): GraphProjectionManifest {
   return {
-    version: 3,
+    version: 6,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {
@@ -2496,6 +2767,7 @@ function testManifest(graphId: string): GraphProjectionManifest {
       nodeCount: ARTIFACT.nodes.length,
       edgeCount: ARTIFACT.edges.length,
     },
+    repositorySummary: buildGraphIndex(ARTIFACT).structure.repositorySummary,
     defaultView: BASE_PROJECTION_REQUEST,
   };
 }
@@ -2527,8 +2799,22 @@ function testProjection(
     request,
     artifact,
     index: buildGraphIndex(artifact),
+    reachability: null,
+    review: null,
     serializedBytes: 100,
     residentBytes: 300,
+  };
+}
+
+function reviewSliceArtifactForTest(artifact: GraphArtifact, graphPath: string | null): GraphArtifact {
+  const nodes = graphPath === null
+    ? []
+    : artifact.nodes.filter((candidate) => candidate.location?.file.replace(/\\/g, "/") === graphPath);
+  const ids = new Set(nodes.map((candidate) => candidate.id));
+  return {
+    ...artifact,
+    nodes,
+    edges: artifact.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target)),
   };
 }
 
@@ -2546,26 +2832,255 @@ function testReviewProjection(head: LoadedGraphProjection, mergeBase: LoadedGrap
 function projectionOverrides(
   resolvePrepared: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact>,
   resolveMergeBase: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact> = () => ARTIFACT,
-): Pick<StoreDependencies, "projectionDataSource" | "initialProjection"> {
+  strictReviewSlices = false,
+  preparedManifest: readonly PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }],
+): Pick<StoreDependencies, "projectionDataSource" | "initialProjection" | "projectionEndpoints"> {
   const source = new TestProjectionSource(ARTIFACT, (graphId, signal) =>
-    graphId.endsWith("-base") ? resolveMergeBase(graphId, signal) : resolvePrepared(graphId, signal));
+    graphId.endsWith("-base") ? resolveMergeBase(graphId, signal) : resolvePrepared(graphId, signal),
+  strictReviewSlices, preparedManifest);
   const projection = testProjection(ARTIFACT, "artifact-1", BASE_PROJECTION_REQUEST);
   source.seed(projection);
-  return { projectionDataSource: source, initialProjection: projection };
+  return {
+    projectionDataSource: source,
+    initialProjection: projection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
+  };
+}
+
+type ApplicationFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Response | Promise<Response>;
+
+function realProjectionFetch(
+  applicationFetch: ApplicationFetch,
+  options: {
+    artifactForGraphId?: (graphId: string) => GraphArtifact;
+    manifestGraphId?: (requestedGraphId: string) => string;
+  } = {},
+) {
+  const artifactForGraphId = options.artifactForGraphId ?? ((graphId: string) => (
+    graphId === "artifact-1" || graphId.endsWith("-base")
+      ? ARTIFACT
+      : graphId === REFRESHED_GRAPH_ID
+        ? REFRESHED_HEAD_ARTIFACT
+        : HEAD_ARTIFACT
+  ));
+  return vi.fn<typeof fetch>(async (input, init) => {
+    const url = new URL(input.toString(), "http://meridian.local");
+    const graphId = url.searchParams.get("id");
+    if (url.pathname === "/api/graph/manifest") {
+      if (graphId === null) throw new Error("test projection manifest is missing graph id");
+      const returnedGraphId = options.manifestGraphId?.(graphId) ?? graphId;
+      return strictProjectionJson(realProjectionManifest(
+        returnedGraphId,
+        artifactForGraphId(graphId),
+      ));
+    }
+    if (url.pathname === "/api/graph/projection") {
+      if (graphId === null) throw new Error("test projection request is missing graph id");
+      const request = canonicalizeProjectionRequest(
+        JSON.parse(String(init?.body)) as GraphProjectionRequest,
+      );
+      const artifact = artifactForGraphId(graphId);
+      const headGraphId = graphId.endsWith("-base") ? graphId.slice(0, -"-base".length) : graphId;
+      const files = preparedArtifactReviewFilesForTest(artifactForGraphId(headGraphId), [
+        { path: "src/a.ts", status: "modified" },
+      ]);
+      return strictProjectionResponse(request, artifact, graphId, files);
+    }
+    return applicationFetch(input, init);
+  });
+}
+
+async function realProjectionDependencies(
+  fetchImpl: typeof fetch,
+  recentAllocationBudget: RecentAllocationBudget,
+) {
+  const pendingAllocationBudget = new RecentAllocationBudget({
+    maxRecentEntries: 4,
+    maxRecentBytes: 192 * 1024 * 1024,
+  });
+  const projectionEndpoints = {
+    graphId: "artifact-1",
+    manifestUrl: "/api/graph/manifest?id=artifact-1",
+    projectionUrl: "/api/graph/projection?id=artifact-1",
+    searchUrl: "/api/graph/search?id=artifact-1",
+  };
+  const projectionDataSource = new GraphProjectionClient({
+    fetch: fetchImpl,
+    residentExpansionFactor: 1,
+    recentCache: { maxRecentEntries: 3, maxRecentBytes: 48 * 1024 * 1024 },
+    recentBudget: recentAllocationBudget,
+    pendingBudget: pendingAllocationBudget,
+  });
+  const staged = await projectionDataSource.stage(BASE_PROJECTION_REQUEST, {
+    endpoints: projectionEndpoints,
+  });
+  let initialProjection: LoadedGraphProjection;
+  try {
+    initialProjection = staged.commit();
+  } finally {
+    staged.release();
+  }
+  return {
+    projectionDataSource,
+    pendingAllocationBudget,
+    dependencies: {
+      projectionDataSource,
+      initialProjection,
+      projectionEndpoints,
+      recentAllocationBudget,
+    } satisfies Partial<StoreDependencies>,
+  };
+}
+
+function realProjectionManifest(graphId: string, artifact: GraphArtifact): GraphProjectionManifest {
+  const structure = deriveGraphStructure(artifact.nodes, artifact.edges);
+  return {
+    version: 6,
+    graphId,
+    contentId: "0".repeat(64),
+    graphSummary: {
+      schemaVersion: artifact.schemaVersion,
+      generatedAt: artifact.generatedAt,
+      nodeCount: artifact.nodes.length,
+      edgeCount: artifact.edges.length,
+    },
+    repositorySummary: structure.repositorySummary,
+    defaultView: canonicalizeProjectionRequest(BASE_PROJECTION_REQUEST),
+  };
+}
+
+async function strictProjectionResponse(
+  request: GraphProjectionRequest,
+  artifact: GraphArtifact,
+  graphId: string,
+  reviewFiles: readonly object[],
+): Promise<Response> {
+  const structure = deriveGraphStructure(artifact.nodes, artifact.edges);
+  const moduleOverview = request.focusIds.length === 0
+    && (request.view === "modules" || request.view === "ui")
+    ? structure.moduleOverview
+    : null;
+  const service = request.view === "service"
+    ? deriveSerializedServiceTopology(artifact.nodes, artifact.edges)
+    : null;
+  const projectionId = await projectionIdForRealClientTest("0".repeat(64), request);
+  return strictProjectionJson({
+    version: 6,
+    contentId: "0".repeat(64),
+    projectionId,
+    request,
+    artifact,
+    hierarchy: {
+      moduleOverviewRootIds: moduleOverview === null ? [] : structure.moduleOverviewRootIds,
+      nodes: Object.fromEntries(structure.hierarchyById),
+    },
+    viewFacts: {
+      moduleOverview,
+      service,
+      review: request.view === "review" && request.filePaths.length === 0
+        ? reviewProjectionFactsForTest(
+            reviewFiles,
+            request,
+            graphId.endsWith("-base") ? "mergeBase" : "head",
+            artifact,
+          )
+        : null,
+    },
+    analysis: {
+      reachability: request.includeReachability
+        ? buildReachabilityProjection(artifact.nodes, artifact.edges)
+        : null,
+    },
+    completeness: { complete: true, reasons: [], omittedNodes: 0, omittedEdges: 0 },
+    residentBytes: 4_096,
+  });
+}
+
+function strictProjectionJson(value: unknown): Response {
+  const body = JSON.stringify(value);
+  const record = typeof value === "object" && value !== null
+    ? value as Record<string, unknown>
+    : null;
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    "content-length": String(new TextEncoder().encode(body).byteLength),
+  };
+  if (typeof record?.projectionId === "string" && Number.isSafeInteger(record.residentBytes)) {
+    headers["x-meridian-projection-id"] = record.projectionId;
+    headers["x-meridian-resident-bytes"] = String(record.residentBytes);
+  }
+  return new Response(body, { status: 200, headers });
+}
+
+function sourceResponse(payload: {
+  code: string;
+  startLine?: number;
+  lineCount?: number;
+  truncated?: boolean;
+}): Response {
+  const startLine = payload.startLine ?? 1;
+  const lineCount = payload.lineCount ?? (payload.code.length === 0 ? 0 : payload.code.split("\n").length);
+  const body = new TextEncoder().encode(payload.code);
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "content-length": String(body.byteLength),
+      [SOURCE_TEXT_HEADERS.version]: "1",
+      [SOURCE_TEXT_HEADERS.startLine]: String(startLine),
+      [SOURCE_TEXT_HEADERS.endLine]: String(lineCount === 0 ? startLine - 1 : startLine + lineCount - 1),
+      [SOURCE_TEXT_HEADERS.lineCount]: String(lineCount),
+      [SOURCE_TEXT_HEADERS.truncated]: payload.truncated === true ? "1" : "0",
+    },
+  });
+}
+
+async function projectionIdForRealClientTest(contentId: string, request: unknown): Promise<string> {
+  const bytes = new TextEncoder().encode(
+    graphProjectionIdentityPreimage(contentId, request as GraphProjectionRequest),
+  );
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
 }
 
 /** A fetch stub routing direct preparation and the bounded HEAD capability descriptor. */
-function routedFetch(options?: { graphId?: string; headSha?: string }) {
+function routedFetch(options?: { graphId?: string; headSha?: string; changedFiles?: readonly PreparedChangedFile[] }) {
   const graphId = options?.graphId ?? "pr-head-1";
   const headSha = options?.headSha ?? INITIAL_HEAD_SHA;
   return vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
     const url = input.toString();
     if (url.includes("/api/pr/prepare")) {
       const request = JSON.parse(String(init?.body)) as { prNumber?: number };
-      return Promise.resolve(ndjsonResponse(prepareLines(graphId, headSha, request.prNumber ?? 7)));
+      return Promise.resolve(ndjsonResponse(prepareLines(
+        graphId,
+        headSha,
+        request.prNumber ?? 7,
+        options?.changedFiles,
+      )));
     }
     if (url.includes("/api/meta")) {
       return Promise.resolve(Response.json(preparedSyntheticMeta(graphId, headSha)));
+    }
+    if (url.includes("/api/source")) {
+      const request = new URL(url, "http://meridian.local");
+      const startLine = Number(request.searchParams.get("start") ?? 1);
+      const endLine = Number(request.searchParams.get("end") ?? startLine);
+      const code = Array.from(
+        { length: Math.max(1, endLine - startLine + 1) },
+        (_value, index) => `line${startLine + index}`,
+      ).join("\n");
+      return Promise.resolve(sourceResponse({ code, startLine }));
     }
     return Promise.resolve(Response.json({ files: [], truncated: false }));
   });
@@ -2627,22 +3142,32 @@ function prepareProgress(stage: "resolve" | "git" | "extract-head" | "extract-me
   return { version: 1, type: "progress", stage, elapsedMs };
 }
 
-function prepareLines(graphId: string, headSha: string, prNumber = 7): object[] {
+function prepareLines(
+  graphId: string,
+  headSha: string,
+  prNumber = 7,
+  changedFiles?: readonly PreparedChangedFile[],
+): object[] {
   return [
     prepareProgress("resolve", 0),
     prepareProgress("git", 1),
     prepareProgress("extract-head", 2),
     prepareProgress("extract-merge-base", 3),
     prepareProgress("publish", 4),
-    prepareDone(graphId, headSha, prNumber),
+    prepareDone(graphId, headSha, prNumber, changedFiles),
   ];
 }
 
-function prepareDone(graphId: string, headSha = INITIAL_HEAD_SHA, prNumber = 7) {
+function prepareDone(
+  graphId: string,
+  headSha = INITIAL_HEAD_SHA,
+  prNumber = 7,
+  changedFiles?: readonly PreparedChangedFile[],
+) {
   return {
     version: 1,
     type: "done",
-    ...prepareResult(graphId, headSha),
+    ...prepareResult(graphId, headSha, changedFiles),
     handoff: {
       id: `handoff-${graphId}`,
       url: `/api/pr/prepared?id=handoff-${graphId}`,
@@ -2651,16 +3176,20 @@ function prepareDone(graphId: string, headSha = INITIAL_HEAD_SHA, prNumber = 7) 
   };
 }
 
-function prepareResult(graphId: string, headSha = INITIAL_HEAD_SHA) {
+function prepareResult(
+  graphId: string,
+  headSha = INITIAL_HEAD_SHA,
+  changedFiles: readonly PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }],
+) {
   return {
     headSha,
     baseSha: "b".repeat(40),
     mergeBaseSha: "c".repeat(40),
-    changedFiles: [{ path: "src/a.ts", status: "modified" }],
+    changedFiles,
     head: preparedDescriptor(graphId),
     mergeBase: preparedDescriptor(`${graphId}-base`),
     cache: "miss",
-    timings: { totalMs: 5 },
+    timings: { resolve: 1, git: 1, "extract-head": 1, "extract-merge-base": 1, publish: 1 },
     warnings: [],
   };
 }
@@ -2746,7 +3275,7 @@ async function enterPreparedReview(store: ReturnType<typeof freshStore>): Promis
         path: file.path,
         status: file.status === "removed" ? "deleted" : file.status,
         ...(file.status === "renamed" ? { previousPath: file.previousPath } : {}),
-      }));
+      })).sort((left, right) => compareCanonicalPrPreparePaths(left.path, right.path));
       return Promise.resolve(ndjsonResponse([{
         ...prepareDone(graphId, headSha, store.getState().prSelected ?? 7),
         changedFiles,
@@ -2769,6 +3298,7 @@ function preparedDescriptor(graphId: string) {
     graphId,
     manifestUrl: `/api/graph/manifest?id=${graphId}`,
     projectionUrl: `/api/graph/projection?id=${graphId}`,
+    searchUrl: `/api/graph/search?id=${graphId}`,
     sourceUrl: `/api/source?id=${graphId}`,
     metaUrl: `/api/meta?id=${graphId}`,
     graphSummary: {
@@ -2823,6 +3353,51 @@ async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
 }
 
 describe("PR head preparation (prepareHeadGraph)", () => {
+  it("prepares a broader-root review through v1 and returns only its immutable handoff URL", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      expect(input.toString()).toBe("http://meridian.local/api/pr/prepare");
+      expect(init?.method).toBe("POST");
+      return Promise.resolve(ndjsonResponse(prepareLines("pr-broader-root", INITIAL_HEAD_SHA)));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(PREPARE_DEPS);
+    store.setState(selectedPrState(7));
+
+    await expect(store.getState().preparePrReviewNavigation("packages/web")).resolves.toBe(
+      "/view?id=pr-broader-root&view=modules&prn=7&rev=1&prepared=handoff-pr-broader-root",
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      owner: "o",
+      repo: "r",
+      subdir: "packages/web",
+      prNumber: 7,
+      baseRef: "main",
+      headRef: "feature",
+    });
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/generate"))).toBe(false);
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prPreparedHead).toBeNull();
+  });
+
+  it("omits subdir when broader-root review preparation targets the repository root", async () => {
+    const fetchMock = routedFetch({ graphId: "pr-repo-root" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore(PREPARE_DEPS);
+    store.setState(selectedPrState(7));
+
+    await store.getState().preparePrReviewNavigation("");
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toEqual({
+      owner: "o",
+      repo: "r",
+      prNumber: 7,
+      baseRef: "main",
+      headRef: "feature",
+    });
+  });
+
   it("starts direct preparation from the selected summary while file detail hydrates", async () => {
     let releaseFiles!: () => void;
     let filesSettled = false;
@@ -2992,6 +3567,22 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(completed).toBe(true);
   });
 
+  it("rejects a direct prepare projection whose identity differs from its descriptor", async () => {
+    vi.stubGlobal("fetch", routedFetch({ graphId: "pr-expected" }));
+    const store = freshStore(PREPARE_DEPS);
+    misroutePreparedReviewHead(store, "pr-misrouted");
+    store.setState(selectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain(
+      "projection identity does not match its descriptor capability",
+    );
+  });
+
   it("restores a strict prepared handoff without POSTing or waiting for GitHub file detail", async () => {
     const summary = { ...pr(7), headSha: INITIAL_HEAD_SHA };
     let releaseFiles!: () => void;
@@ -3033,7 +3624,10 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     vi.stubGlobal("fetch", fetchMock);
-    const store = freshStore({ preparedReviewUrl: "/api/pr/prepared?id=opaque" });
+    const store = freshStore({
+      ...projectionOverrides(() => HEAD_ARTIFACT, () => ARTIFACT, true),
+      preparedReviewUrl: "/api/pr/prepared?id=opaque",
+    });
     store.setState({ viewMode: "prs" });
 
     await expect(store.getState().restorePreparedPrReview(7)).resolves.toBe(true);
@@ -3047,10 +3641,116 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().prFiles).toEqual([
       expect.objectContaining({ path: "src/a.ts", status: "modified" }),
     ]);
+    expect(store.getState().artifact.nodes).toEqual([]);
+    const restoredSource = testProjectionSources.get(store)!;
+    const restoredReviewReads = restoredSource.activationCalls.filter((call) => call.request.view === "review");
+    expect(restoredReviewReads).toHaveLength(2);
+    expect(restoredReviewReads.every((call) => (
+      call.request.reviewCursor === null && call.request.filePaths.length === 0
+    ))).toBe(true);
     expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
 
     releaseFiles();
     await vi.waitFor(() => expect(store.getState().prFiles?.[0]?.additions).toBe(2));
+  });
+
+  it("releases a real-client handoff stage when selection changes before metadata validation", async () => {
+    const budget = new RecentAllocationBudget({
+      maxRecentEntries: 3,
+      maxRecentBytes: 48 * 1024 * 1024,
+    });
+    let releaseMeta!: (response: Response) => void;
+    const metadata = new Promise<Response>((resolve) => { releaseMeta = resolve; });
+    const fetchMock = realProjectionFetch((input, init) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepared")) {
+        return Response.json({
+          version: 1,
+          request: { owner: "o", repo: "r", prNumber: 7, baseRef: "main", headRef: "feature" },
+          ...prepareResult("artifact-1", INITIAL_HEAD_SHA),
+        });
+      }
+      if (url.includes("/api/prs/one")) {
+        return Response.json({ pr: { ...pr(7), headSha: INITIAL_HEAD_SHA } });
+      }
+      if (url.includes("/api/prs/files")) {
+        return Response.json({ files: [], truncated: false });
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 } });
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null });
+      }
+      if (url.includes("/api/meta?id=artifact-1")) return metadata;
+      if (url.includes("/api/pr/prepare") || init?.method === "POST") {
+        throw new Error("stale prepared restore must not POST");
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const {
+      projectionDataSource,
+      pendingAllocationBudget,
+      dependencies,
+    } = await realProjectionDependencies(fetchMock, budget);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ ...dependencies, preparedReviewUrl: "/api/pr/prepared?id=opaque" });
+    const bootKey = store.getState().activeProjectionKey;
+    store.setState({ viewMode: "prs" });
+
+    const restore = store.getState().restorePreparedPrReview(7);
+    await vi.waitFor(() => expect(pendingAllocationBudget.inactiveEntryCount).toBe(1));
+    expect(budget.inactiveEntryCount).toBe(0);
+    expect(projectionDataSource.activeKey).toBe(bootKey);
+
+    store.setState({ prSelected: 8 });
+    releaseMeta(Response.json(preparedSyntheticMeta("artifact-1", INITIAL_HEAD_SHA)));
+    await restore;
+
+    expect(projectionDataSource.activeKey).toBe(bootKey);
+    expect(store.getState().activeProjectionKey).toBe(bootKey);
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prReviewed).toBeNull();
+    expect(pendingAllocationBudget.inactiveEntryCount).toBe(0);
+    expect(budget.inactiveEntryCount).toBe(0);
+  });
+
+  it("rejects a prepared handoff projection whose identity differs from its descriptor", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepared")) {
+        return Promise.resolve(Response.json({
+          version: 1,
+          request: { owner: "o", repo: "r", prNumber: 7, baseRef: "main", headRef: "feature" },
+          ...prepareResult("artifact-1", INITIAL_HEAD_SHA),
+        }));
+      }
+      if (url.includes("/api/prs/one")) {
+        return Promise.resolve(Response.json({ pr: { ...pr(7), headSha: INITIAL_HEAD_SHA } }));
+      }
+      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json({ files: [], truncated: false }));
+      if (url.includes("/api/meta?id=artifact-1")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("artifact-1", INITIAL_HEAD_SHA)));
+      }
+      if (url.includes("/api/pr/prepare") || init?.method === "POST") {
+        return Promise.reject(new Error("prepared restore must not POST"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ preparedReviewUrl: "/api/pr/prepared?id=opaque" });
+    misroutePreparedReviewHead(store, "misrouted-handoff-head");
+    store.setState({ viewMode: "prs" });
+
+    await expect(store.getState().restorePreparedPrReview(7)).resolves.toBe(true);
+
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().prReviewed).toBeNull();
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain(
+      "projection identity does not match its descriptor capability",
+    );
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
   it("fails a mismatched prepared handoff closed without falling through to POST", async () => {
@@ -3114,6 +3814,50 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     await review;
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-atomic", headSha));
+  });
+
+  it("charges a decoded real-client pair while metadata is pending and commits ownership atomically", async () => {
+    const budget = new RecentAllocationBudget({
+      maxRecentEntries: 3,
+      maxRecentBytes: 48 * 1024 * 1024,
+    });
+    let releaseMeta!: (response: Response) => void;
+    const metadata = new Promise<Response>((resolve) => { releaseMeta = resolve; });
+    const fetchMock = realProjectionFetch((input, init) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepare")) {
+        return ndjsonResponse(prepareLines("pr-delayed-meta", INITIAL_HEAD_SHA));
+      }
+      if (url.includes("/api/meta?id=pr-delayed-meta")) return metadata;
+      if (url.includes("/api/prs/")) return Response.json({ files: [], truncated: false });
+      throw new Error(`Unexpected request: ${url} ${String(init?.method ?? "GET")}`);
+    });
+    const {
+      projectionDataSource,
+      pendingAllocationBudget,
+      dependencies,
+    } = await realProjectionDependencies(fetchMock, budget);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ ...PREPARE_DEPS, ...dependencies });
+    const bootKey = store.getState().activeProjectionKey;
+    store.setState(headSelectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(pendingAllocationBudget.inactiveEntryCount).toBe(1));
+    expect(budget.inactiveEntryCount).toBe(0);
+
+    expect(projectionDataSource.activeKey).toBe(bootKey);
+    expect(store.getState().activeProjectionKey).toBe(bootKey);
+    expect(store.getState().artifact).toBe(ARTIFACT);
+
+    releaseMeta(Response.json(preparedSyntheticMeta("pr-delayed-meta", INITIAL_HEAD_SHA)));
+    await review;
+
+    expect(projectionDataSource.activeKey).toBe(store.getState().activeProjectionKey);
+    expect(store.getState().activeProjectionGraphId).toBe("pr-delayed-meta");
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(pendingAllocationBudget.inactiveEntryCount).toBe(0);
+    expect(budget.inactiveEntryCount).toBe(1); // The boot projection is now the only recent owner.
   });
 
   const boundHeadSha = "1".repeat(40);
@@ -3192,12 +3936,170 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
   });
 
+  it("mounts a source-only overview and hydrates graph data only for an explicit file click", async () => {
+    const fetchMock = routedFetch({ graphId: "pr-strict-cursor" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(() => HEAD_ARTIFACT, () => ARTIFACT, true),
+    });
+    const source = testProjectionSources.get(store)!;
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    const overviewReads = source.activationCalls.filter((call) => call.request.view === "review");
+    expect(overviewReads).toHaveLength(2);
+    expect(overviewReads.every((call) => (
+      call.request.reviewCursor === null && call.request.filePaths.length === 0
+    ))).toBe(true);
+    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().reviewFiles).toEqual([
+      expect.objectContaining({ path: "src/a.ts", moduleId: null }),
+    ]);
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+
+    source.activationCalls.length = 0;
+    await store.getState().focusReviewFile("src/a.ts");
+
+    const fileReads = source.activationCalls.filter((call) => call.request.view === "review");
+    expect(fileReads.length).toBeGreaterThanOrEqual(2);
+    expect(fileReads.length % 2).toBe(0);
+    expect(fileReads.every((call) => (
+      call.request.reviewCursor === "file:0" && call.request.filePaths.length === 0
+    ))).toBe(true);
+    expect(store.getState().artifact.nodes.length).toBeGreaterThan(0);
+    expect(store.getState().artifact.nodes.every((candidate) => candidate.location?.file === "src/a.ts")).toBe(true);
+    expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    expect(store.getState().reviewSelectedId).toBe(FILE_ID);
+  });
+
+  it("keeps the committed overview on file-load failure and retries through the same file lane", async () => {
+    let failFileLoad = false;
+    const fetchMock = routedFetch({ graphId: "pr-file-retry" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(() => {
+        if (failFileLoad) throw new Error("file projection unavailable");
+        return HEAD_ARTIFACT;
+      }, () => ARTIFACT, true),
+    });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const committedArtifact = store.getState().artifact;
+
+    failFileLoad = true;
+    await store.getState().focusReviewFile("src/a.ts");
+
+    expect(store.getState().artifact).toBe(committedArtifact);
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
+    expect(store.getState().prPreparedFileProjectionError).toEqual({
+      path: "src/a.ts",
+      message: "file projection unavailable",
+    });
+    expect(store.getState().prReviewStatus).toBe("idle");
+
+    failFileLoad = false;
+    await store.getState().focusReviewFile("src/a.ts");
+    expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().reviewSelectedId).toBe(FILE_ID);
+  });
+
+  it("singleflights the same file and makes a later file the only commit", async () => {
+    let deferFileLoads = false;
+    const signals: AbortSignal[] = [];
+    const releases: Array<(artifact: GraphArtifact) => void> = [];
+    const fetchMock = routedFetch({
+      graphId: "pr-file-race",
+      changedFiles: TWO_FILE_MANIFEST,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides((_graphId, signal) => {
+        if (!deferFileLoads) return TWO_FILE_HEAD_ARTIFACT;
+        expect(signal).toBeInstanceOf(AbortSignal);
+        signals.push(signal!);
+        return new Promise<GraphArtifact>((resolve) => releases.push(resolve));
+      }, () => TWO_FILE_BASE_ARTIFACT, true, TWO_FILE_MANIFEST),
+    });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    deferFileLoads = true;
+
+    const firstA = store.getState().focusReviewFile("src/a.ts");
+    const secondA = store.getState().focusReviewFile("src/a.ts");
+    await vi.waitFor(() => expect(releases).toHaveLength(1));
+    expect(store.getState().prPreparedFileProjectionPending?.path).toBe("src/a.ts");
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+
+    const fileB = store.getState().focusReviewFile("src/b.ts");
+    await vi.waitFor(() => {
+      expect(releases).toHaveLength(2);
+      expect(signals[0]?.aborted).toBe(true);
+    });
+    expect(store.getState().prPreparedFileProjectionPending?.path).toBe("src/b.ts");
+    releases[1]!(TWO_FILE_HEAD_ARTIFACT);
+    await vi.waitFor(() => expect({
+      cursor: store.getState().prPreparedReviewCursor,
+      pending: store.getState().prPreparedFileProjectionPending,
+      error: store.getState().prPreparedFileProjectionError,
+    }).toEqual({ cursor: "file:1", pending: null, error: null }), { timeout: 3_000 });
+    await Promise.all([firstA, secondA, fileB]);
+
+    expect(store.getState().prPreparedReviewCursor).toBe("file:1");
+    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
+    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().artifact.nodes.every((candidate) =>
+      candidate.kind === "package" || candidate.location?.file === "src/b.ts")).toBe(true);
+    expect(store.getState().reviewSelectedId).toBe(SECOND_FILE_ID);
+  });
+
+  it("cancels a pending file projection on Close without borrowing the preparation status lane", async () => {
+    let deferFileLoad = false;
+    let fileSignal: AbortSignal | undefined;
+    const fetchMock = routedFetch({ graphId: "pr-file-close" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides((_graphId, signal) => {
+        if (!deferFileLoad) return HEAD_ARTIFACT;
+        fileSignal = signal;
+        return new Promise<GraphArtifact>(() => {});
+      }, () => ARTIFACT, true),
+    });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    deferFileLoad = true;
+
+    const focus = store.getState().focusReviewFile("src/a.ts");
+    await vi.waitFor(() => expect(fileSignal).toBeInstanceOf(AbortSignal));
+    const close = store.getState().closeMinimalGraph();
+    await Promise.all([focus, close]);
+
+    expect(fileSignal?.aborted).toBe(true);
+    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
+    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("idle");
+
+    deferFileLoad = false;
+    await store.getState().resumePrReview();
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().prReviewStatus).toBe("idle");
+  });
+
   it("colours an additions-only node green inside a modified file on the prepared head graph", async () => {
     const additionsOnlyHead: GraphArtifact = {
       ...HEAD_ARTIFACT,
       extensions: {
         changedSince: {
           baseRef: "origin/main",
+          manifest: [{ path: "src/a.ts", status: "modified" }],
           files: { "src/a.ts": [{ start: 20, end: 21 }] },
           kinds: { "src/a.ts": [{ start: 20, end: 21, kind: "added" }] },
         },
@@ -3281,7 +4183,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
         }));
       }
       if (url.pathname === "/api/source") {
-        return Promise.resolve(Response.json({ code: "removed4\nremoved5\nremoved6", startLine: 4, truncated: false }));
+        return Promise.resolve(sourceResponse({ code: "removed4\nremoved5\nremoved6", startLine: 4, truncated: false }));
       }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
@@ -3292,6 +4194,18 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       ...projectionOverrides(() => canonicalHead, () => comparison),
       sourceUrl: "/api/source?id=artifact-1",
     });
+    const expectedHeadIndex = buildGraphIndex(canonicalHead);
+    const expectHeadRevisionAuthority = () => {
+      const currentIndex = store.getState().index;
+      expect(currentIndex.graphSummary).toEqual(expectedHeadIndex.graphSummary);
+      expect(currentIndex.structure.repositorySummary).toEqual(expectedHeadIndex.structure.repositorySummary);
+      expect(currentIndex.structure.moduleOverviewRootIds).toEqual(
+        expectedHeadIndex.structure.moduleOverviewRootIds,
+      );
+      expect(currentIndex.structure.hierarchyById.get(PACKAGE_ID)).toEqual(
+        expectedHeadIndex.structure.hierarchyById.get(PACKAGE_ID),
+      );
+    };
     store.setState({
       ...headSelectedPrState(7),
       // Simulate GitHub's bounded endpoint: it returned only the first of two changed files.
@@ -3311,6 +4225,9 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     });
     expect(state.reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
     expect(state.reviewBaseNodeIds.has(deletedFunctionId)).toBe(true);
+    expect(state.index.changedStatus.get(deletedFileId)).toBe("deleted");
+    expect(state.index.changedStatus.get(deletedFunctionId)).toBe("deleted");
+    expectHeadRevisionAuthority();
     expect(state.index.nodesById.get(deletedFunctionId)?.location).toMatchObject({
       file: "src/removed.ts",
       startLine: 4,
@@ -3342,6 +4259,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(extractedPairKey));
     expect(store.getState().index.nodesById.has(deletedFunctionId)).toBe(true);
     expect(store.getState().reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
+    expectHeadRevisionAuthority();
     const headContextRequest = source.activationCalls
       .find((call) => graphIdFromOptions(call.options) === "pr-head-canonical")!.request;
     expect(headContextRequest.expandedIds).not.toContain(deletedFileId);
@@ -3352,10 +4270,37 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).toBe(extractedPairKey));
     expect(store.getState().index.nodesById.has(deletedFunctionId)).toBe(true);
     expect(store.getState().reviewDeletedNodeIds.has(deletedFunctionId)).toBe(true);
+    expectHeadRevisionAuthority();
     expect(source.activationCalls).toEqual([]);
+
+    // The store owns exactly one current presentation composite/index. It is structurally bounded
+    // by the pure active pair and is not a transport cache entry; parking replaces it with the
+    // baseline projection and clears every graph-derived review reference.
+    const presentationArtifact = store.getState().artifact;
+    const presentationIndex = store.getState().index;
+    expect(presentationArtifact.nodes.length).toBeLessThanOrEqual(
+      canonicalHead.nodes.length + comparison.nodes.length,
+    );
+    expect(presentationArtifact.edges).toBe(canonicalHead.edges);
+    expect(presentationIndex.nodesById.size).toBe(presentationArtifact.nodes.length);
+
+    store.getState().setViewMode("prs");
+
+    const parked = store.getState();
+    expect(parked.artifact).not.toBe(presentationArtifact);
+    expect(parked.index).not.toBe(presentationIndex);
+    expect(parked.index.nodesById.has(deletedFunctionId)).toBe(false);
+    expect(parked.prReviewComparison).toBeNull();
+    expect(parked.reviewBaseNodeIds).toEqual(new Set());
+    expect(parked.reviewDeletedNodeIds).toEqual(new Set());
+    expect(parked.reviewBaseSpanByHeadId).toEqual(new Map());
+    expect(parked.review).toBeNull();
+    expect(parked.reviewFiles).toEqual([]);
+    expect(source.activeKey).toBe(parked.activeProjectionKey);
+    expect(source.activeKey).not.toBe(extractedPairKey);
   });
 
-  it("evaluates the zero-match guard against the prepared graph", async () => {
+  it("keeps an unmatched prepared projection open as source-only review", async () => {
     const unmatchedHead: GraphArtifact = {
       ...HEAD_ARTIFACT,
       nodes: [
@@ -3373,17 +4318,15 @@ describe("PR head preparation (prepareHeadGraph)", () => {
 
     await store.getState().reviewPrInGraph();
 
-    expect(store.getState().viewMode).toBe("prs");
-    expect(store.getState().prReviewed).toBe(null);
-    expect(store.getState().review).toBe(null);
-    expect(store.getState().prReviewBlocked).toEqual({
-      number: 7,
-      reason: "None of this PR's 1 changed files match this session's graph",
-    });
-    // The HEAD graph was used for the decision, then the unreviewed swap was put away.
-    expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(10);
-    expect(store.getState().prPreparedHead).toBeNull();
-    expect(store.getState().prReviewBaseline).toBe(null);
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().review).not.toBeNull();
+    expect(store.getState().reviewFiles).toEqual([
+      expect.objectContaining({ path: "src/a.ts", moduleId: null }),
+    ]);
+    expect(store.getState().prReviewBlocked).toBeNull();
+    expect(store.getState().prPreparedHead).not.toBeNull();
+    expect(store.getState().prReviewBaseline).not.toBeNull();
   });
 
   it("a second review while preparation is in flight does not start a duplicate", async () => {
@@ -3631,8 +4574,14 @@ describe("PR review artifact swap and restore", () => {
     swapToPreparedReviewProjection(
       store.getState,
       store.setState,
-      testReviewProjection(head, mergeBase),
+      detachedReviewStage(testReviewProjection(head, mergeBase)),
       invalidateArtifactCaches,
+      {
+        graphId: "pr-head-1",
+        manifestUrl: "/api/graph/manifest?id=pr-head-1",
+        projectionUrl: "/api/graph/projection?id=pr-head-1",
+        searchUrl: "/api/graph/search?id=pr-head-1",
+      },
     );
 
     expect(store.getState().moduleGhostInspection).toBeNull();
@@ -3674,6 +4623,15 @@ describe("PR review artifact swap and restore", () => {
     const changedSince = (store.getState().artifact.extensions as { changedSince?: { baseRef?: string } }).changedSince;
     expect(changedSince?.baseRef).toBe("origin/main");
     expect(store.getState().prPreparedHead?.graphId).toBe("pr-head-1");
+    expect(store.getState().activeProjectionGraphId).toBe("pr-head-1");
+    expect(store.getState().activeProjectionRequest?.view).toBe("review");
+    expect(store.getState().activeProjectionEndpoints).toEqual({
+      graphId: "pr-head-1",
+      manifestUrl: "/api/graph/manifest?id=pr-head-1",
+      projectionUrl: "/api/graph/projection?id=pr-head-1",
+      searchUrl: "/api/graph/search?id=pr-head-1",
+    });
+    expect(store.getState().prReviewComparison?.graphId).toBe("pr-head-1-base");
     expect(store.getState().prPreparedHeadSha).toBe(INITIAL_HEAD_SHA);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA));
@@ -3715,13 +4673,19 @@ describe("PR review artifact swap and restore", () => {
 
     await store.getState().addToView(galleryMethod, current.activeProjectionGraphId);
 
-    expect(source.activationCalls).toHaveLength(2);
-    const [headRead, mergeBaseRead] = source.activationCalls;
-    expect(headRead?.request.view).toBe("review");
-    expect(headRead?.request.extraIds).toContain(galleryMethod);
-    expect(mergeBaseRead?.request.view).toBe("review");
-    expect(mergeBaseRead?.request.extraIds).not.toContain(galleryMethod);
-    expect(mergeBaseRead?.options.endpoints?.manifestUrl).toContain("-base");
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const headReads = source.activationCalls.filter((call) => !graphIdFromOptions(call.options).endsWith("-base"));
+    const mergeBaseReads = source.activationCalls.filter((call) => graphIdFromOptions(call.options).endsWith("-base"));
+    expect(headReads).toHaveLength(2);
+    expect(mergeBaseReads).toHaveLength(2);
+    expect(headReads.every((call) => call.request.view === "review")).toBe(true);
+    expect(headReads.at(-1)?.request.extraIds).toContain(galleryMethod);
+    expect(headReads.at(-1)?.request.expandedIds).toEqual(expect.arrayContaining([galleryFile, galleryClass]));
+    expect(mergeBaseReads.every((call) => (
+      call.request.view === "review"
+      && !call.request.extraIds.includes(galleryMethod)
+      && call.options.endpoints.manifestUrl.includes("-base")
+    ))).toBe(true);
     expect(store.getState().index.nodesById.has(galleryMethod)).toBe(true);
     expect(store.getState().minimalMemberIds).toContain(galleryFile);
     expect(store.getState().minimalProjectionExtraIds).toEqual(new Set([galleryMethod]));
@@ -3735,8 +4699,10 @@ describe("PR review artifact swap and restore", () => {
 
   it("refreshes a stale prepared review onto the new prepared head without losing drafts", async () => {
     const { store } = await swappedReviewStore();
-    const previousArtifact = store.getState().artifact;
     const path = store.getState().reviewFiles[0].path;
+    await store.getState().focusReviewFile(path);
+    expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    const previousArtifact = store.getState().artifact;
     store.getState().addReviewComment(path, null, "Carry this draft to the new head");
     // L31 exists in both revisions and remains inside the refreshed hunk context. The numeric
     // coincidence must not let an old-revision draft silently attach to different new code.
@@ -3754,6 +4720,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(30);
     expect(store.getState().prPreparedHead?.graphId).toBe(REFRESHED_GRAPH_ID);
     expect(store.getState().prPreparedHeadSha).toBe(REFRESHED_HEAD_SHA);
+    expect(store.getState().prPreparedReviewCursor).toBe("file:0");
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
     expect(store.getState().prReviewStale).toBe(false);
@@ -3824,11 +4791,22 @@ describe("PR review artifact swap and restore", () => {
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph"))).toBe(false);
   });
 
-  it("rolls back a zero-match prepared refresh payload so the prior review can resume", async () => {
+  it("commits an unmatched prepared refresh as source-only review", async () => {
     const noMatchGraphId = "pr-head-no-match";
     const unmatched: GraphArtifact = {
       ...REFRESHED_HEAD_ARTIFACT,
       nodes: [node("ts:other", "package", "other"), node("ts:other/b.ts", "module", "other/b.ts", "ts:other")],
+      extensions: {
+        ...(REFRESHED_HEAD_ARTIFACT.extensions ?? {}),
+        changedSince: {
+          baseRef: "origin/main",
+          manifest: [{ path: "src/no-longer-in-graph.ts", status: "modified" }],
+          files: { "src/no-longer-in-graph.ts": [{ start: 1, end: 1 }] },
+          kinds: { "src/no-longer-in-graph.ts": [{ start: 1, end: 1, kind: "modified" }] },
+          diffLines: { "src/no-longer-in-graph.ts": [] },
+          stats: { "src/no-longer-in-graph.ts": { added: 3, deleted: 1 } },
+        },
+      } as GraphArtifact["extensions"],
     };
     const { store } = await swappedReviewStore(projectionOverrides(
       (graphId) => graphId === noMatchGraphId ? unmatched : HEAD_ARTIFACT,
@@ -3874,22 +4852,27 @@ describe("PR review artifact swap and restore", () => {
 
     await store.getState().refreshPrReview();
 
-    expect(store.getState().artifact).toBe(before.artifact);
-    expect(store.getState().index).toBe(before.index);
-    expect(store.getState().review).toBe(before.review);
-    expect(store.getState().prReviewRevision).toBe(before.prReviewRevision);
-    expect(store.getState().prFiles).toBe(before.prFiles);
-    expect(store.getState().prFilesTotal).toBe(before.prFilesTotal);
-    expect(store.getState().prFilesOutside).toBe(before.prFilesOutside);
+    expect(store.getState().artifact).toBe(unmatched);
+    expect(store.getState().index.nodesById.has("ts:other/b.ts")).toBe(true);
+    expect(store.getState().review).not.toBe(before.review);
+    expect(store.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
+    expect(store.getState().prFiles).toEqual([
+      expect.objectContaining({ path: "src/no-longer-in-graph.ts", status: "modified" }),
+    ]);
+    expect(store.getState().prFilesTotal).toBe(5);
+    expect(store.getState().prFilesOutside).toBe(4);
+    expect(store.getState().reviewFiles).toEqual([
+      expect.objectContaining({ path: "src/no-longer-in-graph.ts", moduleId: null }),
+    ]);
     expect(selectedPrSummary(store.getState())).not.toBe(priorSummary);
     expect(selectedPrSummary(store.getState())?.headSha).toBe(REFRESHED_HEAD_SHA);
-    expect(store.getState().prPrepareError).toBe("The refreshed pull request no longer matches this graph.");
+    expect(store.getState().prPrepareError).toBeNull();
 
     store.getState().closeMinimalGraph();
     await store.getState().resumePrReview();
 
-    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
-    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().artifact.generatedAt).toBe(unmatched.generatedAt);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
   });
 
@@ -3911,6 +4894,80 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().syntheticExecutionTrust).toEqual(before.syntheticExecutionTrust);
     expect(store.getState().prReviewStatus).toBe("error");
     expect(store.getState().prPrepareError).toContain("syntheticScenarios");
+  });
+
+  it("keeps real-client active ownership on the visible review while refreshed metadata is pending and fails", async () => {
+    const budget = new RecentAllocationBudget({
+      maxRecentEntries: 3,
+      maxRecentBytes: 48 * 1024 * 1024,
+    });
+    let prepareCount = 0;
+    let refreshedMetaRequested = false;
+    let releaseRefreshedMeta!: (response: Response) => void;
+    const refreshedMetadata = new Promise<Response>((resolve) => { releaseRefreshedMeta = resolve; });
+    const fetchMock = realProjectionFetch((input) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepare")) {
+        prepareCount += 1;
+        return ndjsonResponse(prepareCount === 1
+          ? prepareLines("pr-head-1", INITIAL_HEAD_SHA)
+          : prepareLines(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA));
+      }
+      if (url.includes(`/api/meta?id=${REFRESHED_GRAPH_ID}`)) {
+        refreshedMetaRequested = true;
+        return refreshedMetadata;
+      }
+      if (url.includes("/api/meta?id=pr-head-1")) {
+        return Response.json(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA));
+      }
+      if (url.includes("/api/prs/one")) return Response.json({ pr: REFRESHED_SUMMARY });
+      if (url.includes("/api/prs/files")) return Response.json(REFRESHED_FILES);
+      if (url.includes("/api/prs/comments")) {
+        return Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 0 },
+          hasMore: false,
+        });
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Response.json({ total: 1, passed: 1, failed: 0, pending: 0, url: null });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const {
+      projectionDataSource,
+      pendingAllocationBudget,
+      dependencies,
+    } = await realProjectionDependencies(fetchMock, budget);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ ...PREPARE_DEPS, ...dependencies });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const before = store.getState();
+    const visibleKey = before.activeProjectionKey;
+    store.setState({ prReviewStale: true });
+
+    const refresh = store.getState().refreshPrReview();
+    await vi.waitFor(() => expect(refreshedMetaRequested).toBe(true));
+    await vi.waitFor(() => expect(pendingAllocationBudget.inactiveEntryCount).toBe(1));
+    expect(budget.inactiveEntryCount).toBe(1);
+
+    expect(projectionDataSource.activeKey).toBe(visibleKey);
+    expect(store.getState().activeProjectionKey).toBe(visibleKey);
+    expect(store.getState().artifact).toBe(before.artifact);
+
+    releaseRefreshedMeta(Response.json(
+      preparedSyntheticMeta(REFRESHED_GRAPH_ID, "e".repeat(40)),
+    ));
+    await refresh;
+
+    expect(projectionDataSource.activeKey).toBe(visibleKey);
+    expect(store.getState().activeProjectionKey).toBe(visibleKey);
+    expect(store.getState().artifact).toBe(before.artifact);
+    expect(store.getState().index).toBe(before.index);
+    expect(pendingAllocationBudget.inactiveEntryCount).toBe(0);
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prPrepareError).toContain("head SHA provenance");
   });
 
   it("keeps the prior prepared graph and capability when refreshed sandbox provenance is stale", async () => {
@@ -3997,7 +5054,7 @@ describe("PR review artifact swap and restore", () => {
   it("previews a prepared node in its existing HEAD coordinates without double-shifting it", async () => {
     const { store } = await swappedReviewStore();
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
-    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+    const fetchMock = vi.fn().mockResolvedValue(sourceResponse({
       code: "line20\nline21\nline22",
       truncated: false,
       startLine: 20,
@@ -4035,8 +5092,10 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPreparedHeadSha).toBe(INITIAL_HEAD_SHA);
     expect(store.getState().prPreparedArtifactCurrent).toBe(false);
     expect(store.getState().prReviewed).toBe(7);
-    expect(store.getState().review).not.toBe(null);
-    expect(store.getState().reviewAffectedIds.size).toBeGreaterThan(0);
+    expect(store.getState().review).toBe(null);
+    expect(store.getState().reviewAffectedIds.size).toBe(0);
+    expect(store.getState().reviewGroups).toBe(null);
+    expect(store.getState().reviewFiles).toEqual([]);
     expect(store.getState()).toMatchObject({
       syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
       syntheticExecutionTrust: { mode: "local" },
@@ -4060,7 +5119,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().index).toBe(bootIndex);
     expect(store.getState().prReviewBaseline?.graphId).toBe("artifact-1");
     expect(store.getState().prReviewed).toBe(7);
-    expect(store.getState().review).not.toBe(null);
+    expect(store.getState().review).toBe(null);
     expect(store.getState().prSelected).toBe(9);
     expectSyntheticSessionReset(store);
 
@@ -4097,10 +5156,34 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().minimalSeedIds).toEqual([]);
   });
 
-  it("re-extracting without leaving the session keeps the original projection reference", async () => {
+  it("atomically replaces a mounted review and preserves its exact two-sided coordinate", async () => {
     const { store } = await swappedReviewStore();
     await store.getState().prepareHeadGraph();
-    expect(store.getState().prReviewBaseline?.graphId).toBe("artifact-1");
+    const replaced = store.getState();
+    expect(replaced.prReviewBaseline?.graphId).toBe("artifact-1");
+    expect(replaced.prPreparedArtifactCurrent).toBe(true);
+    expect(replaced.activeProjectionGraphId).toBe(replaced.prPreparedHead?.graphId);
+    expect(replaced.activeProjectionRequest?.view).toBe("review");
+    expect(replaced.activeProjectionEndpoints).toEqual({
+      graphId: replaced.prPreparedHead?.graphId,
+      manifestUrl: replaced.prPreparedHead?.manifestUrl,
+      projectionUrl: replaced.prPreparedHead?.projectionUrl,
+      searchUrl: replaced.prPreparedHead?.searchUrl,
+    });
+    expect(replaced.prReviewComparison?.graphId).toBe(replaced.prPreparedMergeBase?.graphId);
+    expect(replaced.minimalSeedIds).toEqual([FILE_ID]);
+    expect(replaced).toMatchObject(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA));
+
+    await store.getState().closeMinimalGraph();
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().activeProjectionGraphId).toBe("artifact-1");
+
+    await store.getState().resumePrReview();
+    const resumed = store.getState();
+    expect(resumed.prPreparedArtifactCurrent).toBe(true);
+    expect(resumed.activeProjectionGraphId).toBe(resumed.prPreparedHead?.graphId);
+    expect(resumed.prReviewComparison?.graphId).toBe(resumed.prPreparedMergeBase?.graphId);
+    expect(resumed.minimalSeedIds).toEqual([FILE_ID]);
   });
 
   it("loads bounded codebase context as a paired projection and restores the extracted pair from cache", async () => {
@@ -4149,8 +5232,8 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
     await vi.waitFor(() => expect(store.getState().activeProjectionKey).not.toBe(expandedPairKey));
     await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
-    expect(source.activationCalls.find((call) => graphIdFromOptions(call.options) === "pr-head-1")?.request.expandedIds)
-      .not.toContain(CLASS_ID);
+    expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID);
+    expect(source.activationCalls).toEqual([]); // exact collapsed context was promoted from cache.
 
     source.activationCalls.length = 0;
     store.getState().setMinimalView("graph");
@@ -4189,13 +5272,14 @@ describe("PR review artifact swap and restore", () => {
         graphIdFromOptions(call.options) === "pr-head-1"
         && call.request.expandedIds.includes(CLASS_ID)),
     ).toBe(true));
+    const expansionCall = source.activationCalls.find((call) =>
+      graphIdFromOptions(call.options) === "pr-head-1"
+      && call.request.expandedIds.includes(CLASS_ID))!;
     store.getState().setMinimalCodebaseExpansionOverride(CLASS_ID, false);
     expect(store.getState().minimalCodebaseProjectionPending).toBe(true);
-    await vi.waitFor(() => expect(
-      source.activationCalls.filter((call) => graphIdFromOptions(call.options) === "pr-head-1").length,
-    ).toBeGreaterThanOrEqual(2));
     await vi.waitFor(() => expect(store.getState().activeProjectionRequest?.expandedIds).not.toContain(CLASS_ID));
     await vi.waitFor(() => expect(store.getState().minimalCodebaseProjectionPending).toBe(false));
+    expect(expansionCall.options.signal?.aborted).toBe(true);
 
     releaseExpansion(HEAD_ARTIFACT);
     await Promise.resolve();
@@ -4344,7 +5428,7 @@ describe("PR review artifact swap and restore", () => {
     });
 
     seedStaleSyntheticSession(store);
-    store.getState().closeMinimalGraph();
+    await store.getState().closeMinimalGraph();
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().prPreparedHead?.graphId).toBe("pr-head-1");
     expect(store.getState().prPreparedArtifactCurrent).toBe(false);
@@ -4354,7 +5438,7 @@ describe("PR review artifact swap and restore", () => {
       syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
     });
     expectSyntheticSessionReset(store);
-    await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
+    await store.getState().showCode(ARTIFACT.nodes.find((node) => node.id === METHOD_ID)!, { wholeFile: true });
     const bootSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(bootSourceCall[0].toString()).searchParams.get("id")).toBe("artifact-1");
 
@@ -4362,19 +5446,23 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA));
-    await store.getState().showCode(store.getState().index.nodesById.get(METHOD_ID)!);
+    await store.getState().showCode(HEAD_ARTIFACT.nodes.find((node) => node.id === METHOD_ID)!, { wholeFile: true });
     const headSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(headSourceCall[0].toString()).searchParams.get("id")).toBe("pr-head-1");
   });
 
   it("keeps a failed resume retryable and succeeds on the next attempt", async () => {
-    let projectionReads = 0;
+    let failNextProjection = false;
     const { store } = await swappedReviewStore(projectionOverrides(() => {
-      projectionReads += 1;
-      if (projectionReads === 2) throw new Error("expired projection");
+      if (failNextProjection) {
+        failNextProjection = false;
+        throw new Error("expired projection");
+      }
       return HEAD_ARTIFACT;
     }));
     store.getState().closeMinimalGraph();
+    testProjectionSources.get(store)?.clearCache();
+    failNextProjection = true;
 
     await store.getState().resumePrReview();
 
@@ -4397,28 +5485,167 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
   });
 
-  it("shares concurrent resume clicks instead of swapping the prepared graph twice", async () => {
-    let projectionReads = 0;
-    let releaseProjection!: (artifact: GraphArtifact) => void;
-    const graph = new Promise<GraphArtifact>((resolve) => {
-      releaseProjection = resolve;
-    });
-    const { store } = await swappedReviewStore(projectionOverrides(() => {
-      projectionReads += 1;
-      return projectionReads === 1 ? HEAD_ARTIFACT : graph;
+  it("aborts a superseded resume generation across projection and metadata reads", async () => {
+    let deferProjection = false;
+    const projectionSignals: AbortSignal[] = [];
+    const releaseProjection: Array<(artifact: GraphArtifact) => void> = [];
+    const { store } = await swappedReviewStore(projectionOverrides((_graphId, signal) => {
+      if (!deferProjection) return HEAD_ARTIFACT;
+      expect(signal).toBeInstanceOf(AbortSignal);
+      projectionSignals.push(signal!);
+      return new Promise<GraphArtifact>((resolve) => releaseProjection.push(resolve));
     }));
     store.getState().closeMinimalGraph();
+    testProjectionSources.get(store)?.clearCache();
+    deferProjection = true;
+    const metaSignals: AbortSignal[] = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (!input.toString().includes("/api/meta")) {
+        return Promise.reject(new Error(`Unexpected request: ${input.toString()}`));
+      }
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      metaSignals.push(init!.signal!);
+      return Promise.resolve(Response.json(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA)));
+    }));
 
     const first = store.getState().resumePrReview();
+    await vi.waitFor(() => expect(releaseProjection).toHaveLength(1));
     const second = store.getState().resumePrReview();
-    await vi.waitFor(() => expect(store.getState().prReviewStatus).toBe("preparing"));
-    expect(projectionReads).toBe(2);
+    await vi.waitFor(() => {
+      expect(releaseProjection).toHaveLength(2);
+      expect(projectionSignals[0]?.aborted).toBe(true);
+      expect(metaSignals[0]?.aborted).toBe(true);
+    });
 
-    releaseProjection(HEAD_ARTIFACT);
+    // Subsequent visible-projection hydration is allowed to complete normally after the winning
+    // paired HEAD read resolves; only the first generation remains aborted.
+    deferProjection = false;
+    releaseProjection[1]!(HEAD_ARTIFACT);
     await Promise.all([first, second]);
 
-    expect(projectionReads).toBe(2);
+    expect(projectionSignals[1]?.aborted).toBe(false);
+    expect(metaSignals[1]?.aborted).toBe(false);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().prReviewStatus).toBe("idle");
+  });
+
+  it("does not let a failed older resume restore over a newer successful resume", async () => {
+    const budget = new RecentAllocationBudget({
+      maxRecentEntries: 3,
+      maxRecentBytes: 48 * 1024 * 1024,
+    });
+    let metaCallCount = 0;
+    let olderSignal: AbortSignal | undefined;
+    let releaseOlderMeta!: (response: Response) => void;
+    const olderMetadata = new Promise<Response>((resolve) => { releaseOlderMeta = resolve; });
+    const fetchMock = realProjectionFetch((input, init) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepare")) {
+        return ndjsonResponse(prepareLines("pr-head-1", INITIAL_HEAD_SHA));
+      }
+      if (url.includes("/api/meta?id=pr-head-1")) {
+        metaCallCount += 1;
+        if (metaCallCount === 2) {
+          olderSignal = init?.signal ?? undefined;
+          return olderMetadata; // Intentionally ignores abort like a slow browser transport.
+        }
+        return Response.json(preparedSyntheticMeta("pr-head-1", INITIAL_HEAD_SHA));
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    const {
+      projectionDataSource,
+      pendingAllocationBudget,
+      dependencies,
+    } = await realProjectionDependencies(fetchMock, budget);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ ...PREPARE_DEPS, ...dependencies });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    await store.getState().closeMinimalGraph();
+
+    const first = store.getState().resumePrReview();
+    await vi.waitFor(() => expect(metaCallCount).toBe(2));
+
+    await store.getState().resumePrReview();
+    const winner = store.getState();
+    expect(winner).toMatchObject({
+      activeProjectionGraphId: "pr-head-1",
+      prPreparedArtifactCurrent: true,
+      prReviewStatus: "idle",
+      prPrepareError: null,
+    });
+    expect(winner.minimalSeedIds).toEqual([FILE_ID]);
+    const winningProjectionKey = winner.activeProjectionKey;
+    expect(projectionDataSource.activeKey).toBe(winningProjectionKey);
+
+    expect(olderSignal?.aborted).toBe(true);
+    releaseOlderMeta(Response.json(
+      preparedSyntheticMeta("pr-head-1", "f".repeat(40)),
+    ));
+    await first;
+
+    expect(store.getState()).toMatchObject({
+      activeProjectionKey: winningProjectionKey,
+      activeProjectionGraphId: "pr-head-1",
+      prPreparedArtifactCurrent: true,
+      prReviewStatus: "idle",
+      prPrepareError: null,
+    });
+    expect(projectionDataSource.activeKey).toBe(winningProjectionKey);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(pendingAllocationBudget.inactiveEntryCount).toBe(0);
+    expect(budget.inactiveEntryCount).toBe(1); // Only the restored boot projection remains recent.
+  });
+
+  it("aborts an in-flight resume when review preparation is canceled", async () => {
+    let deferProjection = false;
+    let resumeSignal: AbortSignal | undefined;
+    const { store } = await swappedReviewStore(projectionOverrides((_graphId, signal) => {
+      if (!deferProjection) return HEAD_ARTIFACT;
+      resumeSignal = signal;
+      return new Promise<GraphArtifact>(() => {});
+    }));
+    store.getState().closeMinimalGraph();
+    testProjectionSources.get(store)?.clearCache();
+    deferProjection = true;
+
+    const resume = store.getState().resumePrReview();
+    await vi.waitFor(() => expect(resumeSignal).toBeInstanceOf(AbortSignal));
+    store.getState().cancelPrReviewPreparation();
+    await resume;
+
+    expect(resumeSignal?.aborted).toBe(true);
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareError).toBeNull();
+  });
+
+  it("aborts an in-flight resume before committing a different lens", async () => {
+    let deferProjection = false;
+    let resumeSignal: AbortSignal | undefined;
+    const { store } = await swappedReviewStore(projectionOverrides((_graphId, signal) => {
+      if (!deferProjection) return HEAD_ARTIFACT;
+      resumeSignal = signal;
+      return new Promise<GraphArtifact>(() => {});
+    }));
+    store.getState().closeMinimalGraph();
+    testProjectionSources.get(store)?.clearCache();
+    deferProjection = true;
+
+    const resume = store.getState().resumePrReview();
+    await vi.waitFor(() => expect(resumeSignal).toBeInstanceOf(AbortSignal));
+    store.getState().setViewMode("logic");
+    await resume;
+
+    expect(resumeSignal?.aborted).toBe(true);
+    expect(store.getState().viewMode).toBe("logic");
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
     expect(store.getState().prReviewStatus).toBe("idle");
   });
 

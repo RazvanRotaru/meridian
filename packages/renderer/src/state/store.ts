@@ -14,7 +14,6 @@ import {
   changedLineStatsFromExtensions,
   computeAffectedNodes,
   computeChangeGroups,
-  computeCoverage,
 } from "@meridian/core";
 import type {
   AffectedNode,
@@ -22,7 +21,6 @@ import type {
   ChangedLineKind,
   ChangedLineSpan,
   ChangeGroupsResult,
-  CoverageReport,
   FlowSourceAnchor,
   FlowPath,
   FlowStep,
@@ -42,14 +40,25 @@ import type {
   TraceBundle,
   TraceGraphRef,
 } from "@meridian/core";
-import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
-import { canonicalProjectionKey } from "../graph/graphProjectionClient";
+import {
+  applyChangedIds,
+  applyChangedStatus,
+  buildGraphIndex,
+  graphIndexMetadataWithoutPresentationNodes,
+  type GraphIndex,
+} from "../graph/graphIndex";
+import {
+  canonicalProjectionKey,
+  canonicalReviewProjectionKey,
+  OVERVIEW_PROJECTION_REQUEST,
+} from "../graph/graphProjectionClient";
 import type {
   GraphProjectionDataSource,
   GraphProjectionEndpoints,
   GraphProjectionRequest,
   LoadedGraphProjection,
-  LoadedReviewProjection,
+  StagedGraphProjection,
+  StagedReviewProjection,
 } from "../graph/graphProjectionClient";
 import {
   localSymbolSearch,
@@ -63,12 +72,24 @@ import { rollupSeeds } from "../derive/seedRollup";
 import { minimalGraphConnectorIds } from "../derive/minimalGraphConnectors";
 import { filesInScope } from "../derive/filesInScope";
 import { deriveRequestGraphOverlay } from "../derive/requestGraphOverlay";
-import { traceGraphRefMismatches } from "../derive/requestTimelineModel";
+import {
+  traceGraphRevisionIdentity,
+  traceGraphRefMismatches,
+} from "../derive/requestTimelineModel";
+import {
+  requestFlowProjectionIds,
+  requestFlowProjectionPassBudget,
+} from "../derive/requestFlowProjection";
 import {
   deriveMinimalCodebaseContext,
   type MinimalCodebaseContext,
 } from "../derive/minimalCodebaseContext";
 import type { LogicNodeData } from "../derive/logicGraph";
+import {
+  buildRendererReachabilityReport,
+  type RendererReachabilityReport,
+  withReachabilityTestIds,
+} from "../derive/reachabilityFacts";
 import type {
   TelemetryProvider,
   TelemetrySourceDescriptor,
@@ -99,7 +120,7 @@ import { decorateGhostInspectionTree } from "../derive/ghostInspection";
 import { moduleChildContainerIds } from "../derive/moduleChildContainers";
 import { serviceScopeFor, widenServiceScope, type ServiceScope } from "./serviceScope";
 import { expandServiceSyntheticAnchors, leadIdOf } from "../derive/serviceClusterEdges";
-import { clusteringFor } from "../derive/serviceClusteringCache";
+import { clusteringFor, clusteringForIfAvailable } from "../derive/serviceClusteringCache";
 import { deriveServiceDomains, isServiceDomainId, serviceDomainById } from "../derive/serviceDomains";
 import {
   DEFAULT_SERVICE_GROUPING_LABEL_MODE,
@@ -166,14 +187,18 @@ import {
   reviewSourceChangeStatus,
 } from "./reviewNodeStatus";
 import {
-  changedFileProjectionPaths,
   fetchPreparedReviewHandoff,
+  preparedReviewFileCursor,
+  remapPreparedReviewFilePath,
   streamPrPreparation,
+  totalPrPrepareElapsedMs,
   type PreparedGraphDescriptor,
   type PreparedChangedFile,
   type PreparedReviewHandoff,
+  type PrPrepareRequest,
   type PrPrepareStage,
 } from "./prPreparation";
+import { assertPreparedReviewProjectionFacts } from "./preparedReviewProjection";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   discardReviewLineComposer as discardReviewLineComposerState,
@@ -189,6 +214,7 @@ import {
   resetChangedIdsToArtifact,
   restorePrReviewBaseline,
   swapToPreparedReviewProjection,
+  type PreparedSyntheticCapability,
   type PrReviewBaseline,
 } from "./prReviewSession";
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
@@ -222,9 +248,11 @@ import {
   type RelationVisibilityOverrides,
 } from "../graph/relationVisibility";
 import {
+  boundMinimalGraphHistory,
   captureMinimalGraphScene,
   captureMinimalGraphHistory,
   emptyMinimalGraphScene,
+  minimalGraphResidentBytes,
   minimalGraphSceneResidentBytes,
   restoreMinimalGraphHistory,
   restoreMinimalGraphScene,
@@ -237,6 +265,17 @@ import {
   RecentViewProjectionCache,
   type RecentAllocationBudget,
 } from "./recentViewProjectionCache";
+import { BoundedAsyncValueCache } from "./boundedAsyncValueCache";
+import {
+  SOURCE_TEXT_TRANSIENT_BYTES,
+  fetchSourceText,
+  type SourceTextPayload,
+} from "./sourceTextClient";
+import {
+  LatestOnlyLayoutCoordinator,
+  type LayoutWorkOwner,
+} from "./latestOnlyLayoutCoordinator";
+import { SubscriberAwareAsyncFlight } from "./subscriberAwareAsyncFlight";
 
 /**
  * The "All" setting for the related-flows depth dial: a depth larger than any real call-graph chain.
@@ -338,6 +377,8 @@ export interface CodeView {
 export interface CodePreviewOptions {
   /** Exact control statement inside the canonical enclosing callable. */
   focus?: FlowSourceAnchor;
+  /** The mounted preview owns this subscription; hiding/unmounting aborts it immediately. */
+  signal?: AbortSignal;
 }
 
 /** A review container opened as its own exact-file graph. Navigation history is owned by the
@@ -349,7 +390,29 @@ export interface ReviewFocusedSubgraph {
   moduleIds: string[];
 }
 
+/** One authority for deciding which structural module surface is mounted. Review data alone is not
+ * ownership: an artifact-carried review initially decorates the ordinary source Map, while a live
+ * prepared review owns an explicit source-only overview until a file projection is selected. */
+export type ModuleGraphSurfaceOwner = "source" | "extracted" | "prepared-review-overview";
+
+export interface PreparedFileProjectionPending {
+  /** Monotonic request identity exposed only for deterministic UI/test correlation. */
+  token: number;
+  path: string;
+  cursor: string;
+}
+
+export interface PreparedFileProjectionError {
+  path: string;
+  message: string;
+}
+
 export interface BlueprintState {
+  /** The one graph presentation mounted by the renderer. Ordinary views share the transport's
+   * active artifact/index. A review with deletions owns one current-only composite/index here while
+   * the transport owns the pure HEAD + merge-base pair: at most the pair's combined node count,
+   * HEAD's edge count, and one derived index. This presentation is not a navigation-cache entry;
+   * replacement or parking swaps both fields and clears every review-derived graph reference. */
   artifact: GraphArtifact;
   index: GraphIndex;
   /** Identity only; decoded projection bodies live in the transport's bounded active/recent cache. */
@@ -367,7 +430,7 @@ export interface BlueprintState {
   /** Coverage lens: imported runtime counters when present, otherwise estimated static reachability. */
   coverageMode: boolean;
   /** Computed lazily for the active projection and invalidated whenever projection identity changes. */
-  coverage: CoverageReport | null;
+  coverage: RendererReachabilityReport | null;
   /** Whether request telemetry controls, runtime paint, and request-only surfaces are visible.
    * Loaded data stays resident when this presentation mode is off so re-entry is instant. */
   telemetryMode: boolean;
@@ -553,9 +616,10 @@ export interface BlueprintState {
   serviceGroupingTargetSize: ServiceGroupingTargetSize;
   /** How many ranked semantic concepts name each inferred Service parent. */
   serviceGroupingLabelMode: ServiceGroupingLabelMode;
-  /** The ORIGIN of the OPEN minimal-graph overlay: the raw selection ids (any kind), verbatim; empty
-   * == the overlay is closed and the Module-map level canvas shows. Immutable per build — it is the
-   * seed-tier baseline and the Reset target. URL-synced as `mgraph`. */
+  /** The ORIGIN membership of an extracted graph: the raw selection ids (any kind), verbatim.
+   * Empty closes an ordinary extraction, but an active review may intentionally own the surface
+   * with no graph members while its file projection remains unselected. Immutable per build — it
+   * is the seed-tier baseline and the Reset target. URL-synced as `mgraph`. */
   minimalSeedIds: string[];
   /** The mutable working set of MEMBERS shown in the overlay (starts = origin). Promoting a ghost adds
    * to it; removing a member drops from it. Ghosts are the members' on-map 1-hop ring, derived (not
@@ -784,8 +848,15 @@ export interface BlueprintState {
   prPreparedHead: PreparedGraphDescriptor | null;
   /** Direct immutable endpoints for the prepared merge base; retained across a soft close. */
   prPreparedMergeBase: PreparedGraphDescriptor | null;
-  /** Canonical changed paths routing both bounded review slices. */
-  prPreparedFilePaths: string[];
+  /** Opaque canonical changed-file coordinate currently projected on both comparison sides. */
+  prPreparedReviewCursor: string | null;
+  /** The latest requested file coordinate, separate from the committed cursor until both sides have
+   * staged and passed the same-session compare-and-swap guard. */
+  prPreparedFileProjectionPending: PreparedFileProjectionPending | null;
+  /** Retryable per-file projection failure. It never changes the committed artifact/cursor. */
+  prPreparedFileProjectionError: PreparedFileProjectionError | null;
+  /** Canonical prepare inventory whose stable indexes define every review cursor. */
+  prPreparedChangedFiles: PreparedChangedFile[];
   /** The head commit the server extracted for the prepared projection (the "done" payload's
    * provenance); shown in the review header. */
   prPreparedHeadSha: string | null;
@@ -938,7 +1009,7 @@ export interface BlueprintState {
   toggleReviewTick(flowId: string): void;
   resetReviewTicks(): void;
   /** Reveal a changed file, focusing its owning rollup first, then select/light/center its frame. */
-  focusReviewFile(path: string): void;
+  focusReviewFile(path: string): Promise<void>;
   toggleReviewUnitTick(nodeId: string): void;
   toggleReviewUnitsViewed(nodeIds: readonly string[]): void;
   toggleReviewFileViewed(path: string): void;
@@ -1018,6 +1089,9 @@ export interface BlueprintState {
   /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
   refreshPrReview(): Promise<void>;
   reviewPrInGraph(options?: ReviewEntryOptions): Promise<void>;
+  /** Prepare the selected PR at a different extraction root and return the server-validated
+   * immutable review URL. This never generates or installs an intermediate base graph. */
+  preparePrReviewNavigation(subdir: string, signal?: AbortSignal): Promise<string>;
   /** Consume the immutable handoff injected for a validated shared review URL. Returns false only
    * when this boot has no handoff; any present-but-invalid handoff fails closed without POSTing. */
   restorePreparedPrReview(number: number, options?: ReviewEntryOptions): Promise<boolean>;
@@ -1025,10 +1099,10 @@ export interface BlueprintState {
    * projections, and run the review in head coordinates. On entry failure the PRs page stays put;
    * on refresh failure the prior immutable pair remains active. */
   prepareHeadGraph(options?: ReviewEntryOptions): Promise<void>;
-  /** Re-open a review whose overlay was soft-closed (explicit Close/lens switch) WITHOUT re-running
+  /** Re-open a review whose surface was soft-closed (explicit Close/lens switch) WITHOUT re-running
    * the expensive head prepare: reactivate the already-prepared projection if there was one,
-   * repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
-   * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
+   * repaint the kept amber, and rebuild the current review projection. Guarded on retained review
+   * metadata with no active `review` payload; seed ids describe graph membership, not ownership. */
   resumePrReview(options?: ReviewEntryOptions): Promise<void>;
   /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
   cancelPrReviewPreparation(): void;
@@ -1046,8 +1120,7 @@ export interface StoreDependencies {
   recentAllocationBudget?: RecentAllocationBudget;
   /** The overview projection already activated during boot (avoids retaining a second pair). */
   initialProjection?: LoadedGraphProjection | null;
-  /** Exact endpoints that produced initialProjection. Required by server boot; tests/local
-   * embedders may omit it and use the conventional graph-id routes. */
+  /** Exact endpoints that produced initialProjection. Null only when no projection is active. */
   projectionEndpoints?: GraphProjectionEndpoints | null;
   provider: TelemetryProvider | null;
   telemetrySources?: TelemetrySourceRegistration[];
@@ -1077,10 +1150,20 @@ export interface StoreDependencies {
 
 export type BlueprintStore = StoreApi<BlueprintState>;
 
-/** Metadata-only return coordinate for the ordinary extracted-review projection while its
- * codebase-context sibling is active. Decoded artifacts remain owned exclusively by the bounded
- * projection transport cache. */
-interface MinimalCodebaseProjectionBaseline {
+/** Metadata-only return coordinate for an ordinary projected graph while its broader codebase
+ * sibling is active. Decoded artifacts remain owned exclusively by the bounded transport cache. */
+interface MinimalCodebaseSingleProjectionBaseline {
+  kind: "single";
+  graphId: string;
+  key: string;
+  request: GraphProjectionRequest;
+  endpoints: GraphProjectionEndpoints;
+}
+
+/** A prepared review is one atomic two-revision allocation, so its return coordinate carries both
+ * immutable descriptors and promotes them together after cache eviction. */
+interface MinimalCodebaseReviewProjectionBaseline {
+  kind: "review";
   reviewNumber: number;
   headGraphId: string;
   mergeBaseGraphId: string;
@@ -1089,6 +1172,44 @@ interface MinimalCodebaseProjectionBaseline {
   mergeBaseRequest: GraphProjectionRequest;
   headEndpoints: GraphProjectionEndpoints;
   mergeBaseEndpoints: GraphProjectionEndpoints;
+}
+
+type MinimalCodebaseProjectionBaseline =
+  | MinimalCodebaseSingleProjectionBaseline
+  | MinimalCodebaseReviewProjectionBaseline;
+
+type ProjectionLayoutOwner = LayoutWorkOwner;
+
+type ModuleLensMode = Exclude<ViewMode, "logic" | "prs">;
+
+/** A cross-lens carry is resolved only after the destination projection is active. The staged raw
+ * anchors are real immutable ids and therefore safe transport selectors; no outgoing view is asked
+ * to manufacture another view's topology. */
+interface PendingModuleLensTransition {
+  mode: ModuleLensMode;
+  anchors: string[];
+}
+
+/** One store installation may feed multiple layouts. Consumers of the exact same immutable
+ * projection coordinate share both the read and the atomic promotion; only a different coordinate
+ * is navigation and therefore allowed to supersede it. */
+interface ProjectionHydrationFlight {
+  key: string;
+  shared: SubscriberAwareAsyncFlight<ProjectionLayoutOwner, boolean>;
+}
+
+interface PreparedReviewProjectionCoordinate {
+  key: string;
+  head: {
+    graphId: string;
+    request: GraphProjectionRequest;
+    endpoints: GraphProjectionEndpoints;
+  };
+  mergeBase: {
+    graphId: string;
+    request: GraphProjectionRequest;
+    endpoints: GraphProjectionEndpoints;
+  };
 }
 
 /** Projection coordinates are metadata only; decoded pairs remain in the shared bounded cache. */
@@ -1110,7 +1231,6 @@ export function projectionRequestForState(state: Pick<
   | "moduleGhostInspection"
   | "minimalMemberIds"
   | "minimalProjectionExtraIds"
-  | "moduleRadius"
   | "logicRoot"
   | "logicStack"
   | "logicFocus"
@@ -1120,32 +1240,55 @@ export function projectionRequestForState(state: Pick<
   | "compRoot"
   | "compSelectedId"
   | "flowSelection"
+  | "flowPaneOrigin"
+  | "requestFlowExpansionOverrides"
+  | "requestFlowTraceId"
+  | "selectedTraceId"
+  | "requestTraces"
+  | "syntheticExecution"
+  | "artifact"
   | "showTests"
+  | "coverageMode"
   | "prReviewed"
   | "prPreparedArtifactCurrent"
-  | "prPreparedFilePaths"
+  | "prPreparedReviewCursor"
   | "prFiles"
+  | "reviewBaseNodeIds"
 >): GraphProjectionRequest {
   // A parked review keeps its lightweight payload/chip but is back on the ordinary baseline graph.
   // Only an actually-active prepared artifact may request the semantic review projection; deriving
   // it from prReviewed would silently reload HEAD again during baseline soft-close/navigation.
   const reviewView = state.prPreparedArtifactCurrent;
-  const view = reviewView
+  const view: GraphProjectionRequest["view"] = reviewView
     ? "review" as const
     : state.viewMode === "prs"
       ? "modules" as const
-      : state.viewMode;
+      : state.viewMode === "call"
+        ? "service" as const
+        : state.viewMode;
   const logic = state.viewMode === "logic";
-  const focusIds = compactIds([
+  // One file cursor already publishes that file's complete semantic subtree on both revisions.
+  // Its disclosure set is therefore renderer presentation, not another transport coordinate. Only
+  // explicit additions/flow work widen the pair; this prevents every file click from fetching the
+  // same pair twice merely because the review auto-opens its changed declarations.
+  const reviewCursorOwnsExpandedSubtree = reviewView
+    && state.prPreparedReviewCursor !== null
+    && state.minimalProjectionExtraIds.size === 0
+    && state.flowSelection === null
+    && state.flowPaneOrigin === null;
+  const headIds = (ids: string[]): string[] => reviewView
+    ? ids.filter((id) => !state.reviewBaseNodeIds.has(id))
+    : ids;
+  const focusIds = headIds(realProjectionIds([
     state.moduleFocus,
     state.compRoot,
     state.logicRoot,
     ...state.logicStack,
     ...state.logicFocus.map((focus) => focus.id),
-  ]);
+  ]));
   // Large review membership is intentionally absent: `view: review` asks the server for its
   // precomputed semantic rollup. Only direct reader anchors join the current slice.
-  const extraIds = compactIds([
+  const extraIds = headIds(realProjectionIds([
     ...state.moduleSelected,
     ...state.mapExtra,
     ...(state.moduleGhostInspection?.visitedIds ?? []),
@@ -1153,29 +1296,106 @@ export function projectionRequestForState(state: Pick<
     state.logicSelected,
     state.compSelectedId,
     state.flowSelection?.rootId ?? null,
-  ]);
+  ]));
+  const expanded = logic ? state.expandedLogic : state.moduleExpanded;
   return {
+    ...OVERVIEW_PROJECTION_REQUEST,
     view,
-    filePaths: reviewView
-      ? state.prPreparedFilePaths.length > 0
-        ? state.prPreparedFilePaths
-        : compactIds((state.prFiles ?? []).flatMap((file) => [file.path, file.previousPath]))
-      : [],
+    filePaths: [],
+    reviewCursor: reviewView ? state.prPreparedReviewCursor : null,
     focusIds,
-    expandedIds: logic ? [...state.expandedLogic] : [...state.moduleExpanded],
+    // Synthetic Service frames have their own selector. Keeping them out of the graph-id fields
+    // makes the network contract honest: every generic id is an actual immutable graph identity.
+    expandedIds: reviewCursorOwnsExpandedSubtree
+      ? []
+      : headIds(realProjectionIds(expanded, false)),
     extraIds,
+    causalIds: headIds(projectionCausalIds(state)),
+    serviceExpandedLeadIds: headIds(serviceExpandedLeadIds(expanded)),
     depth: Math.min(4, logic ? Math.max(1, state.logicInlineDepth + 1) : 1),
-    radius: Math.min(3, Math.max(0, state.moduleRadius)),
     includeTests: state.showTests,
+    includeReachability: state.coverageMode,
   };
 }
 
-function compactIds(ids: Iterable<string | null | undefined>): string[] {
-  const compact: string[] = [];
+/** Translate renderer-only Service frames at the transport boundary. Domain wrappers never cross
+ * that boundary: their immutable topology is response metadata, while an individual `svc:` frame
+ * names one real lead unit. */
+function realProjectionIds(
+  ids: Iterable<string | null | undefined>,
+  includeServiceLeads = true,
+): string[] {
+  const real = new Set<string>();
   for (const id of ids) {
-    if (typeof id === "string" && id.length > 0) compact.push(id);
+    if (typeof id !== "string" || id.length === 0 || isServiceDomainId(id)) continue;
+    const leadId = leadIdOf(id);
+    if (leadId !== null) {
+      if (includeServiceLeads && leadId.length > 0) real.add(leadId);
+      continue;
+    }
+    real.add(id);
   }
-  return compact;
+  return [...real];
+}
+
+function serviceExpandedLeadIds(ids: Iterable<string | null | undefined>): string[] {
+  const leads = new Set<string>();
+  for (const id of ids) {
+    if (typeof id !== "string") continue;
+    const leadId = leadIdOf(id);
+    if (leadId !== null && leadId.length > 0) leads.add(leadId);
+  }
+  return [...leads];
+}
+
+/** Exact runtime joins are an explicit bounded projection selector, never an inferred edge radius. */
+const NO_REQUEST_FLOW_EXPANSIONS: ReadonlySet<string> = new Set<string>();
+
+function projectionCausalIds(state: Pick<
+  BlueprintState,
+  | "flowPaneOrigin"
+  | "requestFlowExpansionOverrides"
+  | "requestFlowTraceId"
+  | "selectedTraceId"
+  | "requestTraces"
+  | "syntheticExecution"
+  | "artifact"
+>): string[] {
+  const traceIds = new Set<string>();
+  if (state.selectedTraceId !== null) traceIds.add(state.selectedTraceId);
+  if (state.flowPaneOrigin === "request" && state.requestFlowTraceId !== null) {
+    traceIds.add(state.requestFlowTraceId);
+  }
+  const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+  const nodeIds: string[] = [];
+  for (const trace of state.requestTraces) {
+    if (!traceIds.has(trace.traceId)) continue;
+    nodeIds.push(...requestFlowProjectionIds(
+      trace,
+      flows,
+      state.flowPaneOrigin === "request" && state.requestFlowTraceId === trace.traceId
+        ? state.requestFlowExpansionOverrides
+        : NO_REQUEST_FLOW_EXPANSIONS,
+    ));
+  }
+  if (state.flowPaneOrigin === "synthetic" && state.syntheticExecution !== null) {
+    nodeIds.push(...requestFlowProjectionIds(
+      state.syntheticExecution.trace,
+      flows,
+      state.requestFlowExpansionOverrides,
+    ));
+  }
+  return realProjectionIds(nodeIds).slice(0, 2_000);
+}
+
+/** Projection responses carry whole-revision claims and paint facts only for resident nodes. Test
+ * identities come from that same resident index, so attaching them never retains another graph. */
+function reachabilityForProjection(
+  projection: LoadedGraphProjection,
+): RendererReachabilityReport | null {
+  return projection.reachability === null
+    ? null
+    : withReachabilityTestIds(projection.reachability, projection.index.testIds);
 }
 
 /** The `/api/source` base for the CURRENT graph: after a head projection swap the server serves the
@@ -1189,6 +1409,15 @@ function activeSourceUrl(state: BlueprintState): string | null {
   return state.prPreparedHead.sourceUrl;
 }
 
+/** Retained direct-preparation descriptors keep identifying a prepared review while its immutable
+ * HEAD projection is softly parked. Treat either descriptor as ownership so a malformed partial
+ * coordinate fails closed instead of silently falling back to the mutable live-PR source route. */
+function hasPreparedReviewCoordinate(
+  state: Pick<BlueprintState, "prPreparedHead" | "prPreparedMergeBase">,
+): boolean {
+  return state.prPreparedHead !== null || state.prPreparedMergeBase !== null;
+}
+
 /** The active capability URL is already immutable and graph-specific: boot injects the baseline
  * URL, while a prepared HEAD swap installs the descriptor's validated meta capability atomically. */
 function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
@@ -1196,36 +1425,68 @@ function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
 }
 
 function graphProjectionEndpoints(descriptor: PreparedGraphDescriptor): GraphProjectionEndpoints {
-  return { manifestUrl: descriptor.manifestUrl, projectionUrl: descriptor.projectionUrl };
-}
-
-function conventionalProjectionEndpoints(graphId: string): GraphProjectionEndpoints {
-  const id = encodeURIComponent(graphId);
   return {
-    manifestUrl: `/api/graph/manifest?id=${id}`,
-    projectionUrl: `/api/graph/projection?id=${id}`,
+    graphId: descriptor.graphId,
+    manifestUrl: descriptor.manifestUrl,
+    projectionUrl: descriptor.projectionUrl,
+    searchUrl: descriptor.searchUrl,
   };
 }
 
-async function activatePreparedReviewProjection(
+async function stagePreparedReviewProjection(
   source: GraphProjectionDataSource,
   state: BlueprintState,
   signal?: AbortSignal,
-): Promise<LoadedReviewProjection> {
+): Promise<StagedReviewProjection> {
+  const coordinate = preparedReviewProjectionCoordinate(state);
+  const staged = source.stageCachedReview(coordinate.key)
+    ?? await source.stageReviewPair({
+      head: { request: coordinate.head.request, endpoints: coordinate.head.endpoints },
+      mergeBase: { request: coordinate.mergeBase.request, endpoints: coordinate.mergeBase.endpoints },
+      signal,
+    });
+  const projection = staged.projection;
+  if (projection.head.graphId !== coordinate.head.endpoints.graphId
+    || projection.mergeBase.graphId !== coordinate.mergeBase.endpoints.graphId) {
+    staged.release();
+    throw new Error("prepared review projection identity does not match its descriptor capability");
+  }
+  assertPreparedReviewProjectionFacts(
+    projection,
+    state.prPreparedChangedFiles,
+    state.prPreparedReviewCursor,
+  );
+  return staged;
+}
+
+function preparedReviewProjectionCoordinate(
+  state: BlueprintState,
+): PreparedReviewProjectionCoordinate {
   if (state.prPreparedHead === null || state.prPreparedMergeBase === null) {
     throw new Error("prepared PR review requires both HEAD and merge-base descriptors");
   }
   const headRequest: GraphProjectionRequest = {
     ...projectionRequestForState(state),
     view: "review",
-    filePaths: state.prPreparedFilePaths,
+    filePaths: [],
+    reviewCursor: state.prPreparedReviewCursor,
   };
   const mergeBaseRequest = mergeBaseProjectionRequest(headRequest);
-  return source.activateReviewPair({
-    head: { request: headRequest, endpoints: graphProjectionEndpoints(state.prPreparedHead) },
-    mergeBase: { request: mergeBaseRequest, endpoints: graphProjectionEndpoints(state.prPreparedMergeBase) },
-    signal,
-  });
+  const headKey = canonicalProjectionKey(state.prPreparedHead.graphId, headRequest);
+  const mergeBaseKey = canonicalProjectionKey(state.prPreparedMergeBase.graphId, mergeBaseRequest);
+  return {
+    key: canonicalReviewProjectionKey(headKey, mergeBaseKey),
+    head: {
+      graphId: state.prPreparedHead.graphId,
+      request: headRequest,
+      endpoints: graphProjectionEndpoints(state.prPreparedHead),
+    },
+    mergeBase: {
+      graphId: state.prPreparedMergeBase.graphId,
+      request: mergeBaseRequest,
+      endpoints: graphProjectionEndpoints(state.prPreparedMergeBase),
+    },
+  };
 }
 
 function mergeBaseProjectionRequest(headRequest: GraphProjectionRequest): GraphProjectionRequest {
@@ -1236,8 +1497,10 @@ function mergeBaseProjectionRequest(headRequest: GraphProjectionRequest): GraphP
     focusIds: [],
     expandedIds: [],
     extraIds: [],
+    causalIds: [],
+    serviceExpandedLeadIds: [],
     depth: 1,
-    radius: 0,
+    includeReachability: false,
   };
 }
 
@@ -1248,6 +1511,8 @@ function snapshotProjectionRequest(request: GraphProjectionRequest): GraphProjec
     focusIds: [...request.focusIds],
     expandedIds: [...request.expandedIds],
     extraIds: [...request.extraIds],
+    causalIds: [...request.causalIds],
+    serviceExpandedLeadIds: [...request.serviceExpandedLeadIds],
   };
 }
 
@@ -1258,6 +1523,25 @@ function projectionWithContextGates(
   return {
     ...snapshotProjectionRequest(request),
     expandedIds: [...new Set([...request.expandedIds, ...expansionIds])].sort(),
+  };
+}
+
+/** A two-sided presentation can contain merge-base tombstone ids. Strip them from every HEAD-only
+ * selector before widening a request; filtering only the new gates would let an older baseline
+ * reintroduce the same invalid identity during a later Codebase expansion. */
+function projectionWithoutIds(
+  request: GraphProjectionRequest,
+  excludedIds: ReadonlySet<string>,
+): GraphProjectionRequest {
+  if (excludedIds.size === 0) return snapshotProjectionRequest(request);
+  const keep = (id: string) => !excludedIds.has(id);
+  return {
+    ...snapshotProjectionRequest(request),
+    focusIds: request.focusIds.filter(keep),
+    expandedIds: request.expandedIds.filter(keep),
+    extraIds: request.extraIds.filter(keep),
+    causalIds: request.causalIds.filter(keep),
+    serviceExpandedLeadIds: request.serviceExpandedLeadIds.filter(keep),
   };
 }
 
@@ -1327,14 +1611,18 @@ interface CodeLoadRequest {
   sourceSide: "head" | "base";
 }
 
-interface CodePayload {
-  code: string;
-  truncated: boolean;
-  startLine?: number;
-  lineCount?: number;
-}
+type CodePayload = SourceTextPayload;
 
-type CodePayloadCache = Map<string, Promise<CodePayload>>;
+type CodePayloadCache = BoundedAsyncValueCache<string, CodePayload>;
+
+const CODE_PAYLOAD_CACHE_LIMITS = {
+  maxEntries: 32,
+  maxResidentBytes: 8 * 1024 * 1024,
+  maxFlights: 8,
+  maxActiveFlights: 2,
+  maxActiveBytes: SOURCE_TEXT_TRANSIENT_BYTES * 2,
+  maxSubscribers: 32,
+} as const;
 
 /** Generous surrounding source for edge evidence: enough to understand the declaration/control
  * flow without asking the source server for only the proving line or risking its 2,000-line cap. */
@@ -1383,12 +1671,12 @@ function displayedEvidenceSpan(
   const end = Math.max(start, context.site.endLine ?? start);
   const diff = state.reviewDiffByFile[context.site.file] ?? null;
   const removedAtHead = state.reviewFileDelta[context.site.file]?.status === "removed";
-  const readsPrHead = !state.prPreparedArtifactCurrent
+  const readsLiveReviewHead = !hasPreparedReviewCoordinate(state)
     && !removedAtHead
     && state.prReviewed !== null
     && prFileUrl !== null
     && state.reviewHeadRef !== null;
-  return readsPrHead && diff !== null ? headSpanFor(start, end, diff.edits) : { start, end };
+  return readsLiveReviewHead && diff !== null ? headSpanFor(start, end, diff.edits) : { start, end };
 }
 
 /** Resolve the source request once so click-to-open and hover-preview read identical code. */
@@ -1405,6 +1693,7 @@ function codeLoadRequest(
   // A prepared PR projection has its own retained source root. Every code surface reads the exact
   // immutable HEAD or merge-base descriptor; GitHub patch text is never used as a source fallback.
   const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
+  const preparedReviewCoordinate = hasPreparedReviewCoordinate(state);
   const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
   const readsComparisonBase = state.reviewBaseNodeIds.has(node.id) || removedAtHead;
   const resolvedSourceUrl = preparedArtifactCurrent
@@ -1415,17 +1704,17 @@ function codeLoadRequest(
   // The strict prepared path reads immutable descriptor source directly. The PR-head endpoint is
   // still required for the current main-side base-coordinate source contract (including files
   // without graph nodes); it is never an analysis or graph fallback.
-  const reviewDiff = !preparedArtifactCurrent && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
+  const reviewDiff = !preparedReviewCoordinate && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     ? state.reviewDiffByFile[node.location.file] ?? null
     : null;
-  const readsPrHead = !preparedArtifactCurrent && !readsComparisonBase
+  const readsLiveReviewHead = !preparedReviewCoordinate && !readsComparisonBase
     && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
     && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
-  if (!readsPrHead && !resolvedSourceUrl) {
+  if (!readsLiveReviewHead && !resolvedSourceUrl) {
     return null;
   }
   const wholeFile = opts?.wholeFile ?? false;
-  const headSpan = readsPrHead && !wholeFile
+  const headSpan = readsLiveReviewHead && !wholeFile
     ? reviewDiff === null
       ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
       : headSpanFor(node.location.startLine, node.location.endLine ?? node.location.startLine, reviewDiff.edits)
@@ -1441,7 +1730,7 @@ function codeLoadRequest(
     ? undefined
     : preparedArtifactCurrent && state.prReviewComparison !== null
       ? state.reviewBaseSpanByHeadId.get(node.id) ?? null
-      : readsPrHead
+      : readsLiveReviewHead
         ? { start: node.location.startLine, end: node.location.endLine ?? node.location.startLine }
         : undefined;
   const normalizedFile = node.location.file.replace(/\\/g, "/");
@@ -1453,10 +1742,12 @@ function codeLoadRequest(
   const artifactDiffLines = preparedArtifactCurrent || state.prReviewed === null
     ? changedDiffLinesFromExtensions(state.artifact.extensions)?.[normalizedFile]
     : undefined;
-  const reviewDiffLines = state.reviewDiffLinesByFile[node.location.file] ?? state.reviewDiffLinesByFile[normalizedFile];
+  const reviewDiffLines = preparedArtifactCurrent || readsLiveReviewHead
+    ? state.reviewDiffLinesByFile[node.location.file] ?? state.reviewDiffLinesByFile[normalizedFile]
+    : undefined;
   return {
     node,
-    url: readsPrHead
+    url: readsLiveReviewHead
       ? prFileHeadUrl(prFileUrl, node.location.file, state.reviewHeadRef!)
       : baseSourceUrl(resolvedSourceUrl!, node.location, wholeFile),
     baseLine,
@@ -1519,27 +1810,16 @@ function withCodePreviewFocus(
 async function fetchCodeView(
   request: CodeLoadRequest,
   mode: CodeView["mode"],
-  payloadCache?: CodePayloadCache,
-): Promise<CodeView> {
+  payloadCache: CodePayloadCache,
+  signal?: AbortSignal,
+): Promise<CodeView | null> {
   const key = request.url.toString();
-  let pending = payloadCache?.get(key);
-  if (!pending) {
-    pending = fetch(request.url, { credentials: "same-origin" }).then(async (response): Promise<CodePayload> => {
-      if (!response.ok) {
-        throw new Error(`source request failed with ${response.status}`);
-      }
-      const data = await response.json() as { code?: unknown; truncated?: unknown; startLine?: unknown; lineCount?: unknown };
-      return {
-        code: typeof data.code === "string" ? data.code : String(data.code ?? ""),
-        truncated: data.truncated === true,
-        ...(typeof data.startLine === "number" ? { startLine: data.startLine } : {}),
-        ...(isSourceLineCount(data.lineCount) ? { lineCount: data.lineCount } : {}),
-      };
-    });
-    payloadCache?.set(key, pending);
-  }
   try {
-    const data = await pending;
+    const data = await payloadCache.load(
+      key,
+      { estimatedBytes: SOURCE_TEXT_TRANSIENT_BYTES, signal },
+      (flightSignal) => fetchSourceText(globalThis.fetch.bind(globalThis), request.url, flightSignal),
+    );
     if (request.headSpan !== null) {
       return sliceHeadCodeView(
         request.node,
@@ -1554,8 +1834,8 @@ async function fetchCodeView(
         mode,
       );
     }
-    const baseLine = data.startLine ?? request.baseLine;
-    const lineCount = data.lineCount ?? data.code.split("\n").length;
+    const baseLine = data.startLine;
+    const lineCount = data.lineCount;
     const changedLineKinds = request.headKinds.length > 0
       ? headKindsWithin(request.headKinds, baseLine, baseLine + lineCount - 1)
       : undefined;
@@ -1576,11 +1856,9 @@ async function fetchCodeView(
         ? { changedLineKinds, changedLines: new Set(changedLineKinds.keys()) }
         : {}),
     };
-  } catch {
-    // Do not pin a transient source error into the shared cache; a later hover/click may retry it.
-    if (payloadCache?.get(key) === pending) {
-      payloadCache.delete(key);
-    }
+  } catch (error) {
+    if (signal?.aborted || (error instanceof DOMException && error.name === "AbortError")) return null;
+    // Failed payloads never enter the shared LRU; a later hover/click may retry them.
     return {
       node: request.node,
       code: null,
@@ -1635,10 +1913,6 @@ function sliceHeadCodeView(
       ? { changedLineKinds, changedLines: new Set(changedLineKinds.keys()) }
       : {}),
   };
-}
-
-function isSourceLineCount(value: unknown): value is number {
-  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
 /** Whether changing only this view's chrome keeps the active composer mounted on the exact same
@@ -1712,7 +1986,10 @@ interface ModuleSelectionRemovalPlan {
 /** Number of selected scopes on which the action-bar Remove control can operate. Kept as a
  * primitive selector so the action bar does not rerender on unrelated store updates. */
 export function removableModuleSelectionCount(state: BlueprintState): number {
-  if (state.minimalSeedIds.length > 0) {
+  if (moduleGraphSurfaceOwner(state) === "prepared-review-overview") {
+    return 0;
+  }
+  if (moduleGraphSurfaceOwner(state) === "extracted") {
     return minimalSelectionRemovalIds(state).length;
   }
   return moduleSelectionRemovalPlan(state).selectionIds.length;
@@ -1773,7 +2050,7 @@ function moduleSelectionRemovalPlan(state: BlueprintState): ModuleSelectionRemov
   const inspectionVisited = state.moduleGhostInspection?.visitedIds;
   if (
     state.moduleSelected.size === 0
-    || state.minimalSeedIds.length > 0
+    || moduleGraphSurfaceOwner(state) !== "source"
     || moduleSurfaceSpec(state.viewMode) === null
     || (state.mapExtra.size === 0 && (inspectionVisited?.size ?? 0) === 0)
   ) {
@@ -1881,12 +2158,27 @@ function sourceDescriptor(source: TelemetrySourceRegistration): TelemetrySourceD
 
 export function createBlueprintStore(dependencies: StoreDependencies): BlueprintStore {
   const projectionDataSource = dependencies.projectionDataSource ?? null;
-  const initialProjectionEndpoints = dependencies.projectionEndpoints
-    ?? (dependencies.initialProjection === null || dependencies.initialProjection === undefined
-      ? null
-      : conventionalProjectionEndpoints(dependencies.initialProjection.graphId));
+  const initialProjectionEndpoints = dependencies.projectionEndpoints ?? null;
+  if (dependencies.initialProjection != null && initialProjectionEndpoints === null) {
+    throw new Error("an initial graph projection requires its exact transport endpoints");
+  }
   let projectionRequestSeq = 0;
   let projectionRequestController: AbortController | null = null;
+  let projectionHydrationFlight: ProjectionHydrationFlight | null = null;
+  let preparedFileProjectionSeq = 0;
+  let preparedFileProjectionRequest: {
+    token: number;
+    path: string;
+    cursor: string;
+    committedCursor: string | null;
+    reviewNumber: number;
+    head: PreparedGraphDescriptor;
+    mergeBase: PreparedGraphDescriptor;
+    changedFiles: PreparedChangedFile[];
+    controller: AbortController;
+    promise: Promise<boolean>;
+  } | null = null;
+  let pendingModuleLensTransition: PendingModuleLensTransition | null = null;
   let minimalCodebaseProjectionBaseline: MinimalCodebaseProjectionBaseline | null = null;
   let minimalCodebaseProjectionActivitySeq = 0;
   const minimalSceneCache = new RecentViewProjectionCache<string, MinimalGraphSceneSnapshot>(
@@ -1894,6 +2186,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     dependencies.recentAllocationBudget,
   );
   const minimalProjectionFrames = new Map<string, MinimalGraphProjectionFrame>();
+  /** One combined history-entry + projection-frame charge for every semantic Back coordinate. */
+  const minimalNavigationResidentBytes = new Map<string, number>();
   let minimalSceneSequence = 0;
   let currentMinimalSceneKey: string | null = null;
   const sourceRegistrations = telemetryRegistrations(dependencies);
@@ -1908,9 +2202,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let logicLayoutSeq = 0;
   // And for the Module-map layout, so a newer focus change supersedes an older derivation.
   let moduleLayoutSeq = 0;
+  const cancelProjectionHydration = () => {
+    const flight = projectionHydrationFlight;
+    flight?.shared.abort(new DOMException("Projection hydration was superseded", "AbortError"));
+    projectionRequestController?.abort();
+    projectionRequestController = null;
+    projectionRequestSeq += 1;
+    if (projectionHydrationFlight === flight) projectionHydrationFlight = null;
+  };
   // Selected ids whose just-removed membership may leave no settled card. Any winning module
   // layout consumes this set, so a superseded Remove layout cannot strand a palette-only pick.
   const pendingModuleSelectionPrune = new Set<string>();
+  // Opening Extract from temporary ghost exploration hides the source scene. Defer rebuilding that
+  // source until Extract closes instead of retaining a second invisible structural ELK input.
+  let moduleSceneNeedsRestore = false;
   // And for the Module-map selection's minimal-graph overlay (its own surface, its own guard).
   let minimalLayoutSeq = 0;
   // The file import graph, built once per ARTIFACT on first module-map relayout and reused for
@@ -2022,12 +2327,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prPrepareCancellation: { sequence: number; resolve: () => void; controller: AbortController } | null = null;
   let preparedReviewRestoreController: AbortController | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
-  let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
+  let prReviewResumeGeneration = 0;
+  let prReviewResumeRequest: {
+    generation: number;
+    number: number;
+    controller: AbortController;
+  } | null = null;
+  const cancelPrReviewResumeRequest = (): void => {
+    prReviewResumeGeneration += 1;
+    const request = prReviewResumeRequest;
+    prReviewResumeRequest = null;
+    request?.controller.abort();
+  };
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
   let edgeEvidenceSeq = 0;
   // Every global source host shares this lane. Node id alone is insufficient because a node slice,
   // its whole file, and edge evidence can all request the same id with different coordinates.
   let codeViewSeq = 0;
+  let codeViewController: AbortController | null = null;
+  const cancelCodeViewRequest = () => {
+    codeViewController?.abort(new DOMException("Source view was superseded", "AbortError"));
+    codeViewController = null;
+  };
   // Dirty-composer navigation stays out of Zustand because callbacks are ephemeral behavior, not
   // renderable state. The composer itself carries the visible confirmation; Discard replays the
   // exact attempted source/lens/revision transition, while Keep editing clears this callback.
@@ -2035,34 +2356,77 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // PR-head reads return an entire file. Share that response across every changed node in the file;
   // fetchCodeView still slices and annotates a separate node-specific view for each caller.
-  const codePayloadCache: CodePayloadCache = new Map();
+  const codePayloadCache: CodePayloadCache = new BoundedAsyncValueCache(
+    CODE_PAYLOAD_CACHE_LIMITS,
+    // JavaScript strings may occupy two bytes per code unit. The small fixed allowance covers the
+    // payload record and numeric metadata without pretending to be an exact heap measurement.
+    (payload) => payload.code.length * 2 + 128,
+  );
+  // ELK does not currently stop once its bundled main-thread pass begins. Each surface therefore
+  // uses one serialized structural lane which can retain only the physical active pass and newest
+  // coordinate ACROSS Map, Logic, and Extract. Flow-pane layout has a second lane because it is a
+  // visibly concurrent split surface. Superseded coordinates never start beside the active pass.
+  const layoutCoordinator = new LatestOnlyLayoutCoordinator();
+  const invalidateLogicLayout = () => {
+    logicLayoutSeq += 1;
+    layoutCoordinator.cancel("logic");
+  };
   // Rebuilding/closing the minimal overlay must discard any of its ELK passes still in flight; the
   // extracted review body shares this invalidation with the in-store actions that own the counter.
   const invalidateMinimalLayout = () => {
     minimalLayoutSeq += 1;
+    layoutCoordinator.cancel("minimal");
   };
   const invalidateModuleLayout = () => {
     moduleLayoutSeq += 1;
+    layoutCoordinator.cancel("module");
+  };
+  const invalidateFlowPaneLayout = () => {
+    flowPaneLayoutSeq += 1;
+    layoutCoordinator.cancel("flow-pane");
+  };
+  const invalidateRequestFlowWork = () => {
+    invalidateFlowPaneLayout();
+    requestTargetRevealSeq += 1;
   };
   // A PR-review swap/restore replaces the WHOLE artifact/index, so every "built once per artifact"
   // cache must rebuild from the incoming index — and any overlay ELK pass in flight must drop.
-  const invalidateArtifactCaches = () => {
+  const invalidateArtifactCaches = (
+    options: {
+      layoutOwner?: ProjectionLayoutOwner;
+      layoutOwners?: ReadonlySet<ProjectionLayoutOwner>;
+    } = {},
+  ) => {
     moduleGraph = null;
     blockDeps = null;
     unitIndex = null;
+    cancelCodeViewRequest();
     codePayloadCache.clear();
-    invalidateModuleLayout();
-    invalidateMinimalLayout();
+    const retainedOwners: ReadonlySet<ProjectionLayoutOwner> = options.layoutOwners
+      ?? (options.layoutOwner === undefined
+        ? new Set<ProjectionLayoutOwner>()
+        : new Set([options.layoutOwner]));
+    // Promotion swaps the whole artifact/index. Only layouts explicitly sharing this install may
+    // keep running; every other structural or split-pane task still owns the outgoing projection.
+    layoutCoordinator.cancelAllExcept(retainedOwners);
+    const owns = (owner: ProjectionLayoutOwner): boolean => retainedOwners.has(owner);
+    if (!owns("module")) invalidateModuleLayout();
+    if (!owns("minimal")) invalidateMinimalLayout();
+    if (!owns("logic")) invalidateLogicLayout();
+    if (!owns("flow-pane")) invalidateFlowPaneLayout();
   };
   const invalidateSyntheticArtifactBoundary = () => {
     syntheticExecutionSeq += 1;
-    flowPaneLayoutSeq += 1;
+    invalidateFlowPaneLayout();
   };
   // The parsed review payload from the initial `meridian review` projection (null when it carries no
   // valid `review` extension). Live PR projections populate their review independently at runtime.
   const artifactReview = deriveReviewData(dependencies.artifact, dependencies.index);
-  const initialReviewProjection = artifactReview
-    ? deriveReviewProjection(artifactReview.context, dependencies.artifact, dependencies.index, { baseIndex: null, showTests: false })
+  // Only the schema-level context is needed for later Tests re-projection. Capturing ReviewData here
+  // would pin its complete LogicFlows object for the lifetime of the store outside the graph cache.
+  const artifactReviewContext = artifactReview?.context ?? null;
+  const initialReviewProjection = artifactReviewContext
+    ? deriveReviewProjection(artifactReviewContext, dependencies.artifact, dependencies.index, { baseIndex: null, showTests: false })
     : null;
   const review = initialReviewProjection?.review ?? null;
   if (initialReviewProjection !== null) {
@@ -2149,6 +2513,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     const clearMinimalSceneNavigation = (): void => {
       minimalSceneCache.clear();
       minimalProjectionFrames.clear();
+      minimalNavigationResidentBytes.clear();
       currentMinimalSceneKey = null;
     };
     const resetMinimalProjectionNavigationForRevision = (): void => {
@@ -2269,7 +2634,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (
         get().minimalView === "graph"
         && minimalCodebaseProjectionBaseline !== null
-        && !await ensureExtractedReviewProjection()
+        && !await ensureExtractedGraphProjection()
       ) return false;
       const state = get();
       const root = state.index.nodesById.get(rootId);
@@ -2316,9 +2681,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : expandedCodePaths(baseExpansion, new Set([reveal.selectedId]), state.index);
       const activity = { label: `Opening ${root.displayName || "container"} subgraph…` };
       syntheticExecutionSeq += 1;
-      flowPaneLayoutSeq += 1;
+      invalidateFlowPaneLayout();
       invalidateMinimalLayout();
-      const parentFrame = captureMinimalGraphHistoryFrame(state);
+      const history = appendMinimalGraphHistoryFrame(state);
       startNewMinimalScene();
       minimalCodebaseProjectionBaseline = null;
       set({
@@ -2328,7 +2693,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           filePaths: [...new Set(matched.map((match) => match.path))].sort(),
           moduleIds: seeds,
         },
-        minimalGraphHistory: [...state.minimalGraphHistory, parentFrame],
+        minimalGraphHistory: history,
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
@@ -2415,6 +2780,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(retry)) {
         return true;
       }
+      if (state.flowSelection !== null || state.flowPaneOrigin !== null) {
+        invalidateFlowPaneLayout();
+      }
       set({
         moduleSelected: new Set([reveal.selectedId]),
         moduleExpanded,
@@ -2446,10 +2814,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     const reprojectArtifactReview = (showTests: boolean): void => {
       const state = get();
-      if (state.prReviewed !== null || artifactReview === null || state.review === null) {
+      if (state.prReviewed !== null || artifactReviewContext === null || state.review === null) {
         return;
       }
-      const projection = deriveReviewProjection(artifactReview.context, state.artifact, state.index, {
+      const projection = deriveReviewProjection(artifactReviewContext, state.artifact, state.index, {
         baseIndex: null,
         showTests,
       });
@@ -2528,8 +2896,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prFilesUrl,
         invalidateMinimalLayout,
         invalidateModuleLayout,
+        invalidateRequestFlowWork,
         invalidateArtifactCaches,
-        { reprojecting: true, preserveReviewSelection: true },
+        { surfaceTransition: "reproject", preserveReviewSelection: true },
       );
       if (!applied) {
         return false;
@@ -2622,7 +2991,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : reviewLitNodeIds;
       if (filteredFlow) {
         syntheticExecutionSeq += 1;
-        flowPaneLayoutSeq += 1;
+      }
+      if (frame.flowSelection !== null || frame.flowPaneOrigin !== null) {
+        invalidateFlowPaneLayout();
       }
       const visibleReviewPaths = new Set(projected.reviewFiles.map((file) => file.path));
       const reviewFocusedSubgraph = frame.reviewFocusedSubgraph === null
@@ -2706,19 +3077,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     ): MinimalCodebaseProjectionBaseline | null => {
       if (
         projectionDataSource === null
-        || state.prReviewed === null
-        || !state.prPreparedArtifactCurrent
+        || state.activeProjectionKey === null
+        || state.activeProjectionRequest === null
+        || state.activeProjectionGraphId === null
+        || state.activeProjectionEndpoints === null
+      ) {
+        return null;
+      }
+      if (!state.prPreparedArtifactCurrent) {
+        return {
+          kind: "single",
+          graphId: state.activeProjectionGraphId,
+          key: state.activeProjectionKey,
+          request: snapshotProjectionRequest(state.activeProjectionRequest),
+          endpoints: state.activeProjectionEndpoints,
+        };
+      }
+      if (
+        state.prReviewed === null
         || state.prPreparedHead === null
         || state.prPreparedMergeBase === null
         || state.prReviewComparison === null
-        || state.activeProjectionKey === null
-        || state.activeProjectionRequest === null
         || state.activeProjectionGraphId !== state.prPreparedHead.graphId
         || state.prReviewComparison.graphId !== state.prPreparedMergeBase.graphId
       ) {
         return null;
       }
       return {
+        kind: "review",
         reviewNumber: state.prReviewed,
         headGraphId: state.prPreparedHead.graphId,
         mergeBaseGraphId: state.prPreparedMergeBase.graphId,
@@ -2733,83 +3119,150 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     const projectionCoordinateMatchesSession = (
       coordinate: MinimalCodebaseProjectionBaseline,
       state: BlueprintState,
-    ): boolean => state.prReviewed === coordinate.reviewNumber
-      && state.prPreparedArtifactCurrent
-      && state.prPreparedHead?.graphId === coordinate.headGraphId
-      && state.prPreparedMergeBase?.graphId === coordinate.mergeBaseGraphId;
+    ): boolean => coordinate.kind === "single"
+      ? !state.prPreparedArtifactCurrent && state.activeProjectionGraphId === coordinate.graphId
+      : state.prReviewed === coordinate.reviewNumber
+        && state.prPreparedArtifactCurrent
+        && state.prPreparedHead?.graphId === coordinate.headGraphId
+        && state.prPreparedMergeBase?.graphId === coordinate.mergeBaseGraphId;
 
-    const captureMinimalGraphHistoryFrame = (state: BlueprintState): MinimalGraphHistoryEntry => {
+    const appendMinimalGraphHistoryFrame = (state: BlueprintState): MinimalGraphHistoryEntry[] => {
       const sceneKey = retainCurrentMinimalScene(state);
-      minimalProjectionFrames.set(sceneKey, {
+      const frame: MinimalGraphProjectionFrame = {
         active: captureMinimalCodebaseProjectionBaseline(state),
         codebaseBaseline: minimalCodebaseProjectionBaseline,
-      });
-      return captureMinimalGraphHistory(state, sceneKey);
+      };
+      const entry = captureMinimalGraphHistory(state, sceneKey);
+      minimalProjectionFrames.set(sceneKey, frame);
+      minimalNavigationResidentBytes.set(
+        sceneKey,
+        minimalGraphResidentBytes([entry, frame]),
+      );
+      const bounded = boundMinimalGraphHistory(
+        [...state.minimalGraphHistory, entry],
+        minimalNavigationResidentBytes,
+      );
+      for (const truncatedSceneKey of bounded.truncatedSceneKeys) {
+        // Rendered scenes have a separate, much smaller count+byte LRU. Once their semantic
+        // coordinate leaves this window it can no longer be activated, so its projection metadata
+        // and accounting record leave atomically; any still-recent scene remains strictly bounded
+        // by that cache and will age out normally without pinning a decoded graph here.
+        minimalProjectionFrames.delete(truncatedSceneKey);
+        minimalNavigationResidentBytes.delete(truncatedSceneKey);
+      }
+      return bounded.history;
     };
 
-    const installMinimalCodebaseReviewPair = (
-      pair: LoadedReviewProjection,
-      expected: MinimalCodebaseProjectionBaseline,
+    const installReviewProjectionPair = (
+      staged: StagedReviewProjection,
+      expected: MinimalCodebaseReviewProjectionBaseline,
       headRequest: GraphProjectionRequest,
       mergeBaseRequest: GraphProjectionRequest,
+      options: {
+        layoutOwner?: ProjectionLayoutOwner;
+        layoutOwners?: ReadonlySet<ProjectionLayoutOwner>;
+        /** State which becomes authoritative only with this exact pair. Used by file navigation so
+         * subscribers never observe a new graph under the previous committed cursor. */
+        commitState?: Partial<BlueprintState>;
+      } = {},
     ): void => {
-      if (
-        pair.head.graphId !== expected.headGraphId
-        || pair.mergeBase.graphId !== expected.mergeBaseGraphId
-        || canonicalProjectionKey(pair.head.graphId, pair.head.request)
-          !== canonicalProjectionKey(expected.headGraphId, headRequest)
-        || canonicalProjectionKey(pair.mergeBase.graphId, pair.mergeBase.request)
-          !== canonicalProjectionKey(expected.mergeBaseGraphId, mergeBaseRequest)
-      ) {
-        throw new Error("codebase context returned a different review projection");
+      try {
+        const pair = staged.projection;
+        if (
+          pair.head.graphId !== expected.headGraphId
+          || pair.mergeBase.graphId !== expected.mergeBaseGraphId
+          || canonicalProjectionKey(pair.head.graphId, pair.head.request)
+            !== canonicalProjectionKey(expected.headGraphId, headRequest)
+          || canonicalProjectionKey(pair.mergeBase.graphId, pair.mergeBase.request)
+            !== canonicalProjectionKey(expected.mergeBaseGraphId, mergeBaseRequest)
+        ) {
+          throw new Error("codebase context returned a different review projection");
+        }
+        const state = get();
+        const reviewNumber = state.prReviewed ?? state.prSelected;
+        if (reviewNumber === null || state.prFiles === null) {
+          throw new Error("codebase context requires the canonical prepared review manifest");
+        }
+        const summary = selectedPrSummary(state, reviewNumber);
+        const context = reviewContextFromPrFiles({
+          prNumber: reviewNumber,
+          headRef: summary?.headRef ?? null,
+          baseRef: summary?.baseRef ?? null,
+          scopeId: prFilesUrl,
+          files: state.prFiles,
+        }, { baseSide: false });
+        // Projection transport caches only the pure revision pair. Rebuild the current,
+        // presentation-only two-sided composite on promotion so deleted/renamed base ghosts
+        // survive context switches without retaining another decoded graph outside the bounded LRU.
+        const presentation = deriveDeletedNodeProjection({
+          headArtifact: pair.head.artifact,
+          headIndex: pair.head.index,
+          baseArtifact: pair.mergeBase.artifact,
+          baseIndex: pair.mergeBase.index,
+          context,
+          prFiles: state.prFiles,
+        });
+        const outgoing = get().index;
+        const changedIds = [...outgoing.changedIds]
+          .filter((id) => presentation.index.nodesById.has(id));
+        const changedStatus = [...outgoing.changedStatus]
+          .filter(([id]) => presentation.index.nodesById.has(id));
+        applyChangedIds(presentation.index, changedIds);
+        applyChangedStatus(presentation.index, changedStatus);
+        // Validation and presentation derivation are complete. Transfer the bounded staged owner
+        // into the active cache immediately before the synchronous store commit.
+        staged.commit();
+        invalidateArtifactCaches(options);
+        set({
+          artifact: presentation.artifact,
+          index: presentation.index,
+          activeProjectionGraphId: pair.head.graphId,
+          activeProjectionRequest: pair.head.request,
+          activeProjectionKey: pair.key,
+          activeProjectionId: pair.projectionId,
+          activeProjectionEndpoints: expected.headEndpoints,
+          prReviewComparison: pair.mergeBase,
+          reviewBaseNodeIds: presentation.baseSourceNodeIds,
+          reviewDeletedNodeIds: presentation.deletedNodeIds,
+          reviewBaseSpanByHeadId: presentation.baseSpanByHeadId,
+          coverage: get().coverageMode ? reachabilityForProjection(pair.head) : null,
+          ...(options.commitState ?? {}),
+        });
+      } finally {
+        staged.release();
       }
-      const state = get();
-      const reviewNumber = state.prReviewed ?? state.prSelected;
-      if (reviewNumber === null || state.prFiles === null) {
-        throw new Error("codebase context requires the canonical prepared review manifest");
+    };
+
+    const installMinimalCodebaseSingleProjection = (
+      staged: StagedGraphProjection,
+      expected: MinimalCodebaseSingleProjectionBaseline,
+      request: GraphProjectionRequest,
+    ): void => {
+      try {
+        const projection = staged.projection;
+        if (
+          projection.graphId !== expected.graphId
+          || canonicalProjectionKey(projection.graphId, projection.request)
+            !== canonicalProjectionKey(expected.graphId, request)
+        ) {
+          throw new Error("codebase context returned a different graph projection");
+        }
+        staged.commit();
+        invalidateArtifactCaches();
+        set({
+          artifact: projection.artifact,
+          index: projection.index,
+          activeProjectionGraphId: projection.graphId,
+          activeProjectionRequest: projection.request,
+          activeProjectionKey: projection.key,
+          activeProjectionId: projection.projectionId,
+          activeProjectionEndpoints: expected.endpoints,
+          prReviewComparison: null,
+          coverage: get().coverageMode ? reachabilityForProjection(projection) : null,
+        });
+      } finally {
+        staged.release();
       }
-      const summary = selectedPrSummary(state, reviewNumber);
-      const context = reviewContextFromPrFiles({
-        prNumber: reviewNumber,
-        headRef: summary?.headRef ?? null,
-        baseRef: summary?.baseRef ?? null,
-        scopeId: prFilesUrl,
-        files: state.prFiles,
-      }, { baseSide: false });
-      // Projection transport caches only the pure revision pair. Rebuild the current, presentation-
-      // only two-sided composite on promotion so deleted/renamed base ghosts survive context switches
-      // without retaining another decoded graph outside the bounded LRU.
-      const presentation = deriveDeletedNodeProjection({
-        headArtifact: pair.head.artifact,
-        headIndex: pair.head.index,
-        baseArtifact: pair.mergeBase.artifact,
-        baseIndex: pair.mergeBase.index,
-        context,
-        prFiles: state.prFiles,
-      });
-      const outgoing = get().index;
-      const changedIds = [...outgoing.changedIds].filter((id) => presentation.index.nodesById.has(id));
-      const changedStatus = [...outgoing.changedStatus]
-        .filter(([id]) => presentation.index.nodesById.has(id));
-      applyChangedIds(presentation.index, changedIds);
-      applyChangedStatus(presentation.index, changedStatus);
-      invalidateArtifactCaches();
-      set({
-        artifact: presentation.artifact,
-        index: presentation.index,
-        activeProjectionGraphId: pair.head.graphId,
-        activeProjectionRequest: pair.head.request,
-        activeProjectionKey: pair.key,
-        activeProjectionId: pair.projectionId,
-        activeProjectionEndpoints: expected.headEndpoints,
-        prReviewComparison: pair.mergeBase,
-        reviewBaseNodeIds: presentation.baseSourceNodeIds,
-        reviewDeletedNodeIds: presentation.deletedNodeIds,
-        reviewBaseSpanByHeadId: presentation.baseSpanByHeadId,
-        coverage: get().coverageMode
-          ? computeCoverage(presentation.artifact.nodes, presentation.artifact.edges)
-          : null,
-      });
     };
 
     /** Resolve a repository-wide palette identity into the active bounded graph before an action
@@ -2833,7 +3286,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || state.activeProjectionEndpoints === null) {
         throw new Error("The active graph cannot load this symbol.");
       }
-      if (minimalCodebaseProjectionBaseline !== null && !await ensureExtractedReviewProjection()) {
+      if (minimalCodebaseProjectionBaseline !== null && !await ensureExtractedGraphProjection()) {
         throw new Error("Could not restore the extracted graph before adding this symbol.");
       }
       state = get();
@@ -2853,7 +3306,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       try {
         if (state.prPreparedArtifactCurrent) {
           const baseline = captureMinimalCodebaseProjectionBaseline(state);
-          if (baseline === null || state.prReviewComparison === null) {
+          if (baseline?.kind !== "review" || state.prReviewComparison === null) {
             throw new Error("Prepared review comparison is unavailable.");
           }
           const extras = new Set([...state.minimalProjectionExtraIds, rawId]);
@@ -2869,7 +3322,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             extraIds: [...new Set([...semanticRequest.extraIds, ...extras])],
           });
           const mergeBaseRequest = mergeBaseProjectionRequest(headRequest);
-          const pair = await projectionDataSource.activateReviewPair({
+          const staged = await projectionDataSource.stageReviewPair({
             head: { request: headRequest, endpoints: baseline.headEndpoints },
             mergeBase: { request: mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
             signal: controller.signal,
@@ -2878,9 +3331,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (controller.signal.aborted || projectionRequestSeq !== sequence
             || current.activeProjectionGraphId !== baseline.headGraphId
             || current.prReviewed !== baseline.reviewNumber) {
+            staged.release();
             throw new DOMException("Symbol projection was superseded", "AbortError");
           }
-          installMinimalCodebaseReviewPair(pair, baseline, headRequest, mergeBaseRequest);
+          installReviewProjectionPair(staged, baseline, headRequest, mergeBaseRequest);
           if (!get().index.nodesById.has(rawId)) throw new Error("The symbol is unavailable in the current revision.");
           set({ minimalProjectionExtraIds: extras });
           return;
@@ -2891,25 +3345,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ...currentRequest,
           extraIds: [...new Set([...currentRequest.extraIds, rawId])],
         });
-        const projection = await projectionDataSource.activate(request, {
+        const staged = await projectionDataSource.stage(request, {
           endpoints: activeProjectionEndpoints,
           signal: controller.signal,
         });
         if (controller.signal.aborted || projectionRequestSeq !== sequence
           || get().activeProjectionGraphId !== activeProjectionGraphId) {
+          staged.release();
           throw new DOMException("Symbol projection was superseded", "AbortError");
         }
-        invalidateArtifactCaches();
-        set({
-          artifact: projection.artifact,
-          index: projection.index,
-          activeProjectionGraphId: projection.graphId,
-          activeProjectionRequest: projection.request,
-          activeProjectionKey: projection.key,
-          activeProjectionId: projection.projectionId,
-          coverage: get().coverageMode ? computeCoverage(projection.artifact.nodes, projection.artifact.edges) : null,
-        });
-        if (!projection.index.nodesById.has(rawId)) throw new Error("The symbol is unavailable in the current projection.");
+        const projection = staged.projection;
+        installMinimalCodebaseSingleProjection(staged, {
+          kind: "single",
+          graphId: activeProjectionGraphId,
+          key: projection.key,
+          request,
+          endpoints: activeProjectionEndpoints,
+        }, request);
+        if (!projection.index.nodesById.has(rawId)) {
+          throw new Error("The symbol is unavailable in the current projection.");
+        }
       } finally {
         if (projectionRequestController === controller) projectionRequestController = null;
         if (minimalCodebaseProjectionActivitySeq === activity) {
@@ -2940,14 +3395,27 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const controller = new AbortController();
       projectionRequestController = controller;
       const sequence = ++projectionRequestSeq;
-      const finish = (pair: LoadedReviewProjection): boolean => {
+      const isCurrent = (): boolean => !controller.signal.aborted
+        && projectionRequestSeq === sequence
+        && projectionCoordinateMatchesSession(coordinate, get());
+      const finishSingle = (staged: StagedGraphProjection): boolean => {
+        if (!isCurrent() || coordinate.kind !== "single") {
+          staged.release();
+          return false;
+        }
+        installMinimalCodebaseSingleProjection(staged, coordinate, coordinate.request);
+        return true;
+      };
+      const finishReview = (staged: StagedReviewProjection): boolean => {
         if (
-          controller.signal.aborted
-          || projectionRequestSeq !== sequence
-          || !projectionCoordinateMatchesSession(coordinate, get())
-        ) return false;
-        installMinimalCodebaseReviewPair(
-          pair,
+          !isCurrent()
+          || coordinate.kind !== "review"
+        ) {
+          staged.release();
+          return false;
+        }
+        installReviewProjectionPair(
+          staged,
           coordinate,
           coordinate.headRequest,
           coordinate.mergeBaseRequest,
@@ -2963,22 +3431,38 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const release = (): void => {
         if (projectionRequestController === controller) projectionRequestController = null;
       };
-      const cached = projectionDataSource.activateCachedReview(coordinate.key);
-      if (cached !== undefined) {
+      if (coordinate.kind === "single") {
+        const cached = projectionDataSource.stageCached(coordinate.key);
+        if (cached !== undefined) {
+          try {
+            return finishSingle(cached);
+          } catch (error) {
+            return fail(error);
+          } finally {
+            release();
+          }
+        }
+        return projectionDataSource.stage(coordinate.request, {
+          endpoints: coordinate.endpoints,
+          signal: controller.signal,
+        }).then(finishSingle, fail).finally(release);
+      }
+      const cachedReview = projectionDataSource.stageCachedReview(coordinate.key);
+      if (cachedReview !== undefined) {
         try {
-          return finish(cached);
+          return finishReview(cachedReview);
         } catch (error) {
           return fail(error);
         } finally {
           release();
         }
       }
-      return projectionDataSource.activateReviewPair({
+      return projectionDataSource.stageReviewPair({
             head: { request: coordinate.headRequest, endpoints: coordinate.headEndpoints },
             mergeBase: { request: coordinate.mergeBaseRequest, endpoints: coordinate.mergeBaseEndpoints },
             signal: controller.signal,
           })
-        .then(finish, fail)
+        .then(finishReview, fail)
         .finally(release);
     };
 
@@ -2990,18 +3474,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const state = get();
         const captured = captureMinimalCodebaseProjectionBaseline(state);
         const existing = minimalCodebaseProjectionBaseline;
-        baseline = existing !== null
-          && existing.reviewNumber === state.prReviewed
-          && existing.headGraphId === state.prPreparedHead?.graphId
-          && existing.mergeBaseGraphId === state.prPreparedMergeBase?.graphId
+        baseline = existing !== null && projectionCoordinateMatchesSession(existing, state)
             ? existing
             : captured;
         if (baseline === null || projectionDataSource === null) return;
         minimalCodebaseProjectionBaseline = baseline;
         const context = minimalCodebaseContextForState(state);
         if (context === null) return;
+        const baselineRequest = baseline.kind === "review"
+          ? projectionWithoutIds(baseline.headRequest, state.reviewBaseNodeIds)
+          : baseline.request;
         const gates = new Set([
-          ...baseline.headRequest.expandedIds,
+          ...baselineRequest.expandedIds,
           ...(context.reveal.moduleFocus === null ? [] : [context.reveal.moduleFocus]),
           ...context.reveal.moduleExpanded,
           ...[...state.minimalCodebaseExpansionOverrides]
@@ -3012,10 +3496,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (gates.size > 512) {
           throw new Error("codebase context exceeds the bounded projection expansion limit");
         }
+        projectionRequestController?.abort();
+        controller = new AbortController();
+        projectionRequestController = controller;
+        sequence = ++projectionRequestSeq;
+        if (baseline.kind === "single") {
+          const request = projectionWithContextGates(baseline.request, gates);
+          const staged = await projectionDataSource.stage(request, {
+            endpoints: baseline.endpoints,
+            signal: controller.signal,
+          });
+          const current = get();
+          if (
+            controller.signal.aborted
+            || projectionRequestSeq !== sequence
+            || minimalCodebaseProjectionBaseline !== baseline
+            || current.minimalView !== "codebase"
+            || !projectionCoordinateMatchesSession(baseline, current)
+          ) {
+            if (
+              minimalCodebaseProjectionBaseline === baseline
+              && !projectionCoordinateMatchesSession(baseline, current)
+            ) {
+              minimalCodebaseProjectionBaseline = null;
+              if (current.activeProjectionKey === baseline.key) set({ minimalView: "graph" });
+            }
+            staged.release();
+            return;
+          }
+          installMinimalCodebaseSingleProjection(staged, baseline, request);
+          return;
+        }
         // Base-only tombstones belong exclusively to the comparison request. Sending their ids to
         // HEAD would either waste the gate or make a strict projection endpoint reject the request.
         const headGates = [...gates].filter((id) => !state.reviewBaseNodeIds.has(id));
-        const headRequest = projectionWithContextGates(baseline.headRequest, headGates);
+        const headRequest = projectionWithContextGates(baselineRequest, headGates);
         // Never copy HEAD ids across revisions. Only a unique kind/path/qualified-name match in the
         // already path-addressed comparison slice may become a merge-base disclosure gate.
         const comparisonGates = pathDerivedComparisonGates(
@@ -3024,11 +3539,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           gates,
         );
         const mergeBaseRequest = projectionWithContextGates(baseline.mergeBaseRequest, comparisonGates);
-        projectionRequestController?.abort();
-        controller = new AbortController();
-        projectionRequestController = controller;
-        sequence = ++projectionRequestSeq;
-        const pair = await projectionDataSource.activateReviewPair({
+        const staged = await projectionDataSource.stageReviewPair({
           head: { request: headRequest, endpoints: baseline.headEndpoints },
           mergeBase: { request: mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
           signal: controller.signal,
@@ -3048,13 +3559,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             minimalCodebaseProjectionBaseline = null;
             if (current.activeProjectionKey === baseline.key) set({ minimalView: "graph" });
           }
+          staged.release();
           return;
         }
-        installMinimalCodebaseReviewPair(pair, baseline, headRequest, mergeBaseRequest);
+        installReviewProjectionPair(staged, baseline, headRequest, mergeBaseRequest);
       } catch (error) {
         if (controller?.signal.aborted || (sequence !== null && projectionRequestSeq !== sequence)) return;
         const current = get();
-        if (baseline !== null && current.minimalView === "codebase" && current.prReviewed === baseline.reviewNumber) {
+        if (baseline !== null && current.minimalView === "codebase" && projectionCoordinateMatchesSession(baseline, current)) {
           set({
             ...(current.activeProjectionKey === baseline.key ? { minimalView: "graph" as const } : {}),
             prPrepareError: `Could not load codebase context. ${prepareErrorMessage(error)}`,
@@ -3088,41 +3600,60 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       projectionRequestController = controller;
       const sequence = ++projectionRequestSeq;
       try {
-        const pair = projectionDataSource.activateCachedReview(baseline.key)
-          ?? await projectionDataSource.activateReviewPair({
-            head: { request: baseline.headRequest, endpoints: baseline.headEndpoints },
-            mergeBase: { request: baseline.mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
-            signal: controller.signal,
-          });
-        const current = get();
-        if (
-          controller.signal.aborted
-          || projectionRequestSeq !== sequence
-          || minimalCodebaseProjectionBaseline !== baseline
-          || current.minimalView !== "graph"
-          || !projectionCoordinateMatchesSession(baseline, current)
-        ) {
-          if (
-            minimalCodebaseProjectionBaseline === baseline
-            && !projectionCoordinateMatchesSession(baseline, current)
-          ) minimalCodebaseProjectionBaseline = null;
-          return false;
+        const restorationStillOwnsCoordinate = (): boolean => {
+          const current = get();
+          const coordinateMatches = projectionCoordinateMatchesSession(baseline, current);
+          const ownsCoordinate = !controller.signal.aborted
+            && projectionRequestSeq === sequence
+            && minimalCodebaseProjectionBaseline === baseline
+            && current.minimalView === "graph"
+            && coordinateMatches;
+          if (!ownsCoordinate && minimalCodebaseProjectionBaseline === baseline && !coordinateMatches) {
+            minimalCodebaseProjectionBaseline = null;
+          }
+          return ownsCoordinate;
+        };
+
+        if (baseline.kind === "single") {
+          const staged = projectionDataSource.stageCached(baseline.key)
+            ?? await projectionDataSource.stage(baseline.request, {
+              endpoints: baseline.endpoints,
+              signal: controller.signal,
+            });
+          try {
+            if (!restorationStillOwnsCoordinate()) return false;
+            installMinimalCodebaseSingleProjection(staged, baseline, baseline.request);
+          } finally {
+            staged.release();
+          }
+        } else {
+          const staged = projectionDataSource.stageCachedReview(baseline.key)
+            ?? await projectionDataSource.stageReviewPair({
+              head: { request: baseline.headRequest, endpoints: baseline.headEndpoints },
+              mergeBase: { request: baseline.mergeBaseRequest, endpoints: baseline.mergeBaseEndpoints },
+              signal: controller.signal,
+            });
+          try {
+            if (!restorationStillOwnsCoordinate()) return false;
+            installReviewProjectionPair(
+              staged,
+              baseline,
+              baseline.headRequest,
+              baseline.mergeBaseRequest,
+            );
+          } finally {
+            staged.release();
+          }
         }
-        installMinimalCodebaseReviewPair(
-          pair,
-          baseline,
-          baseline.headRequest,
-          baseline.mergeBaseRequest,
-        );
         minimalCodebaseProjectionBaseline = null;
         return true;
       } catch (error) {
         if (controller.signal.aborted || projectionRequestSeq !== sequence) return false;
         const current = get();
-        if (current.minimalView === "graph" && current.prReviewed === baseline.reviewNumber) {
+        if (current.minimalView === "graph" && projectionCoordinateMatchesSession(baseline, current)) {
           set({
             minimalView: "codebase",
-            prPrepareError: `Could not restore extracted review. ${prepareErrorMessage(error)}`,
+            prPrepareError: `Could not restore extracted graph. ${prepareErrorMessage(error)}`,
           });
         }
         return false;
@@ -3132,9 +3663,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     };
 
     /** Return from a context projection before any action reads, derives, or mutates the extracted
-     * graph. The exact paired coordinate stays live until promotion succeeds; failure leaves the
-     * codebase view mounted and cannot strand graph state on the broader context slice. */
-    const ensureExtractedReviewProjection = async (): Promise<boolean> => {
+     * graph. The exact coordinate stays live until promotion succeeds; failure leaves the codebase
+     * view mounted and cannot strand graph state on the broader context slice. */
+    const ensureExtractedGraphProjection = async (): Promise<boolean> => {
       const baseline = minimalCodebaseProjectionBaseline;
       if (baseline === null) return true;
       if (!projectionCoordinateMatchesSession(baseline, get())) {
@@ -3150,99 +3681,470 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return restored
         && minimalCodebaseProjectionBaseline === null
         && current.minimalView === "graph"
-        && current.prReviewed === baseline.reviewNumber
         && current.activeProjectionKey === baseline.key;
+    };
+
+    const projectionHydrationKeyForState = (state: BlueprintState): string => {
+      if (state.prPreparedArtifactCurrent) {
+        const coordinate = preparedReviewProjectionCoordinate(state);
+        // The immutable pair determines the bytes, while the PR identity determines the
+        // presentation-only deleted/renamed overlay installed from the canonical manifest.
+        return `${coordinate.key}\u0000pr:${state.prReviewed ?? state.prSelected ?? "unknown"}`;
+      }
+      const request = projectionRequestForState(state);
+      if (state.activeProjectionEndpoints === null) {
+        throw new Error("The active graph has no projection transport endpoints.");
+      }
+      return canonicalProjectionKey(
+        state.activeProjectionGraphId
+          ?? `unresolved:${state.activeProjectionEndpoints.manifestUrl}`,
+        request,
+      );
     };
 
     /** Activate exactly the graph slice named by the current navigation state. Only this method
      * installs decoded projection pairs in Zustand; the transport owns the bounded recent-view LRU.
-     * A newer navigation aborts and supersedes an older fetch before either layout starts. */
-    const ensureCurrentProjection = async (): Promise<boolean> => {
+     * Concurrent layouts of one coordinate share its hydration and atomic install. A genuinely
+     * different navigation coordinate still aborts and supersedes the prior flight. */
+    const ensureCurrentProjection = async (
+      options: { layoutOwner?: ProjectionLayoutOwner; signal?: AbortSignal } = {},
+    ): Promise<boolean> => {
       if (projectionDataSource === null || get().viewMode === "prs") {
         return true;
       }
-      projectionRequestController?.abort();
-      const controller = new AbortController();
-      projectionRequestController = controller;
-      const sequence = ++projectionRequestSeq;
+      if (options.signal?.aborted) return false;
       const state = get();
-      try {
-        const reviewPair = state.prPreparedArtifactCurrent
-          ? await activatePreparedReviewProjection(
-              projectionDataSource,
-              state,
-              controller.signal,
-            )
-          : null;
-        const projection = reviewPair?.head ?? await projectionDataSource.activate(
-          projectionRequestForState(state),
-          { signal: controller.signal },
-        );
-        if (projectionRequestSeq !== sequence || controller.signal.aborted) {
-          return false;
-        }
-        // A cache hit for the already-active request must not churn the store or invalidate derive
-        // caches; this is the common path for repaint-only actions.
-        const activeKey = reviewPair?.key ?? projection.key;
-        if (get().activeProjectionKey === activeKey && get().artifact === projection.artifact) {
-          return true;
-        }
-        moduleGraph = null;
-        blockDeps = null;
-        unitIndex = null;
-        codePayloadCache.clear();
-        invalidateMinimalLayout();
-        set({
-          artifact: projection.artifact,
-          index: projection.index,
-          activeProjectionGraphId: projection.graphId,
-          activeProjectionRequest: projection.request,
-          activeProjectionKey: activeKey,
-          activeProjectionId: reviewPair?.projectionId ?? projection.projectionId,
-          activeProjectionEndpoints: reviewPair !== null && state.prPreparedHead !== null
-            ? graphProjectionEndpoints(state.prPreparedHead)
-            : initialProjectionEndpoints,
-          coverage: get().coverageMode
-            ? computeCoverage(projection.artifact.nodes, projection.artifact.edges)
-            : null,
-          prReviewComparison: reviewPair?.mergeBase ?? null,
-        });
-        return true;
-      } catch (error) {
-        if (controller.signal.aborted || projectionRequestSeq !== sequence) {
-          return false;
-        }
-        throw error;
-      } finally {
-        if (projectionRequestController === controller) {
-          projectionRequestController = null;
-        }
+      const activeProjectionEndpoints = state.activeProjectionEndpoints;
+      if (activeProjectionEndpoints === null) {
+        throw new Error("The active graph has no projection transport endpoints.");
       }
+      const hydrationKey = projectionHydrationKeyForState(state);
+      const existingFlight = projectionHydrationFlight;
+      if (existingFlight !== null
+        && existingFlight.key === hydrationKey
+        && !existingFlight.shared.signal.aborted) {
+        const outcome = await existingFlight.shared.subscribe({
+          owner: options.layoutOwner,
+          signal: options.signal,
+        });
+        return outcome.status === "completed" ? outcome.value : false;
+      }
+      existingFlight?.shared.abort(new DOMException("Projection coordinate changed", "AbortError"));
+      projectionRequestController?.abort();
+      const sequence = ++projectionRequestSeq;
+      let flight!: ProjectionHydrationFlight;
+      const shared = new SubscriberAwareAsyncFlight<ProjectionLayoutOwner, boolean>(async (physicalSignal) => {
+        let stagedReview: StagedReviewProjection | null = null;
+        let stagedSingle: StagedGraphProjection | null = null;
+        try {
+          stagedReview = state.prPreparedArtifactCurrent
+            ? await stagePreparedReviewProjection(
+                projectionDataSource,
+                state,
+                physicalSignal,
+              )
+            : null;
+          const reviewPair = stagedReview?.projection ?? null;
+          stagedSingle = reviewPair === null
+            ? await projectionDataSource.stage(
+                projectionRequestForState(state),
+                {
+                  endpoints: activeProjectionEndpoints,
+                  signal: physicalSignal,
+                },
+              )
+            : null;
+          const projection = reviewPair?.head ?? stagedSingle!.projection;
+          if (projectionRequestSeq !== sequence || physicalSignal.aborted) {
+            stagedReview?.release();
+            stagedSingle?.release();
+            return false;
+          }
+          // A cache hit for the already-active request must not churn the store or invalidate derive
+          // caches; this is the common path for repaint-only actions.
+          const activeKey = reviewPair?.key ?? projection.key;
+          const current = get();
+          const activeReviewPresentation = reviewPair !== null
+            && current.prPreparedArtifactCurrent
+            && current.activeProjectionGraphId === reviewPair.head.graphId
+            && current.prReviewComparison?.graphId === reviewPair.mergeBase.graphId;
+          if (
+            current.activeProjectionKey === activeKey
+            && (activeReviewPresentation || current.artifact === projection.artifact)
+          ) {
+            if (current.coverageMode && current.coverage === null) {
+              const coverage = reachabilityForProjection(projection);
+              if (coverage !== null) set({ coverage });
+            } else if (!current.coverageMode && current.coverage !== null) {
+              set({ coverage: null });
+            }
+            stagedReview?.release();
+            stagedSingle?.release();
+            return true;
+          }
+          // Owners are read at the synchronous promotion boundary, after cancelled subscribers have
+          // detached. An obsolete layout can therefore neither retain itself nor cancel a newer one.
+          const layoutOwners = shared.owners;
+          if (reviewPair !== null) {
+            const coordinate = captureMinimalCodebaseProjectionBaseline(state);
+            if (coordinate?.kind !== "review") {
+              stagedReview?.release();
+              throw new Error("prepared review projection changed without an active two-sided coordinate");
+            }
+            // Any selector change (coverage, trace, disclosure, palette) still promotes the canonical
+            // two-sided presentation. Installing the transport's pure HEAD artifact here would drop
+            // deleted/renamed base ghosts and changed-status metadata on ordinary navigation.
+            installReviewProjectionPair(
+              stagedReview!,
+              coordinate,
+              reviewPair.head.request,
+              reviewPair.mergeBase.request,
+              { layoutOwners },
+            );
+            return true;
+          }
+          // A projection swap invalidates independent layouts. Every live subscriber consuming this
+          // shared install keeps its sequence; unrelated and already-cancelled passes are retired.
+          try {
+            stagedSingle!.commit();
+            invalidateArtifactCaches({ layoutOwners });
+            set({
+              artifact: projection.artifact,
+              index: projection.index,
+              activeProjectionGraphId: projection.graphId,
+              activeProjectionRequest: projection.request,
+              activeProjectionKey: activeKey,
+              activeProjectionId: projection.projectionId,
+              activeProjectionEndpoints,
+              coverage: get().coverageMode ? reachabilityForProjection(projection) : null,
+              prReviewComparison: null,
+            });
+          } finally {
+            stagedSingle!.release();
+          }
+          return true;
+        } catch (error) {
+          if (physicalSignal.aborted || projectionRequestSeq !== sequence) {
+            return false;
+          }
+          throw error;
+        } finally {
+          stagedReview?.release();
+          stagedSingle?.release();
+          if (projectionHydrationFlight === flight) {
+            projectionHydrationFlight = null;
+          }
+          if (projectionRequestController === shared.controller) {
+            projectionRequestController = null;
+          }
+        }
+      });
+      flight = { key: hydrationKey, shared };
+      projectionHydrationFlight = flight;
+      projectionRequestController = shared.controller;
+      const outcome = await shared.subscribe({
+        owner: options.layoutOwner,
+        signal: options.signal,
+      });
+      return outcome.status === "completed" ? outcome.value : false;
+    };
+
+    /** Static request occurrences address nested call bodies by renderer path, while the transport
+     * accepts immutable graph ids. Each successful projection can reveal the next exact callee on
+     * one retained expansion path. Refine until the semantic request is stable, then lay out once.
+     * The finite occurrence address bounds the number of passes; no timeout or blind retry is part
+     * of this contract. */
+    const ensureRequestFlowProjectionClosure = async (options: {
+      sequence: number;
+      origin: "request" | "synthetic";
+      traceId: string;
+      expansionOverrides: ReadonlySet<string>;
+      signal: AbortSignal;
+    }): Promise<boolean> => {
+      const currentTransition = (): boolean => {
+        const current = get();
+        return !options.signal.aborted
+          && flowPaneLayoutSeq === options.sequence
+          && current.flowPaneOrigin === options.origin
+          && (options.origin === "request"
+            ? current.requestFlowTraceId === options.traceId
+            : current.syntheticExecution?.trace.traceId === options.traceId);
+      };
+      const passBudget = requestFlowProjectionPassBudget(options.expansionOverrides);
+      for (let pass = 0; pass < passBudget; pass += 1) {
+        if (!currentTransition()) return false;
+        const beforeKey = canonicalProjectionKey(
+          "request-flow-closure",
+          projectionRequestForState(get()),
+        );
+        if (!await ensureCurrentProjection({ layoutOwner: "flow-pane", signal: options.signal })) return false;
+        if (!currentTransition()) return false;
+        const afterKey = canonicalProjectionKey(
+          "request-flow-closure",
+          projectionRequestForState(get()),
+        );
+        if (afterKey === beforeKey) return true;
+      }
+      throw new Error("request-flow projection did not converge within its occurrence address");
     };
 
     const loadPreparedReview = async (
       head: PreparedGraphDescriptor,
       mergeBase: PreparedGraphDescriptor,
-      filePaths: readonly string[],
+      changedFiles: readonly PreparedChangedFile[],
+      reviewCursor: string | null,
       signal?: AbortSignal,
-    ): Promise<LoadedReviewProjection> => {
+    ): Promise<StagedReviewProjection> => {
       if (projectionDataSource === null) {
         throw new Error("PR preparation requires graph projection transport");
       }
-      return activatePreparedReviewProjection(projectionDataSource, {
-        ...get(),
+      const state = get();
+      return stagePreparedReviewProjection(projectionDataSource, {
+        ...state,
         prPreparedHead: head,
         prPreparedMergeBase: mergeBase,
-        prPreparedFilePaths: [...filePaths],
+        prPreparedChangedFiles: [...changedFiles],
+        prPreparedReviewCursor: reviewCursor,
+        // A review cursor is the complete semantic coordinate for this bounded view. Never carry
+        // selectors from the prior source/file scene into the new pair: doing so grows a file
+        // projection with unrelated graph state and makes navigation history determine memory use.
+        moduleFocus: null,
+        moduleExpanded: new Set<string>(),
+        moduleSelected: new Set<string>(),
+        mapExtra: new Set<string>(),
+        moduleGhostInspection: null,
+        minimalMemberIds: [],
+        minimalProjectionExtraIds: new Set<string>(),
+        logicRoot: null,
+        logicStack: [],
+        logicFocus: [],
+        expandedLogic: new Set<string>(),
+        logicSelected: null,
+        compRoot: null,
+        compSelectedId: null,
+        flowSelection: null,
+        flowPaneOrigin: null,
+        requestFlowTraceId: null,
+        requestFlowExpansionOverrides: new Set<string>(),
+        selectedTraceId: null,
+        syntheticExecution: null,
       }, signal);
+    };
+
+    /** Load graph bytes and execution metadata as one cancellable staging transaction. If either
+     * lane fails, the sibling is aborted and any pair which decoded first releases its budgeted
+     * staged owner before the error escapes. */
+    const stagePreparedReviewWithCapability = async (
+      head: PreparedGraphDescriptor,
+      mergeBase: PreparedGraphDescriptor,
+      changedFiles: readonly PreparedChangedFile[],
+      reviewCursor: string | null,
+      identity: { repository: string | null; headSha: string | null },
+      signal?: AbortSignal,
+    ): Promise<[StagedReviewProjection, PreparedSyntheticCapability]> => {
+      signal?.throwIfAborted();
+      const controller = new AbortController();
+      const relayAbort = () => controller.abort(signal?.reason);
+      signal?.addEventListener("abort", relayAbort, { once: true });
+      let staged: StagedReviewProjection | undefined;
+      const stagedPromise = loadPreparedReview(
+        head,
+        mergeBase,
+        changedFiles,
+        reviewCursor,
+        controller.signal,
+      )
+        .then((value) => {
+          staged = value;
+          return value;
+        });
+      try {
+        return await Promise.all([
+          stagedPromise,
+          fetchPreparedSyntheticCapability(head.metaUrl, identity, controller.signal),
+        ]);
+      } catch (error) {
+        controller.abort(error);
+        try {
+          (staged ?? await stagedPromise)?.release();
+        } catch {
+          // The graph lane failed before producing an owned stage.
+        }
+        throw error;
+      } finally {
+        signal?.removeEventListener("abort", relayAbort);
+      }
+    };
+
+    /** Cancel only the per-file projection lane. Preparation/Resume status belongs to server work
+     * and remains untouched, so closing or superseding a file load can never disable Resume. */
+    const cancelPreparedFileProjection = (clearError = true): void => {
+      preparedFileProjectionSeq += 1;
+      const request = preparedFileProjectionRequest;
+      preparedFileProjectionRequest = null;
+      request?.controller.abort();
+      const state = get();
+      if (state.prPreparedFileProjectionPending !== null
+        || (clearError && state.prPreparedFileProjectionError !== null)) {
+        set({
+          prPreparedFileProjectionPending: null,
+          ...(clearError ? { prPreparedFileProjectionError: null } : {}),
+        });
+      }
+    };
+
+    /** Latest-only, two-sided file hydration. The committed cursor is deliberately absent from the
+     * pending state: both revisions stage first, then the decoded pair and cursor publish in the
+     * same Zustand transaction. A failed/aborted request leaves the prior graph fully navigable. */
+    const hydratePreparedReviewFile = (path: string, cursor: string): Promise<boolean> => {
+      const initial = get();
+      if (initial.prPreparedArtifactCurrent && initial.prPreparedReviewCursor === cursor) {
+        if (preparedFileProjectionRequest !== null) {
+          cancelPreparedFileProjection();
+        }
+        if (initial.prPreparedFileProjectionError !== null) {
+          set({ prPreparedFileProjectionError: null });
+        }
+        return Promise.resolve(true);
+      }
+      const reviewNumber = initial.prReviewed;
+      const head = initial.prPreparedHead;
+      const mergeBase = initial.prPreparedMergeBase;
+      const changedFiles = initial.prPreparedChangedFiles;
+      if (
+        reviewNumber === null
+        || head === null
+        || mergeBase === null
+        || !initial.prPreparedArtifactCurrent
+        || initial.review === null
+        || initial.viewMode !== "modules"
+        || initial.minimalView !== "graph"
+      ) {
+        return Promise.resolve(false);
+      }
+      const existing = preparedFileProjectionRequest;
+      if (
+        existing !== null
+        && !existing.controller.signal.aborted
+        && existing.path === path
+        && existing.cursor === cursor
+        && existing.committedCursor === initial.prPreparedReviewCursor
+        && existing.reviewNumber === reviewNumber
+        && existing.head === head
+        && existing.mergeBase === mergeBase
+        && existing.changedFiles === changedFiles
+      ) {
+        return existing.promise;
+      }
+
+      existing?.controller.abort();
+      const token = ++preparedFileProjectionSeq;
+      const controller = new AbortController();
+      const request = {
+        token,
+        path,
+        cursor,
+        committedCursor: initial.prPreparedReviewCursor,
+        reviewNumber,
+        head,
+        mergeBase,
+        changedFiles,
+        controller,
+        promise: Promise.resolve(false),
+      };
+      preparedFileProjectionRequest = request;
+      set({
+        prPreparedFileProjectionPending: { token, path, cursor },
+        prPreparedFileProjectionError: null,
+      });
+
+      const isCurrent = (): boolean => {
+        const current = get();
+        return preparedFileProjectionSeq === token
+          && preparedFileProjectionRequest === request
+          && !controller.signal.aborted
+          && current.prReviewed === reviewNumber
+          && current.prPreparedHead === head
+          && current.prPreparedMergeBase === mergeBase
+          && current.prPreparedChangedFiles === changedFiles
+          && current.prPreparedReviewCursor === request.committedCursor
+          && current.prPreparedArtifactCurrent
+          && current.review !== null
+          && current.viewMode === "modules"
+          && current.minimalView === "graph";
+      };
+
+      request.promise = (async (): Promise<boolean> => {
+        let staged: StagedReviewProjection | null = null;
+        try {
+          staged = await loadPreparedReview(head, mergeBase, changedFiles, cursor, controller.signal);
+          if (!isCurrent()) return false;
+          const pair = staged.projection;
+          const expected: MinimalCodebaseReviewProjectionBaseline = {
+            kind: "review",
+            reviewNumber,
+            headGraphId: head.graphId,
+            mergeBaseGraphId: mergeBase.graphId,
+            key: pair.key,
+            headRequest: snapshotProjectionRequest(pair.head.request),
+            mergeBaseRequest: snapshotProjectionRequest(pair.mergeBase.request),
+            headEndpoints: graphProjectionEndpoints(head),
+            mergeBaseEndpoints: graphProjectionEndpoints(mergeBase),
+          };
+          resetMinimalProjectionNavigationForRevision();
+          if (!isCurrent()) return false;
+          invalidateSyntheticArtifactBoundary();
+          const owned = staged;
+          staged = null;
+          installReviewProjectionPair(owned, expected, pair.head.request, pair.mergeBase.request, {
+            commitState: {
+              prPreparedReviewCursor: cursor,
+              prPreparedFileProjectionPending: null,
+              prPreparedFileProjectionError: null,
+              codeView: null,
+              ...requestFlowPaneReset(),
+              logicSelected: null,
+              reviewFlowBaseline: null,
+              ...syntheticExecutionReset(),
+              syntheticExperimentRootId: null,
+              syntheticInputOverrides: [],
+              syntheticFieldWatchers: [],
+              syntheticEditorRequest: null,
+            },
+          });
+          return true;
+        } catch (error) {
+          if (isCurrent()) {
+            set({
+              prPreparedFileProjectionPending: null,
+              prPreparedFileProjectionError: { path, message: prepareErrorMessage(error) },
+            });
+          }
+          return false;
+        } finally {
+          staged?.release();
+          if (preparedFileProjectionRequest === request) {
+            preparedFileProjectionRequest = null;
+          }
+        }
+      })();
+      return request.promise;
     };
 
     /** Promote the exact pre-review projection before clearing/parking the review. The decoded pair
      * may have been evicted (or rejected as oversized) by the bounded browser LRU, so cache miss
      * reloads the same graph/request through its retained immutable endpoints. */
     const restoreReviewSession = (
-      options: { endSession?: boolean } = {},
+      options: {
+        endSession?: boolean;
+        signal?: AbortSignal;
+        isCurrent?: () => boolean;
+      } = {},
     ): boolean | Promise<boolean> => {
+      const ownsRestore = (): boolean => (
+        options.signal?.aborted !== true && (options.isCurrent?.() ?? true)
+      );
+      if (!ownsRestore()) return false;
       const baseline = get().prReviewBaseline;
       if (baseline === null && get().prReviewed !== null && options.endSession === false) {
         resetChangedIdsToArtifact(get().artifact, get().index);
@@ -3254,37 +4156,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         throw new Error("cannot restore an evicted review baseline without graph projection transport");
       }
       const reviewed = get().prReviewed;
-      const promote = (projection: LoadedGraphProjection): boolean => {
-        if (
-          projection.graphId !== baseline.graphId
-          || canonicalProjectionKey(projection.graphId, projection.request)
-            !== canonicalProjectionKey(baseline.graphId, baseline.request)
-        ) {
-          throw new Error("review baseline reload returned a different graph projection");
+      const promote = (staged: StagedGraphProjection): boolean => {
+        try {
+          if (!ownsRestore()) return false;
+          const projection = staged.projection;
+          if (
+            projection.graphId !== baseline.graphId
+            || canonicalProjectionKey(projection.graphId, projection.request)
+              !== canonicalProjectionKey(baseline.graphId, baseline.request)
+          ) {
+            throw new Error("review baseline reload returned a different graph projection");
+          }
+          if (
+            !ownsRestore()
+            || get().prReviewBaseline !== baseline
+            || get().prReviewed !== reviewed
+          ) {
+            return false;
+          }
+          resetChangedIdsToArtifact(projection.artifact, projection.index);
+          staged.commit();
+          set({
+            artifact: projection.artifact,
+            index: projection.index,
+            activeProjectionGraphId: projection.graphId,
+            activeProjectionRequest: projection.request,
+            activeProjectionKey: projection.key,
+            activeProjectionId: projection.projectionId,
+            activeProjectionEndpoints: baseline.endpoints,
+            coverage: get().coverageMode ? reachabilityForProjection(projection) : null,
+          });
+          return restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
+        } finally {
+          staged.release();
         }
-        if (get().prReviewBaseline !== baseline || get().prReviewed !== reviewed) {
-          return false;
-        }
-        resetChangedIdsToArtifact(projection.artifact, projection.index);
-        set({
-          artifact: projection.artifact,
-          index: projection.index,
-          activeProjectionGraphId: projection.graphId,
-          activeProjectionRequest: projection.request,
-          activeProjectionKey: projection.key,
-          activeProjectionId: projection.projectionId,
-          activeProjectionEndpoints: baseline.endpoints,
-          coverage: get().coverageMode
-            ? computeCoverage(projection.artifact.nodes, projection.artifact.edges)
-            : null,
-        });
-        return restorePrReviewBaseline(get, set, invalidateArtifactCaches, options);
       };
-      const cached = projectionDataSource.activateCached(baseline.projectionKey);
+      const cached = projectionDataSource.stageCached(baseline.projectionKey);
       if (cached !== undefined) {
         return promote(cached);
       }
-      return projectionDataSource.activate(baseline.request, { endpoints: baseline.endpoints }).then(promote);
+      return projectionDataSource.stage(baseline.request, {
+        endpoints: baseline.endpoints,
+        signal: options.signal,
+      }).then(promote);
     };
 
     const mutatePrReviewComment = async (mutation: {
@@ -3568,7 +4482,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prPrepareError: null,
     prPreparedHead: null,
     prPreparedMergeBase: null,
-    prPreparedFilePaths: [],
+    prPreparedReviewCursor: null,
+    prPreparedFileProjectionPending: null,
+    prPreparedFileProjectionError: null,
+    prPreparedChangedFiles: [],
     prPreparedHeadSha: null,
     prPreparedMergeBaseSha: null,
     prReviewComparison: null,
@@ -3592,6 +4509,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selection, or the whole graph if none). A pure signal — no relayout, no navigation change; the
     // surface reads the value change via useRecenter and calls React Flow's fitView.
     recenter() {
+      if (moduleGraphSurfaceOwner(get()) === "prepared-review-overview") return;
       set({ recenterSeq: get().recenterSeq + 1 });
     },
 
@@ -3615,7 +4533,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && state.minimalSeedIds.length > 0
           && state.flowSelection !== null
           && baseline !== null;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         requestTargetRevealSeq += 1;
         set({
           flowSelection: null,
@@ -3652,7 +4570,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (!needsExecutionGraph) {
           // Hidden splits and alternate projections do not mount this execution graph. Invalidate
           // and discard any older ELK result instead of paying for invisible work.
-          flowPaneLayoutSeq += 1;
+          invalidateFlowPaneLayout();
         }
         const reviewFlowBaseline = state.reviewFlowBaseline ?? {
           moduleSelected: new Set(state.moduleSelected),
@@ -3773,7 +4691,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const trace = state.selectedTraceId === null
         ? null
         : state.requestTraces.find((candidate) => candidate.traceId === state.selectedTraceId) ?? null;
-      if (trace === null || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length > 0) {
+      if (trace === null || traceGraphRefMismatches(
+        state.traceGraphRef,
+        traceGraphRevisionIdentity(state.index.graphSummary, state.artifact.target),
+      ).length > 0) {
         return;
       }
 
@@ -3810,7 +4731,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       if (
         (state.viewMode !== "modules" && state.viewMode !== "call" && state.viewMode !== "ui")
-        || state.minimalSeedIds.length > 0
+        || moduleGraphSurfaceOwner(state) !== "source"
         || (state.flowSelection !== null && state.flowPaneOrigin !== "request")
       ) {
         return;
@@ -3820,7 +4741,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : state.requestTraces.find((candidate) => candidate.traceId === state.selectedTraceId) ?? null;
       if (
         trace === null
-        || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length > 0
+        || traceGraphRefMismatches(
+          state.traceGraphRef,
+          traceGraphRevisionIdentity(state.index.graphSummary, state.artifact.target),
+        ).length > 0
       ) {
         return;
       }
@@ -3912,7 +4836,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && previousExecution.scenarioId === execution.scenarioId
           ? previousExecution
           : null;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         const stoppedHit = execution.stop?.reason === "watcher"
           ? execution.watchHits.find((hit) => hit.id === execution.stop?.watchHitId) ?? null
           : null;
@@ -3967,7 +4891,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (view !== "graph") {
         // A preference for Graph may have started an ELK pass during selection. Supersede it before
         // mounting the requested DOM projection so a stale result cannot win later.
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         set({
           reviewFlowExplicitView: view,
           recenterSeq: state.recenterSeq + 1,
@@ -4024,7 +4948,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       syntheticExecutionSeq += 1;
       if (state.syntheticExecutionHost === "logic") {
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         set({
           flowSelection: null,
           reviewFlowExplicitView: null,
@@ -4047,7 +4971,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().selectFlowEntry(selection);
         return;
       }
-      flowPaneLayoutSeq += 1;
+      invalidateFlowPaneLayout();
       set({
         flowPaneOrigin: null,
         requestFlowExpansionOverrides: new Set<string>(),
@@ -4170,7 +5094,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const graphTarget = nodeId !== null
           && trace !== null
           && requestFlowContainsTarget(state, trace, nodeId)
-          && (executionOrigin === "synthetic" || traceGraphRefMismatches(state.traceGraphRef, state.artifact).length === 0)
+          && (executionOrigin === "synthetic" || traceGraphRefMismatches(
+            state.traceGraphRef,
+            traceGraphRevisionIdentity(state.index.graphSummary, state.artifact.target),
+          ).length === 0)
           && state.index.nodesById.has(nodeId)
           ? nodeId
           : null;
@@ -4299,88 +5226,152 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     async flowPaneRelayout() {
-      const {
-        flowSelection,
-        flowPaneOrigin,
-        requestFlowTraceId,
-        requestFlowExpansionOverrides,
-        flowPaneExpansionOverrides,
-        flowPaneCollapsedEdges,
-        syntheticSelectedMomentId,
-        syntheticFlowOrientation,
-        syntheticFlowPresentation,
-        index,
-        artifact,
-      } = get();
-      if (flowPaneOrigin === "request" || flowPaneOrigin === "synthetic") {
-        const execution = flowPaneOrigin === "synthetic" ? get().syntheticExecution : null;
-        const trace = flowPaneOrigin === "synthetic"
-          ? execution?.trace ?? null
-          : requestFlowTraceId === null
-            ? null
-            : get().requestTraces.find((candidate) => candidate.traceId === requestFlowTraceId) ?? null;
-        if (trace === null) {
-          set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
-          return;
-        }
-        const sequence = ++flowPaneLayoutSeq;
-        const traceId = trace.traceId;
-        set({ flowPaneLayoutStatus: "laying-out" });
-        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        const graph = flowPaneOrigin === "synthetic"
-          && syntheticFlowPresentation === "focused"
-          && syntheticSelectedMomentId !== null
-          ? await deriveFocusedRequestFlowPaneLayout(
-              trace,
-              index,
-              flows,
-              syntheticSelectedMomentId,
-              syntheticFlowOrientation,
-              requestFlowExpansionOverrides,
-              execution?.snapshots ?? [],
-              flowPaneCollapsedEdges,
-            )
-          : await deriveRequestFlowPaneLayout(
-              trace,
-              index,
-              flows,
-              requestFlowExpansionOverrides,
-              execution?.snapshots ?? [],
-              flowPaneCollapsedEdges,
-            );
-        if (
-          flowPaneLayoutSeq !== sequence
-          || get().flowPaneOrigin !== flowPaneOrigin
-          || (flowPaneOrigin === "request" && get().requestFlowTraceId !== traceId)
-          || (flowPaneOrigin === "synthetic" && get().syntheticExecution?.trace.traceId !== traceId)
-          || (flowPaneOrigin === "synthetic" && get().syntheticSelectedMomentId !== syntheticSelectedMomentId)
-          || (flowPaneOrigin === "synthetic" && get().syntheticFlowOrientation !== syntheticFlowOrientation)
-          || (flowPaneOrigin === "synthetic" && get().syntheticFlowPresentation !== syntheticFlowPresentation)
-        ) {
-          return;
-        }
-        set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
-        return;
-      }
-      if (flowSelection === null) {
+      const requested = get();
+      const requestedTrace = requested.flowPaneOrigin === "synthetic"
+        ? requested.syntheticExecution?.trace ?? null
+        : requested.flowPaneOrigin === "request" && requested.requestFlowTraceId !== null
+          ? requested.requestTraces.find((candidate) => candidate.traceId === requested.requestFlowTraceId) ?? null
+          : null;
+      if (
+        (requested.flowPaneOrigin === "request" || requested.flowPaneOrigin === "synthetic")
+          ? requestedTrace === null
+          : requested.flowSelection === null
+      ) {
+        invalidateFlowPaneLayout();
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
       }
-      const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
       const sequence = ++flowPaneLayoutSeq;
       set({ flowPaneLayoutStatus: "laying-out" });
-      // A flow node's PR status belongs to its own source site. Prepared projections carry the
-      // canonical head-coordinate changed-line kinds beside the graph.
-      const stepStatusSources = reviewNodeStatusSourcesFromKinds(
-        changedLineKindsFromExtensions(artifact.extensions),
-      );
-      const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
-        changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
-      }, flowPaneCollapsedEdges);
-      if (flowPaneLayoutSeq !== sequence || get().flowSelection !== flowSelection) {
-        return;
-      }
-      set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
+      await layoutCoordinator.run("flow-pane", async (signal) => {
+        const initial = get();
+        if (signal.aborted || flowPaneLayoutSeq !== sequence) return;
+        if (initial.flowPaneOrigin === "request" || initial.flowPaneOrigin === "synthetic") {
+          const origin = initial.flowPaneOrigin;
+          const initialExecution = origin === "synthetic" ? initial.syntheticExecution : null;
+          const trace = origin === "synthetic"
+            ? initialExecution?.trace ?? null
+            : initial.requestFlowTraceId === null
+              ? null
+              : initial.requestTraces.find((candidate) => candidate.traceId === initial.requestFlowTraceId) ?? null;
+          if (trace === null) return;
+          const traceId = trace.traceId;
+          try {
+            if (projectionDataSource !== null && !await ensureRequestFlowProjectionClosure({
+              sequence,
+              origin,
+              traceId,
+              expansionOverrides: new Set(initial.requestFlowExpansionOverrides),
+              signal,
+            })) return;
+            const current = get();
+            if (
+              signal.aborted
+              || flowPaneLayoutSeq !== sequence
+              || current.flowPaneOrigin !== origin
+              || (origin === "request" && current.requestFlowTraceId !== traceId)
+              || (origin === "synthetic" && current.syntheticExecution?.trace.traceId !== traceId)
+            ) return;
+            const execution = origin === "synthetic" ? current.syntheticExecution : null;
+            const currentTrace = origin === "synthetic"
+              ? execution?.trace ?? null
+              : current.requestTraces.find((candidate) => candidate.traceId === traceId) ?? null;
+            if (currentTrace === null) return;
+            const {
+              requestFlowExpansionOverrides,
+              flowPaneCollapsedEdges,
+              syntheticSelectedMomentId,
+              syntheticFlowOrientation,
+              syntheticFlowPresentation,
+              index,
+              artifact,
+            } = current;
+            const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+            const graph = origin === "synthetic"
+              && syntheticFlowPresentation === "focused"
+              && syntheticSelectedMomentId !== null
+              ? await deriveFocusedRequestFlowPaneLayout(
+                  currentTrace,
+                  index,
+                  flows,
+                  syntheticSelectedMomentId,
+                  syntheticFlowOrientation,
+                  requestFlowExpansionOverrides,
+                  execution?.snapshots ?? [],
+                  flowPaneCollapsedEdges,
+                )
+              : await deriveRequestFlowPaneLayout(
+                  currentTrace,
+                  index,
+                  flows,
+                  requestFlowExpansionOverrides,
+                  execution?.snapshots ?? [],
+                  flowPaneCollapsedEdges,
+                );
+            if (
+              signal.aborted
+              || flowPaneLayoutSeq !== sequence
+              || get().flowPaneOrigin !== origin
+              || (origin === "request" && get().requestFlowTraceId !== traceId)
+              || (origin === "synthetic" && get().syntheticExecution?.trace.traceId !== traceId)
+              || (origin === "synthetic" && get().syntheticSelectedMomentId !== syntheticSelectedMomentId)
+              || (origin === "synthetic" && get().syntheticFlowOrientation !== syntheticFlowOrientation)
+              || (origin === "synthetic" && get().syntheticFlowPresentation !== syntheticFlowPresentation)
+            ) return;
+            set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
+          } catch {
+            if (!signal.aborted && flowPaneLayoutSeq === sequence && get().flowPaneOrigin === origin) {
+              set({ flowPaneLayoutStatus: "error" });
+            }
+          }
+          return;
+        }
+        const {
+          flowSelection,
+          flowPaneOrigin,
+        } = initial;
+        if (flowSelection === null) return;
+        try {
+          // Explorer/review flows are projection consumers too. Join the same coordinate flight as
+          // the visible structural scene before retaining artifact/index inputs; otherwise that
+          // scene's promotion cancels this pane as an apparent outgoing owner and leaves it busy.
+          if (projectionDataSource !== null
+            && !await ensureCurrentProjection({ layoutOwner: "flow-pane", signal })) return;
+          const current = get();
+          if (
+            signal.aborted
+            || flowPaneLayoutSeq !== sequence
+            || current.flowSelection !== flowSelection
+            || current.flowPaneOrigin !== flowPaneOrigin
+          ) return;
+          const {
+            flowPaneExpansionOverrides,
+            flowPaneCollapsedEdges,
+            index,
+            artifact,
+          } = current;
+          const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+          // A flow node's PR status belongs to its own source site. Prepared projections carry the
+          // canonical head-coordinate changed-line kinds beside the graph.
+          const stepStatusSources = reviewNodeStatusSourcesFromKinds(
+            changedLineKindsFromExtensions(artifact.extensions),
+          );
+          const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
+            changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
+          }, flowPaneCollapsedEdges);
+          if (
+            signal.aborted
+            || flowPaneLayoutSeq !== sequence
+            || get().flowSelection !== flowSelection
+            || get().flowPaneOrigin !== flowPaneOrigin
+          ) return;
+          set({ flowPaneRfNodes: graph.nodes, flowPaneRfEdges: graph.edges, flowPaneLayoutStatus: "ready" });
+        } catch {
+          if (!signal.aborted && flowPaneLayoutSeq === sequence) {
+            set({ flowPaneLayoutStatus: "error" });
+          }
+        }
+      });
     },
 
     // The logic flow charted for a callable id: read straight from the artifact extension, keyed
@@ -4400,14 +5391,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const state = get();
-      moduleLayoutSeq += 1;
-      if (!beginLensTransition(get, set, () => get().openLogicFlow(nodeId))) {
+      invalidateModuleLayout();
+      if (!beginLensTransition(get, set, invalidateRequestFlowWork, () => get().openLogicFlow(nodeId))) {
         return;
       }
       const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
       if (resetSynthetic) {
         syntheticExecutionSeq += 1;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
       }
       set({
         viewMode: "logic",
@@ -4432,8 +5423,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const state = get();
-      logicLayoutSeq += 1;
-      if (!beginLensTransition(get, set, () => get().openComposition(unitId))) {
+      invalidateLogicLayout();
+      if (!beginLensTransition(get, set, invalidateRequestFlowWork, () => get().openComposition(unitId))) {
         return;
       }
       const reveal = serviceRevealStateForMany(
@@ -4468,7 +5459,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
       if (resetSynthetic) {
         syntheticExecutionSeq += 1;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
       }
       set({
         logicStack: [...state.logicStack, nodeId],
@@ -4493,7 +5484,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
       if (resetSynthetic) {
         syntheticExecutionSeq += 1;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
       }
       set({
         logicStack: state.logicStack.slice(0, index + 1),
@@ -4623,6 +5614,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // open/drill/toggle discards an older in-flight layout). A null root clears the graph.
     async logicRelayout(activity) {
       if (get().logicRoot === null) {
+        invalidateLogicLayout();
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle", logicLayoutActivity: null });
         return;
       }
@@ -4631,56 +5623,63 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         logicLayoutStatus: "laying-out",
         logicLayoutActivity: activity ?? { label: "Arranging logic flow…" },
       });
-      try {
-        if ((projectionDataSource !== null && !await ensureCurrentProjection()) || logicLayoutSeq !== sequence) {
-          return;
+      await layoutCoordinator.run("logic", async (signal) => {
+        try {
+          if (
+            signal.aborted
+            || (projectionDataSource !== null && !await ensureCurrentProjection({ layoutOwner: "logic", signal }))
+            || signal.aborted
+            || logicLayoutSeq !== sequence
+          ) {
+            return;
+          }
+          const {
+            logicRoot,
+            index,
+            artifact,
+            expandedLogic,
+            collapsedLogicEdges,
+            hideGreyed,
+            nestByService,
+            logicFocus,
+          } = get();
+          if (logicRoot === null) {
+            return;
+          }
+          const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+          await yieldForPaint();
+          if (signal.aborted || logicLayoutSeq !== sequence) {
+            return;
+          }
+          // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
+          const top = logicFocus[logicFocus.length - 1];
+          const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
+          // Flow nodes represent source sites, not their callees. Resolve their PR status from each
+          // FlowStep source anchor using the same aligned line-kind source as node colouring.
+          const stepStatusSources = reviewNodeStatusSourcesFromDiff(
+            changedLineKindsFromExtensions(artifact.extensions),
+            changedDiffLinesFromExtensions(artifact.extensions),
+          );
+          const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
+            hideGreyed,
+            nestByService,
+            changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
+          }, focus, collapsedLogicEdges);
+          if (signal.aborted || logicLayoutSeq !== sequence) {
+            return; // a newer layout superseded this one.
+          }
+          set({
+            logicRfNodes: graph.nodes,
+            logicRfEdges: graph.edges,
+            logicLayoutStatus: "ready",
+            logicLayoutActivity: null,
+          });
+        } catch {
+          if (!signal.aborted && logicLayoutSeq === sequence) {
+            set({ logicLayoutStatus: "error", logicLayoutActivity: null });
+          }
         }
-        const {
-          logicRoot,
-          index,
-          artifact,
-          expandedLogic,
-          collapsedLogicEdges,
-          hideGreyed,
-          nestByService,
-          logicFocus,
-        } = get();
-        if (logicRoot === null) {
-          return;
-        }
-        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        await yieldForPaint();
-        if (logicLayoutSeq !== sequence) {
-          return;
-        }
-        // A container dive charts only the TOP focus entry's bodies; else the whole callable flow.
-        const top = logicFocus[logicFocus.length - 1];
-        const focus = top ? { id: top.id, bodies: top.bodies } : undefined;
-        // Flow nodes represent source sites, not their callees. Resolve their PR status from each
-        // FlowStep source anchor using the same aligned line-kind source as node colouring.
-        const stepStatusSources = reviewNodeStatusSourcesFromDiff(
-          changedLineKindsFromExtensions(artifact.extensions),
-          changedDiffLinesFromExtensions(artifact.extensions),
-        );
-        const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
-          hideGreyed,
-          nestByService,
-          changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
-        }, focus, collapsedLogicEdges);
-        if (logicLayoutSeq !== sequence) {
-          return; // a newer layout superseded this one.
-        }
-        set({
-          logicRfNodes: graph.nodes,
-          logicRfEdges: graph.edges,
-          logicLayoutStatus: "ready",
-          logicLayoutActivity: null,
-        });
-      } catch {
-        if (logicLayoutSeq === sequence) {
-          set({ logicLayoutStatus: "error", logicLayoutActivity: null });
-        }
-      }
+      });
     },
 
     // Select a composition unit (pass null to clear). The view renders straight from the laid-out
@@ -4722,7 +5721,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // ring the reader entered from; only the shared "+" action writes permanent `mapExtra` state.
     inspectModuleGhost(nodeIds, anchorIds, extend) {
       const state = get();
-      if (state.minimalSeedIds.length > 0 || moduleSurfaceSpec(state.viewMode) === null) {
+      if (moduleGraphSurfaceOwner(state) !== "source" || moduleSurfaceSpec(state.viewMode) === null) {
         return false;
       }
       const validVisited = extraRoots(state.index, new Set(nodeIds));
@@ -4766,151 +5765,207 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // SurfaceSpec owns both its visible tree and its semantic-parent relation, so Map, Service, and
     // UI all travel through this one hierarchy/composition path.
     async moduleRelayout(activity) {
+      if (moduleGraphSurfaceOwner(get()) !== "source") {
+        return; // Extract/review owns the visible structural lane; no hidden source graph is retained.
+      }
       const sequence = ++moduleLayoutSeq;
+      const lensTransition = pendingModuleLensTransition;
       set({
         moduleLayoutStatus: "laying-out",
         moduleLayoutActivity: activity ?? defaultModuleLayoutActivity(get()),
       });
-      try {
-        if ((projectionDataSource !== null && !await ensureCurrentProjection()) || moduleLayoutSeq !== sequence) {
-          return;
-        }
-        await yieldForPaint();
-        if (moduleLayoutSeq !== sequence) {
-          return;
-        }
-        const state = get();
-        const graph = (moduleGraph ??= buildModuleGraph(state.index));
-        const deps = (blockDeps ??= buildBlockDeps(state.index));
-        const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
-        // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
-        // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
-        // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
-        // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.
-        // Focused semantic composites disable the off-frame dock below so all detail stays enclosed.)
-        const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
-        const spec = activeModuleSurfaceSpec(state.viewMode);
-        // A focused surface mounts detail plus every real parent graph as independent ELK layers.
-        // Commons demotion stays disabled for focused composites: independent Map layouts would
-        // otherwise mint the same RF-only dock identity. Service/UI ignore this Map-only flag.
-        const semanticState = state.moduleFocus !== null ? { ...state, showCommons: false } : state;
-        const transientIds = state.moduleGhostInspection?.visitedIds;
-        const extraIds = transientIds === undefined || transientIds.size === 0
-          ? state.mapExtra
-          : new Set([...state.mapExtra, ...transientIds]);
-        let tree = spec.deriveTree(
-          semanticState,
-          { graph, deps, flows },
-          { extraIds, hiddenIds: hidden },
-        );
-        if (state.moduleGhostInspection !== null) {
-          tree = decorateGhostInspectionTree(tree, state.index, state.moduleGhostInspection, state.mapExtra);
-        }
-        const outerTrees: SemanticOuterTree<SurfaceSemanticContext>[] = [];
-        let currentState = semanticState;
-        let currentEffectiveFocus = tree.effectiveFocus;
-        const seenParents = new Set<string>();
-        while (currentState.moduleFocus !== null && currentEffectiveFocus !== null) {
-          const stateKey = `${currentState.moduleFocus}\u0000${currentEffectiveFocus}`;
-          if (seenParents.has(stateKey)) {
-            break;
+      await layoutCoordinator.run("module", async (signal) => {
+        try {
+          if (
+            signal.aborted
+            || (projectionDataSource !== null && !await ensureCurrentProjection({ layoutOwner: "module", signal }))
+            || signal.aborted
+            || moduleLayoutSeq !== sequence
+          ) {
+            return;
           }
-          seenParents.add(stateKey);
-          const parent = spec.navigation.semanticParent({ state: currentState, effectiveFocus: currentEffectiveFocus });
-          if (parent === null) {
-            break;
+          if (lensTransition !== null) {
+            if (
+              pendingModuleLensTransition !== lensTransition
+              || get().viewMode !== lensTransition.mode
+            ) {
+              return;
+            }
+            // The first activation installs the destination's authoritative facts. Only now may the
+            // carry translate into destination-local focus/expansion and a Service ownership scope.
+            const state = get();
+            const serviceResolution = lensTransition.mode === "call"
+              ? resolveServiceAnchors(
+                  lensTransition.anchors,
+                  state.index,
+                  state.serviceGroupingMode,
+                  state.serviceGroupingTargetSize,
+                )
+              : null;
+            const reveal = lensTransition.mode === "modules"
+              ? mapRevealStateForMany(lensTransition.anchors, state.index)
+              : lensTransition.mode === "call"
+                ? serviceResolution?.reveal ?? null
+                : uiRevealStateForMany(lensTransition.anchors, state.index);
+            set({
+              serviceScope: lensTransition.mode === "call" && serviceResolution !== null
+                ? serviceScopeFor(serviceResolution.owningLeads, state.index)
+                : null,
+              ...(reveal ?? MODULE_TOP_LEVEL),
+            });
+            pendingModuleLensTransition = null;
+            // Carry can add focus and disclosure selectors. Hydrate that exact final coordinate before
+            // deriving any scene so an expanded Service frame never paints from a top-level slice.
+            if (
+              signal.aborted
+              || (projectionDataSource !== null
+                && !await ensureCurrentProjection({ layoutOwner: "module", signal }))
+              || signal.aborted
+              || moduleLayoutSeq !== sequence
+            ) {
+              return;
+            }
           }
-          const parentState = {
-            ...currentState,
-            moduleFocus: parent.focus,
-            moduleExpanded: new Set<string>(),
-            ...(parent.context ?? {}),
-          };
-          let parentTree = spec.deriveTree(
-            parentState,
+          await yieldForPaint();
+          if (signal.aborted || moduleLayoutSeq !== sequence) {
+            return;
+          }
+          const state = get();
+          const graph = (moduleGraph ??= buildModuleGraph(state.index));
+          const deps = (blockDeps ??= buildBlockDeps(state.index));
+          const flows = (state.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+          // Hidden tests are EXCLUDED from the layout (not just painted out): test code can be half the
+          // cards, and paint-hiding it kept a crater of empty space. toggleShowTests relayouts this lens.
+          // (The Service tree applies the hidden set to its GHOST tier only — cluster members still
+          // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
+          // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.
+          // Focused semantic composites disable the off-frame dock below so all detail stays enclosed.)
+          const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
+          const spec = activeModuleSurfaceSpec(state.viewMode);
+          // A focused surface mounts detail plus every real parent graph as independent ELK layers.
+          // Commons demotion stays disabled for focused composites: independent Map layouts would
+          // otherwise mint the same RF-only dock identity. Service/UI ignore this Map-only flag.
+          const semanticState = state.moduleFocus !== null ? { ...state, showCommons: false } : state;
+          const transientIds = state.moduleGhostInspection?.visitedIds;
+          const extraIds = transientIds === undefined || transientIds.size === 0
+            ? state.mapExtra
+            : new Set([...state.mapExtra, ...transientIds]);
+          let tree = spec.deriveTree(
+            semanticState,
             { graph, deps, flows },
-            { hiddenIds: hidden },
+            { extraIds, hiddenIds: hidden },
           );
           if (state.moduleGhostInspection !== null) {
-            // Outer semantic layers intentionally receive no temporary roots, but their canonical
-            // ancestors (and a Service layer's synthetic anchor) are still inside the retained
-            // path. Mark them so clicking the visible enclosing card does not end exploration.
-            parentTree = decorateGhostInspectionTree(
-              parentTree,
-              state.index,
-              state.moduleGhostInspection,
-              state.mapExtra,
-            );
-            parentTree = {
-              ...parentTree,
-              nodes: parentTree.nodes.map((node) =>
-                node.id === parent.anchorId
-                  ? { ...node, data: { ...node.data, ghostInspectionPath: true } }
-                  : node),
+            tree = decorateGhostInspectionTree(tree, state.index, state.moduleGhostInspection, state.mapExtra);
+          }
+          const outerTrees: SemanticOuterTree<SurfaceSemanticContext>[] = [];
+          let currentState = semanticState;
+          let currentEffectiveFocus = tree.effectiveFocus;
+          const seenParents = new Set<string>();
+          while (currentState.moduleFocus !== null && currentEffectiveFocus !== null) {
+            const stateKey = `${currentState.moduleFocus}\u0000${currentEffectiveFocus}`;
+            if (seenParents.has(stateKey)) {
+              break;
+            }
+            seenParents.add(stateKey);
+            const parent = spec.navigation.semanticParent({ state: currentState, effectiveFocus: currentEffectiveFocus });
+            if (parent === null) {
+              break;
+            }
+            const parentState = {
+              ...currentState,
+              moduleFocus: parent.focus,
+              moduleExpanded: new Set<string>(),
+              ...(parent.context ?? {}),
             };
+            let parentTree = spec.deriveTree(
+              parentState,
+              { graph, deps, flows },
+              { hiddenIds: hidden },
+            );
+            if (state.moduleGhostInspection !== null) {
+              // Outer semantic layers intentionally receive no temporary roots, but their canonical
+              // ancestors (and a Service layer's synthetic anchor) are still inside the retained
+              // path. Mark them so clicking the visible enclosing card does not end exploration.
+              parentTree = decorateGhostInspectionTree(
+                parentTree,
+                state.index,
+                state.moduleGhostInspection,
+                state.mapExtra,
+              );
+              parentTree = {
+                ...parentTree,
+                nodes: parentTree.nodes.map((node) =>
+                  node.id === parent.anchorId
+                    ? { ...node, data: { ...node.data, ghostInspectionPath: true } }
+                    : node),
+              };
+            }
+            outerTrees.push({
+              level: {
+                depth: outerTrees.length + 1,
+                focus: parent.focus,
+                effectiveFocus: parentTree.effectiveFocus,
+                anchorId: parent.anchorId,
+                label: parent.label,
+                context: parent.context,
+              },
+              tree: parentTree,
+            });
+            if (parent.focus === null) {
+              break;
+            }
+            currentState = parentState;
+            currentEffectiveFocus = parentTree.effectiveFocus;
           }
-          outerTrees.push({
-            level: {
-              depth: outerTrees.length + 1,
-              focus: parent.focus,
-              effectiveFocus: parentTree.effectiveFocus,
-              anchorId: parent.anchorId,
-              label: parent.label,
-              context: parent.context,
-            },
-            tree: parentTree,
+          const stack = prepareSemanticModuleStack(tree, outerTrees);
+          let laid: { nodes: Node[]; edges: Edge[] };
+          let semanticLayers: SemanticAncestorLevel<SurfaceSemanticContext>[] = [];
+          if (stack.layers.length < 2) {
+            laid = await layoutModuleTree(tree.nodes, tree.edges, spec.relations);
+          } else {
+            const layouts = await Promise.all(
+              stack.layers.map((layer) => layoutModuleTree(layer.tree.nodes, layer.tree.edges, spec.relations)),
+            );
+            const composite = composeSemanticStackLayouts(layouts, stack);
+            laid = composite ?? layouts[0];
+            if (composite !== null) {
+              semanticLayers = stack.ancestors;
+            }
+          }
+          if (signal.aborted || moduleLayoutSeq !== sequence) {
+            return; // a newer focus change superseded this one.
+          }
+          const latest = get();
+          let moduleSelected = latest.moduleSelected;
+          if (pendingModuleSelectionPrune.size > 0) {
+            const visibleIds = new Set(laid.nodes.map((node) => node.id));
+            const staleIds = [...pendingModuleSelectionPrune].filter((id) =>
+              latest.moduleSelected.has(id) && !visibleIds.has(id));
+            if (staleIds.length > 0) {
+              moduleSelected = new Set(latest.moduleSelected);
+              staleIds.forEach((id) => moduleSelected.delete(id));
+            }
+            pendingModuleSelectionPrune.clear();
+          }
+          set({
+            moduleRfNodes: laid.nodes,
+            moduleRfEdges: laid.edges,
+            moduleEffectiveFocus: tree.effectiveFocus,
+            moduleSemanticLayers: semanticLayers,
+            moduleSelected,
+            moduleLayoutStatus: "ready",
+            moduleLayoutActivity: null,
           });
-          if (parent.focus === null) {
-            break;
-          }
-          currentState = parentState;
-          currentEffectiveFocus = parentTree.effectiveFocus;
-        }
-        const stack = prepareSemanticModuleStack(tree, outerTrees);
-        let laid: { nodes: Node[]; edges: Edge[] };
-        let semanticLayers: SemanticAncestorLevel<SurfaceSemanticContext>[] = [];
-        if (stack.layers.length < 2) {
-          laid = await layoutModuleTree(tree.nodes, tree.edges, spec.relations);
-        } else {
-          const layouts = await Promise.all(
-            stack.layers.map((layer) => layoutModuleTree(layer.tree.nodes, layer.tree.edges, spec.relations)),
-          );
-          const composite = composeSemanticStackLayouts(layouts, stack);
-          laid = composite ?? layouts[0];
-          if (composite !== null) {
-            semanticLayers = stack.ancestors;
+        } catch {
+          if (!signal.aborted && moduleLayoutSeq === sequence) {
+            if (pendingModuleLensTransition === lensTransition) {
+              pendingModuleLensTransition = null;
+            }
+            set({ moduleLayoutStatus: "error", moduleLayoutActivity: null });
           }
         }
-        if (moduleLayoutSeq !== sequence) {
-          return; // a newer focus change superseded this one.
-        }
-        const latest = get();
-        let moduleSelected = latest.moduleSelected;
-        if (pendingModuleSelectionPrune.size > 0) {
-          const visibleIds = new Set(laid.nodes.map((node) => node.id));
-          const staleIds = [...pendingModuleSelectionPrune].filter((id) =>
-            latest.moduleSelected.has(id) && !visibleIds.has(id));
-          if (staleIds.length > 0) {
-            moduleSelected = new Set(latest.moduleSelected);
-            staleIds.forEach((id) => moduleSelected.delete(id));
-          }
-          pendingModuleSelectionPrune.clear();
-        }
-        set({
-          moduleRfNodes: laid.nodes,
-          moduleRfEdges: laid.edges,
-          moduleEffectiveFocus: tree.effectiveFocus,
-          moduleSemanticLayers: semanticLayers,
-          moduleSelected,
-          moduleLayoutStatus: "ready",
-          moduleLayoutActivity: null,
-        });
-      } catch {
-        if (moduleLayoutSeq === sequence) {
-          set({ moduleLayoutStatus: "error", moduleLayoutActivity: null });
-        }
-      }
+      });
     },
 
     // Explicitly dive the active module surface (null == its root). Clears the selection (it means
@@ -4937,13 +5992,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // The cards a breadcrumb segment can descend into: the frontier the Map draws at that focus,
-    // filtered to folders/files. Reuses the cached import graph and the SAME hidden-tests set the
+    // filtered to folders/files. Reuses the SAME hidden-tests set the
     // layout hides, so the dropdown never lists a card that isn't on screen.
     folderChildrenFor(focus) {
       const state = get();
-      const graph = (moduleGraph ??= buildModuleGraph(state.index));
       const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
-      return levelChildren(state.index, graph, focus, hidden);
+      return levelChildren(state.index, focus, hidden);
     },
 
     // Crossing an outward semantic threshold is browser-back-shaped navigation on ANY registered
@@ -4971,7 +6025,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
       // A focus relayout requested immediately before the threshold must never overwrite this
       // committed slice when its awaited ELK work completes.
-      moduleLayoutSeq += 1;
+      invalidateModuleLayout();
       set({
         ...(target.context ?? {}),
         moduleFocus: target.focus,
@@ -5086,6 +6140,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selects it. Inert elsewhere — the palette opens a logic flow in logic itself.
     revealInView(rawId, expectedGraphId) {
       const initial = get();
+      if (moduleGraphSurfaceOwner(initial) === "prepared-review-overview") {
+        return Promise.reject(new Error("Select a changed file before revealing symbols in its graph."));
+      }
       if (projectionDataSource !== null && expectedGraphId !== undefined && expectedGraphId !== null
         && expectedGraphId !== initial.activeProjectionGraphId) {
         return Promise.reject(new Error("The graph changed while the symbol palette was open. Search again."));
@@ -5121,6 +6178,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // lens as a scratch-card union for its next relayout. All ordinary module lenses share `mapExtra`.
     addToView(rawId, expectedGraphId) {
       const initial = get();
+      if (moduleGraphSurfaceOwner(initial) === "prepared-review-overview") {
+        return Promise.reject(new Error("Select a changed file before adding symbols to its graph."));
+      }
       if (projectionDataSource !== null && expectedGraphId !== undefined && expectedGraphId !== null
         && expectedGraphId !== initial.activeProjectionGraphId) {
         return Promise.reject(new Error("The graph changed while the symbol palette was open. Search again."));
@@ -5131,7 +6191,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const state = initial;
       const viewMode = state.viewMode;
-      const minimalOpen = state.minimalSeedIds.length > 0;
+      const minimalOpen = moduleGraphSurfaceOwner(state) === "extracted";
       if (!minimalOpen && moduleSurfaceSpec(viewMode) === null) {
         releasePaletteProjectionExtra(rawId);
         return Promise.resolve();
@@ -5201,8 +6261,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // own a set of extra file cards and let ELK place them. Focus and selection are never replaced.
     promoteGhost(ghostId, at) {
       const state = get();
-      const minimalOpen = state.minimalSeedIds.length > 0;
-      if (!minimalOpen && moduleSurfaceSpec(state.viewMode) === null) {
+      const surfaceOwner = moduleGraphSurfaceOwner(state);
+      if (surfaceOwner === "prepared-review-overview") return;
+      const minimalOpen = surfaceOwner === "extracted";
+      if (surfaceOwner === "source" && moduleSurfaceSpec(state.viewMode) === null) {
         return;
       }
 
@@ -5259,7 +6321,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // untouched so re-adding a card does not forget how the reader had opened it.
     removeSelectionFromView() {
       const state = get();
-      if (state.minimalSeedIds.length > 0) {
+      const surfaceOwner = moduleGraphSurfaceOwner(state);
+      if (surfaceOwner === "prepared-review-overview") return;
+      if (surfaceOwner === "extracted") {
         const memberIds = minimalSelectionRemovalIds(state);
         if (memberIds.length === 0) {
           return;
@@ -5373,6 +6437,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // edges, so this is presentation-only: the canvas bundles or restores them without derivation,
     // layout, scene replacement, or a camera reset.
     toggleHighways() {
+      if (moduleGraphSurfaceOwner(get()) === "prepared-review-overview") return;
       set({ showHighways: !get().showHighways });
     },
 
@@ -5478,11 +6543,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async setMinimalView(view) {
       const state = get();
-      if (state.minimalSeedIds.length === 0 || state.minimalView === view) return;
+      if (moduleGraphSurfaceOwner(state) !== "extracted" || state.minimalView === view) return;
       if (!guardReviewLineComposerTransition(() => { void get().setMinimalView(view); })) return;
       if (view === "codebase") {
+        cancelPreparedFileProjection();
         const { targetIds, retainedExpandedIds } = minimalCodebaseInputsForState(state);
-        const needsProjection = projectionDataSource !== null && state.prPreparedArtifactCurrent;
+        const needsProjection = captureMinimalCodebaseProjectionBaseline(state) !== null;
         retainCurrentMinimalScene(state);
         set({
           minimalView: "codebase",
@@ -5511,8 +6577,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       minimalCodebaseProjectionActivitySeq += 1;
       set({ minimalView: "graph", minimalCodebaseProjectionPending: false });
       if (
-        projectionDataSource !== null
-        && state.prPreparedArtifactCurrent
+        minimalCodebaseProjectionBaseline !== null
         && !await restoreMinimalCodebaseProjection()
       ) return;
       await restoreCurrentMinimalScene();
@@ -5529,7 +6594,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       next.set(nodeId, expanded);
       set({ minimalCodebaseExpansionOverrides: next });
       const state = get();
-      if (state.minimalView === "codebase" && state.prPreparedArtifactCurrent) {
+      if (state.minimalView === "codebase" && minimalCodebaseProjectionBaseline !== null) {
         // Both directions are transport changes. A rapid expand→collapse aborts the first request,
         // and the final request is built from the current override map, so stale expanded pairs can
         // never install after the disclosure was closed.
@@ -5545,7 +6610,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (
         get().minimalView === "graph"
         && minimalCodebaseProjectionBaseline !== null
-        && !await ensureExtractedReviewProjection()
+        && !await ensureExtractedGraphProjection()
       ) return;
       const state = get();
       const nested = state.minimalSeedIds.length > 0;
@@ -5604,15 +6669,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           }
         : {};
       if (state.flowSelection !== null || state.flowPaneOrigin !== null) {
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         requestTargetRevealSeq += 1;
       }
       syntheticExecutionSeq += 1;
       const inspectedSource = !nested && state.moduleGhostInspection !== null;
+      if (!nested) moduleSceneNeedsRestore = inspectedSource;
       const minimalBasePositions = captureMapPositions(nested ? state.minimalRfNodes : state.moduleRfNodes);
-      const history = nested
-        ? [...state.minimalGraphHistory, captureMinimalGraphHistoryFrame(state)]
-        : [];
+      const history = nested ? appendMinimalGraphHistoryFrame(state) : [];
       if (nested) startNewMinimalScene();
       // A Codebase-origin child promotes the current context pair into its own extracted coordinate.
       // The parent's exact context+baseline pair lives in metadata beside its evictable scene.
@@ -5685,11 +6749,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ...clearSyntheticFlow,
         ...clearArtifactReviewFlow,
       });
-      if (inspectedSource) {
-        // The overlay commits its own explicit member set. Rebuild the still-mounted source without
-        // reversible preview roots so closing the overlay cannot resurrect the exploration path.
-        void get().moduleRelayout({ label: "Restoring source graph…" });
-      }
       void requestMinimalRelayout({ label: "Extracting selection…" });
     },
 
@@ -5724,17 +6783,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       // A competing navigation may have replaced the stack while an evicted projection reloaded.
       if (state.minimalGraphHistory.at(-1) !== parent) return;
-      minimalLayoutSeq += 1;
-      flowPaneLayoutSeq += 1;
+      invalidateMinimalLayout();
+      invalidateFlowPaneLayout();
       requestTargetRevealSeq += 1;
       syntheticExecutionSeq += 1;
       currentMinimalSceneKey = parent.sceneKey || nextMinimalSceneKey();
       const cachedScene = parent.minimalView === "graph"
-        ? minimalSceneCache.activate(currentMinimalSceneKey)
+        ? minimalSceneCache.activateAndDiscardPrevious(currentMinimalSceneKey)
         : undefined;
       if (parent.minimalView === "codebase") {
-        // Codebase is the current view; its extracted sibling must remain an inactive allocation.
-        minimalSceneCache.deactivateActive();
+        // The popped child has no forward owner. Release it while keeping the parent's extracted
+        // sibling as a budgeted inactive allocation for a later Graph switch.
+        minimalSceneCache.discardActive();
         void minimalSceneCache.get(currentMinimalSceneKey);
       }
       const sceneState = cachedScene === undefined
@@ -5760,6 +6820,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: state.minimalGraphHistory.slice(0, -1),
       });
       minimalProjectionFrames.delete(parent.sceneKey);
+      minimalNavigationResidentBytes.delete(parent.sceneKey);
       // A cache hit restores the exact geometry. A miss keeps only the lightweight coordinate and
       // rebuilds one current scene; no evicted graph data is resurrected outside the shared budget.
       const showTestsChanged = state.showTests !== parent.showTests;
@@ -5790,7 +6851,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             || restored.flowPaneRfNodes.length > 0
             || restored.flowPaneRfEdges.length > 0
           ) {
-            flowPaneLayoutSeq += 1;
+            invalidateFlowPaneLayout();
             set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
           }
         } else if (flowPresentationChanged || restored.flowPaneLayoutStatus !== "ready") {
@@ -5815,6 +6876,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return Promise.resolve();
       }
       const stateBeforeClose = get();
+      cancelPreparedFileProjection();
       const closingPrReview = stateBeforeClose.prReviewed;
       minimalCodebaseProjectionActivitySeq += 1;
       projectionRequestController?.abort();
@@ -5832,10 +6894,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const reviewFlowOpen = stateBeforeClose.review !== null
         && stateBeforeClose.flowSelection !== null
         && flowBaseline !== null;
-      const finishClose = () => {
+      const finishClose = (): Promise<void> => {
       const sourceRestoreSequence = moduleLayoutSeq;
-      minimalLayoutSeq += 1;
-      flowPaneLayoutSeq += 1;
+      const restoreDeferredModuleScene = moduleSceneNeedsRestore;
+      moduleSceneNeedsRestore = false;
+      invalidateMinimalLayout();
+      invalidateFlowPaneLayout();
       clearMinimalSceneNavigation();
       set({
         ...(reviewFlowOpen && flowBaseline !== null
@@ -5893,20 +6957,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // supersede this work, then rebuild only if the soft-closed review is still parked on a
         // module surface. Resume and every artifact swap bump moduleLayoutSeq, so an old base Map
         // can never race a newly reopened HEAD review.
-        void (async () => {
+        return (async () => {
           await yieldForPaint();
           const current = get();
           if (
             moduleLayoutSeq !== sourceRestoreSequence
             || current.prReviewed !== closingPrReview
-            || current.minimalSeedIds.length > 0
+            || moduleGraphOverlayIsOpen(current)
             || moduleSurfaceSpec(current.viewMode) === null
           ) {
             return;
           }
           await current.moduleRelayout({ label: "Restoring review map…" });
         })();
+      } else if (restoreDeferredModuleScene && moduleSurfaceSpec(get().viewMode) !== null) {
+        // The source graph was invisible while Extract owned the structural lane. Rebuild it only
+        // after the overlay has released its scene, so no hidden projection is retained in parallel.
+        return get().moduleRelayout({ label: "Restoring source graph…" });
       }
+      return Promise.resolve();
       };
       // Closing the overlay mid-review must never expose the swapped HEAD as an ordinary Map. A
       // retained baseline promotes synchronously; an evicted/oversized one reloads first, leaving
@@ -5916,7 +6985,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           const restoration = restoreReviewSession({ endSession: false });
           if (restoration instanceof Promise) {
             return restoration.then((restored) => {
-              if (restored) finishClose();
+              if (restored) return finishClose();
             }, (error) => {
               set({
                 prReviewStatus: "error",
@@ -5930,8 +6999,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return Promise.resolve();
         }
       }
-      finishClose();
-      return Promise.resolve();
+      return finishClose();
     },
 
     // Reset the overlay to its base: restore the working set to the origin selection, collapse any
@@ -5995,6 +7063,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // GraphSurface and never enter derivation or ELK.
     async minimalRelayout(activity) {
       if (get().minimalMemberIds.length === 0) {
+        invalidateMinimalLayout();
         set({ minimalLayoutStatus: "idle", minimalLayoutActivity: null });
         if (get().minimalSeedIds.length > 0 && get().minimalView === "graph") {
           publishCurrentMinimalScene(get());
@@ -6006,85 +7075,97 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutStatus: "laying-out",
         minimalLayoutActivity: activity ?? { label: "Arranging extracted graph…" },
       });
-      try {
-        await yieldForPaint();
-        if (minimalLayoutSeq !== sequence) {
-          return;
+      await layoutCoordinator.run("minimal", async (signal) => {
+        try {
+          // Minimal Graph is another bounded view of the active revision, not a license to reuse
+          // whichever source slice happened to be installed underneath it. Its members and explicit
+          // disclosure gates must be admitted before derivation so expanding a file/class never
+          // depends on stale children left over from an earlier Map projection.
+          if (signal.aborted
+          || (projectionDataSource !== null && !await ensureCurrentProjection({ layoutOwner: "minimal", signal }))
+            || signal.aborted
+            || minimalLayoutSeq !== sequence) {
+            return;
+          }
+          await yieldForPaint();
+          if (signal.aborted || minimalLayoutSeq !== sequence) {
+            return;
+          }
+          const state = get();
+          const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = state;
+          moduleGraph ??= buildModuleGraph(index);
+          const deps = (blockDeps ??= buildBlockDeps(index));
+          const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
+          const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
+          const members = minimalMembersForFlowInspection(state);
+          const surface = activeModuleSurfaceSpec(state.viewMode);
+          // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
+          // source cards. Derive it from the already-laid structural scene on every pass: URL restore lays
+          // that scene first, while PR/Service projections whose seeds do not exist there safely add
+          // none. Relationship visibility and redundant-import suppression remain paint-only, so
+          // toggling presentation cannot silently change the extracted graph's membership.
+          const connectorIds = state.review === null
+            ? minimalGraphConnectorIds(state.moduleRfNodes, state.moduleRfEdges, new Set(minimalSeedIds))
+            : EMPTY_HIDDEN_IDS;
+          const derivedMembers = connectorIds.size === 0
+            ? members
+            : new Set([...members, ...connectorIds]);
+          // Source-backed group members keep the exact Map card contract, including real coupling
+          // counts and disclosure. Review-only rollups have no source card and retain their synthetic
+          // summary contract. Both kinds use the same canonical subtree expansion when disclosed.
+          const sourceGroupNodes = state.review === null
+            ? state.moduleRfNodes.filter((node) =>
+                derivedMembers.has(node.id)
+                && (node.type === "package" || node.type === "serviceDomain"),
+              )
+            : [];
+          const expandableGroupIds = new Set([
+            ...Object.keys(state.minimalRollups),
+            ...sourceGroupNodes
+              .filter((node) => (node.data as { isContainer?: unknown }).isContainer === true)
+              .map((node) => node.id),
+          ]);
+          const requestedGroupExpansions = new Set(
+            [...expandableGroupIds].filter((id) => derivedMembers.has(id) && moduleExpanded.has(id)),
+          );
+          const rollupExpansions = requestedGroupExpansions.size === 0
+            ? []
+            : minimalRollupExpansions(
+                surface.deriveTree(state, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden }),
+                index,
+                requestedGroupExpansions,
+              );
+          const layout = await deriveMinimalGraphLayout(index, moduleGraph, derivedMembers, new Set(minimalSeedIds), minimalBasePositions, {
+            moduleExpanded,
+            blockDeps: deps,
+            flows,
+            expandableGroupIds,
+            rollupExpansions,
+            sourceGroupNodes,
+            // Highways is a visual transform over exact wires. Preparing that substrate once per
+            // structural scene lets selection unspool its strands at paint time, just like the Map.
+            directDependencies: true,
+            visibleIds: state.review !== null && state.reviewDiffOnly
+              ? reviewDiffVisibleIds(index, state.reviewAffectedIds)
+              : undefined,
+          }, minimalArrange, hidden, surface.relations);
+          if (signal.aborted || minimalLayoutSeq !== sequence) {
+            return; // a newer build/promote/demote/reset/re-arrange superseded this one.
+          }
+          set({
+            minimalRfNodes: layout.nodes,
+            minimalRfEdges: layout.edges,
+            minimalLayoutStatus: "ready",
+            minimalLayoutActivity: null,
+          });
+          publishCurrentMinimalScene(get());
+        } catch (error) {
+          if (!signal.aborted && minimalLayoutSeq === sequence) {
+            console.error("[meridian] Minimal graph layout failed.", error);
+            set({ minimalLayoutStatus: "error", minimalLayoutActivity: null });
+          }
         }
-        const state = get();
-        const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = state;
-        moduleGraph ??= buildModuleGraph(index);
-        const deps = (blockDeps ??= buildBlockDeps(index));
-        const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
-        const members = minimalMembersForFlowInspection(state);
-        const surface = activeModuleSurfaceSpec(state.viewMode);
-        // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
-        // source cards. Derive it from the already-laid structural scene on every pass: URL restore lays
-        // that scene first, while PR/Service projections whose seeds do not exist there safely add
-        // none. Relationship visibility and redundant-import suppression remain paint-only, so
-        // toggling presentation cannot silently change the extracted graph's membership.
-        const connectorIds = state.review === null
-          ? minimalGraphConnectorIds(state.moduleRfNodes, state.moduleRfEdges, new Set(minimalSeedIds))
-          : EMPTY_HIDDEN_IDS;
-        const derivedMembers = connectorIds.size === 0
-          ? members
-          : new Set([...members, ...connectorIds]);
-        // Source-backed group members keep the exact Map card contract, including real coupling
-        // counts and disclosure. Review-only rollups have no source card and retain their synthetic
-        // summary contract. Both kinds use the same canonical subtree expansion when disclosed.
-        const sourceGroupNodes = state.review === null
-          ? state.moduleRfNodes.filter((node) =>
-              derivedMembers.has(node.id)
-              && (node.type === "package" || node.type === "serviceDomain"),
-            )
-          : [];
-        const expandableGroupIds = new Set([
-          ...Object.keys(state.minimalRollups),
-          ...sourceGroupNodes
-            .filter((node) => (node.data as { isContainer?: unknown }).isContainer === true)
-            .map((node) => node.id),
-        ]);
-        const requestedGroupExpansions = new Set(
-          [...expandableGroupIds].filter((id) => derivedMembers.has(id) && moduleExpanded.has(id)),
-        );
-        const rollupExpansions = requestedGroupExpansions.size === 0
-          ? []
-          : minimalRollupExpansions(
-              surface.deriveTree(state, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden }),
-              index,
-              requestedGroupExpansions,
-            );
-        const layout = await deriveMinimalGraphLayout(index, moduleGraph, derivedMembers, new Set(minimalSeedIds), minimalBasePositions, {
-          moduleExpanded,
-          blockDeps: deps,
-          flows,
-          expandableGroupIds,
-          rollupExpansions,
-          sourceGroupNodes,
-          // Highways is a visual transform over exact wires. Preparing that substrate once per
-          // structural scene lets selection unspool its strands at paint time, just like the Map.
-          directDependencies: true,
-          visibleIds: state.review !== null && state.reviewDiffOnly
-            ? reviewDiffVisibleIds(index, state.reviewAffectedIds)
-            : undefined,
-        }, minimalArrange, hidden, surface.relations);
-        if (minimalLayoutSeq !== sequence) {
-          return; // a newer build/promote/demote/reset/re-arrange superseded this one.
-        }
-        set({
-          minimalRfNodes: layout.nodes,
-          minimalRfEdges: layout.edges,
-          minimalLayoutStatus: "ready",
-          minimalLayoutActivity: null,
-        });
-        publishCurrentMinimalScene(get());
-      } catch (error) {
-        if (minimalLayoutSeq === sequence) {
-          console.error("[meridian] Minimal graph layout failed.", error);
-          set({ minimalLayoutStatus: "error", minimalLayoutActivity: null });
-        }
-      }
+      });
     },
 
     // Flip one Module-map node in/out of the selection WITHOUT touching the rest — the ctrl/cmd+click
@@ -6111,11 +7192,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     // Scope the Service lens to the current anchors' owning cluster(s) plus every cluster coupled
-    // to them in EITHER direction (1-hop). Enters the lens DIRECTLY — going through setViewMode
-    // would clear the very scope this is setting — so it runs the shared lens transition itself
-    // (clear-then-set). The reveal seeds the owning frames open + anchors selected.
+    // to them in EITHER direction (1-hop). From another lens, setViewMode owns destination hydration
+    // and performs this same resolution only after Service facts arrive. Inside Service, this action
+    // narrows the already-authoritative projection and preserves its open frames.
     openServiceScope() {
-      const { index, viewMode, moduleExpanded, serviceGroupingMode, serviceGroupingTargetSize } = get();
+      const initial = get();
+      if (initial.viewMode !== "call" && clusteringForIfAvailable(initial.index) === null) {
+        initial.setViewMode("call");
+        return;
+      }
+      if (pendingModuleLensTransition !== null) {
+        return;
+      }
+      const { index, viewMode, moduleExpanded, serviceGroupingMode, serviceGroupingTargetSize } = initial;
       // ONE anchors→clusters resolution feeds both the scope's leads and the reveal, so they can
       // never disagree about which anchors resolve (they read the same cached clustering too).
       const resolution = resolveServiceAnchors(
@@ -6130,20 +7219,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => get().openServiceScope())) {
         return;
       }
-      if (!beginLensTransition(get, set, () => get().openServiceScope())) {
+      if (!beginLensTransition(get, set, invalidateRequestFlowWork, () => get().openServiceScope())) {
         return;
       }
       if (viewMode === "logic") {
-        logicLayoutSeq += 1;
+        invalidateLogicLayout();
       }
-      // Scoping from WITHIN the call lens narrows the canvas the reader is already on, so their
-      // open frames must survive: UNION the reveal's expansion into the current one. From any
-      // other lens this is a lens switch, where the reveal REPLACES the expansion (the outgoing
-      // lens's expansion ids mean nothing on the incoming surface).
-      const revealExpanded =
-        viewMode === "call"
-          ? new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded])
-          : resolution.reveal.moduleExpanded;
+      const revealExpanded = viewMode === "call"
+        ? new Set([...moduleExpanded, ...resolution.reveal.moduleExpanded])
+        : resolution.reveal.moduleExpanded;
       set({
         viewMode: "call",
         serviceScope: serviceScopeFor(resolution.owningLeads, index),
@@ -6260,6 +7344,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       const moduleSelected = id === null ? new Set<string>() : new Set([id]);
+      if (before.flowSelection !== null || before.flowPaneOrigin !== null) {
+        invalidateFlowPaneLayout();
+      }
       set({
         ...(flowBaseline ?? {}),
         reviewSelectedId: id,
@@ -6295,12 +7382,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       recenter();
     },
 
-    // The file row's click: focus an owning rollup when necessary, select the exact file frame, light
-    // its touched units amber-strong, and center the viewport. Inert for files with no graph module.
-    focusReviewFile(path) {
-      const state = get();
+    // The file row's click first activates one exact two-sided file coordinate, then focuses its
+    // owning frame. A file that still has no semantic match after that honest load opens as source.
+    async focusReviewFile(path) {
+      let state = get();
+      const targetCursor = preparedReviewFileCursor(state.prPreparedChangedFiles, path);
+      if (state.prPreparedArtifactCurrent && targetCursor !== null) {
+        if (!guardReviewLineComposerTransition(() => { void get().focusReviewFile(path); })) return;
+        const coordinateChanged = targetCursor !== state.prPreparedReviewCursor;
+        if (!await hydratePreparedReviewFile(path, targetCursor)
+          || get().prPreparedReviewCursor !== targetCursor) return;
+        if (coordinateChanged) {
+          const layouts: Promise<void>[] = [];
+          const applied = applyPrReviewToMap(
+            get,
+            set,
+            prFilesUrl,
+            invalidateMinimalLayout,
+            invalidateModuleLayout,
+            invalidateRequestFlowWork,
+            invalidateArtifactCaches,
+            {
+              surfaceTransition: "reproject",
+              preserveReviewSelection: false,
+              captureVisibleLayout: (layout) => layouts.push(layout),
+            },
+          );
+          if (!applied) return;
+          await Promise.all(layouts);
+          if (get().prPreparedReviewCursor !== targetCursor) return;
+        }
+        state = get();
+      }
       const file = state.reviewFiles.find((candidate) => candidate.path === path);
       if (!file || file.moduleId === null) {
+        await get().showReviewFile(path);
         return;
       }
       const flowBaseline = state.reviewFlowBaseline;
@@ -6314,7 +7430,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (flowBaseline === null) {
         const rootId = hiddenReviewRollupFor(state, file.moduleId);
         if (rootId !== null) {
-          void focusReviewSubgraph(
+          await focusReviewSubgraph(
             rootId,
             { selectedId: file.moduleId, litNodeIds: lit },
             () => get().focusReviewFile(path),
@@ -6330,6 +7446,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       const moduleSelected = new Set([file.moduleId]);
+      if (state.flowSelection !== null || state.flowPaneOrigin !== null) {
+        invalidateFlowPaneLayout();
+      }
       set({
         ...(flowBaseline ?? {}),
         moduleSelected,
@@ -6378,7 +7497,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) return;
       if (
         minimalCodebaseProjectionBaseline !== null
-        && !await ensureExtractedReviewProjection()
+        && !await ensureExtractedGraphProjection()
       ) return;
       const {
         review,
@@ -6402,6 +7521,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         deletedNodeIds: reviewDeletedNodeIds,
       });
       invalidateMinimalLayout();
+      invalidateFlowPaneLayout();
       clearMinimalSceneNavigation();
       startNewMinimalScene();
       minimalCodebaseProjectionBaseline = null;
@@ -6457,7 +7577,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (
         minimalCodebaseProjectionBaseline !== null
-        && !await ensureExtractedReviewProjection()
+        && !await ensureExtractedGraphProjection()
       ) return;
       const state = get();
       const activeGroup = state.reviewActiveGroupId === null
@@ -6475,6 +7595,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       invalidateMinimalLayout();
+      invalidateFlowPaneLayout();
       clearMinimalSceneNavigation();
       startNewMinimalScene();
       minimalCodebaseProjectionBaseline = null;
@@ -6746,7 +7867,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       if (view !== "graph") {
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
       }
@@ -6780,7 +7901,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const executionGraph = state.flowPaneOrigin === "synthetic" || effectiveView === "graph";
       const splitOpen = open || state.reviewFlowExplicitView !== null;
       if (!splitOpen || !executionGraph) {
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         set({ flowPaneRfNodes: [], flowPaneRfEdges: [], flowPaneLayoutStatus: "idle" });
         return;
       }
@@ -6819,7 +7940,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     toggleReviewDiffOnly() {
       if (minimalCodebaseProjectionBaseline !== null) {
-        void ensureExtractedReviewProjection().then((restored) => {
+        void ensureExtractedGraphProjection().then((restored) => {
           if (restored) get().toggleReviewDiffOnly();
         });
         return;
@@ -7049,6 +8170,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const previous = get().viewMode;
       if (previous === mode) {
+        if (pendingModuleLensTransition !== null) {
+          return;
+        }
+        if (moduleSurfaceSpec(mode) !== null && get().moduleLayoutStatus === "error") {
+          void get().moduleRelayout({ label: "Retrying graph view…" });
+          return;
+        }
         // Re-clicking the ACTIVE Service tab is the escape hatch back to the FULL lens: the scoped
         // sub-view exits AND any svc: cluster zoom clears (the breadcrumb stays the primary exit
         // for each); every other same-tab click remains a no-op.
@@ -7069,19 +8197,29 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // the entry; the server stream may finish, but its sequence can no longer swap the graph.
         get().cancelPrReviewPreparation();
       }
-      // The path nodes to carry — read BEFORE any state mutates the outgoing lens's selection/focus.
-      const outgoing = get();
-      const anchors = expandServiceSyntheticAnchors(
-        anchorNodeIds(outgoing),
-        outgoing.index,
-        outgoing.serviceGroupingMode,
-        outgoing.serviceGroupingTargetSize,
-      );
-      if (!beginLensTransition(get, set, () => get().setViewMode(mode))) {
+      // Capture module-family carry before beginLensTransition clears outgoing Service scope/focus.
+      // Logic and PR entry own no module canvas, so they leave this empty and perform no topology
+      // work at all.
+      let anchors: string[] = [];
+      if (mode !== "logic" && mode !== "prs") {
+        const outgoing = get();
+        const rawAnchors = anchorNodeIds(outgoing);
+        anchors = outgoing.viewMode === "call"
+          ? expandServiceSyntheticAnchors(
+              rawAnchors,
+              outgoing.index,
+              outgoing.serviceGroupingMode,
+              outgoing.serviceGroupingTargetSize,
+            )
+          : [...new Set(rawAnchors)];
+      }
+      if (!beginLensTransition(get, set, invalidateRequestFlowWork, () => get().setViewMode(mode))) {
         return;
       }
       if (mode === "logic") {
-        moduleLayoutSeq += 1;
+        pendingModuleLensTransition = null;
+        cancelProjectionHydration();
+        invalidateModuleLayout();
         const restoreLogicScene = get().logicRoot !== null && get().logicRfNodes.length === 0;
         set({ viewMode: mode, ...releasedModuleScene() });
         if (restoreLogicScene) {
@@ -7090,8 +8228,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       if (mode === "prs") {
-        moduleLayoutSeq += 1;
-        logicLayoutSeq += 1;
+        pendingModuleLensTransition = null;
+        cancelProjectionHydration();
+        invalidateModuleLayout();
+        invalidateLogicLayout();
         // beginLensTransition softly parked any open review and restored its prior projection when
         // cached. Keep the review
         // payload and prepared id alive while the queue is browsed; starting another review is the
@@ -7108,21 +8248,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // path), so an explicit ?mfocus=… still opens exactly where the link points. The palette's
       // "+" pins (`mapExtra`) are session scratch of the level we leave — always cleared. Every
       // remaining mode is a module surface (Map / Service / UI) with its own anchor reveal.
-      const { index, serviceGroupingMode, serviceGroupingTargetSize } = get();
-      logicLayoutSeq += 1;
-      const serviceResolution = mode === "call"
-        ? resolveServiceAnchors(anchors, index, serviceGroupingMode, serviceGroupingTargetSize)
-        : null;
-      const reveal =
-        mode === "modules"
-          ? mapRevealStateForMany(anchors, index)
-          : mode === "call"
-            ? serviceResolution?.reveal ?? null
-            : uiRevealStateForMany(anchors, index);
-      // The incoming spec must never render against the outgoing surface's scene while its ELK pass
-      // is in flight. Service also receives the same owner + one-hop scope as its anchor resolution;
-      // on large repositories this keeps lens carry local instead of synchronously mounting the
-      // entire call graph before the first frame can paint.
+      invalidateLogicLayout();
+      pendingModuleLensTransition = { mode, anchors };
+      // Commit destination intent and its real selector ids. moduleRelayout hydrates the target,
+      // resolves the carry with target facts, hydrates the exact final coordinate, then lays it out.
+      // No outgoing scene remains mounted during either projection boundary.
       set({
         viewMode: mode,
         mapExtra: new Set<string>(),
@@ -7132,11 +8262,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         moduleSemanticLayers: [],
         moduleEffectiveFocus: null,
         ...releasedLogicScene(),
-        serviceScope:
-          mode === "call" && serviceResolution !== null
-            ? serviceScopeFor(serviceResolution.owningLeads, index)
-            : null,
-        ...(reveal ?? MODULE_TOP_LEVEL),
+        serviceScope: null,
+        ...MODULE_TOP_LEVEL,
+        moduleSelected: new Set(anchors),
       });
       void get().moduleRelayout({
         label: mode === "call" ? "Opening Service lens…" : mode === "ui" ? "Opening UI lens…" : "Opening Map lens…",
@@ -7166,7 +8294,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // exist, so selection — including the composition panel's own selection/root — retreats first.
     toggleShowTests() {
       if (minimalCodebaseProjectionBaseline !== null) {
-        void ensureExtractedReviewProjection().then((restored) => {
+        void ensureExtractedGraphProjection().then((restored) => {
           if (restored) get().toggleShowTests();
         });
         return;
@@ -7189,7 +8317,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         beforeToggle.selectFlowEntry(null);
       }
-      const { compSelectedId, compRoot, moduleSelected, viewMode, index, prReviewed, minimalSeedIds } = get();
+      const { compSelectedId, compRoot, moduleSelected, viewMode, index, prReviewed } = get();
       const strandedById = (id: string | null) => !showTests && id !== null && index.testIds.has(id);
       set({
         showTests,
@@ -7200,12 +8328,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A live PR review is auto-derived, not an explicit hand-curated minimal graph. Re-project
       // every review surface through the same toggle (members, files, flows, groups, progress and
       // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
-      if (prReviewed !== null && minimalSeedIds.length > 0) {
+      if (prReviewed !== null && reviewSurfaceIsOpen(get())) {
         if (get().minimalGraphHistory.length > 0) {
           reprojectLivePrReview(showTests ? "Showing tests…" : "Hiding tests…", true);
         } else {
-          applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
-            reprojecting: true,
+          applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateRequestFlowWork, invalidateArtifactCaches, {
+            surfaceTransition: "reproject",
             preserveReviewSelection: true,
           });
         }
@@ -7226,13 +8354,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // The layout is untouched — coverage only recolors — so no relayout is needed.
+    // Coverage only recolors. Projected sessions switch to the same structural slice with optional
+    // whole-revision facts attached; that response is another bounded LRU entry, so rapid toggles
+    // can navigate back without pinning analysis data in Zustand while the lens is off.
     toggleCoverageMode() {
-      const coverageMode = !get().coverageMode;
-      const { artifact, coverage } = get();
-      set({
-        coverageMode,
-        coverage: coverageMode && !coverage ? computeCoverage(artifact.nodes, artifact.edges) : coverage,
+      const previous = get();
+      const coverageMode = !previous.coverageMode;
+      if (projectionDataSource === null) {
+        set({
+          coverageMode,
+          coverage: coverageMode
+            ? buildRendererReachabilityReport(previous.artifact.nodes, previous.artifact.edges)
+            : null,
+        });
+        return;
+      }
+      set({ coverageMode, coverage: null });
+      void ensureCurrentProjection().catch(() => {
+        // The toggle is transactional. If this exact request is still current, restore the prior
+        // paint state; a newer navigation/toggle owns its own projection request and is untouched.
+        if (get().coverageMode === coverageMode) {
+          set({ coverageMode: previous.coverageMode, coverage: previous.coverage });
+        }
       });
     },
 
@@ -7247,7 +8390,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       if (state.flowPaneOrigin === "request") {
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         requestTargetRevealSeq += 1;
       }
       set({
@@ -7264,7 +8407,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       telemetryFetchSeq += 1;
-      if (get().flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+      if (get().flowPaneOrigin === "request") invalidateFlowPaneLayout();
       set({
         telemetrySourceId,
         provider: registration?.provider ?? null,
@@ -7284,7 +8427,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     setEnvironment(environment) {
       telemetryFetchSeq += 1;
-      if (get().flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+      if (get().flowPaneOrigin === "request") invalidateFlowPaneLayout();
       set({
         environment,
         telemetry: {},
@@ -7310,7 +8453,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ selectedTraceId: traceId });
         return;
       }
-      flowPaneLayoutSeq += 1;
+      invalidateFlowPaneLayout();
       requestTargetRevealSeq += 1;
       if (traceId === null) {
         set({ selectedTraceId: null, ...requestFlowPaneReset(get()) });
@@ -7376,8 +8519,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 : newestTrace(bundle.traces)?.traceId ?? null;
               const keepRequestPane = current.flowPaneOrigin === "request"
                 && selectedTraceId !== null
-                && traceGraphRefMismatches(bundle.graphRef, current.artifact).length === 0;
-              if (current.flowPaneOrigin === "request") flowPaneLayoutSeq += 1;
+                && traceGraphRefMismatches(
+                  bundle.graphRef,
+                  traceGraphRevisionIdentity(current.index.graphSummary, current.artifact.target),
+                ).length === 0;
+              if (current.flowPaneOrigin === "request") invalidateFlowPaneLayout();
               set({
                 requestTraces: bundle.traces,
                 selectedTraceId,
@@ -7412,8 +8558,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const state = get();
       const request = codeLoadRequest(node, undefined, state, sourceUrl, prFileUrl);
       if (!request) return null;
-      const view = await fetchCodeView(request, "inline", codePayloadCache);
-      return opts?.focus === undefined
+      const view = await fetchCodeView(request, "inline", codePayloadCache, opts?.signal);
+      return view === null || opts?.focus === undefined
         ? view
         : withCodePreviewFocus(view, node, opts.focus, request, state);
     },
@@ -7433,6 +8579,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       )) {
         return;
       }
+      cancelCodeViewRequest();
+      const controller = new AbortController();
+      codeViewController = controller;
       const requestedMode = opts?.mode ?? "inline";
       const sequence = ++codeViewSeq;
       set({
@@ -7446,8 +8595,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           wholeFile: request.wholeFile,
         },
       });
-      const view = await fetchCodeView(request, requestedMode, codePayloadCache);
-      if (sequence !== codeViewSeq || get().codeView?.node.id !== node.id) {
+      const view = await fetchCodeView(request, requestedMode, codePayloadCache, controller.signal);
+      if (codeViewController === controller) codeViewController = null;
+      if (view === null || sequence !== codeViewSeq || get().codeView?.node.id !== node.id) {
         return;
       }
       // The reader may expand the loading inline panel before the response lands.
@@ -7502,6 +8652,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       )) {
         return;
       }
+      cancelCodeViewRequest();
+      const controller = new AbortController();
+      codeViewController = controller;
       const span = displayedEvidenceSpan(context, state, prFileUrl);
       const edgeEvidence = {
         contexts: [...contexts],
@@ -7524,12 +8677,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           edgeEvidence,
         },
       });
-      const view = await fetchCodeView(request, "modal", codePayloadCache);
+      const view = await fetchCodeView(request, "modal", codePayloadCache, controller.signal);
+      if (codeViewController === controller) codeViewController = null;
       const current = get().codeView;
       const currentContext = current?.edgeEvidence?.contexts[current.edgeEvidence.activeIndex];
       if (
         sequence !== edgeEvidenceSeq
         || codeSequence !== codeViewSeq
+        || view === null
         || currentContext === undefined
         || edgeEvidenceKey(currentContext) !== selectionKey
       ) {
@@ -7555,6 +8710,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       edgeEvidenceSeq += 1;
       codeViewSeq += 1;
+      cancelCodeViewRequest();
       set({ codeView: null });
       return true;
     },
@@ -7584,6 +8740,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         edgeEvidenceSeq += 1;
       }
       codeViewSeq += 1;
+      cancelCodeViewRequest();
       set({ codeView: null });
     },
 
@@ -7851,7 +9008,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // The prepare manifest owns membership/status/rename identity. GitHub detail contributes
             // patches, comment ranges, and totals only; reproject the current immutable HEAD without
             // another server preparation or replacing the canonical inventory.
-            if (await ensureExtractedReviewProjection()) {
+            if (await ensureExtractedGraphProjection()) {
               if (get().minimalGraphHistory.length > 0) {
                 reprojectLivePrReview("Updating review details…", true);
               } else {
@@ -7861,8 +9018,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                   prFilesUrl,
                   invalidateMinimalLayout,
                   invalidateModuleLayout,
+                  invalidateRequestFlowWork,
                   invalidateArtifactCaches,
-                  { reprojecting: true, preserveReviewSelection: true, preserveReviewDiffOnly: true },
+                  { surfaceTransition: "reproject", preserveReviewSelection: true, preserveReviewDiffOnly: true },
                 );
               }
             }
@@ -7971,7 +9129,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         || before.prReviewStatus === "preparing"
         || before.reviewSubmitStatus === "submitting"
         || before.viewMode !== "modules"
-        || before.minimalSeedIds.length === 0
+        || !reviewSurfaceIsOpen(before)
       ) {
         return;
       }
@@ -8105,6 +9263,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       );
       const discussion = fetchPrDiscussion(prCommentsUrl, number).catch(() => null);
       let restoringGraphId: string | null = null;
+      let stagedRestore: StagedReviewProjection | null = null;
       try {
         const [handoff, summary] = await Promise.all([
           fetchPreparedReviewHandoff(preparedReviewUrl, controller.signal),
@@ -8122,21 +9281,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({
           ...refreshedPrSummaryState(get(), summary),
           prPrepareStage: "publish",
-          prPrepareElapsedMs: handoff.timings.totalMs ?? null,
+          prPrepareElapsedMs: totalPrPrepareElapsedMs(handoff.timings),
         });
         const checks = fetchPrChecks(prChecksUrl, number, handoff.headSha).catch(() => null);
-        const filePaths = changedFileProjectionPaths(handoff.changedFiles);
-        const [prepared, capability] = await Promise.all([
-          loadPreparedReview(handoff.head, handoff.mergeBase, filePaths, controller.signal),
-          fetchPreparedSyntheticCapability(handoff.head.metaUrl, {
+        const reviewCursor = preparedReviewFileCursor(handoff.changedFiles);
+        const [staged, capability] = await stagePreparedReviewWithCapability(
+          handoff.head,
+          handoff.mergeBase,
+          handoff.changedFiles,
+          reviewCursor,
+          {
             repository: prSessionSource?.repository ?? null,
             headSha: handoff.headSha,
-          }, controller.signal),
-        ]);
-        if (!activeBeforeEntry()) return true;
+          },
+          controller.signal,
+        );
+        stagedRestore = staged;
+        if (!activeBeforeEntry()) {
+          staged.release();
+          return true;
+        }
+        const prepared = staged.projection;
         // Observe already-settled detail without putting it on the critical path. The immediately
         // resolved sentinel wins while the network request is still pending.
         const initialDetails = await Promise.race<PrFilesResponse | null>([files, Promise.resolve(null)]);
+        if (!activeBeforeEntry()) {
+          staged.release();
+          return true;
+        }
         const canonicalFiles = canonicalPreparedPrFiles(
           initialDetails?.files ?? [],
           handoff.changedFiles,
@@ -8147,28 +9319,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         swapToPreparedReviewProjection(
           get,
           set,
-          prepared,
+          staged,
           invalidateArtifactCaches,
-          capability,
           graphProjectionEndpoints(handoff.head),
+          capability,
+          {
+            prPreparedHead: handoff.head,
+            prPreparedMergeBase: handoff.mergeBase,
+            prPreparedReviewCursor: reviewCursor,
+            prPreparedFileProjectionPending: null,
+            prPreparedFileProjectionError: null,
+            prPreparedChangedFiles: [...handoff.changedFiles],
+            prPreparedHeadSha: handoff.headSha,
+            prPreparedMergeBaseSha: handoff.mergeBaseSha,
+            prFiles: canonicalFiles,
+            prFilesTruncated: false,
+            prFilesTotal: Math.max(
+              canonicalFiles.length,
+              initialDetails?.totalFiles ?? initialDetails?.files.length ?? 0,
+            ),
+            prFilesOutside: initialDetails?.outsideCount ?? 0,
+            prFilesSuggestedSubdir: initialDetails?.suggestedSubdir ?? "",
+            prsLoading: false,
+            prsError: null,
+          },
         );
-        set({
-          prPreparedHead: handoff.head,
-          prPreparedMergeBase: handoff.mergeBase,
-          prPreparedFilePaths: filePaths,
-          prPreparedHeadSha: handoff.headSha,
-          prPreparedMergeBaseSha: handoff.mergeBaseSha,
-          prFiles: canonicalFiles,
-          prFilesTruncated: false,
-          prFilesTotal: Math.max(
-            canonicalFiles.length,
-            initialDetails?.totalFiles ?? initialDetails?.files.length ?? 0,
-          ),
-          prFilesOutside: initialDetails?.outsideCount ?? 0,
-          prFilesSuggestedSubdir: initialDetails?.suggestedSubdir ?? "",
-          prsLoading: false,
-          prsError: null,
-        });
         const visibleLayouts: Promise<void>[] = [];
         const entered = applyPrReviewToMap(
           get,
@@ -8176,6 +9351,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prFilesUrl,
           invalidateMinimalLayout,
           invalidateModuleLayout,
+          invalidateRequestFlowWork,
           invalidateArtifactCaches,
           {
             beforeVisibleLayout: options?.onVisibleLayoutStart,
@@ -8208,7 +9384,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               || current.prReviewed !== number
               || current.prPreparedHead?.graphId !== handoff.head.graphId
             ) return;
-            if (!await ensureExtractedReviewProjection()) return;
+            if (!await ensureExtractedGraphProjection()) return;
             current = get();
             if (
               prFilesSeq !== fileSequence
@@ -8231,8 +9407,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 prFilesUrl,
                 invalidateMinimalLayout,
                 invalidateModuleLayout,
+                invalidateRequestFlowWork,
                 invalidateArtifactCaches,
-                { reprojecting: true, preserveReviewSelection: true, preserveReviewDiffOnly: true },
+                { surfaceTransition: "reproject", preserveReviewSelection: true, preserveReviewDiffOnly: true },
               );
             }
           });
@@ -8272,8 +9449,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return true;
       } finally {
+        stagedRestore?.release();
         if (preparedReviewRestoreController === controller) preparedReviewRestoreController = null;
       }
+    },
+
+    async preparePrReviewNavigation(subdir, signal) {
+      const state = get();
+      const prNumber = state.prSelected;
+      const summary = selectedPrSummary(state, prNumber);
+      if (prepareUrl === null || prSessionSource === null) {
+        throw new Error("This session does not provide direct PR preparation.");
+      }
+      if (prNumber === null || summary === null) {
+        throw new Error("Select a pull request before preparing its review.");
+      }
+      const prepared = await streamPrPreparation(
+        prepareUrl,
+        prPrepareRequest(prSessionSource, summary, subdir),
+        () => {},
+        signal,
+      );
+      return prepared.handoff.viewUrl;
     },
 
     // A selected summary is sufficient to start direct preparation. GitHub's changed-file/detail
@@ -8346,27 +9543,64 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const {
         prReviewed,
         prReviewSource,
-        minimalSeedIds,
+        prReviewBaseline,
+        prReviewRevision,
+        review,
         prPreparedHead,
         prPreparedMergeBase,
-        prPreparedFilePaths,
+        prPreparedReviewCursor,
+        prPreparedChangedFiles,
         prPreparedHeadSha,
+        prPreparedMergeBaseSha,
         reviewActiveGroupId: resumeGroupId,
         reviewPathScope: resumePathScope,
+        viewMode: resumeViewMode,
       } = get();
-      if (prReviewed === null || minimalSeedIds.length > 0) {
+      if (prReviewed === null || review !== null) {
         return;
       }
-      if (prReviewResumeRequest?.number === prReviewed) {
-        await prReviewResumeRequest.promise;
-        return;
-      }
+      cancelPreparedFileProjection();
+      // Resume is a last-intent-wins navigation lane, not background work. A new click owns a new
+      // generation and aborts both reads from the older one, even when it targets the same PR.
+      cancelPrReviewResumeRequest();
+      const generation = prReviewResumeGeneration;
+      const controller = new AbortController();
+      const request = { generation, number: prReviewed, controller };
+      prReviewResumeRequest = request;
+      const sameSession = (): boolean => {
+        const current = get();
+        return prReviewResumeGeneration === generation
+          && prReviewResumeRequest === request
+          && !controller.signal.aborted
+          && current.prReviewed === prReviewed
+          && current.prReviewBaseline === prReviewBaseline
+          && current.prReviewRevision === prReviewRevision
+          && current.prPreparedHead === prPreparedHead
+          && current.prPreparedMergeBase === prPreparedMergeBase
+          && current.prPreparedReviewCursor === prPreparedReviewCursor
+          && current.prPreparedChangedFiles === prPreparedChangedFiles
+          && current.prPreparedHeadSha === prPreparedHeadSha
+          && current.prPreparedMergeBaseSha === prPreparedMergeBaseSha;
+      };
+      const activeBeforeInstall = (): boolean => {
+        const current = get();
+        return sameSession()
+          && current.viewMode === resumeViewMode
+          && !reviewSurfaceIsOpen(current);
+      };
+      const activeAfterInstall = (): boolean => {
+        const current = get();
+        return sameSession()
+          && current.viewMode === "modules"
+          && current.prPreparedArtifactCurrent
+          && current.review !== null;
+      };
       // A normal Code Flow may have been opened on the restored Map after the review overlay soft-
       // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
       // possible artifact swap so only a flow selected inside the review enters review mode.
       const clearResumeFlow = () => {
         const staleFlowOpen = get().flowSelection !== null;
-        flowPaneLayoutSeq += 1;
+        invalidateFlowPaneLayout();
         syntheticExecutionSeq += 1;
         set({
           moduleGhostInspection: null,
@@ -8387,7 +9621,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             : {}),
         });
       };
-      const promise = (async () => {
+      let stagedResume: StagedReviewProjection | null = null;
+      try {
         if (prReviewSource !== null && prReviewSource.number === prReviewed) {
           set({
             prSelected: prReviewSource.number,
@@ -8402,21 +9637,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
         try {
           if (prPreparedHead !== null && prPreparedMergeBase !== null) {
-            const [prepared, capability] = await Promise.all([
-              loadPreparedReview(prPreparedHead, prPreparedMergeBase, prPreparedFilePaths),
-              fetchPreparedSyntheticCapability(prPreparedHead.metaUrl, {
+            const [staged, capability] = await stagePreparedReviewWithCapability(
+              prPreparedHead,
+              prPreparedMergeBase,
+              prPreparedChangedFiles,
+              prPreparedReviewCursor,
+              {
                 repository: prSessionSource?.repository ?? null,
                 headSha: prPreparedHeadSha,
-              }),
-            ]);
-            if (
-              get().prReviewed !== prReviewed
-              || get().minimalSeedIds.length > 0
-              || get().prPreparedHead !== prPreparedHead
-              || get().prPreparedMergeBase !== prPreparedMergeBase
-              || get().prPreparedHeadSha !== prPreparedHeadSha
-            ) {
+              },
+              controller.signal,
+            );
+            stagedResume = staged;
+            if (!activeBeforeInstall()) {
+              staged.release();
               return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
+            }
+            if (prReviewSource !== null && prReviewSource.number === prReviewed) {
+              set({
+                prFiles: canonicalPrFiles(prReviewSource.files, staged.projection.head.artifact),
+                prFilesTruncated: false,
+                prFilesTotal: prReviewSource.total,
+                prFilesOutside: prReviewSource.outside,
+                prFilesSuggestedSubdir: prReviewSource.suggestedSubdir,
+              });
             }
             // The restored Map stayed interactive during the fetch. Clear once more so a Code Flow opened
             // in that window cannot ride the stale base-artifact ref across the head-graph swap.
@@ -8425,10 +9669,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             swapToPreparedReviewProjection(
               get,
               set,
-              prepared,
+              staged,
               invalidateArtifactCaches,
-              capability,
               graphProjectionEndpoints(prPreparedHead),
+              capability,
             );
           }
           const visibleLayouts: Promise<void>[] = [];
@@ -8438,9 +9682,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             prFilesUrl,
             invalidateMinimalLayout,
             invalidateModuleLayout,
+            invalidateRequestFlowWork,
             invalidateArtifactCaches,
             {
-              reprojecting: true,
+              surfaceTransition: "reproject",
               preserveReviewSelection: true,
               beforeVisibleLayout: options?.onVisibleLayoutStart,
               captureVisibleLayout: (layout) => visibleLayouts.push(layout),
@@ -8450,27 +9695,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // A corrupted or mutated retained payload must never leave the prepared HEAD projection
             // active behind a closed overlay; surface an honest retry state instead.
             if (prPreparedHead !== null) {
-              await restoreReviewSession({ endSession: false });
+              await restoreReviewSession({
+                endSession: false,
+                signal: controller.signal,
+                isCurrent: sameSession,
+              });
             }
-            set({
-              prReviewStatus: "error",
-              prPrepareStage: null,
-              prPrepareElapsedMs: null,
-              prPrepareError: "The retained pull request no longer matches this graph.",
-            });
+            if (activeBeforeInstall()) {
+              set({
+                prReviewStatus: "error",
+                prPrepareStage: null,
+                prPrepareElapsedMs: null,
+                prPrepareError: "The retained pull request no longer matches this graph.",
+              });
+            }
             return;
           }
+          if (!activeAfterInstall()) return;
           // Rebuild the reader's lightweight review context, not the entire PR. Each selector
           // invalidates the full pass that applyPrReviewToMap just queued before that pass derives,
           // so a scoped Resume remains cheap even for a repository-wide change.
           const groupLayout = get().selectReviewGroup(resumeGroupId);
           const pathLayout = get().selectReviewPathScope(resumePathScope);
           await Promise.all([...visibleLayouts, groupLayout, pathLayout]);
-          if (get().prReviewed === prReviewed) {
+          if (activeAfterInstall()) {
             set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareElapsedMs: null, prPrepareError: null });
           }
         } catch (error) {
-          if (get().prReviewed === prReviewed && get().minimalSeedIds.length === 0) {
+          if (activeBeforeInstall()) {
             set({
               prReviewStatus: "error",
               prPrepareStage: null,
@@ -8479,12 +9731,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             });
           }
         }
-      })();
-      const request = { number: prReviewed, promise };
-      prReviewResumeRequest = request;
-      try {
-        await promise;
       } finally {
+        stagedResume?.release();
         if (prReviewResumeRequest === request) {
           prReviewResumeRequest = null;
         }
@@ -8516,7 +9764,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             projectionRequest: state.activeProjectionRequest,
             preparedHead: state.prPreparedHead,
             mergeBase: state.prPreparedMergeBase,
-            filePaths: state.prPreparedFilePaths,
+            reviewCursor: state.prPreparedReviewCursor,
+            changedFiles: state.prPreparedChangedFiles,
             headSha: state.prPreparedHeadSha,
             mergeBaseSha: state.prPreparedMergeBaseSha,
             syntheticExecutionUrl: state.syntheticExecutionUrl,
@@ -8536,6 +9785,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(options); })) {
         return;
       }
+      cancelPreparedFileProjection();
       // A direct manual re-run supersedes the prior action just like Retry does through
       // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
       prPrepareCancellation?.controller.abort();
@@ -8555,7 +9805,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             ? current.viewMode === "prs" && current.prReviewed === null
             : current.prReviewed === prNumber)
           && (!refreshingExistingReview
-            || (current.prReviewRefreshing && current.viewMode === "modules" && current.minimalSeedIds.length > 0));
+            || (current.prReviewRefreshing && current.viewMode === "modules" && reviewSurfaceIsOpen(current)));
       };
       set({
         prReviewStatus: "preparing",
@@ -8566,7 +9816,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ? {
               prPreparedHead: null,
               prPreparedMergeBase: null,
-              prPreparedFilePaths: [],
+              prPreparedReviewCursor: null,
+              prPreparedFileProjectionPending: null,
+              prPreparedFileProjectionError: null,
+              prPreparedChangedFiles: [],
               prPreparedHeadSha: null,
               prPreparedMergeBaseSha: null,
               prReviewComparison: null,
@@ -8583,8 +9836,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return false;
         }
         try {
-          const restored = projectionDataSource.activateCachedReview(previousPrepared.projectionKey)
-            ?? await projectionDataSource.activateReviewPair({
+          const staged = projectionDataSource.stageCachedReview(previousPrepared.projectionKey)
+            ?? await projectionDataSource.stageReviewPair({
               head: {
                 request: previousPrepared.projectionRequest,
                 endpoints: graphProjectionEndpoints(previousPrepared.preparedHead),
@@ -8595,38 +9848,45 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               },
               signal: cancellation.controller.signal,
           });
-          if (!active()) return false;
-          resetMinimalProjectionNavigationForRevision();
-          invalidateSyntheticArtifactBoundary();
-          swapToPreparedReviewProjection(get, set, restored, invalidateArtifactCaches, {
-            syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
-            syntheticScenarios: previousPrepared.syntheticScenarios,
-            syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
-          }, graphProjectionEndpoints(previousPrepared.preparedHead));
-          set({
-            prPreparedHead: previousPrepared.preparedHead,
-            prPreparedMergeBase: previousPrepared.mergeBase,
-            prPreparedFilePaths: previousPrepared.filePaths,
-            prPreparedHeadSha: previousPrepared.headSha,
-            prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
-            prReviewComparison: restored.mergeBase,
-            prReviewBlocked: null,
-          });
-          return true;
+          try {
+            if (!active()) return false;
+            resetMinimalProjectionNavigationForRevision();
+            invalidateSyntheticArtifactBoundary();
+            swapToPreparedReviewProjection(
+              get,
+              set,
+              staged,
+              invalidateArtifactCaches,
+              graphProjectionEndpoints(previousPrepared.preparedHead),
+              {
+                syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
+                syntheticScenarios: previousPrepared.syntheticScenarios,
+                syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
+              },
+              {
+                prPreparedHead: previousPrepared.preparedHead,
+                prPreparedMergeBase: previousPrepared.mergeBase,
+                prPreparedReviewCursor: previousPrepared.reviewCursor,
+                prPreparedFileProjectionPending: null,
+                prPreparedFileProjectionError: null,
+                prPreparedChangedFiles: previousPrepared.changedFiles,
+                prPreparedHeadSha: previousPrepared.headSha,
+                prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
+                prReviewBlocked: null,
+              },
+            );
+            return true;
+          } finally {
+            staged.release();
+          }
         } catch {
           return false;
         }
       };
       const work = (async () => {
+        let stagedPrepared: StagedReviewProjection | null = null;
         try {
-          const repository = splitGitHubRepository(prSessionSource.repository);
-          const request = {
-            ...repository,
-            ...(prSessionSource.subdir.length > 0 ? { subdir: prSessionSource.subdir } : {}),
-            prNumber,
-            baseRef: summary.baseRef,
-            headRef: summary.headRef,
-          };
+          const request = prPrepareRequest(prSessionSource, summary);
           const analysis = await streamPrPreparation(prepareUrl, request, (stage, elapsedMs) => {
             if (active()) {
               set({ prPrepareStage: stage, prPrepareElapsedMs: elapsedMs });
@@ -8637,22 +9897,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           }
           // SWAP: load the prepared PR-head projection and make it CURRENT before the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
-          const filePaths = changedFileProjectionPaths(analysis.changedFiles);
-          const [prepared, capability] = await Promise.all([
-            loadPreparedReview(
-              analysis.head,
-              analysis.mergeBase,
-              filePaths,
-              cancellation.controller.signal,
-            ),
-            fetchPreparedSyntheticCapability(analysis.head.metaUrl, {
+          const preservedReviewPath = previousPrepared === null
+            ? null
+            : remapPreparedReviewFilePath(
+                previousPrepared.changedFiles,
+                previousPrepared.reviewCursor,
+                analysis.changedFiles,
+              );
+          const reviewCursor = preparedReviewFileCursor(
+            analysis.changedFiles,
+            preservedReviewPath ?? undefined,
+          );
+          const [staged, capability] = await stagePreparedReviewWithCapability(
+            analysis.head,
+            analysis.mergeBase,
+            analysis.changedFiles,
+            reviewCursor,
+            {
               repository: prSessionSource.repository,
               headSha: analysis.headSha,
-            }, cancellation.controller.signal),
-          ]);
+            },
+            cancellation.controller.signal,
+          );
+          stagedPrepared = staged;
           if (!active()) {
+            staged.release();
             return;
           }
+          const prepared = staged.projection;
           const canonicalFiles = canonicalPreparedPrFiles(
             get().prFiles ?? [],
             analysis.changedFiles,
@@ -8663,28 +9935,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           swapToPreparedReviewProjection(
             get,
             set,
-            prepared,
+            staged,
             invalidateArtifactCaches,
-            capability,
             graphProjectionEndpoints(analysis.head),
+            capability,
+            {
+              prReviewStatus: "idle",
+              prPrepareStage: null,
+              prPrepareElapsedMs: null,
+              prPrepareError: null,
+              prPreparedHead: analysis.head,
+              prPreparedMergeBase: analysis.mergeBase,
+              prPreparedReviewCursor: reviewCursor,
+              prPreparedFileProjectionPending: null,
+              prPreparedFileProjectionError: null,
+              prPreparedChangedFiles: [...analysis.changedFiles],
+              prPreparedHeadSha: analysis.headSha,
+              prPreparedMergeBaseSha: analysis.mergeBaseSha,
+              prFiles: canonicalFiles,
+              prFilesTruncated: false,
+              prFilesTotal: Math.max(get().prFilesTotal, canonicalFiles.length + get().prFilesOutside),
+            },
           );
           swappedNewProjection = true;
-          set({
-            prReviewStatus: "idle",
-            prPrepareStage: null,
-            prPrepareElapsedMs: null,
-            prPrepareError: null,
-            prPreparedHead: analysis.head,
-            prPreparedMergeBase: analysis.mergeBase,
-            prPreparedFilePaths: filePaths,
-            prPreparedHeadSha: analysis.headSha,
-            prPreparedMergeBaseSha: analysis.mergeBaseSha,
-            prFiles: canonicalFiles,
-            prFilesTruncated: false,
-            prFilesTotal: Math.max(get().prFilesTotal, canonicalFiles.length + get().prFilesOutside),
-          });
           const visibleLayouts: Promise<void>[] = [];
-          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
+          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateRequestFlowWork, invalidateArtifactCaches, {
+            surfaceTransition: enteringFromPrs ? "entry" : "replace",
             preserveReviewDiffOnly: !enteringFromPrs,
             beforeVisibleLayout: options?.onVisibleLayoutStart,
             captureVisibleLayout: (layout) => visibleLayouts.push(layout),
@@ -8699,7 +9975,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               set({
                 prPreparedHead: null,
                 prPreparedMergeBase: null,
-                prPreparedFilePaths: [],
+                prPreparedReviewCursor: null,
+                prPreparedFileProjectionPending: null,
+                prPreparedFileProjectionError: null,
+                prPreparedChangedFiles: [],
                 prPreparedHeadSha: null,
                 prPreparedMergeBaseSha: null,
                 prReviewComparison: null,
@@ -8729,7 +10008,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 set({
                   prPreparedHead: null,
                   prPreparedMergeBase: null,
-                  prPreparedFilePaths: [],
+                  prPreparedReviewCursor: null,
+                  prPreparedFileProjectionPending: null,
+                  prPreparedFileProjectionError: null,
+                  prPreparedChangedFiles: [],
                   prPreparedHeadSha: null,
                   prPreparedMergeBaseSha: null,
                   prReviewComparison: null,
@@ -8746,6 +10028,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               prPrepareError: prepareErrorMessage(error),
             });
           }
+        } finally {
+          stagedPrepared?.release();
         }
       })();
       try {
@@ -8761,6 +10045,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     cancelPrReviewPreparation() {
       prPrepareSeq += 1;
+      cancelPreparedFileProjection();
+      cancelPrReviewResumeRequest();
       preparedReviewRestoreController?.abort();
       preparedReviewRestoreController = null;
       const cancellation = prPrepareCancellation;
@@ -8800,15 +10086,18 @@ function applyPrReviewToMap(
   prFilesUrl: string,
   invalidateMinimalLayout: () => void,
   invalidateModuleLayout: () => void,
+  invalidateRequestFlowWork: () => void,
   invalidateArtifactCaches: () => void,
   options: {
-    reprojecting?: boolean;
+    surfaceTransition?: "entry" | "replace" | "reproject";
     preserveReviewSelection?: boolean;
     preserveReviewDiffOnly?: boolean;
     beforeVisibleLayout?: () => void;
     captureVisibleLayout?: (layout: Promise<void>) => void;
   } = {},
 ): boolean {
+  const surfaceTransition = options.surfaceTransition ?? "entry";
+  const reprojecting = surfaceTransition === "reproject";
   const {
     prFiles,
     prSelected,
@@ -8840,7 +10129,12 @@ function applyPrReviewToMap(
   const headArtifact = activeBaseNodeIds.size > 0
     ? { ...activeArtifact, nodes: activeArtifact.nodes.filter((node) => !activeBaseNodeIds.has(node.id)) }
     : activeArtifact;
-  const headIndex = headArtifact === activeArtifact ? activeIndex : buildGraphIndex(headArtifact);
+  const headIndex = headArtifact === activeArtifact
+    ? activeIndex
+    : buildGraphIndex(
+        headArtifact,
+        graphIndexMetadataWithoutPresentationNodes(activeIndex, activeBaseNodeIds),
+      );
   // Direct preparation installs its canonical, status-rich done manifest into `prFiles` before the
   // projection swap. A projection-local extension is only a slice and must never define PR
   // completeness, even when it happens to mention every currently requested path.
@@ -8860,6 +10154,7 @@ function applyPrReviewToMap(
   // A refresh re-enters this same reviewKey. Carry the in-memory progress directly so drafts made
   // while persistence is unavailable (or while the refresh request is in flight) cannot disappear.
   const liveProgress = liveReview?.context.reviewKey === context.reviewKey
+    || (reprojecting && get().prReviewed === prSelected)
     ? {
         ticks: liveReviewTicks,
         unitTicks: liveReviewUnitTicks,
@@ -8903,28 +10198,16 @@ function applyPrReviewToMap(
   const affected = mergeAffectedNodes(headAffected, deletedAffected);
   const files = mergeDeletedReviewFiles(projection.files, headAffected, visibleDeletedFiles, index);
 
-  // Gate entry on the COMPLETE two-sided graph before applying the Tests projection. A deletion-
-  // only PR now resolves through its merge-base module instead of being rejected by a HEAD-only
-  // seed check. An all-test PR still opens an intentionally empty workspace with Tests off.
+  // Page/selection facts are complete even when this one current coordinate has no graph node.
+  // Keep that source-less review mounted with an empty canvas; selecting a manifest entry lazily
+  // swaps only that file's two-sided slice instead of treating a bounded view as whole-PR evidence.
   const allMatchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
   const allRollup = rollupSeeds(allMatchedFiles, index);
-  if (allRollup.seeds.length === 0) {
-    const allOutside = reviewPrFiles.length === 0 && prFilesOutside > 0;
-    const changedFileCount = reviewFilesTotal > 0 ? reviewFilesTotal : reviewPrFiles.length + prFilesOutside;
-    set({
-      prReviewBlocked: {
-        number: prSelected,
-        reason: allOutside
-          ? "This PR's changes are outside this session's subfolder"
-          : `None of this PR's ${changedFileCount} changed files match this session's graph`,
-      },
-    });
-    return false;
-  }
-  // A first entry/manual re-extract owes every shared lens-transition side effect. An in-place
-  // refresh is already on this review surface; its final atomic state replaces the old overlay.
-  if (!get().prReviewRefreshing && !options.reprojecting) {
-    if (!beginLensTransition(get, set)) {
+  // Entering the review is a lens transition; replacing a mounted review is an atomic revision
+  // transaction and must not soft-close it back to the boot graph. Same-revision reprojection is
+  // separate again because it preserves drafts, revision identity, and local review controls.
+  if (surfaceTransition === "entry") {
+    if (!beginLensTransition(get, set, invalidateRequestFlowWork)) {
       return false;
     }
   }
@@ -9034,12 +10317,12 @@ function applyPrReviewToMap(
   }
   const progress = liveProgress ?? readReviewProgress(context.reviewKey);
   const currentSelection = get();
-  const loadedRevision = options.reprojecting
+  const loadedRevision = reprojecting
     ? currentSelection.prReviewRevision
     : summary === null ? null : reviewRevision(summary, prPreparedHeadSha);
   const reviewComments = reconcileReviewLineAnchors(progress.comments, loadedRevision);
   const lineAnchorsInvalidated = reviewComments !== progress.comments;
-  const revisionMismatch = options.reprojecting
+  const revisionMismatch = reprojecting
     ? currentSelection.prReviewStale
     : loadedRevision !== null && summary !== null && isPrReviewStale(loadedRevision, summary);
   const visibleSelectionId = (id: string | null) => id !== null && (currentSelection.showTests || !index.testIds.has(id));
@@ -9089,15 +10372,15 @@ function applyPrReviewToMap(
     reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: progress.fileTicks,
     reviewComments,
-    reviewPanelHidden: options.reprojecting ? currentSelection.reviewPanelHidden : false,
+    reviewPanelHidden: reprojecting ? currentSelection.reviewPanelHidden : false,
     // A Tests toggle can happen while a review POST is in flight. Reprojection must not disarm the
     // duplicate-submit guard or erase its outcome banners; fresh review entry still resets them.
-    reviewSubmitStatus: options.reprojecting ? currentSelection.reviewSubmitStatus : "idle",
-    reviewSubmitError: options.reprojecting ? currentSelection.reviewSubmitError : null,
-    reviewSubmitNotice: options.reprojecting ? currentSelection.reviewSubmitNotice : null,
-    reviewSubmittedUrl: options.reprojecting ? currentSelection.reviewSubmittedUrl : null,
+    reviewSubmitStatus: reprojecting ? currentSelection.reviewSubmitStatus : "idle",
+    reviewSubmitError: reprojecting ? currentSelection.reviewSubmitError : null,
+    reviewSubmitNotice: reprojecting ? currentSelection.reviewSubmitNotice : null,
+    reviewSubmittedUrl: reprojecting ? currentSelection.reviewSubmittedUrl : null,
     reviewAffectedIds: new Set(affected.map((node) => node.nodeId)),
-    reviewDiffOnly: options.reprojecting || options.preserveReviewDiffOnly
+    reviewDiffOnly: reprojecting || options.preserveReviewDiffOnly
       ? currentSelection.reviewDiffOnly
       : false,
     reviewFiles: files,
@@ -9120,7 +10403,7 @@ function applyPrReviewToMap(
     minimalCodebaseTargetIds: [],
     minimalCodebaseRetainedExpandedIds: new Set<string>(),
     minimalCodebaseProjectionPending: false,
-    minimalProjectionExtraIds: options.reprojecting
+    minimalProjectionExtraIds: reprojecting
       ? new Set(currentSelection.minimalProjectionExtraIds)
       : new Set<string>(),
     reviewAllSeedIds: workspaceSeeds,
@@ -9188,7 +10471,10 @@ function canonicalPreparedPrFiles(
       diffComplete: exact?.diffComplete === true,
     };
     if (entry.status === "renamed") {
-      file.previousPath = entry.previousPath!;
+      if (entry.previousPath === undefined) {
+        throw new Error("prepared rename is missing its previous path");
+      }
+      file.previousPath = entry.previousPath;
     } else {
       delete file.previousPath;
     }
@@ -9400,6 +10686,32 @@ function reconcileReviewLineAnchors(comments: ReviewComment[], revision: PrRevie
   return changed ? next : comments;
 }
 
+/** One explicit owner routes every module-family action and layout. A prepared review can be open
+ * before any file projection exists; that overview owns the shell, but it is not an extracted graph
+ * and must never route actions into the parked source artifact underneath it. */
+export function moduleGraphSurfaceOwner(
+  state: Pick<BlueprintState, "review" | "prReviewed" | "minimalSeedIds">,
+): ModuleGraphSurfaceOwner {
+  if (state.minimalSeedIds.length > 0) return "extracted";
+  if (state.review !== null && state.prReviewed !== null) return "prepared-review-overview";
+  return "source";
+}
+
+/** True only when a review actually owns the visible graph shell. Artifact reviews require an
+ * extracted graph; prepared reviews additionally own their honest, zero-file overview. */
+export function reviewSurfaceIsOpen(
+  state: Pick<BlueprintState, "review" | "prReviewed" | "minimalSeedIds">,
+): boolean {
+  return state.review !== null && moduleGraphSurfaceOwner(state) !== "source";
+}
+
+/** Whether the source scene is covered by either an extracted graph or a prepared review overview. */
+export function moduleGraphOverlayIsOpen(
+  state: Pick<BlueprintState, "review" | "prReviewed" | "minimalSeedIds">,
+): boolean {
+  return moduleGraphSurfaceOwner(state) !== "source";
+}
+
 /** The selected PR's summary row (its refs feed the direct prepare request); null when unavailable.
  * An explicit number lets URL restoration resolve a row before selecting it. */
 export function selectedPrSummary(state: BlueprintState, number: number | null = state.prSelected): PrSummary | null {
@@ -9423,11 +10735,28 @@ function prepareErrorMessage(error: unknown): string {
 }
 
 function splitGitHubRepository(repository: string): { owner: string; repo: string } {
-  const parts = repository.split("/");
-  if (parts.length !== 2 || parts.some((part) => part.length === 0)) {
+  const [owner, repo, extra] = repository.split("/");
+  if (owner === undefined || owner.length === 0
+    || repo === undefined || repo.length === 0
+    || extra !== undefined) {
     throw new Error("invalid GitHub repository identity in renderer boot configuration");
   }
-  return { owner: parts[0]!, repo: parts[1]! };
+  return { owner, repo };
+}
+
+/** One request builder owns both in-place review entry and broader-root handoff navigation. */
+function prPrepareRequest(
+  source: PrSessionSource,
+  summary: PrSummary,
+  subdir: string = source.subdir,
+): PrPrepareRequest {
+  return {
+    ...splitGitHubRepository(source.repository),
+    ...(subdir.length > 0 ? { subdir } : {}),
+    prNumber: summary.number,
+    baseRef: summary.baseRef,
+    headRef: summary.headRef,
+  };
 }
 
 function assertPreparedReviewHandoffIdentity(
@@ -9464,6 +10793,7 @@ function assertDescriptorEndpointsBound(descriptor: PreparedGraphDescriptor): vo
   for (const endpoint of [
     descriptor.manifestUrl,
     descriptor.projectionUrl,
+    descriptor.searchUrl,
     descriptor.sourceUrl,
     descriptor.metaUrl,
   ]) {
@@ -9485,9 +10815,12 @@ function preparedHandoffErrorMessage(error: unknown): string {
  * overlay when it is open (it shares the one `moduleExpanded` id space), else the Module map beneath.
  * Relaying out the covered Map instead would be work the reader can't see. */
 function relayoutActiveModuleSurface(get: () => BlueprintState, activity?: LayoutActivity): Promise<void> {
-  return get().minimalSeedIds.length > 0
+  const owner = moduleGraphSurfaceOwner(get());
+  return owner === "extracted"
     ? get().minimalRelayout(activity)
-    : get().moduleRelayout(activity);
+    : owner === "source"
+      ? get().moduleRelayout(activity)
+      : Promise.resolve();
 }
 
 type ReleasedModuleScene = Pick<
@@ -9538,25 +10871,26 @@ function releasedLogicScene(): ReleasedLogicScene {
 function beginLensTransition(
   get: BlueprintStore["getState"],
   set: (partial: Partial<BlueprintState>) => void,
+  invalidateRequestFlowWork: () => void,
   retry?: () => void,
 ): boolean {
   // Most lens entries route through setViewMode, but direct pivots (openLogicFlow,
-  // openComposition, openServiceScope) call this helper themselves. They must abandon the same
-  // prepare-first waiting lane before changing view. Successful prepared entry sets the lane idle
-  // before it calls this helper, so its own PRs → Map transition is deliberately not canceled.
-  if (get().viewMode === "prs" && get().prReviewStatus === "preparing") {
+  // openComposition, openServiceScope) call this helper themselves. They must abandon either the
+  // prepare-first lane or a parked-review Resume before changing view. Successful prepared entry
+  // sets the lane idle before it calls this helper, so its own PRs → Map transition is not canceled.
+  if (get().prReviewStatus === "preparing") {
     get().cancelPrReviewPreparation();
   }
-  if (get().minimalSeedIds.length > 0) {
+  if (moduleGraphOverlayIsOpen(get())) {
     const close = get().closeMinimalGraph();
-    if (get().minimalSeedIds.length > 0) {
+    if (moduleGraphOverlayIsOpen(get())) {
       // An evicted/oversized review baseline reloads asynchronously. Do not let the requested lens
       // expose HEAD underneath the overlay; replay the complete public action only after close has
-      // installed the baseline and cleared the overlay. A failed restore leaves seeds intact and
-      // therefore deliberately does not replay.
+      // installed the baseline and cleared the overlay. A failed restore leaves its surface owner
+      // intact and therefore deliberately does not replay.
       if (retry !== undefined) {
         void close.then(() => {
-          if (get().minimalSeedIds.length === 0) retry();
+          if (!moduleGraphOverlayIsOpen(get())) retry();
         });
       }
       return false;
@@ -9569,6 +10903,7 @@ function beginLensTransition(
     set({ moduleGhostInspection: null });
   }
   if (state.flowPaneOrigin === "request") {
+    invalidateRequestFlowWork();
     set(requestFlowPaneReset());
   }
   const focusedService = state.moduleFocus !== null
@@ -10008,6 +11343,8 @@ function applyScoped(
   activity: LayoutActivity,
 ): void {
   const state = get();
+  const surfaceOwner = moduleGraphSurfaceOwner(state);
+  if (surfaceOwner === "prepared-review-overview") return;
   // A registered module surface (Map/Service/UI) shares one frontier read + expansion set; the
   // strict registry returns null for the logic lens, which keeps its own branch below.
   if (moduleSurfaceSpec(state.viewMode) !== null) {
@@ -10015,7 +11352,7 @@ function applyScoped(
     // The minimal graph covers the registered lens while it is open. Its laid nodes are therefore
     // the authoritative visible frontier for the canvas action bar; deriving the covered lens here
     // would expand/collapse containers the user cannot see.
-    const visible = state.minimalSeedIds.length > 0
+    const visible = surfaceOwner === "extracted"
       ? minimalVisibleNodes(state)
       : moduleTreeNodes(state, getGraph(), getDeps());
     const ids = pick(visible, scope);
@@ -10167,7 +11504,7 @@ function sameReviewRefresh(state: BlueprintState, number: number, revision: PrRe
     && state.prReviewRevision === revision
     && state.prReviewRefreshing
     && state.viewMode === "modules"
-    && state.minimalSeedIds.length > 0;
+    && reviewSurfaceIsOpen(state);
 }
 
 function refreshErrorMessage(error: unknown): string {

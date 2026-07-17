@@ -2,18 +2,35 @@
 
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import {
+  PR_PREPARE_MAX_LINE_BYTES,
+  PR_PREPARE_PROTOCOL_VERSION,
+  PR_PREPARE_V1_FIELDS,
+  hasExactPrPrepareFields,
+  isPrPrepareElapsedMs,
+  isPrPrepareStage,
+  normalizePrPrepareTimings,
+  normalizePrPrepareWarnings,
+} from "@meridian/core";
 import { CliError } from "../errors";
 import { githubTokenFor } from "./web-auth";
 import { WebError } from "./web-error";
+import { cancelWhenClientLeaves } from "./web-cancellation";
 import { readJsonBody } from "./web-request";
 import { parsePrPrepareRequest, sourceForPrPrepare } from "./web-pr-request";
 import type { PrPrepareRequest } from "./web-pr-request";
 import type { Context } from "./web-server";
 import { InspectionQueueFullError } from "./inspection-scheduler";
-import type { CachedPrPreparation, CachedPrSide, PrPrepareProgress } from "./web-pr-cache";
-import type { InspectionGraphSummary } from "./inspection-snapshot-store";
 import {
-  MAX_PREPARED_REVIEW_HANDOFF_BYTES,
+  acquirePrPreparationSourceOperations,
+  type CachedPrPreparation,
+  type CachedPrSide,
+  type PrPrepareProgress,
+} from "./web-pr-cache";
+import type { GraphGenerationSummary } from "./graph-generation-contract";
+import type { GraphRevisionIdentity, VerifiedGraphGeneration } from "./graph-generation-verifier";
+import type { PublishGraphCapability } from "./graph-capability-store";
+import {
   PreparedReviewHandoffStoreError,
   type PreparedReviewGraphDescriptor,
 } from "./prepared-review-handoff-store";
@@ -21,20 +38,44 @@ import {
   readSyntheticCapabilitySidecar,
   syntheticCapabilitySidecarPath,
 } from "./synthetic-capability-sidecar";
-
-const PROTOCOL_VERSION = 1;
-const MAX_NDJSON_LINE_BYTES = MAX_PREPARED_REVIEW_HANDOFF_BYTES;
+import { withOwnershipCleanup } from "./ownership-cleanup";
 
 export type PreparedGraphDescriptor = PreparedReviewGraphDescriptor;
+
+async function acquirePreparedGenerationLeases(
+  ctx: Context,
+  prepared: CachedPrPreparation,
+  signal?: AbortSignal,
+) {
+  const head = await ctx.graphGenerationLifecycle.acquire(
+    prepared.head.verifiedGeneration.generationDirectory,
+    { purpose: "publication", signal },
+  );
+  try {
+    const mergeBase = await ctx.graphGenerationLifecycle.acquire(
+      prepared.mergeBase.verifiedGeneration.generationDirectory,
+      { purpose: "publication", signal },
+    );
+    return [head, mergeBase] as const;
+  } catch (error) {
+    await withOwnershipCleanup(
+      () => { throw error; },
+      [() => head.release()],
+      "PR generation lease acquisition",
+    );
+    throw error;
+  }
+}
 
 export async function handlePrPrepare(
   ctx: Context,
   request: IncomingMessage,
   response: ServerResponse,
 ): Promise<void> {
-  const body = parsePrPrepareRequest(await readJsonBody(request));
+  const body = parsePrPrepareRequest(await readJsonBody({ request, signal: ctx.shutdownSignal }));
   const token = githubTokenFor(ctx, request);
   const cancellation = cancelWhenClientLeaves(request, response);
+  const operationSignal = AbortSignal.any([cancellation.signal, ctx.shutdownSignal]);
   try {
     let pending: Promise<CachedPrPreparation>;
     try {
@@ -47,10 +88,12 @@ export async function handlePrPrepare(
           ...(token ? { token } : {}),
           refresh: ctx.refreshCache,
           repositoryMirrors: ctx.repositoryMirrors,
+          baseInspectionCoordinator: ctx.prBaseInspectionCoordinator,
+          generationLifecycle: ctx.graphGenerationLifecycle,
           runExtraction: ctx.runExtraction,
         },
         {
-          signal: cancellation.signal,
+          signal: operationSignal,
           onProgress: (progress) => writeProgress(response, progress),
         },
       );
@@ -74,29 +117,77 @@ export async function handlePrPrepare(
         timings: prepared.timings,
         warnings: prepared.warnings,
       });
+      const document = candidate.document;
       const done = {
-        version: PROTOCOL_VERSION,
+        version: PR_PREPARE_PROTOCOL_VERSION,
         type: "done",
-        headSha: prepared.headSha,
-        baseSha: prepared.baseSha,
-        mergeBaseSha: prepared.mergeBaseSha,
-        changedFiles: prepared.changedFiles,
-        head: descriptors.head,
-        mergeBase: descriptors.mergeBase,
-        cache: prepared.cache,
-        timings: prepared.timings,
-        warnings: prepared.warnings,
+        headSha: document.headSha,
+        baseSha: document.baseSha,
+        mergeBaseSha: document.mergeBaseSha,
+        changedFiles: document.changedFiles,
+        head: document.head,
+        mergeBase: document.mergeBase,
+        cache: document.cache,
+        timings: document.timings,
+        warnings: document.warnings,
         handoff: candidate.reference,
       };
-      // Validate the exact terminal line before disk publication. This avoids leaving a published
-      // handoff that the strict 2 MiB NDJSON transport can never return to its creator.
+      // Validate the exact terminal line before durable graph publication. This avoids leaving
+      // capabilities that the strict 2 MiB NDJSON transport can never return to their creator.
       const serializedDone = serializeLine(done);
-      publishDescriptorSides(ctx, body, prepared, descriptors);
-      ctx.preparedReviewHandoffs.publish(candidate);
-      writeSerializedLine(response, serializedDone);
+      const generationLeases = await acquirePreparedGenerationLeases(ctx, prepared, operationSignal);
+      await withOwnershipCleanup(
+        async () => {
+          const sourceOperations = await acquirePrPreparationSourceOperations(
+            ctx.repositoryMirrors,
+            prepared,
+            operationSignal,
+          );
+          await withOwnershipCleanup(
+            () => publishCapabilitySides(
+              ctx,
+              body,
+              prepared,
+              descriptors,
+              AbortSignal.any([
+                operationSignal,
+                sourceOperations[0].signal,
+                sourceOperations[1].signal,
+              ]),
+            ),
+            [
+              () => sourceOperations[0].release(),
+              () => sourceOperations[1].release(),
+            ],
+            "PR source capability publication",
+          );
+        },
+        [
+          () => generationLeases[0].release(),
+          () => generationLeases[1].release(),
+        ],
+        "PR generation capability publication",
+      );
+      // Handoff publication can synchronously deliver the terminal record. Every transient source
+      // and generation lease has therefore been released successfully before entering this call.
+      await ctx.preparedReviewHandoffs.publish(candidate, {
+        signal: operationSignal,
+        deliver: () => {
+          writeSerializedLine(response, serializedDone);
+          return undefined;
+        },
+      });
+      if (prepared.cache === "miss") {
+        ctx.graphGenerationMaintenance.notePublication();
+        ctx.graphGenerationMaintenance.notePublication();
+      }
     } catch (error) {
-      if (!cancellation.signal.aborted) {
-        writeLine(response, { version: PROTOCOL_VERSION, type: "error", message: safeMessage(error) });
+      if (!operationSignal.aborted) {
+        writeLine(response, {
+          version: PR_PREPARE_PROTOCOL_VERSION,
+          type: "error",
+          message: safeMessage(error),
+        });
       }
     } finally {
       response.end();
@@ -110,71 +201,87 @@ function describePreparedGraphs(
   request: PrPrepareRequest,
   prepared: CachedPrPreparation,
 ): { head: PreparedGraphDescriptor; mergeBase: PreparedGraphDescriptor } {
-  const headId = graphId("head", [
-    prepared.repositoryKey,
-    prepared.securityDigest,
-    request.subdir ?? "",
-    request.headRef,
-    prepared.headSha,
-    prepared.mergeBaseSha,
-    prepared.analysisKey,
-    prepared.generationId,
-  ], prepared.headSha);
-  const mergeBaseId = graphId("base", [
-    prepared.repositoryKey,
-    prepared.securityDigest,
-    request.subdir ?? "",
-    prepared.mergeBaseSha,
-    prepared.analysisKey,
-    prepared.mergeBaseGenerationId,
-  ], prepared.mergeBaseSha);
+  const sharedIdentity = {
+    repositoryKey: prepared.repositoryKey,
+    securityDigest: prepared.securityDigest,
+    subdir: request.subdir ?? "",
+    analysisKey: prepared.analysisKey,
+    headSha: prepared.headSha,
+    mergeBaseSha: prepared.mergeBaseSha,
+    reviewContextSha256: prepared.reviewContext.sha256,
+  };
+  const headId = graphId("head", {
+    ...sharedIdentity,
+    graph: immutableGraphIdentity(prepared.head.verifiedGeneration),
+  });
+  const mergeBaseId = graphId("base", {
+    ...sharedIdentity,
+    graph: immutableGraphIdentity(prepared.mergeBase.verifiedGeneration),
+  });
   return {
-    head: descriptorFor(headId, prepared.head.graphSummary),
-    mergeBase: descriptorFor(mergeBaseId, prepared.mergeBase.graphSummary),
+    head: descriptorFor(headId, prepared.head.verifiedGeneration.graphSummary),
+    mergeBase: descriptorFor(mergeBaseId, prepared.mergeBase.verifiedGeneration.graphSummary),
   };
 }
 
-function publishDescriptorSides(
+async function publishCapabilitySides(
   ctx: Context,
   request: PrPrepareRequest,
   prepared: CachedPrPreparation,
   descriptors: { head: PreparedGraphDescriptor; mergeBase: PreparedGraphDescriptor },
-): void {
+  signal?: AbortSignal,
+): Promise<void> {
   const source = sourceForPrPrepare(request);
-  publishSide(
-    ctx,
-    descriptors.head.graphId,
-    prepared.head,
-    source,
-    request.subdir,
-    request.headRef,
-    prepared.headSha,
-  );
-  publishSide(ctx, descriptors.mergeBase.graphId, prepared.mergeBase, source, request.subdir);
+  await ctx.graphCapabilities.publishMany([
+    capabilityForSide(
+      descriptors.mergeBase.graphId,
+      prepared.mergeBase,
+      source,
+      request.subdir,
+      {
+        reference: prepared.reviewContext,
+        side: "mergeBase",
+        peerGraphId: descriptors.head.graphId,
+        generation: prepared.head.verifiedGeneration,
+      },
+    ),
+    capabilityForSide(
+      descriptors.head.graphId,
+      prepared.head,
+      source,
+      request.subdir,
+      {
+        reference: prepared.reviewContext,
+        side: "head",
+        peerGraphId: descriptors.mergeBase.graphId,
+        generation: prepared.head.verifiedGeneration,
+      },
+      prepared.headSha,
+    ),
+  ], { signal, idempotence: "managed-cache-semantic" });
 }
 
-function publishSide(
-  ctx: Context,
+function capabilityForSide(
   graphId: string,
   side: CachedPrSide,
   source: ReturnType<typeof sourceForPrPrepare>,
   subdir: string | undefined,
-  branch?: string,
+  reviewContext: NonNullable<PublishGraphCapability["reviewContext"]>,
   preparedHeadSha?: string,
-): void {
+): PublishGraphCapability {
   const synthetic = readSyntheticCapabilitySidecar(syntheticCapabilitySidecarPath(side.artifactPath));
   const canExecute = preparedHeadSha !== undefined
     && synthetic?.state === "ready"
     && synthetic.scenarios.length > 0
     && synthetic.sourceFingerprint !== null;
-  ctx.inspectionSnapshots.publish({
+  return {
     id: graphId,
-    artifactPath: side.artifactPath,
-    graphSummary: side.graphSummary,
-    ...(branch ? { vcsBranch: branch } : {}),
+    generation: side.verifiedGeneration,
     sourceRoot: side.sourceRoot,
+    sourceLease: side.sourceLease,
     ...(subdir ? { sourceSubdir: subdir } : {}),
     source,
+    reviewContext,
     ...(canExecute ? {
       syntheticExecutionTrust: {
         mode: "sandboxed-pr" as const,
@@ -184,24 +291,75 @@ function publishSide(
         },
       },
     } : {}),
-  });
+  };
 }
 
-function descriptorFor(graphId: string, graphSummary: InspectionGraphSummary): PreparedGraphDescriptor {
+function descriptorFor(graphId: string, graphSummary: GraphGenerationSummary): PreparedGraphDescriptor {
   const id = encodeURIComponent(graphId);
   return {
     graphId,
     manifestUrl: `/api/graph/manifest?id=${id}`,
     projectionUrl: `/api/graph/projection?id=${id}`,
+    searchUrl: `/api/graph/search?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     graphSummary,
   };
 }
 
-function graphId(side: "head" | "base", parts: readonly string[], commit: string): string {
-  const digest = createHash("sha256").update(JSON.stringify([side, ...parts])).digest("hex").slice(0, 24);
-  return `pr-${side}-${digest}-${commit.slice(0, 16)}`;
+interface ImmutableGraphIdentity {
+  readonly artifact: { readonly bytes: number; readonly sha256: string };
+  readonly projection: {
+    readonly bytes: number;
+    readonly sha256: string;
+    readonly contentId: string;
+  };
+  readonly revision: GraphRevisionIdentity;
+  readonly summary: GraphGenerationSummary;
+}
+
+interface PreparedGraphIdIdentity {
+  readonly repositoryKey: string;
+  readonly securityDigest: string;
+  readonly subdir: string;
+  readonly analysisKey: string;
+  readonly headSha: string;
+  readonly mergeBaseSha: string;
+  readonly reviewContextSha256: string;
+  readonly graph: ImmutableGraphIdentity;
+}
+
+function immutableGraphIdentity(generation: VerifiedGraphGeneration): ImmutableGraphIdentity {
+  const revision: GraphRevisionIdentity = generation.revision.kind === "git"
+    ? { kind: "git", commit: generation.revision.commit }
+    : { kind: "content", contentId: generation.revision.contentId };
+  return {
+    artifact: { bytes: generation.artifactBytes, sha256: generation.artifactSha256 },
+    projection: {
+      bytes: generation.projectionBytes,
+      sha256: generation.projectionSha256,
+      contentId: generation.projectionContentId,
+    },
+    revision,
+    summary: {
+      schemaVersion: generation.graphSummary.schemaVersion,
+      generatedAt: generation.graphSummary.generatedAt,
+      nodeCount: generation.graphSummary.nodeCount,
+      edgeCount: generation.graphSummary.edgeCount,
+    },
+  };
+}
+
+function graphId(
+  side: "head" | "base",
+  identity: PreparedGraphIdIdentity,
+): string {
+  const digest = createHash("sha256")
+    .update(JSON.stringify({ version: 2, side, ...identity }))
+    .digest("hex");
+  const revision = identity.graph.revision;
+  const revisionId = revision.kind === "git" ? revision.commit : revision.contentId;
+  return `pr-${side}-${digest}-${revisionId.slice(0, 16)}`;
 }
 
 function prJobKey(request: PrPrepareRequest, token: string | undefined, refresh: boolean): string {
@@ -214,7 +372,7 @@ function prJobKey(request: PrPrepareRequest, token: string | undefined, refresh:
 
 function writeProgress(response: ServerResponse, progress: PrPrepareProgress): void {
   writeLine(response, {
-    version: PROTOCOL_VERSION,
+    version: PR_PREPARE_PROTOCOL_VERSION,
     type: "progress",
     stage: progress.stage,
     elapsedMs: progress.elapsedMs,
@@ -233,11 +391,39 @@ function writeLine(response: ServerResponse, line: Record<string, unknown>): voi
 }
 
 function serializeLine(line: Record<string, unknown>): string {
+  assertPrPrepareV1Line(line);
   const serialized = JSON.stringify(line);
-  if (Buffer.byteLength(`${serialized}\n`, "utf8") > MAX_NDJSON_LINE_BYTES) {
+  if (Buffer.byteLength(`${serialized}\n`, "utf8") > PR_PREPARE_MAX_LINE_BYTES) {
     throw new WebError(422, "PR preparation result exceeds the 2 MiB NDJSON line limit");
   }
   return serialized;
+}
+
+function assertPrPrepareV1Line(line: Record<string, unknown>): void {
+  if (line.version !== PR_PREPARE_PROTOCOL_VERSION) throw invalidProtocolRecord();
+  if (line.type === "progress") {
+    if (!hasExactPrPrepareFields(line, PR_PREPARE_V1_FIELDS.progress)
+      || !isPrPrepareStage(line.stage)
+      || !isPrPrepareElapsedMs(line.elapsedMs)) throw invalidProtocolRecord();
+    return;
+  }
+  if (line.type === "done") {
+    if (!hasExactPrPrepareFields(line, PR_PREPARE_V1_FIELDS.done)
+      || normalizePrPrepareTimings(line.timings) === null
+      || normalizePrPrepareWarnings(line.warnings) === null) throw invalidProtocolRecord();
+    return;
+  }
+  if (line.type === "error") {
+    if (!hasExactPrPrepareFields(line, PR_PREPARE_V1_FIELDS.error)
+      || typeof line.message !== "string"
+      || line.message.length === 0) throw invalidProtocolRecord();
+    return;
+  }
+  throw invalidProtocolRecord();
+}
+
+function invalidProtocolRecord(): TypeError {
+  return new TypeError("invalid internal PR preparation protocol record");
 }
 
 function writeSerializedLine(response: ServerResponse, serialized: string): void {
@@ -257,33 +443,4 @@ function safeMessage(error: unknown): string {
     return error.message;
   }
   return "internal error while preparing the pull request";
-}
-
-function cancelWhenClientLeaves(
-  request: IncomingMessage,
-  response: ServerResponse,
-): { signal: AbortSignal; dispose(): void } {
-  const controller = new AbortController();
-  const abort = () => {
-    if (controller.signal.aborted) return;
-    const error = new Error("The client closed the inspection request");
-    error.name = "AbortError";
-    controller.abort(error);
-  };
-  request.once("aborted", abort);
-  const events = response as ServerResponse & {
-    once?: (event: string, listener: () => void) => unknown;
-    off?: (event: string, listener: () => void) => unknown;
-  };
-  const onClose = () => {
-    if (!response.writableEnded) abort();
-  };
-  events.once?.("close", onClose);
-  return {
-    signal: controller.signal,
-    dispose() {
-      request.off("aborted", abort);
-      events.off?.("close", onClose);
-    },
-  };
 }

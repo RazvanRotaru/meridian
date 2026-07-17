@@ -12,24 +12,24 @@ import type { ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import {
+  isStandaloneMockWorkerResponse,
+  MAX_STANDALONE_MOCK_RESPONSE_BYTES,
+  type StandaloneMockTelemetryKind,
+  type StandaloneMockWorkerRequest,
+  type StandaloneMockWorkerResponse,
+} from "./standalone-view-mock-worker-protocol.js";
 import { WebError } from "./web-error";
 
-export const MAX_STANDALONE_MOCK_RESPONSE_BYTES = 16 * 1024 * 1024;
+export {
+  isStandaloneMockWorkerRequest,
+  MAX_STANDALONE_MOCK_RESPONSE_BYTES,
+  type StandaloneMockTelemetryKind,
+  type StandaloneMockWorkerRequest,
+  type StandaloneMockWorkerResponse,
+} from "./standalone-view-mock-worker-protocol.js";
+
 const DEFAULT_TIMEOUT_MS = 60_000;
-
-export type StandaloneMockTelemetryKind = "overlay" | "traces";
-
-export interface StandaloneMockWorkerRequest {
-  type: "render";
-  kind: StandaloneMockTelemetryKind;
-  artifactPath: string;
-  outputPath: string;
-  environment: string;
-}
-
-export type StandaloneMockWorkerResponse =
-  | { type: "result"; outputPath: string; bytes: number }
-  | { type: "error"; reason: "invalid-request" | "invalid-artifact" | "too-large" | "internal" };
 
 export interface RunStandaloneMockTelemetryRequest {
   artifactPath: string;
@@ -130,7 +130,9 @@ function runWorker(
   return new Promise((resolveWorker, rejectWorker) => {
     const workerEntry = options.workerEntry ?? defaultWorkerEntry();
     const child = fork(workerEntry, {
-      execArgv: isTypeScriptEntry(workerEntry) ? sourceWorkerExecArgv() : [],
+      execArgv: isTypeScriptEntry(workerEntry) && !supportsNativeTypeStripping()
+        ? sourceWorkerExecArgv()
+        : [],
       serialization: "advanced",
       stdio: ["ignore", "ignore", "ignore", "ipc"],
     });
@@ -194,31 +196,6 @@ function runWorker(
   });
 }
 
-export function isStandaloneMockWorkerRequest(value: unknown): value is StandaloneMockWorkerRequest {
-  if (!isRecord(value) || Object.keys(value).length !== 5) return false;
-  return value.type === "render"
-    && (value.kind === "overlay" || value.kind === "traces")
-    && typeof value.artifactPath === "string" && value.artifactPath.length > 0
-    && typeof value.outputPath === "string" && value.outputPath.length > 0
-    && typeof value.environment === "string" && value.environment.trim().length > 0
-    && Buffer.byteLength(value.environment, "utf8") <= 1_024;
-}
-
-function isStandaloneMockWorkerResponse(value: unknown): value is StandaloneMockWorkerResponse {
-  if (!isRecord(value) || typeof value.type !== "string") return false;
-  if (value.type === "result") {
-    return Object.keys(value).length === 3
-      && typeof value.outputPath === "string"
-      && Number.isSafeInteger(value.bytes);
-  }
-  return value.type === "error"
-    && Object.keys(value).length === 2
-    && (value.reason === "invalid-request"
-      || value.reason === "invalid-artifact"
-      || value.reason === "too-large"
-      || value.reason === "internal");
-}
-
 function defaultWorkerEntry(): URL {
   if (import.meta.url.endsWith(".ts")) return new URL("./standalone-view-mock-worker-child.ts", import.meta.url);
   const candidates = [
@@ -237,13 +214,13 @@ function isTypeScriptEntry(entry: string | URL): boolean {
   return (entry instanceof URL ? entry.pathname : entry).endsWith(".ts");
 }
 
+function supportsNativeTypeStripping(): boolean {
+  return "typescript" in process.features && process.features.typescript === "strip";
+}
+
 function abortReason(signal?: AbortSignal): unknown {
   if (signal?.reason !== undefined) return signal.reason;
   const error = new Error("The operation was aborted");
   error.name = "AbortError";
   return error;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

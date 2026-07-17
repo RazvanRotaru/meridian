@@ -4,13 +4,14 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createWebServer } from "./web-server";
+import { createWebServer, type WebServerHandle } from "./web-server";
+import { removeEntry } from "./web-cache-storage";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -24,18 +25,23 @@ interface GenerateLine {
 }
 
 let rendererRoot: string;
-let server: Server;
+let server: WebServerHandle;
 let base: string;
 
 beforeAll(async () => {
   rendererRoot = writeFakeRenderer();
-  server = createWebServer({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
-  base = await listenEphemeral(server);
+  server = createWebServer({
+    rendererRoot,
+    webUiPath: WEB_UI,
+    cwd: REPO_ROOT,
+    cacheRoot: join(rendererRoot, "cache"),
+  });
+  base = await listenEphemeral(server.server);
 });
 
-afterAll(() => {
-  server.close();
-  rmSync(rendererRoot, { recursive: true, force: true });
+afterAll(async () => {
+  await server?.close();
+  removeEntry(rendererRoot);
 });
 
 describe("POST /api/generate response formats", () => {

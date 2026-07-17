@@ -174,13 +174,18 @@ export function expandServiceSyntheticAnchors(
   groupingMode?: ServiceGroupingMode,
   groupingTargetSize?: number,
 ): string[] {
-  const clustering = clusteringFor(index);
-  const domains = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);
+  // Real graph ids and `svc:` frames are self-describing at this boundary. Only a synthetic domain
+  // needs the Service projection's authoritative domain model. Keeping that lookup lazy lets Map,
+  // UI, Logic, and PR navigation carry ordinary ids without importing hidden Service facts.
+  const needsDomainModel = ids.some(isServiceDomainId);
+  const domains = needsDomainModel
+    ? deriveServiceDomains(clusteringFor(index), groupingMode, groupingTargetSize)
+    : null;
   const out: string[] = [];
   const seen = new Set<string>();
   for (const id of ids) {
     const lead = leadIdOf(id);
-    const domain = serviceDomainById(domains, id);
+    const domain = domains === null ? undefined : serviceDomainById(domains, id);
     const expanded = lead !== null ? [lead] : domain ? domain.leadIds : isServiceDomainId(id) ? [] : [id];
     for (const anchor of expanded) {
       if (!seen.has(anchor)) {

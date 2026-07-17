@@ -5,6 +5,7 @@
  */
 
 import { describe, expect, it } from "vitest";
+import { deriveGraphStructure } from "@meridian/core";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { buildModuleGraph } from "./moduleGraph";
@@ -64,6 +65,43 @@ describe("collapseChain", () => {
   it("stops where a level branches (pkgA/src has files + a subdir)", () => {
     const { nodes, edges } = fixture();
     expect(collapseChain(indexOf(nodes, edges), "ts:pkgA/src")).toBe("ts:pkgA/src");
+  });
+
+  it("stops at a bounded projection frontier whose sole directory has undisclosed children", () => {
+    const root = npmPkg("ts:repo", "repo");
+    const services = node("ts:repo/services", "package", root.id, "services");
+    const structure = deriveGraphStructure([root, services], []);
+    const hierarchyById = new Map(structure.hierarchyById);
+    hierarchyById.set(services.id, {
+      isTest: false,
+      childKindCounts: { module: 2 },
+      descendantSourceFileCount: 2,
+      ownedSourceFileCount: 2,
+    });
+    const artifact: GraphArtifact = {
+      schemaVersion: "1.0.0",
+      generatedAt: "2026-07-17T00:00:00.000Z",
+      generator: { name: "test", version: "1" },
+      target: { name: "frontier", root: ".", language: "typescript" },
+      nodes: [root, services],
+      edges: [],
+    };
+    const index = buildGraphIndex(artifact, {
+      structure: {
+        ...structure,
+        hierarchyById,
+        repositorySummary: {
+          overviewPackageCount: 1,
+          sourceFileCount: 2,
+          testSourceFileCount: 0,
+        },
+      },
+      artifactComplete: false,
+    });
+
+    expect(index.childrenOf(services.id)).toEqual([]);
+    expect(index.childCount(services.id)).toBe(2);
+    expect(collapseChain(index, root.id)).toBe(root.id);
   });
 });
 

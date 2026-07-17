@@ -6,8 +6,12 @@
  * they all read the SAME clustering object instead of re-clustering per relayout, click, or render.
  */
 
+import {
+  deriveServiceClusters,
+  hydrateServiceTopology,
+  type ServiceClustering,
+} from "@meridian/design-metrics";
 import type { GraphIndex } from "../graph/graphIndex";
-import { deriveServiceClusters, type ServiceClustering } from "./serviceComposition";
 
 const cache = new WeakMap<GraphIndex, ServiceClustering>();
 
@@ -16,7 +20,29 @@ export function clusteringFor(index: GraphIndex): ServiceClustering {
   if (cached !== undefined) {
     return cached;
   }
-  const clustering = deriveServiceClusters([...index.nodesById.values()], index.edges);
+  const clustering = index.serviceTopology !== null
+    ? hydrateServiceTopology(index.serviceTopology)
+    : deriveFromCompleteArtifact(index);
   cache.set(index, clustering);
   return clustering;
+}
+
+/**
+ * Non-Service projections may contain request/selection overlays that can paint their ordinary
+ * containment ancestors without any service abstraction. Those cross-view consumers opt into
+ * service representatives only when authoritative facts are actually available.
+ */
+export function clusteringForIfAvailable(index: GraphIndex): ServiceClustering | null {
+  return index.serviceTopology !== null || index.artifactComplete
+    ? clusteringFor(index)
+    : null;
+}
+
+function deriveFromCompleteArtifact(index: GraphIndex): ServiceClustering {
+  if (!index.artifactComplete) {
+    throw new Error(
+      "Service topology is unavailable for this bounded graph projection; request a Service projection",
+    );
+  }
+  return deriveServiceClusters([...index.nodesById.values()], index.edges);
 }

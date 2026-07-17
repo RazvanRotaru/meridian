@@ -1,18 +1,19 @@
 /**
- * Browser contract for a trustworthy code diff. Four real local PR refs travel through the same
- * GitHub proxy, smart-HTTP clone, merge-base extraction, hover preview, and </> modal as production.
- * Every assertion is scoped to one exact file path. The rendered rows must independently equal
- * both that file's GitHub-style U3 patch and a raw `git diff -U0` merge-base oracle.
+ * Browser contract for a trustworthy code diff. Four real local PR refs travel through the strict
+ * direct-prepare contract, shared smart-HTTP mirror, merge-base extraction, immutable two-sided
+ * handoff, hover preview, and </> modal as production. Every assertion is scoped to one exact file
+ * path. The rendered rows must independently equal both that file's GitHub-style U3 patch and a raw
+ * `git diff -U0` merge-base oracle.
  */
 
-import { rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
-import { createWebServer } from "../src/server/web-server";
+import { createWebServer, type WebServerHandle } from "../src/server/web-server";
+import { removeEntry } from "../src/server/web-cache-storage";
 import {
   DIFF_PARITY_CASES,
   buildDiffParityFixture,
@@ -29,7 +30,7 @@ import {
   ensureBuilt,
   listenServer,
   startSmartGitServer,
-  verifySmartHttpClone,
+  verifySmartHttpMirrorTransport,
 } from "./harness";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -43,9 +44,9 @@ if (process.env.CI && !HAS_CHROMIUM) {
 
 let fixture: DiffParityFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: Server | undefined;
+let webServer: WebServerHandle | undefined;
 let browser: Browser | undefined;
-let viewUrl = "";
+let baseUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const unexpectedGitHubRequests: string[] = [];
 
@@ -73,7 +74,7 @@ async function setup(): Promise<void> {
   fixture = buildDiffParityFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
-  await verifySmartHttpClone(smartGit.repoUrl);
+  await verifySmartHttpMirrorTransport(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
   vi.stubGlobal("fetch", fakeGitHub(fixture));
   webServer = createWebServer({
@@ -85,9 +86,7 @@ async function setup(): Promise<void> {
     fallbackToken: "meridian-diff-e2e-token",
     fallbackUser: { login: "diff-e2e-reviewer", avatarUrl: null },
   });
-  const baseUrl = await listenServer(webServer);
-  const generated = await generateSession(baseUrl);
-  viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
+  baseUrl = await listenServer(webServer.server);
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 }
 
@@ -95,7 +94,7 @@ async function teardown(): Promise<void> {
   const errors: unknown[] = [];
   for (const close of [
     () => browser?.close(),
-    () => closeServer(webServer),
+    () => webServer?.close(),
     () => closeServer(smartGitServer),
   ]) {
     try {
@@ -107,7 +106,7 @@ async function teardown(): Promise<void> {
   try {
     restoreGitRedirect?.();
     vi.unstubAllGlobals();
-    if (fixture) rmSync(fixture.dir, { recursive: true, force: true });
+    if (fixture) removeEntry(fixture.dir);
   } catch (error) {
     errors.push(error);
   }
@@ -123,30 +122,15 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   const page = await context.newPage();
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  await page.goto(viewUrl, { waitUntil: "domcontentloaded" });
-  await page.getByText(`${DIFF_PARITY_CASES.length} open`, { exact: true }).waitFor();
-  await page.getByTitle("Open the full Pull requests page").click();
-  await page.getByRole("heading", { name: "Pull requests" }).waitFor();
-  const prCard = page.getByText(`#${pr.number}`, { exact: true }).locator("xpath=ancestor::button[1]");
-  await prCard.waitFor();
-  await prCard.click();
-
-  const detail = page.locator("aside.mrd-scroll");
-  if (spec.targetOmittedFromGitHub) {
-    expect(await detail.getByTitle(pr.targetPath).count(), "target must be absent from the bounded GitHub response").toBe(0);
-    const reported = pr.files.find((file) => file.reportedByGitHub !== false);
-    if (!reported) throw new Error(`PR #${pr.number} needs one GitHub-reported seed file`);
-    await detail.getByTitle(reported.api.filename).waitFor();
-  } else {
-    await detail.getByTitle(pr.targetPath).waitFor();
-  }
-  await detail.getByRole("button", { name: "Review in graph" }).click();
+  const viewUrl = await preparePrView(baseUrl, pr);
+  await page.goto(new URL(viewUrl, baseUrl).href, { waitUntil: "domcontentloaded" });
   await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 120_000 });
   const provenance = `${pr.headRef} → ${pr.baseRef} · HEAD @${pr.headSha.slice(0, 7)}`;
   await page.getByText(provenance, { exact: true }).waitFor({ timeout: 180_000 });
 
   const reviewSurface = page.getByRole("region", { name: "Extracted graph" });
   await reviewSurface.waitFor();
+  await focusReviewFile(page, pr.targetPath);
   const targetNode = fileNodeFor(reviewSurface, pr.targetPath);
   await targetNode.waitFor({ state: "visible", timeout: 60_000 });
   await waitForGraphViewportToSettle(reviewSurface);
@@ -158,9 +142,11 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
     await assertTextualFileDiff(page, reviewSurface, pr, spec, file);
   }
   if (spec.deletedNode) {
+    await focusReviewFile(page, pr.targetPath);
     await assertDeletedNodeDiff(page, reviewSurface, pr, spec.deletedNode);
   }
   if (spec.metadataOnlyRename) {
+    await focusReviewFile(page, spec.metadataOnlyRename.path);
     await assertMetadataOnlyRename(page, reviewSurface, pr, spec.metadataOnlyRename);
   }
   expect(pageErrors).toEqual([]);
@@ -175,6 +161,7 @@ async function assertTextualFileDiff(
   file: DiffParityFile,
 ): Promise<void> {
   const path = file.api.filename;
+  await focusReviewFile(page, path);
   const fileNode = fileNodeFor(reviewSurface, path);
   await fileNode.waitFor({ state: "visible", timeout: 60_000 });
 
@@ -227,6 +214,19 @@ async function assertTextualFileDiff(
 
   await modal.getByRole("button", { name: "Close source" }).click();
   await modal.waitFor({ state: "detached" });
+}
+
+/** The review overview intentionally carries no graph. A file-row selection is the public action
+ * that hydrates its exact two-sided projection; the E2E must exercise that contract explicitly. */
+async function focusReviewFile(page: Page, path: string): Promise<void> {
+  const sourceOnly = page.getByTitle(`${path} — click to view the changed source`, { exact: true });
+  if (await sourceOnly.count() > 0) {
+    await sourceOnly.first().click();
+    return;
+  }
+  const projected = page.getByTitle(`${path} — click to reveal on the graph`, { exact: true });
+  await projected.first().waitFor();
+  await projected.first().click();
 }
 
 function fileNodeFor(reviewSurface: Locator, path: string): Locator {
@@ -459,16 +459,47 @@ function expectSameFileParity(
   ).toEqual(file.oracleRows);
 }
 
-async function generateSession(baseUrl: string): Promise<{ id: string }> {
-  const response = await nativeFetch(`${baseUrl}/api/generate`, {
+async function preparePrView(baseUrl: string, pr: DiffParityPr): Promise<string> {
+  const response = await nativeFetch(`${baseUrl}/api/pr/prepare`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ kind: "github", value: "e2e/shop" }),
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    body: JSON.stringify({
+      owner: "e2e",
+      repo: "shop",
+      prNumber: pr.number,
+      baseRef: pr.baseRef,
+      headRef: pr.headRef,
+    }),
   });
-  if (!response.ok) {
-    throw new Error(`diff parity session generation failed (${response.status}): ${await response.text()}`);
+  const body = await response.text();
+  if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0] !== "application/x-ndjson") {
+    throw new Error(`diff parity PR preparation failed (${response.status}): ${body}`);
   }
-  return (await response.json()) as { id: string };
+  const records = body
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  if (records.some((record) => record.version !== 1)) {
+    throw new Error("diff parity PR preparation returned an unversioned record");
+  }
+  const error = records.find((record) => record.type === "error");
+  if (error) throw new Error(`diff parity PR preparation failed: ${String(error.message)}`);
+  const terminals = records.filter((record) => record.type === "done");
+  if (terminals.length !== 1) {
+    throw new Error(`diff parity PR preparation returned ${terminals.length} terminal done records`);
+  }
+  const done = terminals[0];
+  const head = done.head as Record<string, unknown> | undefined;
+  const mergeBase = done.mergeBase as Record<string, unknown> | undefined;
+  const handoff = done.handoff as Record<string, unknown> | undefined;
+  if (
+    typeof head?.graphId !== "string"
+    || typeof mergeBase?.graphId !== "string"
+    || typeof handoff?.viewUrl !== "string"
+  ) {
+    throw new Error("diff parity PR preparation returned an incomplete two-sided handoff");
+  }
+  return handoff.viewUrl;
 }
 
 function fakeGitHub(source: DiffParityFixture): typeof fetch {
@@ -523,7 +554,7 @@ function fakeGitHub(source: DiffParityFixture): typeof fetch {
   }) as typeof fetch;
 }
 
-// git-exec inherits these variables, redirecting both the initial shallow clone and all PR-head
+// git-exec inherits these variables, redirecting mirror initialization and all PR-head
 // analysis fetches without changing production argv or reaching github.com.
 function installGitRedirect(repoUrl: string): () => void {
   const oldCount = process.env.GIT_CONFIG_COUNT;

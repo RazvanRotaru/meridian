@@ -19,12 +19,19 @@ const HEAD_CLOSE = "</head>";
 
 export function injectBootScript(
   html: string,
+  projectionGraphId: string,
   overlay: OverlaySource,
   preselectedEnv: string | null,
   sourceRoot: string | null,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
 ): string {
-  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(overlay, preselectedEnv, sourceRoot, syntheticScenarios))}</script>`;
+  const script = `<script>window.__MERIDIAN__=${escapeForScript(bootJson(
+    projectionGraphId,
+    overlay,
+    preselectedEnv,
+    sourceRoot,
+    syntheticScenarios,
+  ))}</script>`;
   if (html.includes(HEAD_CLOSE)) {
     return html.replace(HEAD_CLOSE, `${script}${HEAD_CLOSE}`);
   }
@@ -38,6 +45,7 @@ function escapeForScript(json: string): string {
 }
 
 function bootJson(
+  projectionGraphId: string,
   overlay: OverlaySource,
   preselectedEnv: string | null,
   sourceRoot: string | null,
@@ -45,8 +53,10 @@ function bootJson(
 ): string {
   const syntheticEnabled = syntheticScenarios !== null;
   return JSON.stringify({
+    projectionGraphId,
     projectionManifestUrl: "/api/graph/manifest",
     projectionUrl: "/api/graph/projection",
+    graphSearchUrl: "/api/graph/search",
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     traceUrl: "/api/traces",

@@ -1,6 +1,5 @@
-import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { mkdtempSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,14 +11,31 @@ import {
   MAX_EXTRACTION_WORKER_STDERR_BYTES,
 } from "./extraction-worker";
 import type { SerializablePipelineRequest } from "./extraction-worker";
+import { GRAPH_PROJECTION_FORMAT_VERSION } from "./graph-projection-bundle";
+import {
+  GraphGenerationLifecycle,
+  type GraphGenerationStage,
+} from "./graph-generation-lifecycle";
+import { parseGraphGenerationStagePath } from "./graph-cache-layout";
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 const tempDirectories: string[] = [];
+const outputStages: GraphGenerationStage[] = [];
 
 afterEach(async () => {
-  await Promise.all(tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
+  const stageResults = await Promise.allSettled(
+    outputStages.splice(0).map((stage) => stage.release()),
+  );
+  const directoryResults = await Promise.allSettled(
+    tempDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+  );
+  const failures = [...stageResults, ...directoryResults].flatMap((result) => (
+    result.status === "rejected" ? [result.reason] : []
+  ));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, "extraction worker fixture cleanup failed");
 });
 
 describe("extractionWorkerHeapMb", () => {
@@ -42,12 +58,17 @@ describe("extractionWorkerHeapMb", () => {
 describe("runExtractionWorker", () => {
   it("runs the real source worker and returns only file-backed metadata and warnings", async () => {
     const root = join(REPO, "examples", "orders-api");
+    const output = await workerOutput();
+    expect(parseGraphGenerationStagePath(
+      output.lifecycleCacheRoot,
+      dirname(output.artifactOutputPath),
+    )).not.toBeNull();
     const result = await runExtractionWorker({
       absoluteRoot: root,
       cwd: root,
       project: join(root, "tsconfig.json"),
       materializeBoundary: true,
-    }, { artifactOutputPath: workerArtifactPath() });
+    }, output);
 
     const artifact = JSON.parse(await readFile(result.artifactPath, "utf8")) as { target: { language: string }; nodes: unknown[] };
     expect(artifact.target.language).toBe("typescript");
@@ -66,7 +87,7 @@ describe("runExtractionWorker", () => {
       cwd: root,
       language: "not-a-language",
       materializeBoundary: true,
-    }, { artifactOutputPath: workerArtifactPath() }));
+    }, await workerOutput()));
 
     expect(error).toBeInstanceOf(CliError);
     expect(error).toMatchObject({ exitCode: EXIT.extractor, details: [] });
@@ -106,7 +127,7 @@ describe("runExtractionWorker", () => {
       error = await rejectionOf(runExtractionWorker(dummyRequest({
         changedSince: "refs/meridian/jobs/test/base",
         changedSinceLabel: "origin/main",
-      }), { artifactOutputPath: workerArtifactPath(), workerEntry: entry, token }));
+      }), { ...(await workerOutput()), workerEntry: entry, token }));
     } finally {
       restoreEnvironment("GITHUB_TOKEN", previous.github);
       restoreEnvironment("GH_TOKEN", previous.gh);
@@ -127,7 +148,7 @@ describe("runExtractionWorker", () => {
     `);
 
     const error = await rejectionOf(runExtractionWorker(dummyRequest(), {
-      artifactOutputPath: workerArtifactPath(), workerEntry: entry,
+      ...(await workerOutput()), workerEntry: entry,
     }));
     expect(error).toBeInstanceOf(CliError);
     expect(error).toMatchObject({ exitCode: EXIT.internal, details: [] });
@@ -150,7 +171,7 @@ describe("runExtractionWorker", () => {
     const reason = new Error("subscriber left");
     reason.name = "AbortError";
     const pending = runExtractionWorker(dummyRequest({ absoluteRoot: ready }), {
-      artifactOutputPath: workerArtifactPath(),
+      ...(await workerOutput()),
       workerEntry: entry,
       signal: controller.signal,
       terminateGraceMs: 40,
@@ -170,7 +191,7 @@ describe("runExtractionWorker", () => {
     const reason = new Error("already gone");
     controller.abort(reason);
     await expect(runExtractionWorker(dummyRequest(), {
-      artifactOutputPath: workerArtifactPath(),
+      ...(await workerOutput()),
       signal: controller.signal,
       workerEntry: "/does/not/exist.cjs",
     })).rejects.toBe(reason);
@@ -182,7 +203,7 @@ describe("runExtractionWorker", () => {
       process.once("message", () => setInterval(() => {}, 1_000));
     `);
     const error = await rejectionOf(runExtractionWorker(dummyRequest(), {
-      artifactOutputPath: workerArtifactPath(),
+      ...(await workerOutput()),
       workerEntry: entry,
       timeoutMs: 30,
       terminateGraceMs: 20,
@@ -206,7 +227,7 @@ describe("runExtractionWorker", () => {
     `, directory);
     const controller = new AbortController();
     const pending = runExtractionWorker(dummyRequest({ absoluteRoot: ready }), {
-      artifactOutputPath: workerArtifactPath(),
+      ...(await workerOutput()),
       workerEntry: entry,
       signal: controller.signal,
       terminateGraceMs: 30,
@@ -251,6 +272,9 @@ describe("runExtractionWorker", () => {
             artifactBytes: Buffer.byteLength(serialized),
             artifactSha256: require("node:crypto").createHash("sha256").update(serialized).digest("hex"),
             projectionDirectory,
+            projectionBytes: 1,
+            projectionSha256: "b".repeat(64),
+            projectionContentId: "0".repeat(64),
             graphSummary: {
               schemaVersion: ${JSON.stringify(SCHEMA_VERSION)},
               generatedAt: "2026-07-14T00:00:00.000Z",
@@ -269,7 +293,7 @@ describe("runExtractionWorker", () => {
     `, directory);
 
     await runExtractionWorker(dummyRequest({ absoluteRoot: descendantFile }), {
-      artifactOutputPath: workerArtifactPath(), workerEntry: entry,
+      ...(await workerOutput()), workerEntry: entry,
     });
     const descendantPid = Number.parseInt(await readFile(descendantFile, "utf8"), 10);
     expect(processExists(descendantPid)).toBe(false);
@@ -299,6 +323,9 @@ describe("runExtractionWorker", () => {
             artifactBytes: Buffer.byteLength(serialized),
             artifactSha256: require("node:crypto").createHash("sha256").update(serialized).digest("hex"),
             projectionDirectory,
+            projectionBytes: 1,
+            projectionSha256: "b".repeat(64),
+            projectionContentId: "0".repeat(64),
             graphSummary: {
               schemaVersion: ${JSON.stringify(SCHEMA_VERSION)},
               generatedAt: "2026-07-14T00:00:00.000Z",
@@ -318,7 +345,7 @@ describe("runExtractionWorker", () => {
     ) as typeof process.kill);
 
     const error = await rejectionOf(runExtractionWorker(dummyRequest(), {
-      artifactOutputPath: workerArtifactPath(),
+      ...(await workerOutput()),
       workerEntry: entry,
       processTreeKillWaitMs: 30,
     }));
@@ -346,21 +373,53 @@ async function temporaryDirectory(): Promise<string> {
   return directory;
 }
 
-function workerArtifactPath(): string {
-  const directory = mkdtempSync(join(tmpdir(), "meridian-extraction-output-"));
+async function workerOutput(): Promise<{ artifactOutputPath: string; lifecycleCacheRoot: string }> {
+  const directory = await mkdtemp(join(tmpdir(), "meridian-extraction-output-"));
   tempDirectories.push(directory);
-  return join(directory, "artifact.json");
+  const lifecycleCacheRoot = await realpath(directory);
+  const lifecycle = new GraphGenerationLifecycle({ cacheRoot: lifecycleCacheRoot });
+  const stage = await lifecycle.reserveStage();
+  outputStages.push(stage);
+  return {
+    artifactOutputPath: join(stage.directory, "artifact.json"),
+    lifecycleCacheRoot,
+  };
 }
 
 function projectionBundleWriter(): string {
   return `
     function writeProjectionBundle(artifactPath) {
+      const { createHash } = require("node:crypto");
       const { dirname, join } = require("node:path");
       const { mkdirSync, writeFileSync } = require("node:fs");
       const projectionDirectory = join(dirname(artifactPath), "graph-projections");
       mkdirSync(projectionDirectory, { recursive: true });
+      const moduleOverview = JSON.stringify({ roots: [], edges: [] });
+      const reachabilitySummary = JSON.stringify({
+        summary: {
+          callables: 0,
+          covered: 0,
+          indirect: 0,
+          uncovered: 0,
+          percent: 0,
+          testNodes: 0,
+          unresolvedFromTests: 0,
+        },
+        worstRows: [],
+      });
+      const serviceTopology = JSON.stringify({
+        version: 1,
+        clusters: [],
+        metrics: [],
+        featuresByUnit: [],
+        couplings: [],
+      });
+      writeFileSync(join(projectionDirectory, "module-overview.json"), moduleOverview);
+      writeFileSync(join(projectionDirectory, "module-overview-without-tests.json"), moduleOverview);
+      writeFileSync(join(projectionDirectory, "reachability-summary.json"), reachabilitySummary);
+      writeFileSync(join(projectionDirectory, "service-topology.json"), serviceTopology);
       writeFileSync(join(projectionDirectory, "manifest.json"), JSON.stringify({
-        formatVersion: 3,
+        formatVersion: ${GRAPH_PROJECTION_FORMAT_VERSION},
         contentId: "0".repeat(64),
         graphSummary: {
           schemaVersion: ${JSON.stringify(SCHEMA_VERSION)},
@@ -368,6 +427,7 @@ function projectionBundleWriter(): string {
           nodeCount: 0,
           edgeCount: 0,
         },
+        repositorySummary: { overviewPackageCount: 0, sourceFileCount: 0, testSourceFileCount: 0 },
         header: {
           schemaVersion: ${JSON.stringify(SCHEMA_VERSION)},
           generatedAt: "2026-07-14T00:00:00.000Z",
@@ -376,6 +436,14 @@ function projectionBundleWriter(): string {
         },
         shardCount: 256,
         roots: { count: 0, refs: [] },
+        moduleOverviewRoots: {
+          all: { count: 0, refs: [] },
+          withoutTests: { count: 0, refs: [] },
+        },
+        uiEntryIds: {
+          all: { count: 0, refs: [] },
+          withoutTests: { count: 0, refs: [] },
+        },
         changed: { count: 0, refs: [] },
         symbols: {
           map: { count: 0, refs: [], scopeCounts: { public: 0, all: 0, private: 0 } },
@@ -383,6 +451,16 @@ function projectionBundleWriter(): string {
         },
         filePathCount: 0,
         extensions: { entryModuleCount: 0, changedPathCount: 0, changedMetaBytes: 0, flowCount: 0 },
+        facts: {
+          moduleOverviewBytes: Buffer.byteLength(moduleOverview),
+          moduleOverviewWithoutTestsBytes: Buffer.byteLength(moduleOverview),
+          serviceTopology: {
+            version: 1,
+            bytes: Buffer.byteLength(serviceTopology),
+            sha256: createHash("sha256").update(serviceTopology).digest("hex"),
+          },
+          reachabilitySummaryBytes: Buffer.byteLength(reachabilitySummary),
+        },
       }));
       writeFileSync(join(dirname(artifactPath), "synthetic-capability.json"), JSON.stringify({
         version: 1,

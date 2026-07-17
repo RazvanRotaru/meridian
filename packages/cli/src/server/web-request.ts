@@ -13,10 +13,10 @@ import {
   syntheticInputOverridesSchema,
 } from "@meridian/core";
 import type { JsonValue, SyntheticFieldWatcher, SyntheticInputOverride } from "@meridian/core";
-import type { SourceRequest } from "./clone";
+import type { SourceRequest } from "./repository-source";
 import { WebError } from "./web-error";
 
-const MAX_BODY_BYTES = 64_000;
+const DEFAULT_MAX_BODY_BYTES = 64_000;
 const GENERATE_KEYS = new Set(["kind", "value", "ref", "subdir", "token", "refresh"]);
 const SYNTHETIC_KEYS = new Set(["scenarioId", "rootNodeId", "input", "inputOverrides", "watchers"]);
 
@@ -33,28 +33,100 @@ export interface SyntheticExecutionRequest {
   watchers: SyntheticFieldWatcher[];
 }
 
-export function readJsonBody(request: IncomingMessage): Promise<unknown> {
+export interface ReadJsonBodyOptions {
+  readonly request: IncomingMessage;
+  /** The owning server/request lifecycle. Aborting it tears down an incomplete HTTP body. */
+  readonly signal: AbortSignal;
+  readonly maxBytes?: number;
+}
+
+/**
+ * Read one bounded JSON body while the request still belongs to a live client and server.
+ *
+ * Every cancellation/error listener is installed before the `data` listener starts the stream.
+ * All terminal paths share one settlement gate so shutdown, peer disconnect, parse failure, and
+ * size rejection cannot race into duplicate completion or retain listeners on a partial body.
+ */
+export function readJsonBody(options: ReadJsonBodyOptions): Promise<unknown> {
+  const { request, signal, maxBytes = DEFAULT_MAX_BODY_BYTES } = options;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    return Promise.reject(new RangeError("JSON body limit must be a positive safe integer"));
+  }
   return new Promise((resolveBody, rejectBody) => {
     let size = 0;
+    let settled = false;
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        rejectBody(new WebError(413, "request body too large"));
-        request.destroy();
+
+    const cleanup = () => {
+      request.off("data", onData);
+      request.off("end", onEnd);
+      request.off("error", onError);
+      request.off("aborted", onAborted);
+      request.off("close", onClose);
+      signal.removeEventListener("abort", onSignalAbort);
+    };
+    const resolveOnce = (body: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveBody(body);
+    };
+    const rejectOnce = (error: unknown, destroy = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectBody(error);
+      // Do not pass the reason to destroy: emitting a later `error` after listener cleanup would
+      // turn an expected cancellation into an uncaught stream error.
+      if (destroy && !request.destroyed) request.destroy();
+    };
+    const onData = (value: Buffer | string) => {
+      const chunk = Buffer.isBuffer(value) ? value : Buffer.from(value);
+      if (chunk.length > maxBytes - size) {
+        rejectOnce(new WebError(413, "request body too large"), true);
         return;
       }
+      size += chunk.length;
       chunks.push(chunk);
-    });
-    request.on("end", () => {
+    };
+    const onEnd = () => {
       try {
-        resolveBody(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+        resolveOnce(JSON.parse(Buffer.concat(chunks, size).toString("utf8") || "{}"));
       } catch {
-        rejectBody(new WebError(400, "request body is not valid JSON"));
+        rejectOnce(new WebError(400, "request body is not valid JSON"));
       }
-    });
-    request.on("error", () => rejectBody(new WebError(400, "could not read request body")));
+    };
+    const onError = () => rejectOnce(new WebError(400, "could not read request body"));
+    const onAborted = () => rejectOnce(new WebError(400, "client closed request body"));
+    const onClose = () => {
+      if (!request.complete && !request.readableEnded) onAborted();
+    };
+    const onSignalAbort = () => rejectOnce(signal.reason ?? requestBodyCancellationError(), true);
+
+    request.once("end", onEnd);
+    request.once("error", onError);
+    request.once("aborted", onAborted);
+    request.once("close", onClose);
+    signal.addEventListener("abort", onSignalAbort, { once: true });
+
+    if (signal.aborted) {
+      onSignalAbort();
+      return;
+    }
+    if (request.aborted || (request.destroyed && !request.complete && !request.readableEnded)) {
+      onAborted();
+      return;
+    }
+
+    // Installing this listener starts flowing mode, so it must remain the final setup step.
+    request.on("data", onData);
   });
+}
+
+function requestBodyCancellationError(): Error {
+  const error = new Error("The request body owner was cancelled");
+  error.name = "AbortError";
+  return error;
 }
 
 export function parseGenerateRequest(body: unknown): GenerateRequest {

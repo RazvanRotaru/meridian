@@ -1,8 +1,8 @@
 /**
  * Running `git` as a child process and turning its stderr into a browser-safe message.
  *
- * Split from `clone` so the process/IO concerns (spawn, timeout, secret-scrubbing) stay apart
- * from the pure input parsing. A token appears here only to build the redactor that strips it
+ * Process/IO concerns (spawn, timeout, secret-scrubbing) stay separate from repository input
+ * parsing. A token appears here only to build the redactor that strips it
  * from git's stderr and (for `runGit`) to inject an `http.extraHeader` credential; it is never
  * logged, echoed in a response, or persisted anywhere.
  */
@@ -11,13 +11,24 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
 import { WebError } from "./web-error";
 
-const CLONE_TIMEOUT_MS = 90_000;
 const DEFAULT_GIT_TIMEOUT_MS = 60_000;
 const TERMINATE_GRACE_MS = 5_000;
 const PROCESS_TREE_POLL_MS = 25;
 const PROCESS_TREE_KILL_WAIT_MS = 5_000;
 const MAX_STDERR_BYTES = 4_000;
 const MAX_STDOUT_BYTES = 32 * 1024 * 1024;
+const MAX_STDOUT_LINE_CHARACTERS = 64 * 1024;
+
+export interface RunGitOptions {
+  cwd: string;
+  token?: string;
+  timeoutMs?: number;
+  signal?: AbortSignal;
+  /** Keep false only when an outer supervisor owns and terminates this process group. */
+  isolateProcessGroup?: boolean;
+}
+
+export type GitLineConsumer = (line: string) => void | Promise<void>;
 
 /** base64("x-access-token:<token>") — the credential half of the Authorization header. */
 export function base64Auth(token: string): string {
@@ -29,29 +40,14 @@ function authArgs(token?: string): string[] {
   return token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
 }
 
-export function runGitClone(
-  args: string[],
-  token?: string,
-  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
-): Promise<void> {
-  return spawnGit(args, { token, timeoutMs: opts.timeoutMs ?? CLONE_TIMEOUT_MS, signal: opts.signal }).then(() => undefined);
-}
-
 /**
  * Run an arbitrary git subcommand in `opts.cwd`, argv-only (never shell-interpolated), and return
- * its stdout. The token is injected the same way `runGitClone` does — a `-c http.extraHeader`
- * before the subcommand — so it never lands in an argv URL, a log, or an error message.
+ * its stdout. A token is injected as a `-c http.extraHeader` before the subcommand, so it never
+ * lands in an argv URL, a log, or an error message.
  */
 export function runGit(
   args: string[],
-  opts: {
-    cwd: string;
-    token?: string;
-    timeoutMs?: number;
-    signal?: AbortSignal;
-    /** Keep false only when an outer supervisor owns and terminates this process group. */
-    isolateProcessGroup?: boolean;
-  },
+  opts: RunGitOptions,
 ): Promise<string> {
   return spawnGit([...authArgs(opts.token), ...args], {
     cwd: opts.cwd,
@@ -59,7 +55,27 @@ export function runGit(
     timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
     signal: opts.signal,
     isolateProcessGroup: opts.isolateProcessGroup ?? true,
-  });
+  }, bufferedStdoutConsumer());
+}
+
+/**
+ * Stream Git's newline-delimited stdout with backpressure and bounded carry memory.
+ *
+ * The consumer is awaited before stdout resumes, so callers can process a fixed-size batch and
+ * yield without the child accumulating an unbounded JavaScript-side output inventory.
+ */
+export function streamGitLines(
+  args: string[],
+  opts: RunGitOptions,
+  consume: GitLineConsumer,
+): Promise<void> {
+  return spawnGit([...authArgs(opts.token), ...args], {
+    cwd: opts.cwd,
+    token: opts.token,
+    timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+    signal: opts.signal,
+    isolateProcessGroup: opts.isolateProcessGroup ?? true,
+  }, lineStdoutConsumer(consume));
 }
 
 interface SpawnOptions {
@@ -70,8 +86,13 @@ interface SpawnOptions {
   isolateProcessGroup?: boolean;
 }
 
+interface StdoutConsumer<T> {
+  write(chunk: Buffer): void | Promise<void>;
+  end(): T | Promise<T>;
+}
+
 /** The one place `git` is spawned: pipes stdout, caps buffers, time-boxes, and scrubs the token. */
-function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
+function spawnGit<T>(args: string[], opts: SpawnOptions, stdoutConsumer: StdoutConsumer<T>): Promise<T> {
   const redact = redactor(opts.token);
   if (opts.signal?.aborted) {
     return Promise.reject(abortReason(opts.signal));
@@ -91,9 +112,6 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
       rejectRun(new WebError(500, `could not run git: ${message}`));
       return;
     }
-    let stdout = "";
-    const stdoutDecoder = new StringDecoder("utf8");
-    let stdoutBytes = 0;
     let stderr = "";
     let terminalError: unknown;
     let spawnFailure: WebError | undefined;
@@ -102,19 +120,25 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
     let closeCode: number | null = null;
     let terminationComplete = false;
     let terminationFailure: WebError | undefined;
+    let outputQueue = Promise.resolve();
+    let outputComplete = false;
+    let outputFinalized = false;
+    let outputFailed = false;
+    let outputFailure: unknown;
+    let output!: T;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
     let treePollTimer: ReturnType<typeof setTimeout> | undefined;
-    const finish = (error: unknown, output?: string) => {
+    const finish = (error: unknown, value?: T) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
       if (killTimer) clearTimeout(killTimer);
       if (treePollTimer) clearTimeout(treePollTimer);
       opts.signal?.removeEventListener("abort", abort);
-      error === undefined ? resolveRun(output ?? "") : rejectRun(error);
+      error === undefined ? resolveRun(value as T) : rejectRun(error);
     };
     const finishClosed = () => {
-      if (!closed) return;
+      if (!closed || !outputComplete) return;
       if (terminalError !== undefined) {
         if (terminationComplete) finish(terminationFailure ?? terminalError);
         return;
@@ -123,9 +147,26 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
         finish(spawnFailure);
         return;
       }
+      if (outputFailed) {
+        finish(outputFailure);
+        return;
+      }
       closeCode === 0
-        ? finish(undefined, stdout + stdoutDecoder.end())
+        ? finish(undefined, output)
         : finish(new WebError(422, gitFailureMessage(redact(stderr))));
+    };
+    const finalizeOutput = () => {
+      if (outputFinalized) return;
+      outputFinalized = true;
+      void outputQueue.then(async () => {
+        if (!outputFailed) output = await stdoutConsumer.end();
+      }).catch((error: unknown) => {
+        outputFailed = true;
+        outputFailure = error;
+      }).finally(() => {
+        outputComplete = true;
+        finishClosed();
+      });
     };
     const markTerminationComplete = (failure?: WebError) => {
       if (terminationComplete) return;
@@ -151,14 +192,18 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
     opts.signal?.addEventListener("abort", abort, { once: true });
     child.stdout?.on("data", (chunk: Buffer) => {
       if (terminalError !== undefined) return;
-      stdoutBytes += chunk.byteLength;
-      if (stdoutBytes > MAX_STDOUT_BYTES) {
-        // Never expose a plausible prefix: a cut name-status stream can still end on a NUL and a
-        // cut patch can still end on a complete hunk while silently omitting later files.
-        terminate(new WebError(422, "git output exceeded 32MB; refusing truncated output"));
-        return;
-      }
-      stdout += stdoutDecoder.write(chunk);
+      (child.stdout as { pause?: () => unknown } | null)?.pause?.();
+      outputQueue = outputQueue.then(async () => {
+        if (!outputFailed && terminalError === undefined) await stdoutConsumer.write(chunk);
+      }).catch((error: unknown) => {
+        outputFailed = true;
+        outputFailure = error;
+        if (!closed) terminate(error);
+      }).finally(() => {
+        if (terminalError === undefined) {
+          (child.stdout as { resume?: () => unknown } | null)?.resume?.();
+        }
+      });
     });
     child.stderr?.on("data", (chunk: Buffer) => {
       stderr = (stderr + chunk.toString("utf8")).slice(-MAX_STDERR_BYTES);
@@ -174,11 +219,70 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
       if (terminalError !== undefined && !terminationComplete && !processTreeExists(child, isolatedProcessGroup)) {
         markTerminationComplete();
       }
-      finishClosed();
+      finalizeOutput();
     });
     // The signal can flip after the pre-spawn check but before listener registration.
     if (opts.signal?.aborted) abort();
   });
+}
+
+function bufferedStdoutConsumer(): StdoutConsumer<string> {
+  const decoder = new StringDecoder("utf8");
+  let output = "";
+  let bytes = 0;
+  return {
+    write(chunk): void {
+      bytes += chunk.byteLength;
+      if (bytes > MAX_STDOUT_BYTES) {
+        // Never expose a plausible prefix: a cut name-status stream can still end on a NUL and a
+        // cut patch can still end on a complete hunk while silently omitting later files.
+        throw new WebError(422, "git output exceeded 32MB; refusing truncated output");
+      }
+      output += decoder.write(chunk);
+    },
+    end(): string {
+      return output + decoder.end();
+    },
+  };
+}
+
+function lineStdoutConsumer(consume: GitLineConsumer): StdoutConsumer<void> {
+  const decoder = new StringDecoder("utf8");
+  let carry = "";
+  const append = (value: string): void => {
+    carry += value;
+    if (carry.length > MAX_STDOUT_LINE_CHARACTERS) {
+      throw new WebError(422, "git emitted an overlong stdout line");
+    }
+  };
+  const accept = async (value: string): Promise<void> => {
+    let start = 0;
+    while (start < value.length) {
+      const newline = value.indexOf("\n", start);
+      if (newline === -1) {
+        append(value.slice(start));
+        return;
+      }
+      append(value.slice(start, newline));
+      const line = carry.endsWith("\r") ? carry.slice(0, -1) : carry;
+      carry = "";
+      await consume(line);
+      start = newline + 1;
+    }
+  };
+  return {
+    write(chunk): Promise<void> {
+      return accept(decoder.write(chunk));
+    },
+    async end(): Promise<void> {
+      await accept(decoder.end());
+      if (carry) {
+        const line = carry.endsWith("\r") ? carry.slice(0, -1) : carry;
+        carry = "";
+        await consume(line);
+      }
+    },
+  };
 }
 
 /**

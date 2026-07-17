@@ -14,7 +14,13 @@ import type { SyntheticExecutionTrust } from "../state/syntheticExecutionTrust";
 
 export type GraphBootSource =
   | { kind: "dev-sample"; artifactUrl: string }
-  | { kind: "projections"; manifestUrl: string; projectionUrl: string };
+  | {
+      kind: "projections";
+      graphId: string;
+      manifestUrl: string;
+      projectionUrl: string;
+      searchUrl: string;
+    };
 
 export interface BootConfig {
   /** The production source is always projection transport; the complete artifact is Vite-only. */
@@ -71,8 +77,10 @@ interface InjectedConfig extends Omit<BootConfig, "graphSource" | "defaultEnv" |
   telemetrySources: unknown;
   preselectedTelemetrySourceId: unknown;
   /** Required for every injected/server session; typed unknown so violations fail explicitly. */
+  projectionGraphId: unknown;
   projectionManifestUrl: unknown;
   projectionUrl: unknown;
+  graphSearchUrl: unknown;
   syntheticExecutionUrl: unknown;
   syntheticExecutionTrust: unknown;
   syntheticScenarios: unknown;
@@ -127,19 +135,16 @@ export function readBootConfig(): BootConfig {
   return assertNeverDefaulted(injected);
 }
 
-export function prApiUrlsFromProjectionManifest(manifestUrl: string | null): PrApiUrls {
-  const id = manifestUrl === null
-    ? null
-    : new URL(manifestUrl, "http://meridian.local").searchParams.get("id");
+export function prApiUrlsForGraph(graphId: string | null): PrApiUrls {
   return {
-    prsUrl: apiUrl("/api/prs", id),
-    prOneUrl: apiUrl("/api/prs/one", id),
-    prFilesUrl: apiUrl("/api/prs/files", id),
-    prRelatedUrl: apiUrl("/api/prs/related", id),
-    prCommentsUrl: apiUrl("/api/prs/comments", id),
-    prChecksUrl: apiUrl("/api/prs/checks", id),
-    prFileUrl: apiUrl("/api/prs/file", id),
-    prReviewUrl: apiUrl("/api/prs/review", id),
+    prsUrl: apiUrl("/api/prs", graphId),
+    prOneUrl: apiUrl("/api/prs/one", graphId),
+    prFilesUrl: apiUrl("/api/prs/files", graphId),
+    prRelatedUrl: apiUrl("/api/prs/related", graphId),
+    prCommentsUrl: apiUrl("/api/prs/comments", graphId),
+    prChecksUrl: apiUrl("/api/prs/checks", graphId),
+    prFileUrl: apiUrl("/api/prs/file", graphId),
+    prReviewUrl: apiUrl("/api/prs/review", graphId),
     prepareUrl: "/api/pr/prepare",
   };
 }
@@ -162,11 +167,16 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     injected.syntheticExecutionTrust,
     syntheticExecutionUrl,
   );
+  const projectionGraphId = nonEmptyString(injected.projectionGraphId);
   const projectionManifestUrl = nonEmptyString(injected.projectionManifestUrl);
   const projectionUrl = nonEmptyString(injected.projectionUrl);
-  if (projectionManifestUrl === null || projectionUrl === null) {
+  const graphSearchUrl = nonEmptyString(injected.graphSearchUrl);
+  if (projectionGraphId === null
+    || projectionManifestUrl === null
+    || projectionUrl === null
+    || graphSearchUrl === null) {
     throw new Error(
-      "boot contract violation: injected sessions require projectionManifestUrl and projectionUrl",
+      "boot contract violation: injected sessions require projectionGraphId, projectionManifestUrl, projectionUrl, and graphSearchUrl",
     );
   }
   const preselectedTelemetrySourceId = parseTelemetrySelection(
@@ -183,7 +193,13 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   const syntheticExecutionTrust = syntheticCapabilityValid ? parsedSyntheticExecutionTrust : null;
   const syntheticScenarios = syntheticCapabilityValid ? parsedSyntheticScenarios! : [];
   return {
-    graphSource: { kind: "projections", manifestUrl: projectionManifestUrl, projectionUrl },
+    graphSource: {
+      kind: "projections",
+      graphId: projectionGraphId,
+      manifestUrl: projectionManifestUrl,
+      projectionUrl,
+      searchUrl: graphSearchUrl,
+    },
     metaUrl: injected.metaUrl,
     overlayUrl: injected.overlayUrl,
     traceUrl,
@@ -206,8 +222,10 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
 
 function requireCurrentInjectedFields(injected: InjectedConfig): void {
   for (const field of [
+    "projectionGraphId",
     "projectionManifestUrl",
     "projectionUrl",
+    "graphSearchUrl",
     "traceUrl",
     "telemetrySources",
     "preselectedTelemetrySourceId",

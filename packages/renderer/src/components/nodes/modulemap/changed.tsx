@@ -3,7 +3,8 @@
  * diff. Reads the store's changed sets by node id (the view-agnostic signal every lens shares, built
  * once in graphIndex): `changedStatus` gives the kind (added green / modified gold / deleted red).
  * Only directly-touched blocks are coloured — a file/module that merely CONTAINS changes is left
- * uncoloured (it shows a "+N -M" marker before its name instead). Selection always wins the ring.
+ * uncoloured (it shows a "+N -M" marker before its name instead). Change status owns the inner
+ * border; selection remains independently visible as the neutral outer ring.
  */
 
 import type { ChangeStatus } from "@meridian/core";
@@ -40,13 +41,18 @@ export function changedBorder(base: React.CSSProperties, color: string): React.C
   };
 }
 
-/** Pick the border a card wears: selection first, then the diff ring (ONLY for a directly-changed
- * block — a container that merely contains changes is not coloured), then the resting style. */
+/** Pick the two independent node signals: a directly-changed node keeps its semantic status on the
+ * inner border/body, while selection contributes only its neutral outer halo. This matters most for
+ * base-only tombstones: selecting a removed file must never repaint deleted red as a kind accent. */
 export function borderFor(base: React.CSSProperties, selectedStyle: React.CSSProperties, selected: boolean, diff: NodeDiff): React.CSSProperties {
-  if (selected) {
-    return selectedStyle;
+  if (diff.status !== undefined) {
+    const changed = changedBorder(base, changedColor(diff.status));
+    const selectionHalo = selected ? selectedStyle.boxShadow : undefined;
+    return selectionHalo === undefined
+      ? changed
+      : { ...changed, boxShadow: `${String(changed.boxShadow)}, ${String(selectionHalo)}` };
   }
-  return diff.status !== undefined ? changedBorder(base, changedColor(diff.status)) : base;
+  return selected ? selectedStyle : base;
 }
 
 /** The Δ chip was removed — the status ring + body wash carry the "touched" signal on their own.

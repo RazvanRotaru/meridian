@@ -19,6 +19,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
 import type { NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
+import { moduleGraphSurfaceOwner } from "../state/store";
 import type { ViewMode } from "../derive/edgeSelection";
 import {
   GRAPH_SYMBOL_SEARCH_VERSION,
@@ -64,7 +65,15 @@ export function CommandPalette() {
 
   // Keep the closed shell independent of artifact/index. Mounting the body only while visible means
   // its repo-wide searchable collection is released as soon as the palette closes.
-  return open ? <OpenCommandPalette onClose={() => setOpen(false)} /> : null;
+  return open ? <OpenCommandPaletteGate onClose={() => setOpen(false)} /> : null;
+}
+
+function OpenCommandPaletteGate({ onClose }: { onClose: () => void }) {
+  const enabled = useBlueprint((state) => moduleGraphSurfaceOwner(state) !== "prepared-review-overview");
+  useEffect(() => {
+    if (!enabled) onClose();
+  }, [enabled, onClose]);
+  return enabled ? <OpenCommandPalette onClose={onClose} /> : null;
 }
 
 function OpenCommandPalette(props: { onClose: () => void }) {

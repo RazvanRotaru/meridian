@@ -3,7 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
 import { afterEach, describe, expect, it } from "vitest";
-import { readGraphProjectionManifest } from "./graph-projection-bundle";
+import {
+  GRAPH_PROJECTION_FORMAT_VERSION,
+  readGraphProjectionManifest,
+} from "./graph-projection-bundle";
 import { readSyntheticCapabilitySidecar } from "./synthetic-capability-sidecar";
 import { createStandaloneViewSession } from "./standalone-view-session";
 
@@ -26,7 +29,8 @@ describe("createStandaloneViewSession", () => {
     expect(session).not.toHaveProperty("artifact");
     expect(session.graphSummary).toMatchObject({ nodeCount: 2, edgeCount: 0 });
     expect(readGraphProjectionManifest(session.projectionDirectory)).toMatchObject({
-      formatVersion: 3,
+      formatVersion: GRAPH_PROJECTION_FORMAT_VERSION,
+      repositorySummary: { overviewPackageCount: 1, sourceFileCount: 1, testSourceFileCount: 0 },
       graphSummary: session.graphSummary,
     });
     expect(readSyntheticCapabilitySidecar(session.syntheticCapabilityPath)).toMatchObject({

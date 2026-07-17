@@ -1,6 +1,6 @@
 /** Strict request boundary for POST /api/pr/prepare. */
 
-import { isAllowedCloneRef } from "./git-ref";
+import { isAllowedBranchRef } from "./git-ref";
 import { canonicalExtractionSubdir } from "./web-source";
 import type { ArtifactSource } from "./web-source";
 import { WebError } from "./web-error";
@@ -73,7 +73,7 @@ function extractionSubdir(value: unknown): string {
 
 function branch(value: unknown, name: string): string {
   const ref = requiredString(value, name);
-  if (!isAllowedCloneRef(ref)) throw new WebError(400, `${name} contains illegal characters`);
+  if (!isAllowedBranchRef(ref)) throw new WebError(400, `${name} contains illegal characters`);
   return ref;
 }
 

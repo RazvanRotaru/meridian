@@ -1,11 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import type {
-  GraphProjectionDataSource,
-  GraphProjectionRequest,
-  LoadedGraphProjection,
-  LoadedReviewProjection,
+import {
+  OVERVIEW_PROJECTION_REQUEST,
+  type GraphProjectionDataSource,
+  type GraphProjectionRequest,
+  type LoadedGraphProjection,
 } from "../graph/graphProjectionClient";
 import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintState } from "./store";
@@ -33,14 +33,7 @@ const HEAD_ARTIFACT: GraphArtifact = {
 };
 
 const BOOT_REQUEST: GraphProjectionRequest = {
-  view: "modules",
-  filePaths: [],
-  focusIds: [],
-  expandedIds: [],
-  extraIds: [],
-  depth: 1,
-  radius: 0,
-  includeTests: false,
+  ...OVERVIEW_PROJECTION_REQUEST,
 };
 
 function freshStore(telemetry?: {
@@ -55,13 +48,15 @@ function freshStore(telemetry?: {
     request: BOOT_REQUEST,
     artifact: BOOT_ARTIFACT,
     index: bootIndex,
+    reachability: null,
+    review: null,
     serializedBytes: 100,
     residentBytes: 300,
   };
   const projectionDataSource: GraphProjectionDataSource = {
     activeKey: initialProjection.key,
     loadManifest: async () => ({
-      version: 3,
+      version: 6,
       graphId: "artifact-1",
       contentId: "0".repeat(64),
       graphSummary: {
@@ -70,12 +65,23 @@ function freshStore(telemetry?: {
         nodeCount: BOOT_ARTIFACT.nodes.length,
         edgeCount: BOOT_ARTIFACT.edges.length,
       },
+      repositorySummary: bootIndex.structure.repositorySummary,
       defaultView: BOOT_REQUEST,
     }),
-    activate: async () => initialProjection,
-    activateCached: (key) => key === initialProjection.key ? initialProjection : undefined,
-    activateReviewPair: async () => { throw new Error("review pair is not loaded during URL exit"); },
-    activateCachedReview: (): LoadedReviewProjection | undefined => undefined,
+    stage: async () => ({
+      projection: initialProjection,
+      commit: () => initialProjection,
+      release: () => {},
+    }),
+    stageCached: (key) => key === initialProjection.key
+      ? {
+          projection: initialProjection,
+          commit: () => initialProjection,
+          release: () => {},
+        }
+      : undefined,
+    stageReviewPair: async () => { throw new Error("review pair is not loaded during URL exit"); },
+    stageCachedReview: () => undefined,
     searchSymbols: async () => { throw new Error("symbol search is not loaded during URL exit"); },
   };
   return createBlueprintStore({
@@ -83,6 +89,12 @@ function freshStore(telemetry?: {
     index: bootIndex,
     projectionDataSource,
     initialProjection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
     provider: telemetry?.provider ?? null,
     ...(telemetry === undefined ? {} : { telemetrySources: telemetry.sources }),
     hasOverlay: telemetry !== undefined,
@@ -124,8 +136,10 @@ describe("restoreFromUrl review exit", () => {
         projectionKey: "boot-projection-key",
         projectionId: "boot-projection-id",
         endpoints: {
+          graphId: "artifact-1",
           manifestUrl: "/api/graph/manifest?id=artifact-1",
           projectionUrl: "/api/graph/projection?id=artifact-1",
+          searchUrl: "/api/graph/search?id=artifact-1",
         },
         syntheticExecutionUrl: null,
         syntheticScenarios: [],
@@ -135,7 +149,8 @@ describe("restoreFromUrl review exit", () => {
       prSelected: 7,
       prPreparedHead: preparedDescriptor("pr-head-7"),
       prPreparedMergeBase: preparedDescriptor("pr-head-7-base"),
-      prPreparedFilePaths: ["src/a.ts"],
+      prPreparedReviewCursor: "file:0",
+      prPreparedChangedFiles: [{ path: "src/a.ts", status: "modified" }],
       prPreparedHeadSha: "abc123",
       prPreparedArtifactCurrent: true,
       minimalSeedIds: [FILE_ID],
@@ -519,6 +534,7 @@ function preparedDescriptor(graphId: string) {
     graphId,
     manifestUrl: `/api/graph/manifest?id=${graphId}`,
     projectionUrl: `/api/graph/projection?id=${graphId}`,
+    searchUrl: `/api/graph/search?id=${graphId}`,
     sourceUrl: `/api/source?id=${graphId}`,
     metaUrl: `/api/meta?id=${graphId}`,
     graphSummary: {

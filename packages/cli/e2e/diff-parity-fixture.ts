@@ -1,7 +1,7 @@
 /**
  * A self-contained GitHub-PR catalog for code-diff browser parity. Every advertised PR is a real
  * ref in a local bare repository; API patches and the independent UI oracle both come from git,
- * while the smart-HTTP harness makes the production clone/analyze path stay entirely offline.
+ * while the smart-HTTP harness keeps the production mirror/extraction path entirely offline.
  */
 
 import { execFileSync } from "node:child_process";

@@ -297,6 +297,34 @@ describe("RecentViewProjectionCache", () => {
     expect(budget.inactiveResidentByteLength).toBe(300);
   });
 
+  it("discards an unreachable active view on destructive activation hits and misses", () => {
+    const budget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 1_000 });
+    const cache = new RecentViewProjectionCache<string, Projection>(
+      { maxRecentEntries: 3, maxRecentBytes: 1_000 },
+      budget,
+    );
+    const first = projection("first");
+    const second = projection("second");
+    const unreachable = projection("unreachable");
+    cache.setActive("first", first, 100);
+    cache.setActive("second", second, 200);
+    cache.setActive("unreachable", unreachable, 300);
+
+    expect(cache.activateAndDiscardPrevious("second")).toBe(second);
+    expect(cache.active).toBe(second);
+    expect(cache.has("unreachable")).toBe(false);
+    expect(cache.has("first")).toBe(true);
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(100);
+
+    expect(cache.activateAndDiscardPrevious("missing")).toBeUndefined();
+    expect(cache.active).toBeUndefined();
+    expect(cache.has("second")).toBe(false);
+    expect(cache.has("first")).toBe(true);
+    expect(budget.inactiveEntryCount).toBe(1);
+    expect(budget.inactiveResidentByteLength).toBe(100);
+  });
+
   it("never registers an oversized deactivated allocation in either inactive cache", () => {
     const budget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 100 });
     const cache = new RecentViewProjectionCache<string, Projection>(

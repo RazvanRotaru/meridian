@@ -27,14 +27,11 @@ import {
   requestControlEventBadge,
 } from "./requestEventPresentation";
 import { NODE_EMPTY_EXPANSION_HEIGHT } from "../theme/nodeChrome";
+import { requestSpanMomentId } from "./requestFlowAddress";
 
 const NODE_WIDTH = 260;
 const NODE_BASE_HEIGHT = 70;
 const TERMINAL_HEIGHT = 38;
-
-export function requestSpanMomentId(traceId: string, spanId: string): string {
-  return `request:${traceId}:span:${spanId}`;
-}
 
 interface RequestMoment {
   id: string;

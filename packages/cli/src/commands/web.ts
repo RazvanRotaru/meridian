@@ -2,8 +2,8 @@
  * `web`: the single app launcher for repository analysis and existing graph artifacts.
  *
  * Repository extraction always runs in Node (ts-morph never touches a browser); the page only
- * POSTs a source and loads the renderer against the resulting in-memory graph. A file source uses
- * the existing-artifact server through the same public command.
+ * POSTs a source and loads bounded projections from the resulting immutable graph capability.
+ * A file source uses the existing-artifact server through the same public command.
  */
 
 import { statSync } from "node:fs";
@@ -62,8 +62,14 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
   });
   await serve(
-    server,
-    { host: options.host, startPort: options.port, openBrowser: options.open, label: "Blueprint web UI" },
+    server.server,
+    {
+      host: options.host,
+      startPort: options.port,
+      openBrowser: options.open,
+      label: "Blueprint web UI",
+      shutdown: () => server.close(),
+    },
     reporter,
   );
 }

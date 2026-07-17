@@ -1,23 +1,45 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import type { ExtractionWorkerRunner } from "./extraction-worker";
+import type {
+  PrepareRepositoryWorktree,
+  RepositoryWorktreeLease,
+} from "./repository-mirror";
 import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { checkoutFor, repositoryCacheKey } from "./web-cache-checkout";
+import type { RepositoryMirrorPreparer } from "./web-cache-checkout";
 import { probeRemoteGraph } from "./web-cache-probe";
 import type { GenerateRequest } from "./web-request";
 import { remoteArtifactId } from "./web-request";
 import { GRAPH_PROJECTION_DIRECTORY, writeGraphProjectionBundle } from "./graph-projection-bundle";
+import { measureGraphProjectionBundle } from "./graph-generation-verifier";
+import { GraphGenerationLifecycle } from "./graph-generation-lifecycle";
+import {
+  graphGenerationStagingRoot,
+  parseGraphGenerationStagePath,
+  repositoryArtifactEntry,
+} from "./graph-cache-layout";
+import { removeEntry } from "./web-cache-storage";
+import { OwnershipCleanupError } from "./ownership-cleanup";
 
 vi.mock("./git-exec", () => ({
   base64Auth: (token: string) => Buffer.from(`x-access-token:${token}`, "utf8").toString("base64"),
   runGit: vi.fn(),
-  runGitClone: vi.fn(),
 }));
 
 const FIRST_COMMIT = "a".repeat(40);
@@ -27,28 +49,23 @@ const REQUEST: GenerateRequest = { kind: "github", value: "owner/repo" };
 let cacheRoot: string;
 let advertisedCommit: string;
 let runExtraction: ExtractionWorkerRunner;
+let mirror: ReturnType<typeof createMirror>;
 
 beforeEach(() => {
   cacheRoot = mkdtempSync(join(tmpdir(), "meridian-cache-test-"));
   advertisedCommit = FIRST_COMMIT;
+  mirror = createMirror(cacheRoot);
   vi.mocked(runGit).mockImplementation(async (args) => {
     const branchRef = args.find((arg) => arg.startsWith("refs/heads/"));
     return args[0] === "ls-remote"
       ? `${advertisedCommit}\t${branchRef ?? "HEAD"}\n`
       : `${advertisedCommit}\n`;
   });
-  vi.mocked(runGitClone).mockImplementation(async (args) => {
-    const repoDir = args.at(-1)!;
-    mkdirSync(join(repoDir, "apps", "one"), { recursive: true });
-    mkdirSync(join(repoDir, "apps", "two"), { recursive: true });
-    writeFileSync(join(repoDir, "apps", "one", "index.ts"), "export const one = 1;\n");
-    writeFileSync(join(repoDir, "apps", "two", "index.ts"), "export const two = 2;\n");
-  });
   runExtraction = vi.fn(writeExtractionResult);
 });
 
 afterEach(() => {
-  rmSync(cacheRoot, { recursive: true, force: true });
+  removeEntry(cacheRoot);
   vi.unstubAllEnvs();
   vi.clearAllMocks();
 });
@@ -76,14 +93,13 @@ describe("persistent web graph cache", () => {
 
   it("treats a direct-layout artifact as a cold miss and publishes a current generation", async () => {
     const current = await generate(REQUEST);
-    const artifactEntry = join(
+    const artifactEntry = repositoryArtifactEntry(
       cacheRoot,
-      "artifacts",
       current.checkout.repositoryKey,
       current.checkout.commit,
       current.analysisKey,
     );
-    rmSync(artifactEntry, { recursive: true, force: true });
+    removeEntry(artifactEntry);
     mkdirSync(artifactEntry, { recursive: true });
     writeFileSync(join(artifactEntry, "artifact.json"), JSON.stringify(artifactFor("owner/repo", FIRST_COMMIT)));
     writeFileSync(join(artifactEntry, "metadata.json"), JSON.stringify({
@@ -117,9 +133,56 @@ describe("persistent web graph cache", () => {
     expect(second.cache).toBe("hit");
     expect(second.checkout.cache).toBe("hit");
     expect(secondStages).toEqual([]);
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(runExtraction).toHaveBeenCalledTimes(1);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
+    const extractionStage = dirname(vi.mocked(runExtraction).mock.calls[0]![1].artifactOutputPath);
+    expect(parseGraphGenerationStagePath(realpathSync(cacheRoot), extractionStage)).not.toBeNull();
+    expect(readdirSync(graphGenerationStagingRoot(cacheRoot))).toEqual([]);
+    const artifactEntry = repositoryArtifactEntry(
+      cacheRoot,
+      first.checkout.repositoryKey,
+      first.checkout.commit,
+      first.analysisKey,
+    );
+    expect(readdirSync(join(artifactEntry, "generations"))).toEqual([first.generationId]);
+  });
+
+  it("releases its exact mutable stage when remote extraction fails", async () => {
+    runExtraction = vi.fn(async () => {
+      throw new Error("remote extraction failed");
+    });
+
+    await expect(generate(REQUEST)).rejects.toThrow("remote extraction failed");
+
+    expect(readdirSync(graphGenerationStagingRoot(cacheRoot))).toEqual([]);
+    const artifactEntry = repositoryArtifactEntry(
+      cacheRoot,
+      repositoryCacheKey("https://github.com/owner/repo.git"),
+      FIRST_COMMIT,
+      webAnalysisKey(REQUEST),
+    );
+    expect(existsSync(join(artifactEntry, "generations"))
+      ? readdirSync(join(artifactEntry, "generations"))
+      : []).toEqual([]);
+  });
+
+  it("preserves a falsy extraction failure before a mandatory source release failure", async () => {
+    const sourceError = new Error("source operation release failed");
+    const originalAcquireSource = mirror.store.acquireSource;
+    mirror.store.acquireSource = async (reference, expectedWorktreeDir, purpose, signal) => ({
+      ...await originalAcquireSource(reference, expectedWorktreeDir, purpose, signal),
+      release: async () => { throw sourceError; },
+    });
+    runExtraction = vi.fn(async () => { throw 0; });
+
+    const outcome = await generate(REQUEST).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+
+    expect(outcome).toBeInstanceOf(OwnershipCleanupError);
+    expect((outcome as OwnershipCleanupError).errors).toEqual([0, sourceError]);
   });
 
   it("persists bounded worker warnings for cache hits", async () => {
@@ -150,21 +213,31 @@ describe("persistent web graph cache", () => {
     expect(first.checkout.commit).toBe(FIRST_COMMIT);
     expect(second.checkout.commit).toBe(SECOND_COMMIT);
     expect(second.cache).toBe("miss");
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(2);
+    expect(mirror.prepare).toHaveBeenCalledTimes(2);
     expect(runExtraction).toHaveBeenCalledTimes(2);
   });
 
   it("probes an unchanged graph without loading or regenerating it", async () => {
     const generated = await generate(REQUEST);
 
-    const hit = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const hit = await probeRemoteGraph({
+      cacheRoot,
+      request: REQUEST,
+      cwd: cacheRoot,
+      repositoryMirrors: mirror.store,
+    });
     advertisedCommit = SECOND_COMMIT;
-    const miss = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const miss = await probeRemoteGraph({
+      cacheRoot,
+      request: REQUEST,
+      cwd: cacheRoot,
+      repositoryMirrors: mirror.store,
+    });
 
     expect(hit).toEqual({ status: "hit", commit: FIRST_COMMIT, id: expect.any(String) });
     expect(hit.id).toHaveLength(24);
     expect(miss).toEqual({ status: "miss" });
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(runExtraction).toHaveBeenCalledTimes(1);
     expect(generated.checkout.commit).toBe(FIRST_COMMIT);
   });
@@ -174,7 +247,7 @@ describe("persistent web graph cache", () => {
     const second = await generate({ ...REQUEST, subdir: "apps/two" });
 
     expect(first.analysisKey).not.toBe(second.analysisKey);
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(runExtraction).toHaveBeenCalledTimes(2);
   });
 
@@ -193,7 +266,7 @@ describe("persistent web graph cache", () => {
       fromMain.checkout.repositoryKey, fromMain.checkout.commit, fromMain.analysisKey,
       fromMain.generationId, fromMain.checkout.branch ?? "",
     ));
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(runExtraction).toHaveBeenCalledTimes(1);
   });
 
@@ -207,14 +280,18 @@ describe("persistent web graph cache", () => {
       first.analysisKey,
     );
     const current = JSON.parse(readFileSync(join(artifactPath, "current.json"), "utf8")) as { generationId: string };
-    writeFileSync(join(artifactPath, "generations", current.generationId, "artifact.json"), "{broken", "utf8");
+    const corruptGeneration = join(artifactPath, "generations", current.generationId);
+    const corruptArtifact = join(corruptGeneration, "artifact.json");
+    chmodSync(corruptGeneration, 0o700);
+    chmodSync(corruptArtifact, 0o600);
+    writeFileSync(corruptArtifact, "{broken", "utf8");
 
     const second = await generate(REQUEST);
     expect(second.cache).toBe("miss");
     expect(runExtraction).toHaveBeenCalledTimes(2);
   });
 
-  it("forces re-extraction without cloning the unchanged checkout again", async () => {
+  it("forces re-extraction without preparing another worktree for the unchanged checkout", async () => {
     const original = await generate(REQUEST);
     const refreshed = await generate({ ...REQUEST, refresh: true });
 
@@ -223,11 +300,11 @@ describe("persistent web graph cache", () => {
     expect(refreshed.artifactPath).not.toBe(original.artifactPath);
     expect(existsSync(original.artifactPath)).toBe(true);
     expect(existsSync(refreshed.artifactPath)).toBe(true);
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(runExtraction).toHaveBeenCalledTimes(2);
   });
 
-  it("never persists the clone token", async () => {
+  it("never persists the repository credential", async () => {
     const token = "secret-cache-token";
     const result = await generate(REQUEST, token);
     const checkoutMetadata = readFileSync(
@@ -243,24 +320,29 @@ describe("persistent web graph cache", () => {
     await generate(request, "ambient-github-token");
 
     expect(vi.mocked(runGit).mock.calls[0][1]).toMatchObject({ token: undefined });
-    expect(vi.mocked(runGitClone).mock.calls[0][1]).toBeUndefined();
-    expect(vi.mocked(runGitClone).mock.calls[0][0].join(" ")).not.toContain("http.extraHeader");
+    expect(mirror.prepare.mock.calls[0][0]).toMatchObject({ token: undefined });
   });
 
-  it("propagates lifecycle cancellation through revision lookup, clone, and extraction", async () => {
+  it("propagates lifecycle cancellation through revision lookup, mirror preparation, and extraction", async () => {
     const controller = new AbortController();
+    let extractionSignal: AbortSignal | undefined;
     const runExtraction: ExtractionWorkerRunner = vi.fn(async (request, options) => {
+      extractionSignal = options.signal;
+      expect(extractionSignal?.aborted).toBe(false);
       const artifact = artifactFor(request.targetName ?? "repo", request.vcs?.commit ?? FIRST_COMMIT);
       const serialized = JSON.stringify(artifact);
       writeFileSync(options.artifactOutputPath, serialized);
       const projectionDirectory = join(dirname(options.artifactOutputPath), GRAPH_PROJECTION_DIRECTORY);
-      writeGraphProjectionBundle(projectionDirectory, artifact);
+      const manifest = writeGraphProjectionBundle(projectionDirectory, artifact);
+      const projectionIntegrity = await measureGraphProjectionBundle(projectionDirectory, cacheRoot);
       return {
         kind: "file" as const,
         artifactPath: options.artifactOutputPath,
         artifactBytes: Buffer.byteLength(serialized),
         artifactSha256: createHash("sha256").update(serialized).digest("hex"),
         projectionDirectory,
+        ...projectionIntegrity,
+        projectionContentId: manifest.contentId,
         graphSummary: {
           schemaVersion: artifact.schemaVersion,
           generatedAt: artifact.generatedAt,
@@ -280,61 +362,79 @@ describe("persistent web graph cache", () => {
       cwd: cacheRoot,
       signal: controller.signal,
       extractionAdmitted: true,
+      repositoryMirrors: mirror.store,
       runExtraction,
-      onClone: () => {},
+      generationLifecycle: new GraphGenerationLifecycle({ cacheRoot }),
+      onPrepareSource: () => {},
       onExtract: () => {},
     });
 
     expect(vi.mocked(runGit).mock.calls[0][1]).toMatchObject({ signal: controller.signal });
-    expect(vi.mocked(runGitClone).mock.calls[0][2]).toMatchObject({ signal: controller.signal });
+    expect(mirror.prepare.mock.calls[0][0]).toMatchObject({ signal: controller.signal });
     expect(runExtraction).toHaveBeenCalledWith(
       expect.any(Object),
-      expect.objectContaining({ signal: controller.signal, admitted: true }),
+      expect.objectContaining({ admitted: true }),
     );
+    expect(extractionSignal).toBeDefined();
+    const reason = new Error("cancel graph extraction");
+    controller.abort(reason);
+    expect(extractionSignal?.aborted).toBe(true);
+    expect(extractionSignal?.reason).toBe(reason);
   });
 
   it("revalidates under the entry lock before repairing a concurrently published checkout", async () => {
     const remoteUrl = "https://github.com/owner/repo.git";
     const repositoryKey = repositoryCacheKey(remoteUrl);
     const checkoutEntry = join(cacheRoot, "repositories", repositoryKey, FIRST_COMMIT);
-    mkdirSync(join(checkoutEntry, "repo"), { recursive: true });
+    const staleRepositoryDigest = "c".repeat(64);
+    const staleLeaseId = "e".repeat(64);
+    const staleRepositoryRoot = join(cacheRoot, "repository-mirrors", "v2", staleRepositoryDigest);
+    const staleRepo = join(staleRepositoryRoot, "worktrees", staleLeaseId);
+    const staleLeaseMetadata = join(staleRepositoryRoot, "leases", `${staleLeaseId}.json`);
+    mkdirSync(staleRepo, { recursive: true });
+    mkdirSync(dirname(staleLeaseMetadata), { recursive: true });
+    writeFileSync(staleLeaseMetadata, JSON.stringify({ state: "active" }));
+    mkdirSync(checkoutEntry, { recursive: true });
     writeFileSync(join(checkoutEntry, "metadata.json"), JSON.stringify({
-      formatVersion: 3,
+      formatVersion: 4,
       repositoryKey,
       commit: FIRST_COMMIT,
       remoteUrl,
+      sourceRoot: `repository-mirrors/v2/${staleRepositoryDigest}/worktrees/${staleLeaseId}`,
+      leaseMetadata: `repository-mirrors/v2/${staleRepositoryDigest}/leases/${staleLeaseId}.json`,
+      sourceLease: { repositoryDigest: staleRepositoryDigest, leaseId: staleLeaseId },
     }));
+    const canonicalStaleRepo = realpathSync(staleRepo);
 
     let releaseStaleValidation: ((value: string) => void) | undefined;
     let announceStaleValidation: (() => void) | undefined;
     const staleValidationStarted = new Promise<void>((resolve) => { announceStaleValidation = resolve; });
-    let revParseCalls = 0;
-    vi.mocked(runGit).mockImplementation(async (args) => {
+    let staleRevParseCalls = 0;
+    vi.mocked(runGit).mockImplementation(async (args, options) => {
       if (args[0] === "ls-remote") return `${FIRST_COMMIT}\tHEAD\n`;
-      revParseCalls += 1;
-      if (revParseCalls === 1) {
+      if (options.cwd !== canonicalStaleRepo) return `${FIRST_COMMIT}\n`;
+      staleRevParseCalls += 1;
+      if (staleRevParseCalls === 1) {
         announceStaleValidation?.();
         return new Promise<string>((resolve) => { releaseStaleValidation = resolve; });
       }
-      // The repairing request observes the old checkout as invalid twice. Its staged clone,
-      // published entry, and the first request's under-lock revalidation are all valid.
-      return revParseCalls <= 3 ? `${SECOND_COMMIT}\n` : `${FIRST_COMMIT}\n`;
+      return `${SECOND_COMMIT}\n`;
     });
 
-    const firstOnClone = vi.fn();
-    const staleRequest = checkoutFor(cacheRoot, REQUEST, cacheRoot, undefined, firstOnClone);
+    const firstOnPrepareSource = vi.fn();
+    const staleRequest = checkoutFor(cacheRoot, REQUEST, cacheRoot, mirror.store, undefined, firstOnPrepareSource);
     await staleValidationStarted;
-    const repairOnClone = vi.fn();
-    const repaired = await checkoutFor(cacheRoot, REQUEST, cacheRoot, undefined, repairOnClone);
+    const repairOnPrepareSource = vi.fn();
+    const repaired = await checkoutFor(cacheRoot, REQUEST, cacheRoot, mirror.store, undefined, repairOnPrepareSource);
     releaseStaleValidation?.(`${SECOND_COMMIT}\n`);
     const revalidated = await staleRequest;
 
     expect(repaired.cache).toBe("miss");
     expect(revalidated.cache).toBe("hit");
     expect(revalidated.repoDir).toBe(repaired.repoDir);
-    expect(repairOnClone).toHaveBeenCalledTimes(1);
-    expect(firstOnClone).not.toHaveBeenCalled();
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repairOnPrepareSource).toHaveBeenCalledTimes(1);
+    expect(firstOnPrepareSource).not.toHaveBeenCalled();
+    expect(mirror.prepare).toHaveBeenCalledTimes(1);
     expect(existsSync(join(checkoutEntry, "metadata.json"))).toBe(true);
     expect(existsSync(revalidated.repoDir)).toBe(true);
   });
@@ -350,8 +450,10 @@ function generate(
     request,
     cwd: cacheRoot,
     token,
+    repositoryMirrors: mirror.store,
     runExtraction,
-    onClone: () => { stages.push("source"); },
+    generationLifecycle: new GraphGenerationLifecycle({ cacheRoot }),
+    onPrepareSource: () => { stages.push("source"); },
     onExtract: () => { stages.push("extract"); },
   });
 }
@@ -364,13 +466,16 @@ async function writeExtractionResult(
   const serialized = JSON.stringify(artifact);
   writeFileSync(options.artifactOutputPath, serialized);
   const projectionDirectory = join(dirname(options.artifactOutputPath), GRAPH_PROJECTION_DIRECTORY);
-  writeGraphProjectionBundle(projectionDirectory, artifact);
+  const manifest = writeGraphProjectionBundle(projectionDirectory, artifact);
+  const projectionIntegrity = await measureGraphProjectionBundle(projectionDirectory, cacheRoot);
   return {
     kind: "file",
     artifactPath: options.artifactOutputPath,
     artifactBytes: Buffer.byteLength(serialized),
     artifactSha256: createHash("sha256").update(serialized).digest("hex"),
     projectionDirectory,
+    ...projectionIntegrity,
+    projectionContentId: manifest.contentId,
     graphSummary: {
       schemaVersion: artifact.schemaVersion,
       generatedAt: artifact.generatedAt,
@@ -382,6 +487,56 @@ async function writeExtractionResult(
     vcsCommit: request.vcs?.commit,
     warnings: [],
   };
+}
+
+function createMirror(root: string): {
+  store: RepositoryMirrorPreparer;
+  prepare: ReturnType<typeof vi.fn>;
+} {
+  let sequence = 0;
+  const prepare = vi.fn(async (request: PrepareRepositoryWorktree): Promise<RepositoryWorktreeLease> => {
+    sequence += 1;
+    const leaseId = createHash("sha256").update(`lease-${sequence}`).digest("hex");
+    const repositoryDigest = "d".repeat(64);
+    const repositoryRoot = join(root, "repository-mirrors", "v2", repositoryDigest);
+    const worktreeDir = join(repositoryRoot, "worktrees", leaseId);
+    const metadataPath = join(repositoryRoot, "leases", `${leaseId}.json`);
+    mkdirSync(join(worktreeDir, "apps", "one"), { recursive: true });
+    mkdirSync(join(worktreeDir, "apps", "two"), { recursive: true });
+    mkdirSync(dirname(metadataPath), { recursive: true });
+    writeFileSync(join(worktreeDir, "apps", "one", "index.ts"), "export const one = 1;\n");
+    writeFileSync(join(worktreeDir, "apps", "two", "index.ts"), "export const two = 2;\n");
+    writeFileSync(metadataPath, JSON.stringify({ state: "active" }));
+    return {
+      leaseId,
+      repositoryDigest,
+      worktreeDir,
+      headOid: request.head.oid,
+      baseOid: request.base.oid,
+      headRef: request.head.ref,
+      baseRef: request.base.ref,
+      prepareDetachedRevision: async () => { throw new Error("not used by web cache tests"); },
+      touch: () => {},
+      release: async () => {},
+    };
+  });
+  const retainSource = vi.fn(async () => true);
+  const acquireSource: RepositoryMirrorPreparer["acquireSource"] = vi.fn(async (
+    reference,
+    expectedWorktreeDir,
+    _purpose,
+    signal,
+  ) => {
+    signal?.throwIfAborted();
+    return {
+      reference: { ...reference },
+      worktreeDir: realpathSync(expectedWorktreeDir),
+      signal: new AbortController().signal,
+      renew: async () => {},
+      release: async () => {},
+    };
+  });
+  return { store: { prepare, retainSource, acquireSource }, prepare };
 }
 
 function artifactFor(name: string, commit: string): GraphArtifact {

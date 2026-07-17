@@ -6,19 +6,32 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, GraphNode } from "@meridian/core";
+import {
+  compareCanonicalPrPreparePaths,
+  type GraphArtifact,
+  type GraphNode,
+} from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import type {
-  GraphProjectionActivateOptions,
-  GraphProjectionDataSource,
-  GraphProjectionManifest,
-  GraphProjectionRequest,
-  GraphProjectionReviewPairOptions,
-  LoadedGraphProjection,
-  LoadedReviewProjection,
+import {
+  canonicalProjectionKey,
+  OVERVIEW_PROJECTION_REQUEST,
+  type GraphProjectionActivateOptions,
+  type GraphProjectionDataSource,
+  type GraphProjectionManifest,
+  type GraphProjectionRequest,
+  type GraphProjectionReviewPairOptions,
+  type LoadedGraphProjection,
+  type LoadedReviewProjection,
+  type StagedGraphProjection,
+  type StagedProjection,
+  type StagedReviewProjection,
 } from "../graph/graphProjectionClient";
 import { createBlueprintStore } from "./store";
 import type { PrSummary } from "./prTypes";
+import {
+  preparedArtifactReviewFilesForTest,
+  reviewProjectionFactsForTest,
+} from "./reviewProjectionTestSupport";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
   return {
@@ -85,14 +98,7 @@ const ARTIFACT: GraphArtifact = {
 } as unknown as GraphArtifact;
 
 const BOOT_REQUEST: GraphProjectionRequest = {
-  view: "modules",
-  filePaths: [],
-  focusIds: [],
-  expandedIds: [],
-  extraIds: [],
-  depth: 1,
-  radius: 0,
-  includeTests: false,
+  ...OVERVIEW_PROJECTION_REQUEST,
 };
 
 const HEAD_GRAPH_ID = "pr-5-head";
@@ -114,35 +120,38 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
     this.activeKey = projection.key;
   }
 
-  async loadManifest(options: GraphProjectionActivateOptions = {}): Promise<GraphProjectionManifest> {
+  async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
     const graphId = graphIdFrom(options);
     const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
     return {
-      version: 3,
+      version: 6,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: graphSummary(artifact),
+      repositorySummary: buildGraphIndex(artifact).structure.repositorySummary,
       defaultView: BOOT_REQUEST,
     };
   }
 
-  async activate(
+  async stage(
     request: GraphProjectionRequest,
-    options: GraphProjectionActivateOptions = {},
-  ): Promise<LoadedGraphProjection> {
-    options.signal?.throwIfAborted();
-    const graphId = graphIdFrom(options);
-    const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
-    const projection = loadedProjection(artifact, graphId, request);
-    this.cached.set(projection.key, projection);
-    this.activeKey = projection.key;
-    return projection;
+    options: GraphProjectionActivateOptions,
+  ): Promise<StagedGraphProjection> {
+    const projection = this.project(request, options);
+    return stagedValue(projection, () => {
+      this.cached.set(projection.key, projection);
+      this.activeKey = projection.key;
+    });
   }
 
-  async activateReviewPair(options: GraphProjectionReviewPairOptions): Promise<LoadedReviewProjection> {
+  async stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection> {
+    const headKey = canonicalProjectionKey(graphIdFrom(options.head), options.head.request);
+    const mergeBaseKey = canonicalProjectionKey(graphIdFrom(options.mergeBase), options.mergeBase.request);
+    const cached = this.stageCachedReview(`review-pair\u0000${JSON.stringify([headKey, mergeBaseKey])}`);
+    if (cached !== undefined) return cached;
     const [head, mergeBase] = await Promise.all([
-      this.activate(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
-      this.activate(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
+      this.project(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
+      this.project(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
     ]);
     const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
     const review: LoadedReviewProjection = {
@@ -153,30 +162,84 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     };
-    this.cachedReviews.set(key, review);
-    this.activeKey = key;
-    return review;
+    return stagedReview(review, () => {
+      this.cached.set(head.key, head);
+      this.cached.set(mergeBase.key, mergeBase);
+      this.cachedReviews.set(key, review);
+      this.activeKey = key;
+    });
   }
 
-  activateCached(key: string): LoadedGraphProjection | undefined {
+  stageCached(key: string): StagedGraphProjection | undefined {
     const projection = this.cached.get(key);
-    if (projection !== undefined) this.activeKey = key;
-    return projection;
+    return projection === undefined
+      ? undefined
+      : stagedValue(projection, () => { this.activeKey = key; });
   }
 
-  activateCachedReview(key: string): LoadedReviewProjection | undefined {
-    const projection = this.cachedReviews.get(key);
-    if (projection !== undefined) this.activeKey = key;
-    return projection;
+  stageCachedReview(key: string): StagedReviewProjection | undefined {
+    const review = this.cachedReviews.get(key);
+    return review === undefined ? undefined : stagedReview(review, () => { this.activeKey = key; });
   }
 
   searchSymbols(): Promise<never> {
     return Promise.reject(new Error("symbol search is not exercised by this projection source"));
   }
+
+  private project(request: GraphProjectionRequest, options: GraphProjectionActivateOptions): LoadedGraphProjection {
+    options.signal?.throwIfAborted();
+    const graphId = graphIdFrom(options);
+    const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
+    const cached = this.cached.get(canonicalProjectionKey(graphId, request));
+    if (cached !== undefined) return cached;
+    const projection = loadedProjection(artifact, graphId, request);
+    if (request.view !== "review" || request.filePaths.length > 0) return projection;
+    const files = preparedArtifactReviewFilesForTest(this.headArtifact);
+    return {
+      ...projection,
+      review: reviewProjectionFactsForTest(
+        files,
+        request,
+        graphId === HEAD_GRAPH_ID ? "head" : "mergeBase",
+        artifact,
+      ),
+    };
+  }
+}
+
+function stagedReview(review: LoadedReviewProjection, onCommit: () => void): StagedReviewProjection {
+  return stagedValue(review, onCommit);
+}
+
+function stagedValue<Projection>(
+  projection: Projection,
+  onCommit: () => void,
+): StagedProjection<Projection> {
+  let released = false;
+  let committed = false;
+  const read = () => {
+    if (released) throw new Error("projection stage released");
+    return projection;
+  };
+  return {
+    get projection() { return read(); },
+    commit: () => {
+      const value = read();
+      if (!committed) {
+        committed = true;
+        onCommit();
+      }
+      return value;
+    },
+    release: () => { if (!committed) released = true; },
+  };
 }
 
 async function reviewedStore(files: Array<{ path: string }>) {
-  const preparedHead = preparedArtifact(files);
+  const canonicalFiles = [...files].sort((left, right) => (
+    compareCanonicalPrPreparePaths(left.path, right.path)
+  ));
+  const preparedHead = preparedArtifact(canonicalFiles);
   const projectionDataSource = new ReviewProjectionSource(preparedHead, ARTIFACT);
   const initialProjection = loadedProjection(ARTIFACT, "artifact-1", BOOT_REQUEST);
   projectionDataSource.seed(initialProjection);
@@ -185,6 +248,12 @@ async function reviewedStore(files: Array<{ path: string }>) {
     index: buildGraphIndex(ARTIFACT),
     projectionDataSource,
     initialProjection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
@@ -207,11 +276,11 @@ async function reviewedStore(files: Array<{ path: string }>) {
         headSha: HEAD_SHA,
         baseSha: "b".repeat(40),
         mergeBaseSha: "c".repeat(40),
-        changedFiles: files.map((file) => ({ path: file.path, status: "modified" })),
+        changedFiles: canonicalFiles.map((file) => ({ path: file.path, status: "modified" })),
         head: descriptor(HEAD_GRAPH_ID, preparedHead),
         mergeBase: descriptor(BASE_GRAPH_ID, ARTIFACT),
         cache: "miss",
-        timings: { totalMs: 1 },
+        timings: { publish: 1 },
         warnings: [],
         handoff: {
           id: `handoff-${HEAD_GRAPH_ID}`,
@@ -233,7 +302,7 @@ async function reviewedStore(files: Array<{ path: string }>) {
     viewMode: "prs",
     prSelected: 5,
     prsList: { open: [pr(5)], closed: null },
-    prFiles: files.map((file) => ({ path: file.path, status: "modified" as const, additions: 1, deletions: 0 })),
+    prFiles: canonicalFiles.map((file) => ({ path: file.path, status: "modified" as const, additions: 1, deletions: 0 })),
   });
   await store.getState().reviewPrInGraph();
   if (store.getState().prReviewed !== 5) {
@@ -243,10 +312,8 @@ async function reviewedStore(files: Array<{ path: string }>) {
 }
 
 function graphIdFrom(options: GraphProjectionActivateOptions): string {
-  const manifestUrl = options.endpoints?.manifestUrl;
-  return manifestUrl === undefined
-    ? "artifact-1"
-    : new URL(manifestUrl, "http://meridian.local").searchParams.get("id") ?? "artifact-1";
+  return new URL(options.endpoints.manifestUrl, "http://meridian.local").searchParams.get("id")
+    ?? "artifact-1";
 }
 
 function loadedProjection(
@@ -262,6 +329,8 @@ function loadedProjection(
     request,
     artifact,
     index: buildGraphIndex(artifact),
+    reachability: null,
+    review: null,
     serializedBytes: 100,
     residentBytes: 300,
   };
@@ -281,6 +350,7 @@ function descriptor(graphId: string, artifact: GraphArtifact) {
     graphId,
     manifestUrl: `/api/graph/manifest?id=${graphId}`,
     projectionUrl: `/api/graph/projection?id=${graphId}`,
+    searchUrl: `/api/graph/search?id=${graphId}`,
     sourceUrl: `/api/source?id=${graphId}`,
     metaUrl: `/api/meta?id=${graphId}`,
     graphSummary: graphSummary(artifact),
@@ -557,41 +627,22 @@ describe("change groups in PR review", () => {
     });
   });
 
-  it("keeps the file paint seed while focusing its changed units so module ghosts remain visible", async () => {
-    const { store, outerNodes, outerEdges } = await rolledReviewStore();
+  it("loads the exact file cursor before selecting its changed units", async () => {
+    const { store } = await rolledReviewStore();
     const file = store.getState().reviewFiles.find((candidate) => candidate.path === "src/a.ts")!;
     const expectedLit = new Set([FILE_A, ...file.units.map((unit) => unit.nodeId)]);
     store.setState({ reviewFlowExplicitView: "timeline" });
 
-    store.getState().focusReviewFile("src/a.ts");
+    await store.getState().focusReviewFile("src/a.ts");
 
-    expect(store.getState().reviewFocusedSubgraph).toMatchObject({
-      rootId: FS_ID,
-      filePaths: ["src/a.ts", "src/b.ts"],
-      moduleIds: [FILE_A, FILE_B],
-    });
-    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
-    expect(store.getState().minimalRollups).toEqual({});
-    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().prPreparedReviewCursor).toBe("file:1");
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
     expect(store.getState().moduleSelected).toEqual(new Set([FILE_A]));
     expect(store.getState().reviewSelectedId).toBe(FILE_A);
     expect(store.getState().reviewLitNodeIds).toEqual(expectedLit);
     expect(store.getState().reviewFlowExplicitView).toBeNull();
-    expect(store.getState().recenterSeq).toBe(0);
-
-    await vi.waitFor(() => {
-      expect(store.getState().minimalLayoutStatus).toBe("ready");
-      expect(store.getState().recenterSeq).toBe(1);
-    });
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     expect(store.getState().minimalRfNodes.some((node) => node.id === FILE_A)).toBe(true);
-
-    store.getState().closeReviewSubgraph();
-    expect(store.getState().reviewFocusedSubgraph).toBeNull();
-    expect(store.getState().minimalSeedIds).toEqual([FS_ID, FILE_C]);
-    expect(store.getState().minimalRollups).toEqual({ [FS_ID]: [FILE_A, FILE_B] });
-    expect(store.getState().minimalRfNodes).toBe(outerNodes);
-    expect(store.getState().minimalRfEdges).toBe(outerEdges);
-    expect(store.getState().reviewSelectedId).toBeNull();
   });
 
   it("automatically focuses a rolled unit's owning container and reveals the exact unit", async () => {

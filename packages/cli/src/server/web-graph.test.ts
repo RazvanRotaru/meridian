@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,14 +9,27 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import type { ExtractionWorkerResult } from "./extraction-worker";
-import { handleGenerate, sendMeta, sendProjectionManifest, sendView } from "./web-graph";
+import {
+  GraphProjectionRegistry,
+  handleGenerate,
+  sendMeta,
+  sendProjectionManifest,
+  sendView,
+} from "./web-graph";
 import { InspectionScheduler } from "./inspection-scheduler";
 import { SessionStore } from "./session";
 import type { Context } from "./web-server";
+import { PrFilesCache } from "./pr-files-cache";
 import { cachedRemoteGraph } from "./web-cache";
 import type { CachedGraph } from "./web-cache";
-import { graphSummaryFor, InspectionSnapshotStore } from "./inspection-snapshot-store";
-import { GRAPH_PROJECTION_DIRECTORY, writeGraphProjectionBundle } from "./graph-projection-bundle";
+import { graphSummaryFor } from "./graph-generation-contract";
+import type { GraphCapabilityHandle } from "./graph-capability-store";
+import { GraphGenerationLifecycle } from "./graph-generation-lifecycle";
+import {
+  defaultGraphProjectionRequest,
+  GRAPH_PROJECTION_DIRECTORY,
+  writeGraphProjectionBundle,
+} from "./graph-projection-bundle";
 
 vi.mock("./web-cache", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./web-cache")>();
@@ -93,7 +106,7 @@ describe("/api/generate lifecycle admission", () => {
     expect(ctx.runExtraction).not.toHaveBeenCalled();
   });
 
-  it("observes a rejected progress write and cancels its streaming subscription", async () => {
+  it("cancels a streaming subscription before worker admission when the first progress write fails", async () => {
     const ctx = generationContext();
     let workerSignal: AbortSignal | undefined;
     ctx.runExtraction = vi.fn((_request, options) => {
@@ -111,7 +124,7 @@ describe("/api/generate lifecycle admission", () => {
 
     await expect(handleGenerate(ctx, request, response.value)).resolves.toBeUndefined();
 
-    expect(workerSignal?.aborted).toBe(true);
+    expect(workerSignal).toBeUndefined();
     expect(response.write).toHaveBeenCalled();
     expect(response.end).toHaveBeenCalledTimes(1);
     await vi.waitFor(() => expect(ctx.generationScheduler.counts).toEqual({ queued: 0, running: 0 }));
@@ -121,7 +134,6 @@ describe("/api/generate lifecycle admission", () => {
     const ctx = generationContext(2);
     ctx.refreshCache = true;
     ctx.cacheRoot = "/tmp/meridian-generation-test";
-    ctx.inspectionSnapshots = { publish: vi.fn() } as unknown as Context["inspectionSnapshots"];
     const cached = deferred<CachedGraph>();
     let executorSignal: AbortSignal | undefined;
     vi.mocked(cachedRemoteGraph).mockImplementation((options) => {
@@ -162,24 +174,25 @@ describe("immutable graph transport", () => {
       const raw = "{ intentionally-not-parsed-by-the-web-parent }\n";
       writeFileSync(artifactPath, raw, "utf8");
       writeGraphProjectionBundle(join(generation, GRAPH_PROJECTION_DIRECTORY), artifactFor("typescript"));
-      const store = new InspectionSnapshotStore({ cacheRoot });
       const summary = graphSummaryFor(artifactFor("typescript"));
-      store.publish({
+      const release = vi.fn(async () => {});
+      const capability = graphHandle({
         id: "immutable-one",
         artifactPath,
-        graphSummary: summary,
+        projectionDirectory: join(generation, GRAPH_PROJECTION_DIRECTORY),
+        generationDirectory: generation,
         sourceRoot,
-        source: { kind: "other" },
+        graphSummary: summary,
+        release,
       });
-      store.clearMemoryCache();
-      const forbiddenLoad = vi.fn(() => { throw new Error("full graph rehydration is forbidden"); });
-      Object.assign(store, { loadArtifact: forbiddenLoad });
       const ctx = generationContext();
-      ctx.inspectionSnapshots = store;
+      ctx.graphCapabilities = {
+        acquire: vi.fn(async (id: string) => id === "immutable-one" ? capability : null),
+      } as unknown as Context["graphCapabilities"];
       ctx.rendererIndex = "<!doctype html><head></head><body></body>";
 
       const metaResponse = writableResponse();
-      sendMeta(ctx, metaResponse.value, "immutable-one");
+      await sendMeta(ctx, generateRequest(), metaResponse.value, "immutable-one");
       await once(metaResponse.value, "finish");
       expect(JSON.parse(metaResponse.body())).toMatchObject({
         schemaVersion: summary.schemaVersion,
@@ -189,34 +202,69 @@ describe("immutable graph transport", () => {
       });
 
       const viewResponse = writableResponse();
-      sendView(ctx, viewResponse.value, "immutable-one");
+      await sendView(ctx, generateRequest(), viewResponse.value, "immutable-one");
       await once(viewResponse.value, "finish");
       expect(viewResponse.body()).toContain("/api/graph/manifest?id=immutable-one");
       expect(viewResponse.body()).toContain("/api/graph/projection?id=immutable-one");
       expect(viewResponse.body()).not.toContain('"graphUrl"');
 
       const manifestResponse = writableResponse();
-      sendProjectionManifest(ctx, manifestResponse.value, "immutable-one");
+      await sendProjectionManifest(ctx, generateRequest(), manifestResponse.value, "immutable-one");
       await once(manifestResponse.value, "finish");
-      expect(JSON.parse(manifestResponse.body()).defaultView).toEqual({
-        view: "modules",
-        filePaths: [],
-        focusIds: [],
-        expandedIds: [],
-        extraIds: [],
-        depth: 1,
-        radius: 0,
-        includeTests: false,
-      });
-      expect(forbiddenLoad).not.toHaveBeenCalled();
-      expect(store.cacheStats().artifactEntries).toBe(0);
+      expect(JSON.parse(manifestResponse.body()).defaultView).toEqual(defaultGraphProjectionRequest());
+      expect(readFileSync(artifactPath, "utf8")).toBe(raw);
+      expect(release).toHaveBeenCalledTimes(3);
     } finally {
       rmSync(cacheRoot, { recursive: true, force: true });
     }
   });
 });
 
+describe("graph projection reader memory", () => {
+  it("keeps paused queries under one aggregate cache ceiling after reader eviction", async () => {
+    const root = testCacheRoot();
+    const bundleRoot = join(root, GRAPH_PROJECTION_DIRECTORY);
+    writeGraphProjectionBundle(bundleRoot, registryArtifact());
+    const registry = new GraphProjectionRegistry({
+      maxReaders: 4,
+      maxCacheBytes: 24_000,
+      maxCacheEntries: 3,
+    });
+    const readers = Array.from({ length: 6 }, (_, index) => ({
+      id: `graph-${index}`,
+      focusId: `file-${index}`,
+    }));
+
+    const firstReaders = readers.slice(0, 4).map(({ id }) => registry.get(id, bundleRoot));
+    const pending = firstReaders.map((bundle, index) => bundle.query({
+      ...defaultGraphProjectionRequest(),
+      focusIds: [readers[index]!.focusId],
+      depth: 1,
+    }));
+    for (const reader of readers.slice(4)) {
+      pending.push(registry.get(reader.id, bundleRoot).query({
+        ...defaultGraphProjectionRequest(),
+        focusIds: [reader.focusId],
+        depth: 1,
+      }));
+    }
+
+    await Promise.all(pending);
+
+    expect(registry.get(readers[0]!.id, bundleRoot)).not.toBe(firstReaders[0]);
+    expect(registry.cacheStats()).toMatchObject({
+      residentBytes: expect.any(Number),
+      entries: expect.any(Number),
+    });
+    expect(registry.cacheStats().residentBytes).toBeLessThanOrEqual(24_000);
+    expect(registry.cacheStats().entries).toBeLessThanOrEqual(3);
+    expect(registry.cacheStats().trackedNamespaces).toBeLessThanOrEqual(registry.cacheStats().entries);
+    expect(registry.cacheStats().evictions + registry.cacheStats().oversizeSkips).toBeGreaterThan(0);
+  });
+});
+
 function generationContext(concurrency = 1): Context {
+  const cacheRoot = testCacheRoot();
   const generationScheduler = new InspectionScheduler<string, {
     run(signal: AbortSignal, reportProgress: (stage: string) => void): Promise<unknown>;
   }, unknown, string>({
@@ -225,14 +273,18 @@ function generationContext(concurrency = 1): Context {
     execute: ({ input, signal, reportProgress }) => input.run(signal, reportProgress),
   });
   return {
-    localGraphFiles: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map(),
-    prFilesCache: new Map(),
-    tempCleanups: new Set(),
+    shutdownSignal: new AbortController().signal,
+    prFilesCache: new PrFilesCache(),
+    graphCapabilities: {
+      acquire: vi.fn(async () => null),
+      publish: vi.fn(async () => undefined),
+    },
+    graphProjectionRegistry: new GraphProjectionRegistry(),
+    graphGenerationLifecycle: new GraphGenerationLifecycle({ cacheRoot }),
+    graphGenerationMaintenance: { notePublication: vi.fn() },
     generationScheduler,
     runExtraction: vi.fn(),
-    cacheRoot: testCacheRoot(),
+    cacheRoot,
     cwd: process.cwd(),
     sessions: new SessionStore(),
     refreshCache: false,
@@ -330,6 +382,32 @@ function artifactFor(language: string): GraphArtifact {
   };
 }
 
+function registryArtifact(): GraphArtifact {
+  const nodes: GraphArtifact["nodes"] = [{
+    id: "root",
+    kind: "package",
+    qualifiedName: "root",
+    displayName: "root",
+    parentId: null,
+    location: { file: "src", startLine: 1 },
+  }];
+  for (let index = 0; index < 6; index += 1) {
+    nodes.push({
+      id: `file-${index}`,
+      kind: "module",
+      qualifiedName: `file-${index}`,
+      displayName: `file-${index}`,
+      parentId: "root",
+      location: { file: `src/${index}.ts`, startLine: 1 },
+      summary: `graph-${index}:${"x".repeat(2_000)}`,
+    });
+  }
+  return {
+    ...artifactFor("typescript"),
+    nodes,
+  };
+}
+
 function testCacheRoot(): string {
   const root = mkdtempSync(join(tmpdir(), "meridian-web-graph-test-"));
   testCacheRoots.push(root);
@@ -343,6 +421,12 @@ function cachedGraph(): CachedGraph {
     artifactPath: "/tmp/meridian-generation-test/artifact.json",
     projectionDirectory: "/tmp/meridian-generation-test/graph-projections",
     graphSummary: graphSummaryFor(artifact),
+    verifiedGeneration: {} as CachedGraph["verifiedGeneration"],
+    generationLease: {
+      generationDirectory: "/tmp/meridian-generation-test",
+      purpose: "cache-read",
+      release: async () => {},
+    },
     cache: "miss",
     checkout: {
       branch: "main",
@@ -351,10 +435,81 @@ function cachedGraph(): CachedGraph {
       repoDir: "/tmp/meridian-generation-test/repo",
       repositoryKey: "repository-key",
       remoteUrl: "https://github.com/owner/repo.git",
+      sourceLease: {
+        repositoryDigest: "a".repeat(64),
+        leaseId: "b".repeat(64),
+      },
+      sourceOperation: {
+        reference: {
+          repositoryDigest: "a".repeat(64),
+          leaseId: "b".repeat(64),
+        },
+        worktreeDir: "/tmp/meridian-generation-test/repo",
+        signal: new AbortController().signal,
+        renew: async () => {},
+        release: async () => {},
+      },
     },
     sourceDir: "/tmp/meridian-generation-test/repo",
     generationId: "generation-id",
     target: "owner/repo",
     warnings: [],
+  };
+}
+
+function graphHandle(input: {
+  id: string;
+  artifactPath: string;
+  projectionDirectory: string;
+  generationDirectory: string;
+  sourceRoot: string;
+  graphSummary: ReturnType<typeof graphSummaryFor>;
+  release(): Promise<void>;
+}): GraphCapabilityHandle {
+  const sha = "a".repeat(64);
+  return {
+    descriptor: {
+      formatVersion: 10,
+      id: input.id,
+      publishedAt: "2026-07-17T00:00:00.000Z",
+      graphSummary: input.graphSummary,
+      artifact: {
+        path: "generations/one/artifact.json",
+        projectionPath: "generations/one/graph-projection",
+        generationPath: "generations/one",
+        bytes: 1,
+        sha256: sha,
+        projectionBytes: 1,
+        projectionSha256: sha,
+        projectionContentId: sha,
+        sealSha256: sha,
+        revision: { kind: "git", commit: "1".repeat(40) },
+        vcsBranch: null,
+      },
+      source: {
+        kind: "managed-cache",
+        rootPath: "generations/one/repo",
+        subdir: "",
+        metadata: { kind: "other" },
+        owner: null,
+      },
+      synthetic: null,
+      reviewContext: null,
+    },
+    artifactPath: input.artifactPath,
+    projectionDirectory: input.projectionDirectory,
+    generationDirectory: input.generationDirectory,
+    source: {
+      rootDir: input.sourceRoot,
+      sourceDir: input.sourceRoot,
+      subdir: "",
+      metadata: { kind: "other" },
+      owner: null,
+    },
+    synthetic: null,
+    review: null,
+    signal: new AbortController().signal,
+    renew: async () => {},
+    release: input.release,
   };
 }

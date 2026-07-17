@@ -145,6 +145,21 @@ describe("serviceRevealStateForMany", () => {
     expect(serviceRevealStateForMany(["ts:app/src"], index)!.moduleExpanded.has(frameIdOf(LEAD))).toBe(true);
   });
 
+  it("answers an empty selection without requiring Service facts in a bounded Map projection", () => {
+    const boundedMapIndex = buildGraphIndex(
+      { nodes: NODES, edges: EDGES } as GraphArtifact,
+      {
+        structure: index.structure,
+        graphSummary: index.graphSummary,
+        serviceTopology: null,
+        artifactComplete: false,
+      },
+    );
+
+    expect(resolveServiceAnchors([], boundedMapIndex)).toBeNull();
+    expect(serviceRevealStateForMany([], boundedMapIndex)).toBeNull();
+  });
+
   it("memoizes clustering per graph index", () => {
     expect(clusteringFor(index)).toBe(clusteringFor(index));
   });

@@ -30,7 +30,11 @@ import type {
   LineRange,
   ReviewContext,
 } from "@meridian/core";
-import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
+import {
+  buildGraphIndex,
+  graphIndexMetadataWithPresentationNodes,
+  type GraphIndex,
+} from "../graph/graphIndex";
 import type { PrChangedFile } from "../state/prTypes";
 import { matchAffectedFiles, normalizePath } from "./matchAffectedFiles";
 import type { ReviewUnitRow } from "./reviewFiles";
@@ -62,9 +66,14 @@ export interface DeletedReviewFileProjection {
 }
 
 export interface DeletedNodeProjection {
-  /** HEAD artifact plus edge-less base tombstones. Returns the input by identity when empty. */
+  /** HEAD artifact plus edge-less base tombstones. Returns the input by identity when empty.
+   * This is one active-view presentation, not a third cached projection body: it reuses HEAD edges
+   * and extensions and references nodes from the active HEAD + merge-base pair (copying only a
+   * tombstone whose parent must be remapped). Its structural ceiling is therefore
+   * `head.nodes + base.nodes` nodes and `head.edges` edges. */
   artifact: GraphArtifact;
-  /** Index over `artifact`. Returns the input by identity when empty. */
+  /** The sole presentation-only allocation: one index over `artifact`, owned by the mounted view.
+   * It is discarded on projection replacement/parking and is never inserted into transport LRUs. */
   index: GraphIndex;
   /** Every node appended from the base artifact, including containment-only ancestors. */
   baseSourceNodeIds: Set<string>;
@@ -325,7 +334,10 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
   const artifact: GraphArtifact = { ...args.headArtifact, nodes: [...args.headArtifact.nodes, ...appendedNodes] };
   return {
     artifact,
-    index: buildGraphIndex(artifact),
+    index: buildGraphIndex(
+      artifact,
+      graphIndexMetadataWithPresentationNodes(args.headIndex, appendedNodes),
+    ),
     baseSourceNodeIds,
     deletedNodeIds,
     survivingAffectedHeadIds,

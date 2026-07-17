@@ -1,20 +1,35 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { FlowStep, GraphArtifact, GraphNode, SyntheticExecution } from "@meridian/core";
+import {
+  compareCanonicalPrPreparePaths,
+  type FlowStep,
+  type GraphArtifact,
+  type GraphNode,
+  type SyntheticExecution,
+} from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import type {
-  GraphProjectionActivateOptions,
-  GraphProjectionDataSource,
-  GraphProjectionManifest,
-  GraphProjectionRequest,
-  GraphProjectionReviewPairOptions,
-  LoadedGraphProjection,
-  LoadedReviewProjection,
+import {
+  canonicalProjectionKey,
+  OVERVIEW_PROJECTION_REQUEST,
+  type GraphProjectionActivateOptions,
+  type GraphProjectionDataSource,
+  type GraphProjectionManifest,
+  type GraphProjectionRequest,
+  type GraphProjectionReviewPairOptions,
+  type LoadedGraphProjection,
+  type LoadedReviewProjection,
+  type StagedGraphProjection,
+  type StagedProjection,
+  type StagedReviewProjection,
 } from "../graph/graphProjectionClient";
 import type { FlowSelectionRef } from "../derive/flowBlocks";
 import { paintMinimalLevel } from "../components/paintMinimal";
 import { createBlueprintStore, type StoreDependencies } from "./store";
 import type { PrChangedFile, PrSummary } from "./prTypes";
 import type { ReviewFlowSplitView } from "./reviewPreferences";
+import {
+  preparedArtifactReviewFilesForTest,
+  reviewProjectionFactsForTest,
+} from "./reviewProjectionTestSupport";
 
 function node(
   id: string,
@@ -157,14 +172,7 @@ const BASE_SHA = "b".repeat(40);
 const MERGE_BASE_SHA = "c".repeat(40);
 
 const INITIAL_PROJECTION_REQUEST: GraphProjectionRequest = {
-  view: "modules",
-  filePaths: [],
-  focusIds: [],
-  expandedIds: [],
-  extraIds: [],
-  depth: 1,
-  radius: 0,
-  includeTests: false,
+  ...OVERVIEW_PROJECTION_REQUEST,
 };
 
 afterEach(() => {
@@ -243,6 +251,12 @@ function freshStore(extra?: Partial<StoreDependencies>) {
     index,
     projectionDataSource,
     initialProjection,
+    projectionEndpoints: {
+      graphId: "artifact-1",
+      manifestUrl: "/api/graph/manifest?id=artifact-1",
+      projectionUrl: "/api/graph/projection?id=artifact-1",
+      searchUrl: "/api/graph/search?id=artifact-1",
+    },
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
@@ -283,11 +297,11 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
     this.preparedHead = artifact;
   }
 
-  async loadManifest(options: GraphProjectionActivateOptions = {}): Promise<GraphProjectionManifest> {
+  async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
     const graphId = graphIdForOptions(options);
     const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
     return {
-      version: 3,
+      version: 6,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: {
@@ -296,27 +310,30 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
         nodeCount: artifact.nodes.length,
         edgeCount: artifact.edges.length,
       },
+      repositorySummary: buildGraphIndex(artifact).structure.repositorySummary,
       defaultView: INITIAL_PROJECTION_REQUEST,
     };
   }
 
-  async activate(
+  async stage(
     request: GraphProjectionRequest,
-    options: GraphProjectionActivateOptions = {},
-  ): Promise<LoadedGraphProjection> {
-    options.signal?.throwIfAborted();
-    const graphId = graphIdForOptions(options);
-    const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
-    const projection = projectionFor(artifact, graphId, request);
-    this.projections.set(projection.key, projection);
-    this.activeKey = projection.key;
-    return projection;
+    options: GraphProjectionActivateOptions,
+  ): Promise<StagedGraphProjection> {
+    const projection = this.project(request, options);
+    return valueStage(projection, () => {
+      this.projections.set(projection.key, projection);
+      this.activeKey = projection.key;
+    });
   }
 
-  async activateReviewPair(options: GraphProjectionReviewPairOptions): Promise<LoadedReviewProjection> {
+  async stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection> {
+    const headKey = canonicalProjectionKey(graphIdForOptions(options.head), options.head.request);
+    const mergeBaseKey = canonicalProjectionKey(graphIdForOptions(options.mergeBase), options.mergeBase.request);
+    const cached = this.stageCachedReview(`review-pair\u0000${JSON.stringify([headKey, mergeBaseKey])}`);
+    if (cached !== undefined) return cached;
     const [head, mergeBase] = await Promise.all([
-      this.activate(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
-      this.activate(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
+      this.project(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
+      this.project(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
     ]);
     const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
     const review = {
@@ -327,33 +344,83 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     } satisfies LoadedReviewProjection;
-    this.reviews.set(key, review);
-    this.activeKey = key;
-    return review;
+    return reviewStage(review, () => {
+      this.projections.set(head.key, head);
+      this.projections.set(mergeBase.key, mergeBase);
+      this.reviews.set(key, review);
+      this.activeKey = key;
+    });
   }
 
-  activateCached(key: string): LoadedGraphProjection | undefined {
+  stageCached(key: string): StagedGraphProjection | undefined {
     const projection = this.projections.get(key);
-    if (projection !== undefined) this.activeKey = projection.key;
-    return projection;
+    return projection === undefined
+      ? undefined
+      : valueStage(projection, () => { this.activeKey = projection.key; });
   }
 
-  activateCachedReview(key: string): LoadedReviewProjection | undefined {
+  stageCachedReview(key: string): StagedReviewProjection | undefined {
     const review = this.reviews.get(key);
-    if (review !== undefined) this.activeKey = review.key;
-    return review;
+    return review === undefined ? undefined : reviewStage(review, () => { this.activeKey = key; });
   }
 
   searchSymbols(): Promise<never> {
     return Promise.reject(new Error("symbol search is not exercised by this projection source"));
   }
+
+  private project(request: GraphProjectionRequest, options: GraphProjectionActivateOptions): LoadedGraphProjection {
+    options.signal?.throwIfAborted();
+    const graphId = graphIdForOptions(options);
+    const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
+    const cached = this.projections.get(canonicalProjectionKey(graphId, request));
+    if (cached !== undefined) return cached;
+    const projection = projectionFor(artifact, graphId, request);
+    if (request.view !== "review" || request.filePaths.length > 0 || this.preparedHead === null) {
+      return projection;
+    }
+    return {
+      ...projection,
+      review: reviewProjectionFactsForTest(
+        preparedArtifactReviewFilesForTest(this.preparedHead),
+        request,
+        graphId.endsWith("-base") ? "mergeBase" : "head",
+        artifact,
+      ),
+    };
+  }
+}
+
+function reviewStage(review: LoadedReviewProjection, onCommit: () => void): StagedReviewProjection {
+  return valueStage(review, onCommit);
+}
+
+function valueStage<Projection>(
+  projection: Projection,
+  onCommit: () => void,
+): StagedProjection<Projection> {
+  let released = false;
+  let committed = false;
+  const read = () => {
+    if (released) throw new Error("projection stage released");
+    return projection;
+  };
+  return {
+    get projection() { return read(); },
+    commit: () => {
+      const value = read();
+      if (!committed) {
+        committed = true;
+        onCommit();
+      }
+      return value;
+    },
+    release: () => { if (!committed) released = true; },
+  };
 }
 
 function graphIdForOptions(options: GraphProjectionActivateOptions): string {
-  const manifestUrl = options.endpoints?.manifestUrl;
-  return manifestUrl === undefined
-    ? "artifact-1"
-    : new URL(manifestUrl, "http://meridian.local").searchParams.get("id") ?? "artifact-1";
+  return new URL(options.endpoints.manifestUrl, "http://meridian.local").searchParams.get("id")
+    ?? "artifact-1";
 }
 
 function projectionFor(
@@ -369,6 +436,8 @@ function projectionFor(
     request,
     artifact,
     index: buildGraphIndex(artifact),
+    reachability: null,
+    review: null,
     serializedBytes: 100,
     residentBytes: 300,
   };
@@ -416,7 +485,9 @@ function preparedHeadArtifact(artifact: GraphArtifact, files: readonly PrChanged
 async function enterPreparedReview(store: ReturnType<typeof freshStore>): Promise<void> {
   const source = flowReviewProjectionSources.get(store);
   if (source === undefined) throw new Error("missing flow-review projection fixture");
-  const files = store.getState().prFiles ?? [];
+  const files = [...(store.getState().prFiles ?? [])].sort((left, right) => (
+    compareCanonicalPrPreparePaths(left.path, right.path)
+  ));
   const graphId = `flow-review-${++preparedReviewSequence}`;
   source.setPreparedHead(preparedHeadArtifact(store.getState().artifact, files));
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
@@ -445,6 +516,7 @@ function preparationResponse(graphId: string, files: readonly PrChangedFile[]): 
     graphId: id,
     manifestUrl: `/api/graph/manifest?id=${id}`,
     projectionUrl: `/api/graph/projection?id=${id}`,
+    searchUrl: `/api/graph/search?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
     metaUrl: `/api/meta?id=${id}`,
     graphSummary: {
@@ -474,7 +546,7 @@ function preparationResponse(graphId: string, files: readonly PrChangedFile[]): 
       head: descriptor(graphId),
       mergeBase: descriptor(`${graphId}-base`),
       cache: "miss",
-      timings: { totalMs: 5 },
+      timings: { resolve: 0, git: 1, "extract-head": 2, "extract-merge-base": 3, publish: 4 },
       warnings: [],
       handoff: {
         id: `handoff-${graphId}`,

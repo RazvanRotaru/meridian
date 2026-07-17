@@ -10,7 +10,7 @@ import { changedFileManifestFromExtensions } from "@meridian/core";
 import type { ChangedFileManifestEntry, ExtractOptions, GraphArtifact } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import type { ExitCode } from "../errors";
-import type { InspectionGraphSummary } from "./inspection-snapshot-store";
+import type { GraphGenerationSummary } from "./graph-generation-contract";
 
 export const MAX_WORKER_ERROR_TEXT_BYTES = 4_000;
 export const MAX_WORKER_ERROR_DETAILS = 64;
@@ -61,7 +61,10 @@ export interface ExtractionWorkerResult {
   readonly artifactBytes: number;
   readonly artifactSha256: string;
   readonly projectionDirectory: string;
-  readonly graphSummary: InspectionGraphSummary;
+  readonly projectionBytes: number;
+  readonly projectionSha256: string;
+  readonly projectionContentId: string;
+  readonly graphSummary: GraphGenerationSummary;
   readonly changedFiles: ChangedFileManifestEntry[];
   /** Sorted populated-side source/manifest paths used to select extractors for an empty peer. */
   readonly hintedFiles: string[];
@@ -75,6 +78,8 @@ export interface ExtractionWorkerRequestMessage {
   request: SerializablePipelineRequest;
   /** Parent-owned private staging path; the graph itself never crosses IPC. */
   artifactOutputPath: string;
+  /** Private cache authority used only to pin the unpublished stage during projection hashing. */
+  lifecycleCacheRoot: string;
   /** Ephemeral: sent over the private IPC channel, never argv, environment, disk, or logs. */
   token?: string;
 }
@@ -165,6 +170,7 @@ export function isExtractionWorkerRequest(value: unknown): value is ExtractionWo
     && typeof request.materializeBoundary === "boolean"
     && (request.hintedFiles === undefined || isHintedFiles(request.hintedFiles))
     && typeof value.artifactOutputPath === "string"
+    && typeof value.lifecycleCacheRoot === "string"
     && (value.token === undefined || typeof value.token === "string");
 }
 
@@ -219,6 +225,12 @@ function isExtractionWorkerResult(value: unknown): value is ExtractionWorkerResu
     || typeof value.artifactSha256 !== "string"
     || !/^[0-9a-f]{64}$/.test(value.artifactSha256)
     || typeof value.projectionDirectory !== "string"
+    || !Number.isSafeInteger(value.projectionBytes)
+    || (value.projectionBytes as number) <= 0
+    || typeof value.projectionSha256 !== "string"
+    || !/^[0-9a-f]{64}$/.test(value.projectionSha256)
+    || typeof value.projectionContentId !== "string"
+    || !/^[0-9a-f]{64}$/.test(value.projectionContentId)
     || !isGraphSummary(value.graphSummary)
     || !isChangedFileManifest(value.changedFiles)
     || !isHintedFiles(value.hintedFiles)
@@ -267,7 +279,7 @@ function isWorkerWarnings(value: unknown): value is string[] {
   return true;
 }
 
-function isGraphSummary(value: unknown): value is InspectionGraphSummary {
+function isGraphSummary(value: unknown): value is GraphGenerationSummary {
   return isRecord(value)
     && typeof value.schemaVersion === "string"
     && typeof value.generatedAt === "string"

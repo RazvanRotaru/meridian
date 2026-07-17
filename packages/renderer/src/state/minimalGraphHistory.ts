@@ -2,8 +2,25 @@
 
 import type { BlueprintState, LayoutActivity } from "./store";
 
+export interface MinimalGraphNavigationLimits {
+  /** Maximum semantic parent coordinates retained for Back navigation. */
+  maxEntries: number;
+  /** Maximum estimated resident bytes across coordinates and their projection metadata. */
+  maxResidentBytes: number;
+}
+
 /**
- * One exact parent coordinate in an arbitrarily deep chain of extracted graphs.
+ * Semantic graph coordinates are much smaller than decoded scenes, but a reader can create an
+ * arbitrarily deep chain and each coordinate contains real Sets/Maps of ids. Keep a useful deep
+ * window without allowing that metadata to become a second unbounded graph-shaped allocation.
+ */
+export const DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS: Readonly<MinimalGraphNavigationLimits> = {
+  maxEntries: 64,
+  maxResidentBytes: 4 * 1024 * 1024,
+};
+
+/**
+ * One exact parent coordinate in the bounded semantic Back window of extracted graphs.
  *
  * This record deliberately contains no ReactFlow arrays, layout geometry, graph artifacts/indexes,
  * or synthetic execution payloads. Those objects live in `MinimalGraphSceneSnapshot` and are kept
@@ -69,6 +86,46 @@ export interface MinimalGraphSceneSnapshot {
   syntheticExecution: BlueprintState["syntheticExecution"];
   syntheticPreviousExecution: BlueprintState["syntheticPreviousExecution"];
   reviewFlowBaseline: BlueprintState["reviewFlowBaseline"];
+}
+
+export interface BoundedMinimalGraphHistory {
+  history: MinimalGraphHistoryEntry[];
+  /** Oldest coordinates removed from the semantic window, in their original order. */
+  truncatedSceneKeys: string[];
+  residentBytes: number;
+}
+
+/**
+ * Retain the newest semantic coordinates that fit both limits. `residentBytesBySceneKey` must
+ * charge each history entry together with its projection frame; a missing/non-finite charge fails
+ * closed and truncates that coordinate. Rendered scenes have their own stricter LRU and are not
+ * part of this metadata budget.
+ */
+export function boundMinimalGraphHistory(
+  entries: readonly MinimalGraphHistoryEntry[],
+  residentBytesBySceneKey: ReadonlyMap<string, number>,
+  limits: Readonly<MinimalGraphNavigationLimits> = DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS,
+): BoundedMinimalGraphHistory {
+  const maxEntries = nonNegativeSafeInteger(limits.maxEntries, "maxEntries");
+  const maxResidentBytes = nonNegativeSafeInteger(limits.maxResidentBytes, "maxResidentBytes");
+  let firstRetained = entries.length;
+  let residentBytes = 0;
+
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    if (entries.length - index > maxEntries) break;
+    const charge = residentBytesBySceneKey.get(entries[index]!.sceneKey);
+    if (charge === undefined || !Number.isSafeInteger(charge) || charge < 0) break;
+    const nextResidentBytes = saturatedAdd(residentBytes, charge);
+    if (nextResidentBytes > maxResidentBytes) break;
+    residentBytes = nextResidentBytes;
+    firstRetained = index;
+  }
+
+  return {
+    history: entries.slice(firstRetained),
+    truncatedSceneKeys: entries.slice(0, firstRetained).map((entry) => entry.sceneKey),
+    residentBytes,
+  };
 }
 
 export function captureMinimalGraphHistory(
@@ -222,19 +279,107 @@ export function emptyMinimalGraphScene(
 
 /** Conservative byte estimate charged to the shared inactive-allocation budget. */
 export function minimalGraphSceneResidentBytes(scene: MinimalGraphSceneSnapshot): number {
+  return minimalGraphResidentBytes(scene);
+}
+
+/**
+ * Conservative heap-size estimate for decoded graph navigation values.
+ *
+ * JSON serialization cannot be used here: Set and Map serialize as `{}`, which made large id sets
+ * effectively free. This traversal charges their backing slots and values, object/array slots,
+ * UTF-16 strings, typed buffers, and shared references without walking an object twice. Values
+ * whose resident contents cannot be inspected safely are rejected from inactive retention.
+ */
+export function minimalGraphResidentBytes(value: unknown): number {
   try {
-    const json = JSON.stringify(scene);
-    if (json === undefined) return Number.MAX_SAFE_INTEGER;
-    const serializedBytes = new TextEncoder().encode(json).byteLength;
-    if (serializedBytes > Math.floor(Number.MAX_SAFE_INTEGER / 2)) return Number.MAX_SAFE_INTEGER;
-    // The snapshot holds decoded JS objects/strings rather than a compact wire payload. Charging
-    // two bytes per serialized byte is intentionally conservative without traversing it twice.
-    return Math.max(1, serializedBytes * 2);
+    return Math.max(1, residentBytes(value, new WeakSet<object>()));
   } catch {
-    // Cycles or non-serializable host objects must remain usable while current, but never enter the
-    // inactive cache where their resident size cannot be bounded honestly.
     return Number.MAX_SAFE_INTEGER;
   }
+}
+
+function residentBytes(value: unknown, seen: WeakSet<object>): number {
+  if (value === null || value === undefined) return 8;
+  switch (typeof value) {
+    case "boolean": return 8;
+    case "number": return 8;
+    case "bigint": return 24 + value.toString().length * 2;
+    case "string": return stringResidentBytes(value);
+    case "symbol": return 24 + stringResidentBytes(value.description ?? "");
+    // A function's captured environment is not inspectable. It may stay mounted in the current
+    // scene, but must never enter a cache whose byte ceiling claims to account for it.
+    case "function": return Number.MAX_SAFE_INTEGER;
+    case "object": break;
+  }
+
+  const object = value as object;
+  if (seen.has(object)) return 8;
+  seen.add(object);
+
+  if (object instanceof WeakMap || object instanceof WeakSet || object instanceof Promise) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  if (object instanceof ArrayBuffer) {
+    return saturatedAdd(48, object.byteLength);
+  }
+  if (ArrayBuffer.isView(object)) {
+    return saturatedAdd(64, object.byteLength);
+  }
+  if (object instanceof Date) return 48;
+  if (Array.isArray(object)) {
+    let total = saturatedAdd(40, saturatedMultiply(object.length, 8));
+    for (let index = 0; index < object.length; index += 1) {
+      if (index in object) total = saturatedAdd(total, residentBytes(object[index], seen));
+    }
+    return total;
+  }
+  if (object instanceof Set) {
+    let total = saturatedAdd(56, saturatedMultiply(object.size, 24));
+    for (const entry of object) total = saturatedAdd(total, residentBytes(entry, seen));
+    return total;
+  }
+  if (object instanceof Map) {
+    let total = saturatedAdd(56, saturatedMultiply(object.size, 40));
+    for (const [key, entry] of object) {
+      total = saturatedAdd(total, residentBytes(key, seen));
+      total = saturatedAdd(total, residentBytes(entry, seen));
+    }
+    return total;
+  }
+
+  let total = 56;
+  const descriptors = Object.getOwnPropertyDescriptors(object);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    const descriptor = descriptors[key as keyof typeof descriptors];
+    if (descriptor === undefined) continue;
+    total = saturatedAdd(total, typeof key === "string" ? stringResidentBytes(key) : 32);
+    total = saturatedAdd(total, 16);
+    if (!("value" in descriptor)) return Number.MAX_SAFE_INTEGER;
+    total = saturatedAdd(total, residentBytes(descriptor.value, seen));
+  }
+  return total;
+}
+
+function stringResidentBytes(value: string): number {
+  return saturatedAdd(24, saturatedMultiply(value.length, 2));
+}
+
+function saturatedMultiply(left: number, right: number): number {
+  if (left === 0 || right === 0) return 0;
+  if (left > Math.floor(Number.MAX_SAFE_INTEGER / right)) return Number.MAX_SAFE_INTEGER;
+  return left * right;
+}
+
+function saturatedAdd(left: number, right: number): number {
+  if (left >= Number.MAX_SAFE_INTEGER - right) return Number.MAX_SAFE_INTEGER;
+  return left + right;
+}
+
+function nonNegativeSafeInteger(value: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} must be a non-negative safe integer`);
+  }
+  return value;
 }
 
 function cloneRollups(rollups: Readonly<Record<string, readonly string[]>>): Record<string, string[]> {

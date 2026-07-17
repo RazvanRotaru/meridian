@@ -11,6 +11,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -21,18 +22,56 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+  GRAPH_PROJECTION_PROTOCOL_VERSION,
+  GRAPH_PROJECTION_REQUEST_FIELDS,
+  buildReachabilityProjection,
+  collectTestIds,
+  deriveGraphStructure,
+  graphProjectionIdentityPreimage,
+  isGraphProjectionReviewCursor,
+  parseGraphModuleOverview,
+  parseReachabilityProjectionFacts,
   type GraphArtifact,
   type GraphEdge,
+  type GraphHierarchyFact,
+  type GraphModuleOverview,
   type GraphNode,
+  type GraphRepositorySummary,
   type JsonValue,
   type LogicFlows,
+  type ReachabilityPaintFacts,
+  type ReachabilityProjectionFacts,
 } from "@meridian/core";
-import { graphSummaryFor, type InspectionGraphSummary } from "./inspection-snapshot-store";
+import type { SerializedServiceTopologyV1 } from "@meridian/design-metrics";
+import { jsonEncodedByteLength } from "./bounded-json";
+import { graphSummaryFor, type GraphGenerationSummary } from "./graph-generation-contract";
+import {
+  encodeServiceTopologySidecar,
+  isServiceTopologySidecarDescriptor,
+  readServiceTopologySidecar,
+  serviceTopologySidecarPath,
+  writeServiceTopologySidecar,
+  type ServiceTopologySidecarDescriptor,
+} from "./service-topology-sidecar";
+import {
+  effectiveReviewProjectionContentId,
+  resolveReviewContextCursor,
+  type ReviewComparisonContext,
+  type ReviewComparisonSide,
+  type ReviewContextFacts,
+} from "./review-comparison-context";
 
 export const GRAPH_PROJECTION_DIRECTORY = "graph-projections";
-export const GRAPH_PROJECTION_FORMAT_VERSION = 3;
+export const GRAPH_PROJECTION_FORMAT_VERSION = GRAPH_PROJECTION_PROTOCOL_VERSION;
 export const GRAPH_SYMBOL_SEARCH_VERSION = 1;
 const MANIFEST_FILE = "manifest.json";
+const MODULE_OVERVIEW_ROOTS_FILE = "module-overview-roots.ndjson";
+const MODULE_OVERVIEW_ROOTS_WITHOUT_TESTS_FILE = "module-overview-roots-without-tests.ndjson";
+const MODULE_OVERVIEW_FILE = "module-overview.json";
+const MODULE_OVERVIEW_WITHOUT_TESTS_FILE = "module-overview-without-tests.json";
+const UI_ENTRY_IDS_FILE = "ui-entry-ids.ndjson";
+const UI_ENTRY_IDS_WITHOUT_TESTS_FILE = "ui-entry-ids-without-tests.ndjson";
+const REACHABILITY_SUMMARY_FILE = "reachability-summary.json";
 const SHARD_COUNT = 256;
 const NODE_PAGE_ENTRIES = 192;
 const ID_PAGE_ENTRIES = 512;
@@ -46,67 +85,138 @@ const DEFAULT_MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 const MAX_FOCUS_IDS = 32;
 const MAX_EXPANDED_IDS = 512;
 const MAX_EXTRA_IDS = 128;
+const MAX_CAUSAL_IDS = 2_000;
 const MAX_ID_BYTES = 2_048;
+const MAX_CAUSAL_IDS_BYTES = 256 * 1024;
 const MAX_FILE_PATHS = 512;
-const MAX_FILE_PATH_BYTES = 2_048;
+const MAX_REQUEST_FILE_PATH_BYTES = 2_048;
+const MAX_INDEXED_FILE_PATH_BYTES = 4_096;
 const MAX_FILE_PATHS_BYTES = 48 * 1024;
 const MAX_EXTENSION_LABEL_BYTES = 2_048;
 const MAX_SYMBOL_FIELD_BYTES = 2_048;
 const MAX_SYMBOL_QUERY_BYTES = 256;
 const MAX_SYMBOL_SEARCH_RESULTS = 40;
-const GRAPH_PROJECTION_REQUEST_KEYS = new Set([
-  "view",
-  "focusIds",
-  "expandedIds",
-  "extraIds",
-  "filePaths",
-  "depth",
-  "radius",
-  "includeTests",
-  "maxNodes",
-  "maxEdges",
-  "maxResponseBytes",
-]);
+const PROJECTION_QUERY_YIELD_INTERVAL = 64;
+const GRAPH_PROJECTION_REQUEST_KEYS = new Set<string>(GRAPH_PROJECTION_REQUEST_FIELDS);
+const GRAPH_PROJECTION_MANIFEST_KEYS = [
+  "formatVersion",
+  "contentId",
+  "graphSummary",
+  "repositorySummary",
+  "header",
+  "shardCount",
+  "roots",
+  "moduleOverviewRoots",
+  "uiEntryIds",
+  "changed",
+  "symbols",
+  "filePathCount",
+  "extensions",
+  "facts",
+] as const;
 const GRAPH_SYMBOL_SEARCH_REQUEST_KEYS = new Set(["version", "query", "mode", "scope"]);
 const MAP_SYMBOL_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
 const LOGIC_SYMBOL_KINDS = new Set(["function", "method", "module"]);
+const PROJECTION_CODE_ANCHOR_KINDS = new Set([
+  "module",
+  "namespace",
+  "class",
+  "interface",
+  "object",
+  "enum",
+  "typeAlias",
+  "function",
+  "method",
+]);
+const PROJECTION_BOUNDARY_EDGE_KINDS = new Set([
+  "registers",
+  "binds",
+  "provides",
+  "injects",
+  "owns",
+  "aliases",
+  "calls",
+  "references",
+  "imports",
+  "extends",
+  "implements",
+  "implementedBy",
+  "instantiates",
+  "renders",
+  "sends",
+  "handles",
+  "createsPromise",
+  "returnsPromise",
+  "awaitsPromise",
+  "resolvesPromise",
+  "rejectsPromise",
+]);
 
 export type GraphProjectionView =
   | "modules"
-  | "call"
+  | "service"
   | "ui"
   | "logic"
   | "review";
 
 export interface GraphProjectionRequest {
+  version: typeof GRAPH_PROJECTION_FORMAT_VERSION;
   view: GraphProjectionView;
-  focusIds?: readonly string[];
-  expandedIds?: readonly string[];
-  extraIds?: readonly string[];
   /** Canonical extraction-root-relative POSIX paths used by the review projection. */
-  filePaths?: readonly string[];
+  filePaths: readonly string[];
+  /** Opaque file/page coordinate resolved only from a capability-bound comparison context. */
+  reviewCursor: string | null;
+  focusIds: readonly string[];
+  expandedIds: readonly string[];
+  extraIds: readonly string[];
+  causalIds: readonly string[];
+  serviceExpandedLeadIds: readonly string[];
   /** Containment levels disclosed below the seed/focus. */
-  depth?: number;
-  /** Incoming/outgoing relationship hops for service/UI/composition views. */
-  radius?: number;
-  includeTests?: boolean;
-  maxNodes?: number;
-  maxEdges?: number;
-  maxResponseBytes?: number;
-}
-
-export interface CanonicalGraphProjectionRequest {
-  view: GraphProjectionView;
-  focusIds: string[];
-  expandedIds: string[];
-  extraIds: string[];
-  filePaths: string[];
   depth: number;
-  radius: number;
   includeTests: boolean;
+  includeReachability: boolean;
   maxNodes: number;
   maxEdges: number;
   maxResponseBytes: number;
+}
+
+export interface CanonicalGraphProjectionRequest {
+  version: typeof GRAPH_PROJECTION_FORMAT_VERSION;
+  view: GraphProjectionView;
+  filePaths: string[];
+  reviewCursor: string | null;
+  focusIds: string[];
+  expandedIds: string[];
+  extraIds: string[];
+  causalIds: string[];
+  serviceExpandedLeadIds: string[];
+  depth: number;
+  includeTests: boolean;
+  includeReachability: boolean;
+  maxNodes: number;
+  maxEdges: number;
+  maxResponseBytes: number;
+}
+
+/** One source of truth for the public manifest and every server-side default activation. */
+export function defaultGraphProjectionRequest(): CanonicalGraphProjectionRequest {
+  return {
+    version: GRAPH_PROJECTION_FORMAT_VERSION,
+    view: "modules",
+    filePaths: [],
+    reviewCursor: null,
+    focusIds: [],
+    expandedIds: [],
+    extraIds: [],
+    causalIds: [],
+    serviceExpandedLeadIds: [],
+    depth: 1,
+    includeTests: false,
+    includeReachability: false,
+    maxNodes: DEFAULT_MAX_NODES,
+    maxEdges: DEFAULT_MAX_EDGES,
+    maxResponseBytes: DEFAULT_MAX_RESPONSE_BYTES,
+  };
 }
 
 interface SliceRef {
@@ -173,10 +283,21 @@ interface GraphHeader {
 export interface GraphProjectionManifest {
   formatVersion: typeof GRAPH_PROJECTION_FORMAT_VERSION;
   contentId: string;
-  graphSummary: InspectionGraphSummary;
+  graphSummary: GraphGenerationSummary;
+  /** Constant-size, whole-repository counts safe to expose in the public transport manifest. */
+  repositorySummary: GraphRepositorySummary;
   header: GraphHeader;
   shardCount: typeof SHARD_COUNT;
   roots: PagedIds;
+  /** Disk-only identity pages. Public manifests expose only repositorySummary. */
+  moduleOverviewRoots: {
+    all: PagedIds;
+    withoutTests: PagedIds;
+  };
+  uiEntryIds: {
+    all: PagedIds;
+    withoutTests: PagedIds;
+  };
   changed: PagedIds;
   symbols: Record<GraphSymbolSearchMode, GraphSymbolCatalogManifest>;
   filePathCount: number;
@@ -186,11 +307,34 @@ export interface GraphProjectionManifest {
     changedMetaBytes: number;
     flowCount: number;
   };
+  facts: {
+    moduleOverviewBytes: number;
+    moduleOverviewWithoutTestsBytes: number;
+    serviceTopology: ServiceTopologySidecarDescriptor;
+    reachabilitySummaryBytes: number;
+  };
 }
 
 interface NodeShardIndex {
   pages: SliceRef[];
   byId: Record<string, number>;
+}
+
+interface StoredHierarchyFact {
+  all: GraphHierarchyFact;
+  /** Null means collectTestIds classified this node out of the test-hidden graph. */
+  withoutTests: GraphHierarchyFact | null;
+  /** Complete-revision paint facts co-paged by identity; never hydrated as a full-graph map. */
+  reachability: {
+    leaf: ReachabilityPaintFacts["leaves"][string] | null;
+    container: ReachabilityPaintFacts["containers"][string] | null;
+  };
+}
+
+type ReachabilitySummarySidecar = Pick<ReachabilityProjectionFacts, "summary" | "worstRows">;
+
+interface HierarchyShardIndex {
+  pages: SliceRef[];
 }
 
 interface AdjacencyIndexEntry {
@@ -249,27 +393,76 @@ export interface GraphProjectionCompleteness {
 }
 
 export interface GraphProjectionResult {
+  version: typeof GRAPH_PROJECTION_FORMAT_VERSION;
+  contentId: string;
   projectionId: string;
   request: CanonicalGraphProjectionRequest;
   artifact: GraphArtifact;
-  childCounts: Record<string, number>;
+  hierarchy: {
+    /** Present only for a repository-overview modules request; always bounded by this response. */
+    moduleOverviewRootIds: string[];
+    /** Exact structural facts for every returned artifact node. */
+    nodes: Record<string, GraphHierarchyFact>;
+  };
+  viewFacts: {
+    moduleOverview: GraphModuleOverview | null;
+    service: SerializedServiceTopologyV1 | null;
+    review: ReviewContextFacts | null;
+  };
+  analysis: {
+    reachability: ReachabilityProjectionFacts | null;
+  };
   completeness: GraphProjectionCompleteness;
   /** Conservative default weight for the browser's inactive-projection LRU. */
   residentBytes: number;
 }
 
+/** Internal context attached to a comparison-specific graph capability. */
+export interface GraphProjectionReviewContext {
+  readonly context: ReviewComparisonContext;
+  /** Digest verified while reading the immutable context sidecar. */
+  readonly contextId: string;
+  readonly side: ReviewComparisonSide;
+}
+
+export interface GraphProjectionQueryOptions {
+  readonly review?: GraphProjectionReviewContext;
+}
+
 export interface GraphProjectionBundleOptions {
   maxCacheBytes?: number;
   maxCacheEntries?: number;
+  /**
+   * Optional process-owned cache shared by multiple immutable projection bundles.
+   * Supplying a cache transfers the memory-budget ownership to that coordinator.
+   */
+  pageCache?: GraphProjectionPageCache;
 }
 
 export interface GraphProjectionCacheStats {
-  bytes: number;
+  /** Conservative decoded-heap liability currently retained by parsed cache entries. */
+  residentBytes: number;
   entries: number;
+  /** Namespace identities retained by the cache; always bounded by entries. */
+  trackedNamespaces: number;
   hits: number;
   misses: number;
   evictions: number;
   oversizeSkips: number;
+}
+
+/** Bounded cache contract for parsed projection indexes and pages. */
+export interface GraphProjectionPageCache {
+  get<Value>(namespace: string, key: string): Value | undefined;
+  set(namespace: string, key: string, value: unknown, residentBytes: number): void;
+  /** A namespace scopes current residency; hit/miss/eviction counters are aggregate-only. */
+  stats(namespace?: string): GraphProjectionCacheStats;
+  deleteNamespace(namespace: string): void;
+}
+
+export interface BoundedGraphProjectionPageCacheOptions {
+  maxBytes: number;
+  maxEntries: number;
 }
 
 /** Write a complete immutable query bundle into an empty/caller-owned directory. */
@@ -278,6 +471,7 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
   mkdirSync(root, { recursive: true, mode: 0o700 });
   for (const category of [
     "nodes",
+    "hierarchy",
     "children",
     "out-edges",
     "in-edges",
@@ -297,6 +491,20 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     target: artifact.target,
     telemetry: artifact.telemetry,
   }));
+
+  // Extraction already owns the complete node array here. Derive both structural universes once,
+  // persist them as immutable shards, then let the long-lived server read only current-view facts.
+  const allStructure = deriveGraphStructure(artifact.nodes, artifact.edges);
+  const testIds = collectTestIds([...artifact.nodes]);
+  const withoutTestNodes = artifact.nodes.filter((node) => !testIds.has(node.id));
+  const withoutTestEdges = artifact.edges.filter(
+    (edge) => !testIds.has(edge.source) && !testIds.has(edge.target),
+  );
+  const withoutTestsStructure = deriveGraphStructure(
+    withoutTestNodes,
+    withoutTestEdges,
+  );
+  const reachability = buildReachabilityProjection(artifact.nodes, artifact.edges);
 
   const nodesByShard = buckets<GraphNode[]>(() => []);
   const childrenByShard = buckets<Map<string, string[]>>(() => new Map());
@@ -326,6 +534,13 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     writeAdjacencyShard(root, "children", shard, childrenByShard[shard]!, ID_PAGE_ENTRIES);
     writeAdjacencyShard(root, "file-nodes", shard, fileNodesByShard[shard]!, ID_PAGE_ENTRIES);
   }
+  writeHierarchyShards(
+    root,
+    artifact.nodes,
+    allStructure.hierarchyById,
+    withoutTestsStructure.hierarchyById,
+    reachability,
+  );
 
   const outByShard = buckets<Map<string, GraphEdge[]>>(() => new Map());
   const inByShard = buckets<Map<string, GraphEdge[]>>(() => new Map());
@@ -356,6 +571,39 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
   const changedPathCount = writeChangedPathShards(root, changedSince.records);
   const changedMetaBytes = writeJson(join(root, "changed-meta.json"), changedSince.meta);
   const rootPages = writeListPages(root, "roots.ndjson", roots);
+  const moduleOverviewRootPages = writeListPages(
+    root,
+    MODULE_OVERVIEW_ROOTS_FILE,
+    [...allStructure.moduleOverviewRootIds],
+  );
+  const moduleOverviewRootPagesWithoutTests = writeListPages(
+    root,
+    MODULE_OVERVIEW_ROOTS_WITHOUT_TESTS_FILE,
+    [...withoutTestsStructure.moduleOverviewRootIds],
+  );
+  const nodeIds = new Set(artifact.nodes.map((node) => node.id));
+  const uiEntryIds = [...new Set(artifact.edges.flatMap((edge) => edge.kind === "renders"
+    ? [edge.source, edge.target].filter((id) => nodeIds.has(id))
+    : []))].sort();
+  const uiEntryIdsWithoutTests = uiEntryIds.filter((id) => !testIds.has(id));
+  const uiEntryPages = writeListPages(root, UI_ENTRY_IDS_FILE, uiEntryIds);
+  const uiEntryPagesWithoutTests = writeListPages(
+    root,
+    UI_ENTRY_IDS_WITHOUT_TESTS_FILE,
+    uiEntryIdsWithoutTests,
+  );
+  const moduleOverviewBytes = writeJson(join(root, MODULE_OVERVIEW_FILE), allStructure.moduleOverview);
+  const moduleOverviewWithoutTestsBytes = writeJson(
+    join(root, MODULE_OVERVIEW_WITHOUT_TESTS_FILE),
+    withoutTestsStructure.moduleOverview,
+  );
+  const serviceTopology = encodeServiceTopologySidecar(artifact);
+  contentHash.update("\0service-topology\0").update(serviceTopology.payload);
+  writeServiceTopologySidecar(root, serviceTopology);
+  const reachabilitySummaryBytes = writeJson(join(root, REACHABILITY_SUMMARY_FILE), {
+    summary: reachability.summary,
+    worstRows: reachability.worstRows,
+  });
   const changedPages = writeListPages(root, "changed.ndjson", changed);
   const symbols = writeSymbolCatalogs(root, artifact.nodes, logicFlows);
 
@@ -370,13 +618,31 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     formatVersion: GRAPH_PROJECTION_FORMAT_VERSION,
     contentId: contentHash.digest("hex"),
     graphSummary: graphSummaryFor(artifact),
+    repositorySummary: allStructure.repositorySummary,
     header,
     shardCount: SHARD_COUNT,
     roots: { count: roots.length, refs: rootPages },
+    moduleOverviewRoots: {
+      all: { count: allStructure.moduleOverviewRootIds.length, refs: moduleOverviewRootPages },
+      withoutTests: {
+        count: withoutTestsStructure.moduleOverviewRootIds.length,
+        refs: moduleOverviewRootPagesWithoutTests,
+      },
+    },
+    uiEntryIds: {
+      all: { count: uiEntryIds.length, refs: uiEntryPages },
+      withoutTests: { count: uiEntryIdsWithoutTests.length, refs: uiEntryPagesWithoutTests },
+    },
     changed: { count: changed.length, refs: changedPages },
     symbols,
     filePathCount: indexedFilePaths.size,
     extensions: { entryModuleCount, changedPathCount, changedMetaBytes, flowCount },
+    facts: {
+      moduleOverviewBytes,
+      moduleOverviewWithoutTestsBytes,
+      serviceTopology: serviceTopology.descriptor,
+      reachabilitySummaryBytes,
+    },
   };
   writeJson(join(root, MANIFEST_FILE), manifest);
   return manifest;
@@ -384,22 +650,29 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
 
 export function readGraphProjectionManifest(bundleRoot: string): GraphProjectionManifest | null {
   try {
-    const path = join(resolve(bundleRoot), MANIFEST_FILE);
+    const root = resolve(bundleRoot);
+    const path = join(root, MANIFEST_FILE);
     if (statSync(path).size > 256 * 1024) return null;
     const raw = readFileSync(path, "utf8");
     const value = JSON.parse(raw) as Partial<GraphProjectionManifest>;
-    if (value.formatVersion !== GRAPH_PROJECTION_FORMAT_VERSION
+    if (!hasExactKeys(value, GRAPH_PROJECTION_MANIFEST_KEYS)
+      || value.formatVersion !== GRAPH_PROJECTION_FORMAT_VERSION
       || typeof value.contentId !== "string"
       || !/^[0-9a-f]{64}$/.test(value.contentId)
       || value.shardCount !== SHARD_COUNT
       || !isSummary(value.graphSummary)
+      || !isRepositorySummary(value.repositorySummary)
       || !isHeader(value.header)
       || !isPagedIds(value.roots)
+      || !isModuleOverviewRoots(value.moduleOverviewRoots)
+      || !isModuleOverviewRoots(value.uiEntryIds)
       || !isPagedIds(value.changed)
       || !isSymbolCatalogs(value.symbols)
       || !isNonNegativeInteger(value.filePathCount)
-      || !isExtensionManifest(value.extensions)) return null;
-    return value as GraphProjectionManifest;
+      || !isExtensionManifest(value.extensions)
+      || !isFactManifest(value.facts)) return null;
+    const manifest = value as GraphProjectionManifest;
+    return requiredFactSidecarsMatchManifest(root, manifest.facts) ? manifest : null;
   } catch {
     return null;
   }
@@ -421,68 +694,269 @@ export function readGraphProjectionChangedSinceMeta(
 export class GraphProjectionBundle {
   readonly manifest: GraphProjectionManifest;
   private readonly root: string;
-  private readonly cache: ResidentLru;
+  private readonly cache: GraphProjectionPageCache;
+  private readonly ownedCache: BoundedGraphProjectionPageCache | null;
 
   constructor(bundleRoot: string, options: GraphProjectionBundleOptions = {}) {
     this.root = resolve(bundleRoot);
     const manifest = readGraphProjectionManifest(this.root);
     if (!manifest) throw new Error("graph projection manifest is unavailable or invalid");
     this.manifest = manifest;
-    this.cache = new ResidentLru(
-      positiveOrZero(options.maxCacheBytes, DEFAULT_CACHE_BYTES, "maxCacheBytes"),
-      positiveOrZero(options.maxCacheEntries, DEFAULT_CACHE_ENTRIES, "maxCacheEntries"),
-    );
+    if (options.pageCache !== undefined
+      && (options.maxCacheBytes !== undefined || options.maxCacheEntries !== undefined)) {
+      throw new TypeError("pageCache cannot be combined with per-bundle cache limits");
+    }
+    if (options.pageCache !== undefined) {
+      this.ownedCache = null;
+      this.cache = options.pageCache;
+    } else {
+      this.ownedCache = new BoundedGraphProjectionPageCache({
+        maxBytes: positiveOrZero(options.maxCacheBytes, DEFAULT_CACHE_BYTES, "maxCacheBytes"),
+        maxEntries: positiveOrZero(options.maxCacheEntries, DEFAULT_CACHE_ENTRIES, "maxCacheEntries"),
+      });
+      this.cache = this.ownedCache;
+    }
   }
 
   cacheStats(): GraphProjectionCacheStats {
-    return this.cache.stats();
+    return this.ownedCache?.stats() ?? this.cache.stats(this.root);
   }
 
   clearMemoryCache(): void {
-    this.cache.clear();
+    if (this.ownedCache) this.ownedCache.clear();
+    else this.cache.deleteNamespace(this.root);
   }
 
-  query(input: GraphProjectionRequest): GraphProjectionResult {
+  /** Public identity for this physical bundle under an optional logical review capability. */
+  contentIdFor(options: GraphProjectionQueryOptions = {}): string {
+    const review = options.review;
+    return review === undefined
+      ? this.manifest.contentId
+      : effectiveReviewProjectionContentId(
+          this.manifest.contentId,
+          review.contextId,
+          review.side,
+        );
+  }
+
+  async query(
+    input: GraphProjectionRequest,
+    signal?: AbortSignal,
+    options: GraphProjectionQueryOptions = {},
+  ): Promise<GraphProjectionResult> {
     const request = canonicalizeGraphProjectionRequest(input);
+    const review = resolveReviewQuery(request, options.review);
+    const contentId = this.contentIdFor(options);
+    const reviewPaths = review?.graphPath === null || review?.graphPath === undefined
+      ? []
+      : [review.graphPath];
+    const routingPaths = review === null ? request.filePaths : reviewPaths;
+    const cancellation = new ProjectionQueryCancellation(signal);
+    let pendingYield = cancellation.checkpoint(true);
+    if (pendingYield !== null) await pendingYield;
     const projectionId = createHash("sha256")
-      .update(`projection-v3\0${this.manifest.contentId}\0${JSON.stringify(request)}`)
+      .update(graphProjectionIdentityPreimage(contentId, request))
       .digest("hex");
     const reasons = new Set<string>();
     let omittedNodes = 0;
     let omittedEdges = 0;
-    let retainedBytes = projectionEnvelopeReserveBytes(projectionId, request, this.manifest.header);
+    let retainedBytes = projectionEnvelopeReserveBytes(
+      contentId,
+      projectionId,
+      request,
+      this.manifest.header,
+      review?.facts ?? null,
+    );
     if (retainedBytes > request.maxResponseBytes) {
       throw new GraphProjectionRequestError(413, "graph projection response budget cannot hold its request envelope");
     }
+    const needsModuleOverview = request.focusIds.length === 0
+      && (request.view === "modules" || request.view === "ui");
+    const requiredFacts = [
+      needsModuleOverview
+        ? {
+            label: "module overview",
+            bytes: request.includeTests
+              ? this.manifest.facts.moduleOverviewBytes
+              : this.manifest.facts.moduleOverviewWithoutTestsBytes,
+          }
+        : null,
+      request.view === "service"
+        ? { label: "service topology", bytes: this.manifest.facts.serviceTopology.bytes }
+        : null,
+      request.includeReachability
+        ? { label: "reachability summary", bytes: this.manifest.facts.reachabilitySummaryBytes }
+        : null,
+    ].filter((fact): fact is { label: string; bytes: number } => fact !== null);
+    let requiredFactBytes = retainedBytes;
+    for (const fact of requiredFacts) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      requiredFactBytes += fact.bytes + 32;
+      if (requiredFactBytes > request.maxResponseBytes) {
+        throw new GraphProjectionRequestError(
+          413,
+          `graph projection response budget cannot hold its ${fact.label}`,
+        );
+      }
+    }
+    const moduleOverview = needsModuleOverview
+      ? this.moduleOverview(request.includeTests)
+      : null;
+    const service = request.view === "service" ? this.serviceTopology() : null;
+    const reachabilitySummary = request.includeReachability ? this.reachabilitySummary() : null;
+    // These values are parsed from canonical JSON sidecars whose exact encoded sizes are in the
+    // manifest. Reuse those sizes rather than serializing a potentially large service topology a
+    // second time merely for admission accounting; the final complete-response guard remains the
+    // authoritative safety check.
+    retainedBytes = requiredFactBytes;
     const nodes = new Map<string, GraphNode>();
+    const hierarchyNodes = Object.create(null) as Record<string, GraphHierarchyFact>;
+    const reachabilityLeaves: Record<string, ReachabilityPaintFacts["leaves"][string]> = {};
+    const reachabilityContainers: Record<string, ReachabilityPaintFacts["containers"][string]> = {};
 
     const addNode = (id: string): boolean => {
+      cancellation.throwIfAborted();
       if (nodes.has(id)) return true;
       const node = this.node(id);
-      if (!node) return false;
-      if (!request.includeTests && isTestNode(node)) return false;
+      if (!node) {
+        omittedNodes += 1;
+        reasons.add("projection-data-unavailable");
+        return false;
+      }
+      const storedFact = this.hierarchyFact(id);
+      if (!storedFact) {
+        omittedNodes += 1;
+        reasons.add("projection-data-unavailable");
+        return false;
+      }
+      const hierarchyFact = request.includeTests ? storedFact.all : storedFact.withoutTests;
+      if (hierarchyFact === null) return false;
       const parentId = node.parentId ?? null;
       if (parentId !== null && !nodes.has(parentId) && !addNode(parentId)) return false;
-      // Charge both the node and a conservative childCounts entry. Most nodes have no disclosed
-      // children, so this intentionally over-reserves rather than allowing envelope overhead to
-      // push the serialized response past maxResponseBytes.
-      const bytes = jsonBytes(node) + jsonBytes(id) + 32;
+      // Every returned node carries one exact structural fact. Charge both together before either
+      // is published so a byte-limited response remains a closed, strictly decodable projection.
+      const reachabilityFact = request.includeReachability ? storedFact.reachability : null;
+      const reachabilityBytes = reachabilityFact === null
+        ? 0
+        : jsonBytes(id) * 2
+          + (reachabilityFact.leaf === null ? 0 : jsonBytes(reachabilityFact.leaf))
+          + (reachabilityFact.container === null ? 0 : jsonBytes(reachabilityFact.container))
+          + 16;
+      const bytes = jsonBytes(node) + jsonBytes(id) + jsonBytes(hierarchyFact) + reachabilityBytes + 48;
       if (nodes.size >= request.maxNodes || retainedBytes + bytes > request.maxResponseBytes) {
         omittedNodes += 1;
         reasons.add(nodes.size >= request.maxNodes ? "node-limit" : "byte-limit");
         return false;
       }
       nodes.set(id, node);
+      hierarchyNodes[id] = hierarchyFact;
+      if (reachabilityFact?.leaf !== null && reachabilityFact?.leaf !== undefined) {
+        reachabilityLeaves[id] = reachabilityFact.leaf;
+      }
+      if (reachabilityFact?.container !== null && reachabilityFact?.container !== undefined) {
+        reachabilityContainers[id] = reachabilityFact.container;
+      }
       retainedBytes += bytes;
       return true;
     };
 
-    const seeds = new Set<string>([...request.focusIds, ...request.extraIds]);
+    const seeds = new Set<string>([
+      ...request.focusIds,
+      ...request.extraIds,
+      ...request.causalIds,
+    ]);
+    const boundarySeedCandidates = new Set<string>(seeds);
+    if (service !== null) {
+      const expandedLeads = new Set(request.serviceExpandedLeadIds);
+      for (const cluster of service.clusters) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        seeds.add(cluster.leadId);
+        if (expandedLeads.has(cluster.leadId)) {
+          for (const memberId of cluster.memberIds) {
+            pendingYield = cancellation.checkpoint();
+            if (pendingYield !== null) await pendingYield;
+            seeds.add(memberId);
+          }
+          expandedLeads.delete(cluster.leadId);
+        }
+      }
+      // A stale topology selector is an explicit data miss, not permission to broaden the view.
+      for (const staleLeadId of expandedLeads) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        seeds.add(staleLeadId);
+      }
+    }
+    const uiEntries = request.view === "ui" && request.focusIds.length === 0
+      ? (request.includeTests ? this.manifest.uiEntryIds.all : this.manifest.uiEntryIds.withoutTests)
+      : null;
+    const moduleOverviewRequested = request.focusIds.length === 0
+      && (request.view === "modules" || (request.view === "ui" && uiEntries?.count === 0));
+    const moduleOverviewRootCandidates: string[] = [];
+    if (moduleOverviewRequested) {
+      const list = request.includeTests
+        ? this.manifest.moduleOverviewRoots.all
+        : this.manifest.moduleOverviewRoots.withoutTests;
+      const path = request.includeTests
+        ? MODULE_OVERVIEW_ROOTS_FILE
+        : MODULE_OVERVIEW_ROOTS_WITHOUT_TESTS_FILE;
+      let visited = 0;
+      let stoppedAtLimit = false;
+      for (const id of this.readIdPages(path, list.refs)) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        visited += 1;
+        const identityBytes = jsonBytes(id) + 1;
+        if (seeds.size >= request.maxNodes || retainedBytes + identityBytes > request.maxResponseBytes) {
+          omittedNodes += Math.max(1, list.count - visited + 1);
+          reasons.add(seeds.size >= request.maxNodes ? "node-limit" : "byte-limit");
+          stoppedAtLimit = true;
+          break;
+        }
+        retainedBytes += identityBytes;
+        moduleOverviewRootCandidates.push(id);
+        seeds.add(id);
+        boundarySeedCandidates.add(id);
+      }
+      if (!stoppedAtLimit && visited !== list.count) {
+        throw new GraphProjectionDataError(`${path} does not match its manifest count`);
+      }
+    }
+    if (uiEntries !== null && uiEntries.count > 0) {
+      const path = request.includeTests ? UI_ENTRY_IDS_FILE : UI_ENTRY_IDS_WITHOUT_TESTS_FILE;
+      let visited = 0;
+      let stoppedAtLimit = false;
+      for (const id of this.readIdPages(path, uiEntries.refs)) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        visited += 1;
+        const identityBytes = jsonBytes(id) + 1;
+        if (seeds.size >= request.maxNodes || retainedBytes + identityBytes > request.maxResponseBytes) {
+          omittedNodes += Math.max(1, uiEntries.count - visited + 1);
+          reasons.add(seeds.size >= request.maxNodes ? "node-limit" : "byte-limit");
+          stoppedAtLimit = true;
+          break;
+        }
+        retainedBytes += identityBytes;
+        seeds.add(id);
+      }
+      if (!stoppedAtLimit && visited !== uiEntries.count) {
+        throw new GraphProjectionDataError(`${path} does not match its manifest count`);
+      }
+    }
     if (request.view === "review") {
-      for (const filePath of request.filePaths) {
+      for (const filePath of routingPaths) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
         const entry = this.adjacencyEntry("file-nodes", filePath);
         if (!entry) continue;
+        let visited = 0;
         for (const id of this.readAdjacencyPages<string>("file-nodes", filePath, entry.refs)) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
+          visited += 1;
           if (seeds.has(id)) continue;
           if (seeds.size >= request.maxNodes) {
             omittedNodes += 1;
@@ -490,71 +964,156 @@ export class GraphProjectionBundle {
             continue;
           }
           seeds.add(id);
+          boundarySeedCandidates.add(id);
+        }
+        if (visited !== entry.count) {
+          throw new GraphProjectionDataError(`file-nodes for ${filePath} does not match its index count`);
         }
       }
     }
     // An explicit path query that has no nodes is still a complete empty projection (for example,
     // a deleted path on HEAD). Never broaden it to every changed node as an implicit fallback.
-    if (seeds.size === 0 && request.filePaths.length === 0) {
+    if (!moduleOverviewRequested
+      && seeds.size === 0
+      && routingPaths.length === 0
+      && review === null
+      && request.view !== "service"
+      && request.view !== "ui") {
       const list = request.view === "review" ? this.manifest.changed : this.manifest.roots;
+      let visited = 0;
+      let stoppedAtLimit = false;
       for (const id of this.readIdPages(request.view === "review" ? "changed.ndjson" : "roots.ndjson", list.refs)) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        visited += 1;
         seeds.add(id);
+        boundarySeedCandidates.add(id);
         if (seeds.size >= request.maxNodes) {
           omittedNodes += Math.max(0, list.count - seeds.size);
           if (list.count > seeds.size) reasons.add("node-limit");
+          stoppedAtLimit = true;
           break;
         }
       }
+      if (!stoppedAtLimit && visited !== list.count) {
+        throw new GraphProjectionDataError("projection root list does not match its manifest count");
+      }
     }
-    for (const id of seeds) addNode(id);
+    for (const id of seeds) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      addNode(id);
+    }
+    const boundaryAnchorIds = new Set<string>();
+    const markBoundaryAnchor = (id: string): void => {
+      if (PROJECTION_CODE_ANCHOR_KINDS.has(nodes.get(id)?.kind ?? "")) boundaryAnchorIds.add(id);
+    };
+    for (const id of boundarySeedCandidates) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      markBoundaryAnchor(id);
+    }
+    const focusAncestorIds = new Set<string>();
+    for (const focusId of request.focusIds) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      const seen = new Set<string>([focusId]);
+      let parentId = nodes.get(focusId)?.parentId ?? null;
+      while (parentId !== null && !seen.has(parentId)) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        seen.add(parentId);
+        focusAncestorIds.add(parentId);
+        parentId = nodes.get(parentId)?.parentId ?? null;
+      }
+    }
 
-    const disclose = (parents: Iterable<string>, depth: number) => {
+    const disclose = async (
+      parents: Iterable<string>,
+      depth: number,
+      collectBoundaryAnchors = false,
+    ): Promise<void> => {
       let frontier = [...parents];
       for (let level = 0; level < depth && frontier.length > 0; level += 1) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
         const next: string[] = [];
         for (const parentId of frontier) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
           const entry = this.adjacencyEntry("children", parentId);
           if (!entry) continue;
           let visited = 0;
+          let stoppedAtLimit = false;
           for (const child of this.readAdjacencyPages<string>("children", parentId, entry.refs)) {
+            pendingYield = cancellation.checkpoint();
+            if (pendingYield !== null) await pendingYield;
             visited += 1;
-            if (addNode(child)) next.push(child);
-            if (nodes.size >= request.maxNodes) break;
+            if (addNode(child)) {
+              next.push(child);
+              if (collectBoundaryAnchors) markBoundaryAnchor(child);
+            }
+            if (nodes.size >= request.maxNodes) {
+              stoppedAtLimit = true;
+              break;
+            }
           }
           if (visited < entry.count) {
             omittedNodes += entry.count - visited;
-            reasons.add("node-limit");
+            if (stoppedAtLimit) reasons.add("node-limit");
+            else throw new GraphProjectionDataError(`children for ${parentId} does not match its index count`);
+          } else if (visited > entry.count) {
+            throw new GraphProjectionDataError(`children for ${parentId} exceeds its index count`);
           }
           if (nodes.size >= request.maxNodes) break;
         }
         frontier = next;
       }
     };
-    disclose(seeds, request.depth);
-    disclose(request.expandedIds, 1);
+    // Every breadcrumb ancestor discloses its direct-child cohort. This keeps sibling navigation
+    // available without a whole-subtree preload; the focused node's own depth remains explicit.
+    await disclose(focusAncestorIds, 1);
+    const implicitTopologyRoot = request.focusIds.length === 0
+      && (request.view === "service" || request.view === "ui");
+    await disclose(seeds, request.depth, !implicitTopologyRoot && request.view !== "service");
+    for (const id of request.expandedIds) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      markBoundaryAnchor(id);
+    }
+    await disclose(request.expandedIds, 1, true);
 
-    if (request.view === "call" || request.view === "ui") {
-      let frontier = [...nodes.keys()];
-      const visited = new Set(frontier);
-      for (let hop = 0; hop < request.radius && frontier.length > 0; hop += 1) {
-        const next: string[] = [];
-        for (const id of frontier) {
-          for (const category of ["out-edges", "in-edges"] as const) {
-            for (const edge of this.adjacency<GraphEdge>(category, id)) {
-              const peer = edge.source === id ? edge.target : edge.source;
-              if (visited.has(peer)) continue;
-              visited.add(peer);
-              if (addNode(peer)) next.push(peer);
-            }
-          }
+    const boundaryEdgeIds = new Set<string>();
+    // One typed boundary hop from the fixed original anchor set. Partners never become new
+    // traversal anchors, so this cannot turn into a hidden multi-hop walk through the repository.
+    for (const id of [...boundaryAnchorIds]) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      for (const category of ["out-edges", "in-edges"] as const) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        for (const edge of this.adjacency<GraphEdge>(category, id)) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
+          if (!PROJECTION_BOUNDARY_EDGE_KINDS.has(edge.kind)) continue;
+          boundaryEdgeIds.add(edge.id);
+          const peer = edge.source === id ? edge.target : edge.source;
+          if (nodes.has(peer)) continue;
+          const unresolvedTarget = peer === edge.target && (edge.resolution === "external" || edge.resolution === "unresolved");
+          if (!unresolvedTarget || this.node(peer) !== null) addNode(peer);
         }
-        frontier = next;
       }
     }
 
     const flows: LogicFlows = {};
+    const flowIds = new Set<string>([...request.expandedIds, ...request.causalIds]);
     if (request.view === "logic") {
-      for (const id of request.focusIds.length > 0 ? request.focusIds : [...seeds]) {
+      for (const id of request.focusIds.length > 0 ? request.focusIds : [...seeds]) flowIds.add(id);
+    }
+    if (flowIds.size > 0) {
+      for (const id of flowIds) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
         const flow = this.flow(id);
         if (!flow) continue;
         const flowBytes = jsonBytes(flow) + jsonBytes(id) + 48;
@@ -564,15 +1123,26 @@ export class GraphProjectionBundle {
         }
         flows[id] = flow;
         retainedBytes += flowBytes;
-        for (const target of flowTargets(flow)) addNode(target);
+        for (const target of flowTargets(flow)) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
+          addNode(target);
+        }
       }
     }
 
     const edges: GraphEdge[] = [];
     const edgeIds = new Set<string>();
     for (const source of nodes.keys()) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
       for (const edge of this.adjacency<GraphEdge>("out-edges", source)) {
-        if (!nodes.has(edge.target) || edgeIds.has(edge.id)) continue;
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        const representedTarget = nodes.has(edge.target)
+          || (boundaryEdgeIds.has(edge.id)
+            && (edge.resolution === "external" || edge.resolution === "unresolved"));
+        if (!representedTarget || edgeIds.has(edge.id)) continue;
         const bytes = jsonBytes(edge) + 1;
         if (edges.length >= request.maxEdges || retainedBytes + bytes > request.maxResponseBytes) {
           omittedEdges += 1;
@@ -585,11 +1155,6 @@ export class GraphProjectionBundle {
       }
     }
 
-    const childCounts: Record<string, number> = {};
-    for (const id of nodes.keys()) {
-      const count = this.adjacencyEntry("children", id)?.count ?? 0;
-      if (count > 0) childCounts[id] = count;
-    }
     let extensions: Record<string, JsonValue> | undefined;
     const entryModules = this.selectedEntryModules(nodes.keys());
     if (entryModules.length > 0) {
@@ -619,13 +1184,19 @@ export class GraphProjectionBundle {
         reasons.add("extension-byte-limit");
       }
 
-      const relevantPaths = new Set(request.filePaths);
-      for (const node of nodes.values()) {
-        const filePath = storedFilePath(node.location?.file);
-        if (filePath !== null) relevantPaths.add(filePath);
+      const relevantPaths = new Set(routingPaths);
+      if (relevantPaths.size === 0) {
+        for (const node of nodes.values()) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
+          const filePath = storedFilePath(node.location?.file);
+          if (filePath !== null) relevantPaths.add(filePath);
+        }
       }
       const manifestPaths = new Set<string>();
       for (const filePath of [...relevantPaths].sort()) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
         const pathOverhead = (jsonBytes(filePath) * 4) + 256;
         const remaining = request.maxResponseBytes - retainedBytes - estimatedBytes - pathOverhead;
         const lookup = this.changedPath(filePath, remaining);
@@ -645,6 +1216,8 @@ export class GraphProjectionBundle {
         if (record.kinds !== undefined) (projected.kinds ??= {})[filePath] = record.kinds;
         if (record.diffLines !== undefined) (projected.diffLines ??= {})[filePath] = record.diffLines;
         for (const entry of record.manifests ?? []) {
+          pendingYield = cancellation.checkpoint();
+          if (pendingYield !== null) await pendingYield;
           if (manifestPaths.has(entry.path)) continue;
           manifestPaths.add(entry.path);
           (projected.manifest ??= []).push(entry);
@@ -676,19 +1249,64 @@ export class GraphProjectionBundle {
       omittedNodes,
       omittedEdges,
     };
-    const baseResult = { projectionId, request, artifact, childCounts, completeness };
-    const residentBytes = Math.min(Number.MAX_SAFE_INTEGER, jsonBytes(baseResult) * 3);
-    const result: GraphProjectionResult = {
+    const hierarchy = {
+      moduleOverviewRootIds: moduleOverviewRootCandidates.filter((id) => nodes.has(id)),
+      nodes: hierarchyNodes,
+    };
+    const reviewFacts = review === null
+      ? null
+      : review.facts.selection === null
+        ? review.facts
+        : {
+            ...review.facts,
+            selection: {
+              ...review.facts.selection,
+              graphMatched: review.graphPath !== null
+                && [...nodes.values()].some((node) => storedFilePath(node.location?.file) === review.graphPath),
+            },
+          };
+    const viewFacts = { moduleOverview, service, review: reviewFacts };
+    const analysis = {
+      reachability: reachabilitySummary === null
+        ? null
+        : {
+            ...reachabilitySummary,
+            leaves: reachabilityLeaves,
+            containers: reachabilityContainers,
+          },
+    };
+    pendingYield = cancellation.checkpoint(true);
+    if (pendingYield !== null) await pendingYield;
+    const baseResult = {
+      version: GRAPH_PROJECTION_FORMAT_VERSION,
+      contentId,
       projectionId,
       request,
       artifact,
-      childCounts,
+      hierarchy,
+      viewFacts,
+      analysis,
+      completeness,
+    };
+    const baseResultBytes = jsonBytes(baseResult);
+    const residentBytes = Math.min(Number.MAX_SAFE_INTEGER, baseResultBytes * 3);
+    const result: GraphProjectionResult = {
+      version: GRAPH_PROJECTION_FORMAT_VERSION,
+      contentId,
+      projectionId,
+      request,
+      artifact,
+      hierarchy,
+      viewFacts,
+      analysis,
       completeness,
       residentBytes,
     };
-    if (jsonBytes(result) > request.maxResponseBytes) {
+    const resultBytes = baseResultBytes + Buffer.byteLength(`,"residentBytes":${residentBytes}`, "utf8");
+    if (resultBytes > request.maxResponseBytes) {
       throw new Error("graph projection response exceeded its reserved byte budget");
     }
+    cancellation.throwIfAborted();
     return result;
   }
 
@@ -698,8 +1316,10 @@ export class GraphProjectionBundle {
   async search(
     input: GraphSymbolSearchRequest,
     signal?: AbortSignal,
+    options: GraphProjectionQueryOptions = {},
   ): Promise<GraphSymbolSearchResult> {
     const request = canonicalizeGraphSymbolSearchRequest(input);
+    const contentId = this.contentIdFor(options);
     const catalog = this.manifest.symbols[request.mode];
     const needle = request.query.toLowerCase();
     const results: GraphSymbolEntry[] = [];
@@ -730,7 +1350,7 @@ export class GraphProjectionBundle {
         if (results.length === MAX_SYMBOL_SEARCH_RESULTS) {
           return {
             version: GRAPH_SYMBOL_SEARCH_VERSION,
-            contentId: this.manifest.contentId,
+            contentId,
             mode: request.mode,
             scope: request.scope,
             scopeCounts: catalog.scopeCounts,
@@ -742,7 +1362,7 @@ export class GraphProjectionBundle {
     signal?.throwIfAborted();
     return {
       version: GRAPH_SYMBOL_SEARCH_VERSION,
-      contentId: this.manifest.contentId,
+      contentId,
       mode: request.mode,
       scope: request.scope,
       scopeCounts: catalog.scopeCounts,
@@ -756,7 +1376,86 @@ export class GraphProjectionBundle {
     const page = index?.byId[id];
     const ref = page === undefined ? undefined : index?.pages[page];
     if (!ref) return null;
-    return this.readPage<GraphNode[]>(join("nodes", `${shard}.ndjson`), ref)?.find((node) => node.id === id) ?? null;
+    const nodes = this.readPage<unknown>(join("nodes", `${shard}.ndjson`), ref);
+    if (!Array.isArray(nodes)) {
+      throw new GraphProjectionDataError(`node page for ${id} is malformed`);
+    }
+    return (nodes as GraphNode[]).find((node) => node?.id === id) ?? null;
+  }
+
+  private hierarchyFact(id: string): StoredHierarchyFact | null {
+    const shard = shardName(id);
+    const nodeIndex = this.readJson<NodeShardIndex>(join("nodes", `${shard}.index.json`));
+    const hierarchyIndex = this.readJson<HierarchyShardIndex>(join("hierarchy", `${shard}.index.json`));
+    const page = nodeIndex?.byId[id];
+    const ref = page === undefined ? undefined : hierarchyIndex?.pages[page];
+    if (!ref) return null;
+    const entries = this.readPage<unknown>(join("hierarchy", `${shard}.ndjson`), ref);
+    if (!Array.isArray(entries)
+      || entries.some((entry) => !Array.isArray(entry) || entry.length !== 2 || typeof entry[0] !== "string")) {
+      throw new GraphProjectionDataError(`hierarchy page for ${id} is malformed`);
+    }
+    const fact = (entries as Array<[string, unknown]>).find(([candidate]) => candidate === id)?.[1];
+    if (fact === undefined) return null;
+    if (!isStoredHierarchyFact(fact)) {
+      throw new GraphProjectionDataError(`hierarchy fact for ${id} is malformed`);
+    }
+    return fact;
+  }
+
+  private moduleOverview(includeTests: boolean): GraphModuleOverview {
+    const path = includeTests ? MODULE_OVERVIEW_FILE : MODULE_OVERVIEW_WITHOUT_TESTS_FILE;
+    const expectedBytes = includeTests
+      ? this.manifest.facts.moduleOverviewBytes
+      : this.manifest.facts.moduleOverviewWithoutTestsBytes;
+    return this.readRequiredFact(path, expectedBytes, parseGraphModuleOverview);
+  }
+
+  private serviceTopology(): SerializedServiceTopologyV1 {
+    const key = "fact:service-topology";
+    const cached = this.cache.get<SerializedServiceTopologyV1>(this.root, key);
+    if (cached !== undefined) return cached;
+    try {
+      const topology = readServiceTopologySidecar(this.root, this.manifest.facts.serviceTopology);
+      const bytes = this.manifest.facts.serviceTopology.bytes;
+      this.cache.set(this.root, key, topology, parsedCacheResidentBytes(bytes));
+      return topology;
+    } catch (error) {
+      throw new GraphProjectionDataError("service topology sidecar is invalid", { cause: error });
+    }
+  }
+
+  private reachabilitySummary(): ReachabilitySummarySidecar {
+    const raw = this.readRequiredFact(
+      REACHABILITY_SUMMARY_FILE,
+      this.manifest.facts.reachabilitySummaryBytes,
+      (value) => value,
+    );
+    const parsed = parseReachabilityProjectionFacts({
+      ...(raw as Record<string, unknown>),
+      leaves: {},
+      containers: {},
+    });
+    return { summary: parsed.summary, worstRows: parsed.worstRows };
+  }
+
+  private readRequiredFact<Value>(
+    path: string,
+    expectedBytes: number,
+    parse: (value: unknown) => Value,
+  ): Value {
+    const absolute = join(this.root, path);
+    try {
+      if (statSync(absolute).size !== expectedBytes) {
+        throw new GraphProjectionDataError(`${path} does not match its manifest byte size`);
+      }
+      const raw = this.readJson<unknown>(path);
+      if (raw === null) throw new GraphProjectionDataError(`${path} is unavailable`);
+      return parse(raw);
+    } catch (error) {
+      if (error instanceof GraphProjectionDataError) throw error;
+      throw new GraphProjectionDataError(`${path} is invalid`, { cause: error });
+    }
   }
 
   private flow(id: string): LogicFlows[string] | null {
@@ -764,7 +1463,11 @@ export class GraphProjectionBundle {
     const index = this.readJson<FlowShardIndex>(join("flows", `${shard}.index.json`));
     const ref = index?.[id];
     if (!ref) return null;
-    return this.readPage<LogicFlows[string]>(join("flows", `${shard}.ndjson`), ref) ?? null;
+    const flow = this.readPage<unknown>(join("flows", `${shard}.ndjson`), ref);
+    if (!Array.isArray(flow)) {
+      throw new GraphProjectionDataError(`logic flow for ${id} is malformed`);
+    }
+    return flow as LogicFlows[string];
   }
 
   private selectedEntryModules(ids: Iterable<string>): string[] {
@@ -811,7 +1514,14 @@ export class GraphProjectionBundle {
   private *adjacency<Value>(category: "out-edges" | "in-edges", id: string): Generator<Value> {
     const entry = this.adjacencyEntry(category, id);
     if (!entry) return;
-    yield* this.readAdjacencyPages<Value>(category, id, entry.refs);
+    let visited = 0;
+    for (const value of this.readAdjacencyPages<Value>(category, id, entry.refs)) {
+      visited += 1;
+      yield value;
+    }
+    if (visited !== entry.count) {
+      throw new GraphProjectionDataError(`${category} for ${id} does not match its index count`);
+    }
   }
 
   private *readAdjacencyPages<Value>(
@@ -821,54 +1531,99 @@ export class GraphProjectionBundle {
   ): Generator<Value> {
     const path = join(category, `${shardName(id)}.ndjson`);
     for (const ref of refs) {
-      for (const value of this.readPage<Value[]>(path, ref) ?? []) yield value;
+      const page = this.readPage<unknown>(path, ref);
+      if (!Array.isArray(page)) {
+        throw new GraphProjectionDataError(`${path} contains a malformed adjacency page`);
+      }
+      for (const value of page) yield value as Value;
     }
   }
 
   private *readIdPages(path: string, refs: readonly SliceRef[]): Generator<string> {
     for (const ref of refs) {
-      for (const id of this.readPage<string[]>(path, ref) ?? []) yield id;
+      const page = this.readPage<unknown>(path, ref);
+      if (!Array.isArray(page) || page.some((id) => typeof id !== "string")) {
+        throw new GraphProjectionDataError(`${path} contains a malformed id page`);
+      }
+      yield* page as string[];
     }
   }
 
   private readJson<Value>(path: string): Value | null {
     const key = `json:${path}`;
-    const cached = this.cache.get<Value>(key);
+    const cached = this.cache.get<Value>(this.root, key);
     if (cached !== undefined) return cached;
     const absolute = join(this.root, path);
     if (!existsSync(absolute)) return null;
     try {
       const size = statSync(absolute).size;
-      if (size > DEFAULT_MAX_RESPONSE_BYTES) return null;
+      if (size > DEFAULT_MAX_RESPONSE_BYTES) {
+        throw new GraphProjectionDataError(`${path} exceeds the projection index limit`);
+      }
       const raw = readFileSync(absolute);
       const value = JSON.parse(raw.toString("utf8")) as Value;
-      this.cache.set(key, value, Math.max(raw.byteLength * 2, raw.byteLength + 1_024));
+      if (value === null) throw new GraphProjectionDataError(`${path} contains null instead of an index`);
+      this.cache.set(this.root, key, value, parsedCacheResidentBytes(raw.byteLength));
       return value;
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof GraphProjectionDataError) throw error;
+      throw new GraphProjectionDataError(`${path} is unavailable or invalid`, { cause: error });
     }
   }
 
-  private readPage<Value>(path: string, ref: SliceRef): Value | null {
+  private readPage<Value>(path: string, ref: SliceRef): Value {
     const key = `page:${path}:${ref.offset}:${ref.length}`;
-    const cached = this.cache.get<Value>(key);
+    const cached = this.cache.get<Value>(this.root, key);
     if (cached !== undefined) return cached;
-    if (!safeRef(ref)) return null;
+    if (!safeRef(ref)) throw new GraphProjectionDataError(`${path} contains an invalid page reference`);
     const absolute = join(this.root, path);
     let descriptor: number | undefined;
     try {
       descriptor = openSync(absolute, "r");
       const buffer = Buffer.allocUnsafe(ref.length);
       const read = readSync(descriptor, buffer, 0, ref.length, ref.offset);
-      if (read !== ref.length) return null;
+      if (read !== ref.length) {
+        throw new GraphProjectionDataError(`${path} ended before its referenced page`);
+      }
       const value = JSON.parse(buffer.toString("utf8")) as Value;
-      this.cache.set(key, value, Math.max(buffer.byteLength * 2, buffer.byteLength + 1_024));
+      this.cache.set(this.root, key, value, parsedCacheResidentBytes(buffer.byteLength));
       return value;
-    } catch {
-      return null;
+    } catch (error) {
+      if (error instanceof GraphProjectionDataError) throw error;
+      throw new GraphProjectionDataError(`${path} contains an unavailable or invalid page`, { cause: error });
     } finally {
       if (descriptor !== undefined) closeSync(descriptor);
     }
+  }
+}
+
+class GraphProjectionDataError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(`graph projection bundle data is unavailable: ${message}`, options);
+    this.name = "GraphProjectionDataError";
+  }
+}
+
+/**
+ * Cheap synchronous abort checks with an occasional event-loop yield for HTTP disconnects.
+ * No signal means no yield or promise allocation, preserving extraction/test throughput.
+ */
+class ProjectionQueryCancellation {
+  private operations = 0;
+
+  constructor(private readonly signal: AbortSignal | undefined) {}
+
+  throwIfAborted(): void {
+    this.signal?.throwIfAborted();
+  }
+
+  checkpoint(force = false): Promise<void> | null {
+    this.throwIfAborted();
+    if (this.signal === undefined) return null;
+    this.operations += 1;
+    if (!force && this.operations % PROJECTION_QUERY_YIELD_INTERVAL !== 0) return null;
+    return new Promise<void>((resolveYield) => setImmediate(resolveYield))
+      .then(() => this.throwIfAborted());
   }
 }
 
@@ -876,38 +1631,100 @@ export function canonicalizeGraphProjectionRequest(input: GraphProjectionRequest
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new GraphProjectionRequestError(400, "graph projection request must be an object");
   }
-  const unknownKey = Object.keys(input).find((key) => !GRAPH_PROJECTION_REQUEST_KEYS.has(key));
-  if (unknownKey !== undefined) {
-    throw new GraphProjectionRequestError(400, `unknown graph projection request field: ${unknownKey}`);
+  const actualKeys = Object.keys(input).sort();
+  const expectedKeys = [...GRAPH_PROJECTION_REQUEST_KEYS].sort();
+  if (JSON.stringify(actualKeys) !== JSON.stringify(expectedKeys)) {
+    throw new GraphProjectionRequestError(400, `graph projection request fields do not match the v${GRAPH_PROJECTION_FORMAT_VERSION} contract`);
   }
-  const views: readonly GraphProjectionView[] = ["modules", "call", "ui", "logic", "review"];
+  if (input.version !== GRAPH_PROJECTION_FORMAT_VERSION) {
+    throw new GraphProjectionRequestError(400, `graph projection request version must be ${GRAPH_PROJECTION_FORMAT_VERSION}`);
+  }
+  const views: readonly GraphProjectionView[] = ["modules", "service", "ui", "logic", "review"];
   if (!views.includes(input.view)) throw new GraphProjectionRequestError(400, "unknown graph projection view");
-  if (input.includeTests !== undefined && typeof input.includeTests !== "boolean") {
+  if (typeof input.includeTests !== "boolean") {
     throw new GraphProjectionRequestError(400, "includeTests must be a boolean");
   }
+  if (typeof input.includeReachability !== "boolean") {
+    throw new GraphProjectionRequestError(400, "includeReachability must be a boolean");
+  }
   const filePaths = normalizedFilePaths(input.filePaths);
+  const reviewCursor = normalizedReviewCursor(input.reviewCursor);
   if (filePaths.length > 0 && input.view !== "review") {
     throw new GraphProjectionRequestError(400, "filePaths are supported only by the review view");
   }
+  if (reviewCursor !== null && input.view !== "review") {
+    throw new GraphProjectionRequestError(400, "reviewCursor is supported only by the review view");
+  }
   return {
+    version: GRAPH_PROJECTION_FORMAT_VERSION,
     view: input.view,
+    filePaths,
+    reviewCursor,
     focusIds: normalizedIds(input.focusIds, MAX_FOCUS_IDS, "focusIds"),
     expandedIds: normalizedIds(input.expandedIds, MAX_EXPANDED_IDS, "expandedIds"),
     extraIds: normalizedIds(input.extraIds, MAX_EXTRA_IDS, "extraIds"),
-    filePaths,
-    depth: boundedInteger(input.depth, 1, 0, 4, "depth"),
-    radius: boundedInteger(input.radius, 1, 0, 3, "radius"),
-    includeTests: input.includeTests === true,
-    maxNodes: boundedInteger(input.maxNodes, DEFAULT_MAX_NODES, 1, DEFAULT_MAX_NODES, "maxNodes"),
-    maxEdges: boundedInteger(input.maxEdges, DEFAULT_MAX_EDGES, 0, DEFAULT_MAX_EDGES, "maxEdges"),
-    maxResponseBytes: boundedInteger(
+    causalIds: normalizedIds(
+      input.causalIds,
+      MAX_CAUSAL_IDS,
+      "causalIds",
+      MAX_CAUSAL_IDS_BYTES,
+    ),
+    serviceExpandedLeadIds: normalizedIds(
+      input.serviceExpandedLeadIds,
+      MAX_EXPANDED_IDS,
+      "serviceExpandedLeadIds",
+    ),
+    depth: requiredBoundedInteger(input.depth, 0, 4, "depth"),
+    includeTests: input.includeTests,
+    includeReachability: input.includeReachability,
+    maxNodes: requiredBoundedInteger(input.maxNodes, 1, DEFAULT_MAX_NODES, "maxNodes"),
+    maxEdges: requiredBoundedInteger(input.maxEdges, 0, DEFAULT_MAX_EDGES, "maxEdges"),
+    maxResponseBytes: requiredBoundedInteger(
       input.maxResponseBytes,
-      DEFAULT_MAX_RESPONSE_BYTES,
       64 * 1024,
       DEFAULT_MAX_RESPONSE_BYTES,
       "maxResponseBytes",
     ),
   };
+}
+
+function normalizedReviewCursor(value: unknown): string | null {
+  if (value === null) return null;
+  if (!isGraphProjectionReviewCursor(value)) {
+    throw new GraphProjectionRequestError(400, "reviewCursor is not a canonical comparison coordinate");
+  }
+  return value;
+}
+
+function resolveReviewQuery(
+  request: CanonicalGraphProjectionRequest,
+  review: GraphProjectionReviewContext | undefined,
+): ReturnType<typeof resolveReviewContextCursor> | null {
+  if (review === undefined) {
+    if (request.reviewCursor !== null) {
+      throw new GraphProjectionRequestError(400, "reviewCursor requires comparison capability context");
+    }
+    return null;
+  }
+  if (request.view !== "review") {
+    throw new GraphProjectionRequestError(400, "comparison capability context requires the review view");
+  }
+  if (request.filePaths.length > 0) {
+    throw new GraphProjectionRequestError(400, "comparison capability context does not accept caller-owned file paths");
+  }
+  try {
+    return resolveReviewContextCursor(
+      review.context,
+      review.contextId,
+      review.side,
+      request.reviewCursor,
+    );
+  } catch (error) {
+    throw new GraphProjectionRequestError(
+      400,
+      error instanceof Error ? error.message : "review cursor is invalid",
+    );
+  }
 }
 
 export function canonicalizeGraphSymbolSearchRequest(
@@ -971,6 +1788,50 @@ function writeNodeShard(root: string, shard: number, nodes: GraphNode[]): void {
     closeSync(writer.descriptor);
   }
   writeJson(join(root, "nodes", `${hex(shard)}.index.json`), { pages, byId } satisfies NodeShardIndex);
+}
+
+function writeHierarchyShards(
+  root: string,
+  nodes: readonly GraphNode[],
+  all: ReadonlyMap<string, GraphHierarchyFact>,
+  withoutTests: ReadonlyMap<string, GraphHierarchyFact>,
+  reachability: ReachabilityPaintFacts,
+): void {
+  const byShard = buckets<Array<[string, StoredHierarchyFact]>>();
+  for (const node of nodes) {
+    const allFact = all.get(node.id);
+    if (!allFact) {
+      throw new TypeError(`cannot publish graph projection hierarchy: missing fact for ${node.id}`);
+    }
+    byShard[shardOf(node.id)]!.push([
+      node.id,
+      {
+        all: allFact,
+        withoutTests: withoutTests.get(node.id) ?? null,
+        reachability: {
+          leaf: reachability.leaves[node.id] ?? null,
+          container: reachability.containers[node.id] ?? null,
+        },
+      },
+    ]);
+  }
+  for (let shard = 0; shard < SHARD_COUNT; shard += 1) {
+    const entries = byShard[shard]!;
+    if (entries.length === 0) continue;
+    const writer = openLineWriter(join(root, "hierarchy", `${hex(shard)}.ndjson`));
+    const pages: SliceRef[] = [];
+    try {
+      for (let offset = 0; offset < entries.length; offset += NODE_PAGE_ENTRIES) {
+        pages.push(appendJsonLine(writer, entries.slice(offset, offset + NODE_PAGE_ENTRIES)));
+      }
+    } finally {
+      closeSync(writer.descriptor);
+    }
+    writeJson(
+      join(root, "hierarchy", `${hex(shard)}.index.json`),
+      { pages } satisfies HierarchyShardIndex,
+    );
+  }
 }
 
 function writeAdjacencyShard<Value>(
@@ -1129,15 +1990,15 @@ function writeRecordPages<Value>(
 
 function graphSymbolEntry(node: GraphNode, flow: LogicFlows[string] | undefined): GraphSymbolEntry {
   const file = node.location?.file ?? "";
-  for (const [label, value] of [
-    ["id", node.id],
-    ["displayName", node.displayName],
-    ["qualifiedName", node.qualifiedName],
-    ["file", file],
-    ["kind", node.kind],
+  for (const [label, value, maxBytes] of [
+    ["id", node.id, MAX_SYMBOL_FIELD_BYTES],
+    ["displayName", node.displayName, MAX_SYMBOL_FIELD_BYTES],
+    ["qualifiedName", node.qualifiedName, MAX_SYMBOL_FIELD_BYTES],
+    ["file", file, MAX_INDEXED_FILE_PATH_BYTES],
+    ["kind", node.kind, MAX_SYMBOL_FIELD_BYTES],
   ] as const) {
-    if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > MAX_SYMBOL_FIELD_BYTES) {
-      throw new TypeError(`cannot publish graph symbol catalog: ${label} is invalid or exceeds ${MAX_SYMBOL_FIELD_BYTES} bytes`);
+    if (typeof value !== "string" || value.includes("\0") || Buffer.byteLength(value, "utf8") > maxBytes) {
+      throw new TypeError(`cannot publish graph symbol catalog: ${label} is invalid or exceeds ${maxBytes} bytes`);
     }
   }
   return {
@@ -1204,23 +2065,31 @@ function hex(value: number): string {
   return value.toString(16).padStart(2, "0");
 }
 
-function normalizedIds(values: readonly string[] | undefined, limit: number, label: string): string[] {
-  if (values === undefined) return [];
+function normalizedIds(
+  values: readonly string[],
+  limit: number,
+  label: string,
+  maxTotalBytes = Number.MAX_SAFE_INTEGER,
+): string[] {
   if (!Array.isArray(values) || values.length > limit) {
     throw new GraphProjectionRequestError(413, `${label} exceeds its limit`);
   }
   const result = new Set<string>();
+  let totalBytes = 0;
   for (const value of values) {
     if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value) > MAX_ID_BYTES || value.includes("\0")) {
       throw new GraphProjectionRequestError(400, `${label} contains an invalid graph id`);
+    }
+    totalBytes += Buffer.byteLength(value, "utf8");
+    if (totalBytes > maxTotalBytes) {
+      throw new GraphProjectionRequestError(413, `${label} exceeds its byte limit`);
     }
     result.add(value);
   }
   return [...result].sort();
 }
 
-function normalizedFilePaths(values: readonly string[] | undefined): string[] {
-  if (values === undefined) return [];
+function normalizedFilePaths(values: readonly string[]): string[] {
   if (!Array.isArray(values) || values.length > MAX_FILE_PATHS) {
     throw new GraphProjectionRequestError(413, "filePaths exceeds its limit");
   }
@@ -1228,7 +2097,10 @@ function normalizedFilePaths(values: readonly string[] | undefined): string[] {
   const result = new Set<string>();
   for (const value of values) {
     const canonical = storedFilePath(value);
-    if (typeof value !== "string" || canonical === null || canonical !== value) {
+    if (typeof value !== "string"
+      || Buffer.byteLength(value) > MAX_REQUEST_FILE_PATH_BYTES
+      || canonical === null
+      || canonical !== value) {
       throw new GraphProjectionRequestError(400, "filePaths contains a non-canonical file path");
     }
     totalBytes += Buffer.byteLength(value);
@@ -1244,7 +2116,7 @@ function normalizedFilePaths(values: readonly string[] | undefined): string[] {
 function storedFilePath(value: unknown): string | null {
   if (typeof value !== "string" || value.length === 0 || value.includes("\0")) return null;
   const normalized = value.replace(/\\/g, "/");
-  if (Buffer.byteLength(normalized) > MAX_FILE_PATH_BYTES
+  if (Buffer.byteLength(normalized) > MAX_INDEXED_FILE_PATH_BYTES
     || normalized.startsWith("/")
     || /^[A-Za-z]:/.test(normalized)
     || normalized.split("/").some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
@@ -1469,12 +2341,11 @@ function isJsonObject(value: unknown): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function boundedInteger(value: number | undefined, fallback: number, min: number, max: number, label: string): number {
-  const effective = value ?? fallback;
-  if (!Number.isSafeInteger(effective) || effective < min || effective > max) {
+function requiredBoundedInteger(value: number, min: number, max: number, label: string): number {
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
     throw new GraphProjectionRequestError(400, `${label} must be an integer between ${min} and ${max}`);
   }
-  return effective;
+  return value;
 }
 
 function positiveOrZero(value: number | undefined, fallback: number, label: string): number {
@@ -1483,20 +2354,37 @@ function positiveOrZero(value: number | undefined, fallback: number, label: stri
   return effective;
 }
 
+/** Match projection-response accounting: parsed JSON is charged at 3x its encoded bytes. */
+function parsedCacheResidentBytes(encodedBytes: number): number {
+  if (!isNonNegativeInteger(encodedBytes)) {
+    throw new TypeError("encoded cache bytes must be a non-negative safe integer");
+  }
+  return Math.min(
+    Number.MAX_SAFE_INTEGER,
+    Math.max(encodedBytes * 3, encodedBytes + 1_024),
+  );
+}
+
 function jsonBytes(value: unknown): number {
-  return Buffer.byteLength(JSON.stringify(value), "utf8");
+  return jsonEncodedByteLength(value);
 }
 
 function projectionEnvelopeReserveBytes(
+  contentId: string,
   projectionId: string,
   request: CanonicalGraphProjectionRequest,
   header: GraphHeader,
+  review: ReviewContextFacts | null,
 ): number {
   return jsonBytes({
+    version: GRAPH_PROJECTION_FORMAT_VERSION,
+    contentId,
     projectionId,
     request,
     artifact: { ...header, nodes: [], edges: [] },
-    childCounts: {},
+    hierarchy: { moduleOverviewRootIds: [], nodes: {} },
+    viewFacts: { moduleOverview: null, service: null, review },
+    analysis: { reachability: null },
     completeness: {
       complete: false,
       reasons: [
@@ -1511,12 +2399,6 @@ function projectionEnvelopeReserveBytes(
     },
     residentBytes: Number.MAX_SAFE_INTEGER,
   });
-}
-
-function isTestNode(node: GraphNode): boolean {
-  if (node.tags?.includes("test")) return true;
-  const file = node.location?.file ?? "";
-  return /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)|\.(?:test|spec)\.[^/]+$/i.test(file);
 }
 
 function flowTargets(value: unknown): string[] {
@@ -1541,19 +2423,101 @@ function safeRef(value: SliceRef): boolean {
     && Number.isSafeInteger(value.length) && value.length > 0 && value.length <= DEFAULT_MAX_RESPONSE_BYTES;
 }
 
-function isSummary(value: unknown): value is InspectionGraphSummary {
+function hasExactKeys(value: object, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const canonicalExpected = [...expected].sort();
+  return actual.length === canonicalExpected.length
+    && actual.every((key, index) => key === canonicalExpected[index]);
+}
+
+function isSummary(value: unknown): value is GraphGenerationSummary {
   if (!value || typeof value !== "object") return false;
-  const summary = value as Partial<InspectionGraphSummary>;
-  return typeof summary.schemaVersion === "string"
+  const summary = value as Partial<GraphGenerationSummary>;
+  return hasExactKeys(summary, ["schemaVersion", "generatedAt", "nodeCount", "edgeCount"])
+    && typeof summary.schemaVersion === "string"
     && typeof summary.generatedAt === "string"
     && Number.isSafeInteger(summary.nodeCount) && (summary.nodeCount ?? -1) >= 0
     && Number.isSafeInteger(summary.edgeCount) && (summary.edgeCount ?? -1) >= 0;
 }
 
+function isRepositorySummary(value: unknown): value is GraphRepositorySummary {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const summary = value as Partial<GraphRepositorySummary>;
+  return hasExactKeys(summary, ["overviewPackageCount", "sourceFileCount", "testSourceFileCount"])
+    && Number.isSafeInteger(summary.overviewPackageCount) && (summary.overviewPackageCount ?? -1) >= 0
+    && Number.isSafeInteger(summary.sourceFileCount) && (summary.sourceFileCount ?? -1) >= 0
+    && Number.isSafeInteger(summary.testSourceFileCount) && (summary.testSourceFileCount ?? -1) >= 0
+    && (summary.testSourceFileCount ?? Number.MAX_SAFE_INTEGER) <= (summary.sourceFileCount ?? -1);
+}
+
+function isModuleOverviewRoots(
+  value: unknown,
+): value is GraphProjectionManifest["moduleOverviewRoots"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const roots = value as Partial<GraphProjectionManifest["moduleOverviewRoots"]>;
+  return hasExactKeys(roots, ["all", "withoutTests"])
+    && isPagedIds(roots.all) && isPagedIds(roots.withoutTests);
+}
+
+function isStoredHierarchyFact(value: unknown): value is StoredHierarchyFact {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join("\0") !== "all\0reachability\0withoutTests") return false;
+  return isGraphHierarchyFact(record.all)
+    && (record.withoutTests === null || isGraphHierarchyFact(record.withoutTests))
+    && isStoredReachabilityFact(record.reachability);
+}
+
+function isStoredReachabilityFact(value: unknown): value is StoredHierarchyFact["reachability"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (Object.keys(record).sort().join("\0") !== "container\0leaf") return false;
+  try {
+    parseReachabilityProjectionFacts({
+      summary: {
+        callables: 0,
+        covered: 0,
+        indirect: 0,
+        uncovered: 0,
+        percent: 0,
+        testNodes: 0,
+        unresolvedFromTests: 0,
+      },
+      worstRows: [],
+      leaves: record.leaf === null ? {} : { fact: record.leaf },
+      containers: record.container === null ? {} : { fact: record.container },
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isGraphHierarchyFact(value: unknown): value is GraphHierarchyFact {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const fact = value as Record<string, unknown>;
+  if (Object.keys(fact).some((key) => key !== "isTest"
+      && key !== "childKindCounts"
+      && key !== "descendantSourceFileCount"
+      && key !== "ownedSourceFileCount")
+    || typeof fact.isTest !== "boolean"
+    || !isNonNegativeInteger(fact.descendantSourceFileCount)
+    || !isNonNegativeInteger(fact.ownedSourceFileCount)
+    || !fact.childKindCounts || typeof fact.childKindCounts !== "object"
+    || Array.isArray(fact.childKindCounts)) return false;
+  return Object.entries(fact.childKindCounts as Record<string, unknown>)
+    .every(([kind, count]) => kind.length > 0 && !kind.includes("\0")
+      && Number.isSafeInteger(count) && Number(count) > 0);
+}
+
 function isHeader(value: unknown): value is GraphHeader {
   if (!value || typeof value !== "object") return false;
   const header = value as Partial<GraphHeader>;
-  return typeof header.schemaVersion === "string"
+  const keys = Object.hasOwn(header, "telemetry")
+    ? ["schemaVersion", "generatedAt", "generator", "target", "telemetry"]
+    : ["schemaVersion", "generatedAt", "generator", "target"];
+  return hasExactKeys(header, keys)
+    && typeof header.schemaVersion === "string"
     && typeof header.generatedAt === "string"
     && typeof header.generator === "object" && header.generator !== null
     && typeof header.target === "object" && header.target !== null;
@@ -1562,36 +2526,78 @@ function isHeader(value: unknown): value is GraphHeader {
 function isPagedIds(value: unknown): value is PagedIds {
   if (!value || typeof value !== "object") return false;
   const paged = value as Partial<PagedIds>;
-  return isNonNegativeInteger(paged.count)
+  return hasExactKeys(paged, ["count", "refs"])
+    && isNonNegativeInteger(paged.count)
     && Array.isArray(paged.refs) && paged.refs.every((ref) => safeRef(ref as SliceRef));
 }
 
 function isExtensionManifest(value: unknown): value is GraphProjectionManifest["extensions"] {
   if (!value || typeof value !== "object") return false;
   const extension = value as Partial<GraphProjectionManifest["extensions"]>;
-  return isNonNegativeInteger(extension.entryModuleCount)
+  return hasExactKeys(extension, ["entryModuleCount", "changedPathCount", "changedMetaBytes", "flowCount"])
+    && isNonNegativeInteger(extension.entryModuleCount)
     && isNonNegativeInteger(extension.changedPathCount)
     && isNonNegativeInteger(extension.changedMetaBytes)
     && isNonNegativeInteger(extension.flowCount);
 }
 
+function isFactManifest(value: unknown): value is GraphProjectionManifest["facts"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const facts = value as Partial<GraphProjectionManifest["facts"]>;
+  return Object.keys(value).sort().join("\0")
+      === "moduleOverviewBytes\0moduleOverviewWithoutTestsBytes\0reachabilitySummaryBytes\0serviceTopology"
+    && isPositiveSafeInteger(facts.moduleOverviewBytes)
+    && isPositiveSafeInteger(facts.moduleOverviewWithoutTestsBytes)
+    && isServiceTopologySidecarDescriptor(facts.serviceTopology)
+    && isPositiveSafeInteger(facts.reachabilitySummaryBytes);
+}
+
+function requiredFactSidecarsMatchManifest(
+  bundleRoot: string,
+  facts: GraphProjectionManifest["facts"],
+): boolean {
+  return isRegularFileWithBytes(join(bundleRoot, MODULE_OVERVIEW_FILE), facts.moduleOverviewBytes)
+    && isRegularFileWithBytes(
+      join(bundleRoot, MODULE_OVERVIEW_WITHOUT_TESTS_FILE),
+      facts.moduleOverviewWithoutTestsBytes,
+    )
+    && isRegularFileWithBytes(
+      join(bundleRoot, REACHABILITY_SUMMARY_FILE),
+      facts.reachabilitySummaryBytes,
+    )
+    && isRegularFileWithBytes(
+      serviceTopologySidecarPath(bundleRoot),
+      facts.serviceTopology.bytes,
+    );
+}
+
+function isRegularFileWithBytes(path: string, expectedBytes: number): boolean {
+  const entry = lstatSync(path);
+  return entry.isFile() && !entry.isSymbolicLink() && entry.size === expectedBytes;
+}
+
 function isSymbolCatalogs(value: unknown): value is GraphProjectionManifest["symbols"] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const catalogs = value as Partial<GraphProjectionManifest["symbols"]>;
-  return isSymbolCatalogManifest(catalogs.map) && isSymbolCatalogManifest(catalogs.logic);
+  return hasExactKeys(catalogs, ["map", "logic"])
+    && isSymbolCatalogManifest(catalogs.map) && isSymbolCatalogManifest(catalogs.logic);
 }
 
 function isSymbolCatalogManifest(value: unknown): value is GraphSymbolCatalogManifest {
-  if (!isPagedIds(value)) return false;
-  const scopeCounts = (value as Partial<GraphSymbolCatalogManifest>).scopeCounts;
-  return isGraphSymbolScopeCounts(scopeCounts) && scopeCounts.all === value.count
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !hasExactKeys(value, ["count", "refs", "scopeCounts"])) return false;
+  const catalog = value as Partial<GraphSymbolCatalogManifest>;
+  if (!isPagedIds({ count: catalog.count, refs: catalog.refs })) return false;
+  const scopeCounts = catalog.scopeCounts;
+  return isGraphSymbolScopeCounts(scopeCounts) && scopeCounts.all === catalog.count
     && scopeCounts.public + scopeCounts.private === scopeCounts.all;
 }
 
 function isGraphSymbolScopeCounts(value: unknown): value is GraphSymbolSearchScopeCounts {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const counts = value as Partial<GraphSymbolSearchScopeCounts>;
-  return isNonNegativeInteger(counts.public)
+  return hasExactKeys(counts, ["public", "all", "private"])
+    && isNonNegativeInteger(counts.public)
     && isNonNegativeInteger(counts.all)
     && isNonNegativeInteger(counts.private);
 }
@@ -1602,15 +2608,15 @@ function isGraphSymbolEntry(value: unknown): value is GraphSymbolEntry {
   return boundedSymbolField(entry.id)
     && boundedSymbolField(entry.displayName)
     && boundedSymbolField(entry.qualifiedName)
-    && boundedSymbolField(entry.file)
+    && boundedSymbolField(entry.file, MAX_INDEXED_FILE_PATH_BYTES)
     && boundedSymbolField(entry.kind)
     && typeof entry.isPrivateMethod === "boolean"
     && (entry.stepCount === null || isNonNegativeInteger(entry.stepCount));
 }
 
-function boundedSymbolField(value: unknown): value is string {
+function boundedSymbolField(value: unknown, maxBytes = MAX_SYMBOL_FIELD_BYTES): value is string {
   return typeof value === "string" && !value.includes("\0")
-    && Buffer.byteLength(value, "utf8") <= MAX_SYMBOL_FIELD_BYTES;
+    && Buffer.byteLength(value, "utf8") <= maxBytes;
 }
 
 function isSymbolInScope(entry: GraphSymbolEntry, scope: GraphSymbolSearchScope): boolean {
@@ -1622,12 +2628,21 @@ function isNonNegativeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && Number(value) >= 0;
 }
 
-interface ResidentEntry {
-  value: unknown;
-  bytes: number;
+function isPositiveSafeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) > 0;
 }
 
-class ResidentLru {
+interface ResidentEntry {
+  namespace: string;
+  value: unknown;
+  residentBytes: number;
+}
+
+/**
+ * One byte-and-entry LRU for parsed data across any number of immutable bundles.
+ * Bundle roots are part of the key so identically named shard pages cannot collide.
+ */
+export class BoundedGraphProjectionPageCache implements GraphProjectionPageCache {
   private readonly entries = new Map<string, ResidentEntry>();
   private residentBytes = 0;
   private hits = 0;
@@ -1635,50 +2650,83 @@ class ResidentLru {
   private evictions = 0;
   private oversizeSkips = 0;
 
-  constructor(private readonly maxBytes: number, private readonly maxEntries: number) {}
+  private readonly maxBytes: number;
+  private readonly maxEntries: number;
 
-  get<Value>(key: string): Value | undefined {
-    const entry = this.entries.get(key);
+  constructor(options: BoundedGraphProjectionPageCacheOptions) {
+    this.maxBytes = positiveOrZero(options.maxBytes, 0, "maxBytes");
+    this.maxEntries = positiveOrZero(options.maxEntries, 0, "maxEntries");
+  }
+
+  get<Value>(namespace: string, key: string): Value | undefined {
+    const cacheKey = namespacedCacheKey(namespace, key);
+    const entry = this.entries.get(cacheKey);
     if (!entry) {
       this.misses += 1;
       return undefined;
     }
-    this.entries.delete(key);
-    this.entries.set(key, entry);
+    this.entries.delete(cacheKey);
+    this.entries.set(cacheKey, entry);
     this.hits += 1;
     return entry.value as Value;
   }
 
-  set(key: string, value: unknown, bytes: number): void {
-    const previous = this.entries.get(key);
-    if (previous) {
-      this.entries.delete(key);
-      this.residentBytes -= previous.bytes;
+  set(namespace: string, key: string, value: unknown, residentBytes: number): void {
+    if (!isNonNegativeInteger(residentBytes)) {
+      throw new TypeError("cache entry residentBytes must be a non-negative safe integer");
     }
-    if (this.maxBytes === 0 || this.maxEntries === 0 || bytes > this.maxBytes) {
+    const cacheKey = namespacedCacheKey(namespace, key);
+    const previous = this.entries.get(cacheKey);
+    if (previous) {
+      this.removeResident(cacheKey, previous);
+    }
+    if (this.maxBytes === 0 || this.maxEntries === 0 || residentBytes > this.maxBytes) {
       this.oversizeSkips += 1;
       return;
     }
-    this.entries.set(key, { value, bytes });
-    this.residentBytes += bytes;
+    this.entries.set(cacheKey, { namespace, value, residentBytes });
+    this.residentBytes += residentBytes;
     while (this.residentBytes > this.maxBytes || this.entries.size > this.maxEntries) {
       const oldest = this.entries.entries().next().value as [string, ResidentEntry] | undefined;
       if (!oldest) break;
-      this.entries.delete(oldest[0]);
-      this.residentBytes -= oldest[1].bytes;
+      this.removeResident(oldest[0], oldest[1]);
       this.evictions += 1;
     }
   }
 
-  stats(): GraphProjectionCacheStats {
+  stats(namespace?: string): GraphProjectionCacheStats {
+    if (namespace !== undefined) {
+      const validNamespace = validCachePart(namespace, "namespace");
+      let residentBytes = 0;
+      let entries = 0;
+      for (const entry of this.entries.values()) {
+        if (entry.namespace !== validNamespace) continue;
+        residentBytes += entry.residentBytes;
+        entries += 1;
+      }
+      return {
+        ...emptyGraphProjectionCacheStats(),
+        residentBytes,
+        entries,
+        trackedNamespaces: entries === 0 ? 0 : 1,
+      };
+    }
     return {
-      bytes: this.residentBytes,
+      residentBytes: this.residentBytes,
       entries: this.entries.size,
+      trackedNamespaces: new Set([...this.entries.values()].map((entry) => entry.namespace)).size,
       hits: this.hits,
       misses: this.misses,
       evictions: this.evictions,
       oversizeSkips: this.oversizeSkips,
     };
+  }
+
+  deleteNamespace(namespace: string): void {
+    const validNamespace = validCachePart(namespace, "namespace");
+    for (const [key, entry] of this.entries) {
+      if (entry.namespace === validNamespace) this.removeResident(key, entry);
+    }
   }
 
   clear(): void {
@@ -1689,4 +2737,32 @@ class ResidentLru {
     this.evictions = 0;
     this.oversizeSkips = 0;
   }
+
+  private removeResident(key: string, entry: ResidentEntry): void {
+    this.entries.delete(key);
+    this.residentBytes -= entry.residentBytes;
+  }
+}
+
+function namespacedCacheKey(namespace: string, key: string): string {
+  return `${validCachePart(namespace, "namespace")}\0${validCachePart(key, "key")}`;
+}
+
+function validCachePart(value: string, label: string): string {
+  if (value.length === 0 || value.includes("\0")) {
+    throw new TypeError(`cache ${label} must be non-empty and cannot contain NUL`);
+  }
+  return value;
+}
+
+function emptyGraphProjectionCacheStats(): GraphProjectionCacheStats {
+  return {
+    residentBytes: 0,
+    entries: 0,
+    trackedNamespaces: 0,
+    hits: 0,
+    misses: 0,
+    evictions: 0,
+    oversizeSkips: 0,
+  };
 }

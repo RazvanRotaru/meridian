@@ -7,7 +7,7 @@
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { base64Auth, runGit, runGitClone } from "./git-exec";
+import { base64Auth, runGit, streamGitLines } from "./git-exec";
 import { WebError } from "./web-error";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
@@ -47,6 +47,32 @@ describe("runGit", () => {
     child.emit("close", 0);
 
     await expect(pending).resolves.toBe("before é after");
+  });
+
+  it("streams split lines with consumer backpressure and bounded carry", async () => {
+    const child = nextChild();
+    let resumeFirst!: () => void;
+    const firstGate = new Promise<void>((resolve) => { resumeFirst = resolve; });
+    let firstStarted!: () => void;
+    const started = new Promise<void>((resolve) => { firstStarted = resolve; });
+    const lines: string[] = [];
+    const pending = streamGitLines(["for-each-ref"], { cwd: "/clone" }, async (line) => {
+      lines.push(line);
+      if (line === "first") {
+        firstStarted();
+        await firstGate;
+      }
+    });
+
+    child.stdout.emit("data", Buffer.from("first\nsec"));
+    child.stdout.emit("data", Buffer.from("ond\nthird"));
+    child.emit("close", 0);
+    await started;
+    expect(lines).toEqual(["first"]);
+
+    resumeFirst();
+    await expect(pending).resolves.toBeUndefined();
+    expect(lines).toEqual(["first", "second", "third"]);
   });
 
   it("injects the token ONLY as a -c http.extraHeader before the subcommand — never raw in argv", async () => {
@@ -205,46 +231,6 @@ describe("runGit", () => {
     child.stdout.emit("data", Buffer.alloc(32 * 1024 * 1024 + 1, 0));
     child.emit("close", 0);
     await expect(pending).rejects.toThrow("refusing truncated output");
-  });
-});
-
-describe("runGitClone", () => {
-  afterEach(() => {
-    vi.mocked(spawn).mockReset();
-    vi.restoreAllMocks();
-    vi.useRealTimers();
-  });
-
-  it("passes its argv through unchanged and resolves to undefined", async () => {
-    const child = nextChild();
-    const args = ["-c", "core.longpaths=true", "clone", "--", "https://github.com/o/r.git", "/tmp/x"];
-    const pending = runGitClone(args);
-    child.stdout.emit("data", Buffer.from("ignored"));
-    child.emit("close", 0);
-    await expect(pending).resolves.toBeUndefined();
-    expect(spawn).toHaveBeenCalledWith("git", args, expect.anything());
-  });
-
-  it("honors a per-call timeout without changing the shared clone default", async () => {
-    vi.useFakeTimers();
-    const child = nextChild();
-    const pending = runGitClone(["clone", "--", "https://github.com/o/r.git", "/tmp/x"], undefined, {
-      timeoutMs: 600_000,
-    });
-    vi.advanceTimersByTime(600_000);
-    child.emit("close", null, "SIGTERM");
-    await expect(pending).rejects.toThrow("git timed out after 600s");
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
-  });
-
-  it("flags auth-like clone failures with the token scrubbed", async () => {
-    const child = nextChild();
-    const pending = runGitClone(["clone", "--", "https://github.com/o/r.git", "/tmp/x"], TOKEN);
-    child.stderr.emit("data", Buffer.from(`Authentication failed for repo (used ${TOKEN})`));
-    child.emit("close", 128);
-    const message = await rejectionMessage(pending);
-    expect(message).toContain("authentication failed");
-    expect(message).not.toContain(TOKEN);
   });
 });
 

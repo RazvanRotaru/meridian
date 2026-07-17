@@ -6,16 +6,26 @@
  * complete-artifact compatibility path is accepted here.
  */
 
-const PROTOCOL_VERSION = 1;
-const MAX_LINE_BYTES = 2 * 1024 * 1024;
-const MAX_CHANGED_FILES = 100_000;
-const MAX_PROJECTION_FILE_PATHS = 512;
-const MAX_PATH_LENGTH = 4_096;
-const MAX_TIMINGS = 256;
-const MAX_WARNINGS = 256;
-const MAX_WARNING_LENGTH = 4_096;
+import {
+  PR_PREPARE_MAX_LINE_BYTES,
+  PR_PREPARE_PROTOCOL_VERSION,
+  PR_PREPARE_STAGES,
+  PR_PREPARE_V1_FIELDS,
+  compareCanonicalPrPreparePaths,
+  hasExactPrPrepareFields,
+  isPrPrepareElapsedMs,
+  isPrPrepareStage,
+  normalizePrPrepareChangedFiles,
+  normalizePrPrepareTimings,
+  normalizePrPrepareWarnings,
+  type PrPrepareStage,
+  type PrPrepareTimings,
+} from "@meridian/core";
 
-export type PrPrepareStage = "resolve" | "git" | "extract-head" | "extract-merge-base" | "publish";
+const MAX_PATH_LENGTH = 4_096;
+const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
+
+export type { PrPrepareStage } from "@meridian/core";
 
 export interface PrPrepareRequest {
   owner: string;
@@ -37,6 +47,7 @@ export interface PreparedGraphDescriptor {
   graphId: string;
   manifestUrl: string;
   projectionUrl: string;
+  searchUrl: string;
   sourceUrl: string;
   metaUrl: string;
   graphSummary: PreparedGraphSummary;
@@ -58,7 +69,7 @@ export interface PreparedReviewPair {
   mergeBaseSha: string;
   changedFiles: PreparedChangedFile[];
   cache: "hit" | "miss";
-  timings: Record<string, number>;
+  timings: PrPrepareTimings;
   warnings: string[];
 }
 
@@ -90,22 +101,27 @@ export async function fetchPreparedReviewHandoff(
     signal,
   });
   if (!response.ok) throw new Error(await handoffErrorMessage(response));
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  const contentType = responseMediaType(response);
   if (contentType !== "application/json") {
+    await cancelResponseBody(response, "prepared review handoff content type is invalid");
     throw new Error("invalid prepared review handoff: expected application/json");
   }
-  const body = await response.text();
-  if (utf8ByteLength(body) > MAX_LINE_BYTES) {
-    throw new Error("invalid prepared review handoff: response is too large");
-  }
+  const body = await readBoundedTextResponse(
+    response,
+    PR_PREPARE_MAX_LINE_BYTES,
+    "prepared review handoff",
+  );
   let value: unknown;
   try {
     value = JSON.parse(body);
   } catch {
     throw new Error("invalid prepared review handoff: expected JSON");
   }
-  if (!isRecord(value) || value.version !== PROTOCOL_VERSION) {
+  if (!isRecord(value) || value.version !== PR_PREPARE_PROTOCOL_VERSION) {
     throw new Error("invalid prepared review handoff: expected protocol version 1");
+  }
+  if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.handoffDocument)) {
+    throw new Error("invalid prepared review handoff: fields do not match protocol version 1");
   }
   return { request: parseHandoffRequest(value.request), ...parsePreparedPair(value) };
 }
@@ -126,19 +142,70 @@ export async function streamPrPreparation(
   return result;
 }
 
-/** Canonical changed paths sent to both review projections. Renames address both tree locations. */
-export function changedFileProjectionPaths(files: readonly PreparedChangedFile[]): string[] {
-  const paths = new Set<string>();
-  for (const file of files) {
-    paths.add(file.path);
-    if (file.status === "renamed") paths.add(file.previousPath!);
+/** Opaque coordinate for one canonical handoff entry; no path is replayed to graph transport. */
+export function preparedReviewFileCursor(
+  files: readonly PreparedChangedFile[],
+  path?: string,
+): string | null {
+  if (path === undefined || files.length === 0) return null;
+  const index = files.findIndex((file) => file.path === path);
+  if (index < 0) return null;
+  return `file:${index}`;
+}
+
+/** Resolve one opaque prepared-review coordinate back to its canonical manifest entry. The cursor
+ * grammar is intentionally strict: coordinates are immutable protocol identities, not user input
+ * to coerce or partially parse. */
+export function preparedReviewFileForCursor(
+  files: readonly PreparedChangedFile[],
+  cursor: string | null,
+): PreparedChangedFile | null {
+  if (cursor === null) return null;
+  const match = /^file:(0|[1-9]\d*)$/.exec(cursor);
+  if (match === null) return null;
+  const index = Number(match[1]);
+  return Number.isSafeInteger(index) ? files[index] ?? null : null;
+}
+
+/** Carry the currently inspected semantic file into a refreshed canonical manifest. Exact current
+ * paths win. A rename is followed only through one unique current/previous-path match; ambiguity or
+ * disappearance deliberately falls back to the source-only overview. */
+export function remapPreparedReviewFilePath(
+  previousFiles: readonly PreparedChangedFile[],
+  previousCursor: string | null,
+  nextFiles: readonly PreparedChangedFile[],
+): string | null {
+  const previous = preparedReviewFileForCursor(previousFiles, previousCursor);
+  if (previous === null) return null;
+  const exact = nextFiles.find((file) => file.path === previous.path);
+  if (exact !== undefined) return exact.path;
+
+  const aliases = new Set([previous.path, previous.previousPath].filter((path): path is string => path !== undefined));
+  const renamed = nextFiles.filter((file) => file.status === "renamed"
+    && file.previousPath !== undefined
+    && aliases.has(file.previousPath));
+  if (renamed.length === 1) return renamed[0]!.path;
+
+  // A later manifest can describe the same file after rename metadata has collapsed back to a
+  // normal modified/deleted row. Accept the old-side alias only when it identifies one unique row.
+  if (previous.previousPath !== undefined) {
+    const priorPath = nextFiles.filter((file) => file.path === previous.previousPath);
+    if (priorPath.length === 1) return priorPath[0]!.path;
   }
-  if (paths.size > MAX_PROJECTION_FILE_PATHS) {
-    throw new Error(
-      `This pull request changes ${paths.size} paths; narrow the inspected subdirectory to at most ${MAX_PROJECTION_FILE_PATHS} paths.`,
-    );
+  return null;
+}
+
+/** Sum only protocol-defined stages; an empty timing record means no elapsed observation exists. */
+export function totalPrPrepareElapsedMs(timings: PrPrepareTimings): number | null {
+  let total = 0;
+  let observed = false;
+  for (const stage of PR_PREPARE_STAGES) {
+    const elapsedMs = timings[stage];
+    if (elapsedMs === undefined) continue;
+    observed = true;
+    total += elapsedMs;
   }
-  return [...paths].sort();
+  return observed ? total : null;
 }
 
 async function postPreparation(
@@ -156,8 +223,9 @@ async function postPreparation(
   if (!response.ok || !response.body) {
     throw new Error(await requestErrorMessage(response));
   }
-  const contentType = response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
+  const contentType = responseMediaType(response);
   if (contentType !== "application/x-ndjson") {
+    await cancelResponseBody(response, "PR preparation content type is invalid");
     throw new Error("invalid PR preparation response: expected application/x-ndjson");
   }
   return response;
@@ -167,16 +235,23 @@ async function drainPreparationStream(
   response: Response,
   onStage: (stage: PrPrepareStage, elapsedMs: number) => void,
 ): Promise<PrPreparationResult> {
-  const reader = response.body!.getReader();
-  const decoder = new TextDecoder();
+  if (response.body === null) {
+    throw new Error("invalid PR preparation response: body is required");
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8", { fatal: true });
   let buffer = "";
   let result: PrPreparationResult | null = null;
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      if (utf8ByteLength(buffer) > MAX_LINE_BYTES && !buffer.includes("\n")) {
+      try {
+        buffer += decoder.decode(value, { stream: true });
+      } catch {
+        throw new Error("invalid PR preparation stream: expected UTF-8");
+      }
+      if (utf8ByteLength(buffer) > PR_PREPARE_MAX_LINE_BYTES && !buffer.includes("\n")) {
         throw new Error("invalid PR preparation stream: NDJSON line is too large");
       }
       const lines = buffer.split("\n");
@@ -186,14 +261,25 @@ async function drainPreparationStream(
         result = applyLine(line.trim(), onStage, result);
       }
     }
-    buffer += decoder.decode();
+    try {
+      buffer += decoder.decode();
+    } catch {
+      throw new Error("invalid PR preparation stream: expected UTF-8");
+    }
+    assertLineSize(buffer);
+    result = applyLine(buffer.trim(), onStage, result);
+    if (result === null) throw new Error("PR preparation ended without a v1 done line.");
+    return result;
+  } catch (error) {
+    try {
+      await reader.cancel(error instanceof Error ? error.message : "invalid PR preparation stream");
+    } catch {
+      // Preserve the protocol or transport failure that made the body unusable.
+    }
+    throw error;
   } finally {
     reader.releaseLock();
   }
-  assertLineSize(buffer);
-  result = applyLine(buffer.trim(), onStage, result);
-  if (result === null) throw new Error("PR preparation ended without a v1 done line.");
-  return result;
 }
 
 function applyLine(
@@ -224,16 +310,31 @@ function parseLine(line: string): ParsedLine {
   } catch {
     throw new Error("invalid PR preparation stream: expected NDJSON");
   }
-  if (!isRecord(value) || value.version !== PROTOCOL_VERSION) {
+  if (!isRecord(value) || value.version !== PR_PREPARE_PROTOCOL_VERSION) {
     throw new Error("invalid PR preparation stream: expected protocol version 1");
   }
   if (value.type === "progress") {
-    const stage = prepareStage(value.stage);
-    const elapsedMs = nonNegativeFinite(value.elapsedMs, "progress.elapsedMs");
-    return { type: "progress", stage, elapsedMs };
+    if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.progress)) {
+      throw new Error("invalid PR preparation stream: progress fields do not match protocol version 1");
+    }
+    if (!isPrPrepareStage(value.stage)) {
+      throw new Error("invalid PR preparation stream: progress.stage");
+    }
+    if (!isPrPrepareElapsedMs(value.elapsedMs)) {
+      throw new Error("invalid PR preparation stream: progress.elapsedMs");
+    }
+    return { type: "progress", stage: value.stage, elapsedMs: value.elapsedMs };
   }
-  if (value.type === "done") return { type: "done", result: parseDoneLine(value) };
+  if (value.type === "done") {
+    if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.done)) {
+      throw new Error("invalid PR preparation stream: done fields do not match protocol version 1");
+    }
+    return { type: "done", result: parseDoneLine(value) };
+  }
   if (value.type === "error") {
+    if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.error)) {
+      throw new Error("invalid PR preparation stream: error fields do not match protocol version 1");
+    }
     return { type: "error", message: requiredString(value.message, "error.message") };
   }
   throw new Error("invalid PR preparation stream: unsupported v1 line type");
@@ -262,7 +363,7 @@ function parsePreparedPair(line: Record<string, unknown>): PreparedReviewPair {
 }
 
 function parseHandoffLink(value: unknown, headGraphId: string): PreparedReviewHandoffLink {
-  if (!isRecord(value)) throw invalidDone("handoff");
+  if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.handoffLink)) throw invalidDone("handoff");
   const id = requiredString(value.id, "handoff.id");
   const url = requiredString(value.url, "handoff.url");
   const viewUrl = requiredString(value.viewUrl, "handoff.viewUrl");
@@ -314,6 +415,12 @@ function strictRelativeUrl(
 function parseHandoffRequest(value: unknown): PrPrepareRequest {
   if (!isRecord(value)) throw new Error("invalid prepared review handoff: request");
   try {
+    const fields = Object.prototype.hasOwnProperty.call(value, "subdir")
+      ? PR_PREPARE_V1_FIELDS.requestWithSubdir
+      : PR_PREPARE_V1_FIELDS.request;
+    if (!hasExactPrPrepareFields(value, fields)) {
+      throw new Error("request fields do not match protocol version 1");
+    }
     return canonicalRequest({
       owner: requiredString(value.owner, "request.owner"),
       repo: requiredString(value.repo, "request.repo"),
@@ -330,8 +437,12 @@ function parseHandoffRequest(value: unknown): PrPrepareRequest {
 }
 
 function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescriptor {
-  if (!isRecord(value)) throw invalidDone(`${label} descriptor`);
-  if (!isRecord(value.graphSummary)) throw invalidDone(`${label}.graphSummary`);
+  if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.descriptor)) {
+    throw invalidDone(`${label} descriptor`);
+  }
+  if (!hasExactPrPrepareFields(value.graphSummary, PR_PREPARE_V1_FIELDS.graphSummary)) {
+    throw invalidDone(`${label}.graphSummary`);
+  }
   const graphId = requiredString(value.graphId, `${label}.graphId`);
   return {
     graphId,
@@ -346,6 +457,12 @@ function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescr
       graphId,
       "/api/graph/projection",
       `${label}.projectionUrl`,
+    ),
+    searchUrl: parseDescriptorEndpoint(
+      value.searchUrl,
+      graphId,
+      "/api/graph/search",
+      `${label}.searchUrl`,
     ),
     sourceUrl: parseDescriptorEndpoint(value.sourceUrl, graphId, "/api/source", `${label}.sourceUrl`),
     metaUrl: parseDescriptorEndpoint(value.metaUrl, graphId, "/api/meta", `${label}.metaUrl`),
@@ -371,50 +488,35 @@ function parseDescriptorEndpoint(
 }
 
 function parseChangedFiles(value: unknown): PreparedChangedFile[] {
-  if (!Array.isArray(value) || value.length > MAX_CHANGED_FILES) throw invalidDone("changedFiles");
-  const seen = new Set<string>();
-  return value.map((entry, index) => {
-    if (!isRecord(entry)) throw invalidDone(`changedFiles[${index}]`);
-    const path = safeRelativePath(entry.path, `changedFiles[${index}].path`);
-    if (seen.has(path)) throw invalidDone(`changedFiles[${index}].path is duplicated`);
-    seen.add(path);
-    const status = changedFileStatus(entry.status, `changedFiles[${index}].status`);
-    const hasPreviousPath = Object.prototype.hasOwnProperty.call(entry, "previousPath");
-    if (status === "renamed") {
-      if (!hasPreviousPath) throw invalidDone(`changedFiles[${index}].previousPath`);
-      const previousPath = safeRelativePath(entry.previousPath, `changedFiles[${index}].previousPath`);
-      if (previousPath === path) throw invalidDone(`changedFiles[${index}].previousPath matches path`);
-      return {
-        path,
-        status,
-        previousPath,
-      };
-    }
-    if (hasPreviousPath) throw invalidDone(`changedFiles[${index}].previousPath is only valid for renamed files`);
-    return { path, status };
-  });
+  const files = normalizePrPrepareChangedFiles(value);
+  if (files === null) throw invalidDone("changedFiles");
+  if (files.some((file, index) => index > 0
+    && compareCanonicalPrPreparePaths(files[index - 1]!.path, file.path) >= 0)) {
+    throw invalidDone("changedFiles canonical order");
+  }
+  return files;
 }
 
-function parseTimings(value: unknown): Record<string, number> {
-  if (!isRecord(value) || Object.keys(value).length > MAX_TIMINGS) throw invalidDone("timings");
-  const result: Record<string, number> = {};
-  for (const [key, timing] of Object.entries(value)) {
-    if (key.length === 0 || key.length > 128) throw invalidDone("timings key");
-    result[key] = nonNegativeFinite(timing, `timings.${key}`);
-  }
-  return result;
+function parseTimings(value: unknown): PrPrepareTimings {
+  const timings = normalizePrPrepareTimings(value);
+  if (timings === null) throw invalidDone("timings");
+  return timings;
 }
 
 function parseWarnings(value: unknown): string[] {
-  if (!Array.isArray(value) || value.length > MAX_WARNINGS) throw invalidDone("warnings");
-  return value.map((warning, index) => {
-    const parsed = requiredString(warning, `warnings[${index}]`);
-    if (parsed.length > MAX_WARNING_LENGTH) throw invalidDone(`warnings[${index}]`);
-    return parsed;
-  });
+  const warnings = normalizePrPrepareWarnings(value);
+  if (warnings === null) throw invalidDone("warnings");
+  return warnings;
 }
 
 function canonicalRequest(request: PrPrepareRequest): PrPrepareRequest {
+  const fields = typeof request === "object" && request !== null
+    && Object.prototype.hasOwnProperty.call(request, "subdir")
+    ? PR_PREPARE_V1_FIELDS.requestWithSubdir
+    : PR_PREPARE_V1_FIELDS.request;
+  if (!hasExactPrPrepareFields(request, fields)) {
+    throw new TypeError("PR preparation request fields do not match protocol version 1");
+  }
   const owner = requiredRequestString(request.owner, "owner");
   const repo = requiredRequestString(request.repo, "repo");
   const baseRef = requiredRequestString(request.baseRef, "baseRef");
@@ -445,17 +547,6 @@ function safeRelativePath(value: unknown, label: string): string {
   return path;
 }
 
-function prepareStage(value: unknown): PrPrepareStage {
-  if (value === "resolve" || value === "git" || value === "extract-head"
-    || value === "extract-merge-base" || value === "publish") return value;
-  throw new Error("invalid PR preparation stream: progress.stage");
-}
-
-function changedFileStatus(value: unknown, label: string): PreparedChangedFileStatus {
-  if (value === "added" || value === "modified" || value === "deleted" || value === "renamed") return value;
-  throw invalidDone(label);
-}
-
 function cacheResult(value: unknown): "hit" | "miss" {
   if (value === "hit" || value === "miss") return value;
   throw invalidDone("cache");
@@ -482,11 +573,6 @@ function nonNegativeInteger(value: unknown, label: string): number {
   return Number(value);
 }
 
-function nonNegativeFinite(value: unknown, label: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw invalidDone(label);
-  return value;
-}
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -496,7 +582,7 @@ function invalidDone(field: string): Error {
 }
 
 function assertLineSize(line: string): void {
-  if (utf8ByteLength(line) > MAX_LINE_BYTES) {
+  if (utf8ByteLength(line) + 1 > PR_PREPARE_MAX_LINE_BYTES) {
     throw new Error("invalid PR preparation stream: NDJSON line is too large");
   }
 }
@@ -505,9 +591,25 @@ function utf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
 }
 
+async function cancelResponseBody(response: Response, reason: string): Promise<void> {
+  try {
+    await response.body?.cancel(reason);
+  } catch {
+    // Preserve the contract failure; transport cleanup cannot make an invalid response valid.
+  }
+}
+
 async function requestErrorMessage(response: Response): Promise<string> {
   try {
-    const data = await response.json() as { error?: unknown };
+    if (responseMediaType(response) !== "application/json") {
+      await cancelResponseBody(response, "PR preparation error response content type is invalid");
+      throw new Error("invalid error response media type");
+    }
+    const data = JSON.parse(await readBoundedTextResponse(
+      response,
+      MAX_ERROR_RESPONSE_BYTES,
+      "PR preparation error response",
+    )) as { error?: unknown };
     if (typeof data.error === "string" && data.error.length > 0) return data.error;
   } catch {
     // Non-JSON response: use the bounded generic message below.
@@ -517,12 +619,79 @@ async function requestErrorMessage(response: Response): Promise<string> {
 
 async function handoffErrorMessage(response: Response): Promise<string> {
   try {
-    const data = await response.json() as { error?: unknown };
+    if (responseMediaType(response) !== "application/json") {
+      await cancelResponseBody(response, "prepared review error response content type is invalid");
+      throw new Error("invalid error response media type");
+    }
+    const data = JSON.parse(await readBoundedTextResponse(
+      response,
+      MAX_ERROR_RESPONSE_BYTES,
+      "prepared review error response",
+    )) as { error?: unknown };
     if (typeof data.error === "string" && data.error.length > 0) return data.error;
   } catch {
     // Non-JSON response: use the bounded generic message below.
   }
   return `Prepared review handoff request failed (${response.status}).`;
+}
+
+async function readBoundedTextResponse(
+  response: Response,
+  maxBytes: number,
+  label: string,
+): Promise<string> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const advertised = Number(contentLength);
+    if (!Number.isSafeInteger(advertised) || advertised < 0) {
+      await cancelResponseBody(response, `invalid ${label} content length`);
+      throw new Error(`invalid ${label}: content-length is malformed`);
+    }
+    if (advertised > maxBytes) {
+      await cancelResponseBody(response, `${label} exceeded its byte limit`);
+      throw new Error(`invalid ${label}: response is too large`);
+    }
+  }
+  if (response.body === null) throw new Error(`invalid ${label}: body is required`);
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let byteLength = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value.byteLength > maxBytes - byteLength) {
+        try {
+          await reader.cancel(`${label} exceeded its byte limit`);
+        } catch {
+          // Preserve the bounded-transport failure below.
+        }
+        throw new Error(`invalid ${label}: response is too large`);
+      }
+      byteLength += value.byteLength;
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  if (contentLength !== null && Number(contentLength) !== byteLength) {
+    throw new Error(`invalid ${label}: content-length does not match the body`);
+  }
+  const bytes = new Uint8Array(byteLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    throw new Error(`invalid ${label}: expected UTF-8`);
+  }
+}
+
+function responseMediaType(response: Response): string | null {
+  return response.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? null;
 }
 
 function requestOrigin(): string {

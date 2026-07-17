@@ -23,6 +23,7 @@ import { PrReviewNavigation } from "./controlpanel/PrReviewNavigation";
 import { OverlaysSection } from "./controlpanel/OverlaysSection";
 import { CONTROL_PANEL_WIDTH, Divider, SectionLabel, TOKENS } from "./controlpanel/panelKit";
 import { ChevronDownIcon } from "./controlpanel/icons";
+import { reviewSurfaceIsOpen } from "../state/store";
 
 const CONTROL_PANEL_ID = "meridian-control-panel";
 const CONTROL_PANEL_CONTROLS_ID = "meridian-control-panel-controls";
@@ -34,7 +35,9 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
   const provider = useBlueprint((state) => state.provider);
   const telemetrySources = useBlueprint((state) => state.telemetrySources);
-  const reviewActive = useBlueprint((state) => state.review !== null && state.prReviewed !== null && state.minimalSeedIds.length > 0 && state.viewMode !== "prs");
+  const reviewActive = useBlueprint((state) => reviewSurfaceIsOpen(state)
+    && state.prReviewed !== null
+    && state.viewMode !== "prs");
   const { resetCategoryFilter, resetRelationshipFilter } = useBlueprintActions();
 
   const isComposition = viewMode === "call";

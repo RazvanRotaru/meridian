@@ -107,7 +107,7 @@ function fixture(withCouplings = true): ServiceClustering {
       ]
     : [];
   return {
-    clusters: leads.map(([id]) => ({ leadId: id, memberIds: [id] })),
+    clusters: leads.map(([id]) => ({ leadId: id, memberIds: [id], provenance: "named-service" as const })),
     leadOf: new Map(leads.map(([id]) => [id, id])),
     metrics: new Map(leads.map(([id, name, path]) => [id, metric(id, name, path)])),
     membersByUnit: new Map(leads.map(([id]) => [id, []])),
@@ -122,7 +122,7 @@ function labelFixture(): ServiceClustering {
     ["chat-store", "ConversationMessageStore", "src/chat/store.ts"],
   ] as const;
   return {
-    clusters: leads.map(([id]) => ({ leadId: id, memberIds: [id] })),
+    clusters: leads.map(([id]) => ({ leadId: id, memberIds: [id], provenance: "named-service" as const })),
     leadOf: new Map(leads.map(([id]) => [id, id])),
     metrics: new Map(leads.map(([id, name, path]) => [id, metric(id, name, path)])),
     membersByUnit: new Map(leads.map(([id]) => [id, []])),

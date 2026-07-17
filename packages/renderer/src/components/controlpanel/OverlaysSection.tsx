@@ -226,7 +226,10 @@ export function countTestFiles(state: BlueprintState): number {
   for (const file of state.review?.context.changedFiles ?? []) {
     addReviewTestPath(file.path);
   }
-  return paths.size;
+  // A bounded projection intentionally omits hidden test modules. The manifest-level total keeps
+  // the toggle available without retaining those nodes; review paths can only raise that total for
+  // an unmatched newly-added test carried by an artifact-authored review.
+  return Math.max(state.index.structure.repositorySummary.testSourceFileCount, paths.size);
 }
 
 function hasExternalDependencies(state: BlueprintState): boolean {

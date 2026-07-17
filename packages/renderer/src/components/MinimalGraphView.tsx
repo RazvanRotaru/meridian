@@ -51,6 +51,7 @@ import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
 import { filterExternalGhosts, filterGhostNodes } from "./moduleMapPaint";
 import { relationKindOf } from "../graph/relationEdge";
+import { reviewSurfaceIsOpen } from "../state/store";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
@@ -70,7 +71,7 @@ export function MinimalGraphView({
   const layoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
-  const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewActive = useBlueprint(reviewSurfaceIsOpen);
   const nestedExtraction = useBlueprint((state) => state.minimalGraphHistory.length > 0);
   const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const index = useBlueprint((state) => state.index);
@@ -239,6 +240,12 @@ export function MinimalGraphView({
           relationKinds={relationKinds}
         />
       </GraphSurface>
+      {reviewActive && seedIds.length === 0 && layoutStatus !== "laying-out" && layoutStatus !== "error" ? (
+        <div data-review-empty-canvas="true" role="status" style={EMPTY_REVIEW_CANVAS}>
+          <strong style={EMPTY_REVIEW_TITLE}>No file graph loaded</strong>
+          <span style={EMPTY_REVIEW_COPY}>Select a changed file to load its graph.</span>
+        </div>
+      ) : null}
       {layoutStatus === "error" && (
         <div role="alert" style={LAYOUT_ERROR}>
           <strong style={LAYOUT_ERROR_TITLE}>Couldn’t arrange this review graph</strong>
@@ -264,6 +271,26 @@ const MINIMAL_SEMANTIC_SURFACE_STYLE: React.CSSProperties = {
   inset: 0,
   transition: `opacity ${SEMANTIC_LAYER_FADE_MS}ms ease-out`,
 };
+const EMPTY_REVIEW_CANVAS: React.CSSProperties = {
+  position: "absolute",
+  left: "50%",
+  top: "50%",
+  zIndex: 10,
+  transform: "translate(-50%, -50%)",
+  display: "flex",
+  flexDirection: "column",
+  alignItems: "center",
+  gap: 6,
+  padding: "14px 18px",
+  border: "1px solid #303B48",
+  borderRadius: 10,
+  background: "rgba(13, 17, 23, 0.92)",
+  color: "#E6EDF3",
+  textAlign: "center",
+  pointerEvents: "none",
+};
+const EMPTY_REVIEW_TITLE: React.CSSProperties = { fontSize: 13 };
+const EMPTY_REVIEW_COPY: React.CSSProperties = { color: "#9AA4B2", fontSize: 12 };
 const LAYOUT_ERROR: React.CSSProperties = {
   position: "absolute",
   left: "50%",

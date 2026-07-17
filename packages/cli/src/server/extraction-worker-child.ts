@@ -14,11 +14,12 @@ import type { GraphArtifact } from "@meridian/core";
 import type { PipelineRequest } from "../extract-pipeline";
 import { CliError, EXIT } from "../errors";
 import { runGit } from "./git-exec";
-import { graphSummaryFor } from "./inspection-snapshot-store";
+import { graphSummaryFor } from "./graph-generation-contract";
 import {
   GRAPH_PROJECTION_DIRECTORY,
   writeGraphProjectionBundle,
 } from "./graph-projection-bundle";
+import { measureGraphProjectionBundle } from "./graph-generation-verifier";
 import { writeSyntheticCapabilitySidecar } from "./synthetic-capability-sidecar";
 import { WebError } from "./web-error";
 import {
@@ -57,7 +58,11 @@ async function handleRequest(value: unknown): Promise<void> {
     const serialized = JSON.stringify(artifact);
     await writeFile(value.artifactOutputPath, serialized, { encoding: "utf8", flag: "wx", mode: 0o600 });
     const projectionDirectory = join(dirname(value.artifactOutputPath), GRAPH_PROJECTION_DIRECTORY);
-    writeGraphProjectionBundle(projectionDirectory, artifact);
+    const projectionManifest = writeGraphProjectionBundle(projectionDirectory, artifact);
+    const projectionIntegrity = await measureGraphProjectionBundle(
+      projectionDirectory,
+      value.lifecycleCacheRoot,
+    );
     const syntheticCapability = writeSyntheticCapabilitySidecar(
       value.artifactOutputPath,
       value.request.absoluteRoot,
@@ -75,6 +80,8 @@ async function handleRequest(value: unknown): Promise<void> {
         ], value.token),
         serialized,
         value.request,
+        projectionManifest.contentId,
+        projectionIntegrity,
       ),
     });
   } catch (error) {
@@ -89,6 +96,8 @@ function resultFor(
   warnings: string[],
   serialized: string,
   request: ExtractionWorkerRequestMessage["request"],
+  projectionContentId: string,
+  projectionIntegrity: Awaited<ReturnType<typeof measureGraphProjectionBundle>>,
 ): Extract<ExtractionWorkerResponseMessage, { type: "result" }>["result"] {
   const changedSince = changedSinceWorkerMetadata(artifact, request);
   const hintedFiles = representativeHintedFiles(artifact, changedSince.changedFiles);
@@ -98,6 +107,9 @@ function resultFor(
     artifactBytes: Buffer.byteLength(serialized),
     artifactSha256: createHash("sha256").update(serialized).digest("hex"),
     projectionDirectory,
+    projectionBytes: projectionIntegrity.projectionBytes,
+    projectionSha256: projectionIntegrity.projectionSha256,
+    projectionContentId,
     graphSummary: graphSummaryFor(artifact),
     changedFiles: changedSince.changedFiles,
     hintedFiles,
