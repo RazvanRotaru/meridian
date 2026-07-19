@@ -10,7 +10,7 @@ import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
 import { reviewSurfaceIsOpen, selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { filesInScope } from "../../derive/filesInScope";
-import { countViewedFiles } from "../../derive/reviewFiles";
+import { countViewedReviewFiles } from "../../state/reviewFileProgress";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
 import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
@@ -33,9 +33,10 @@ export function PrReviewSection() {
     && state.prPreparedHead !== null
     && state.prPreparedMergeBase !== null
     && state.prReviewBaseline !== null);
-  const reviewFiles = useBlueprint((state) => state.reviewFiles);
+  const reviewProgress = useBlueprint((state) => state.reviewProgressCatalog);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const showTests = useBlueprint((state) => state.showTests);
   const viewMode = useBlueprint((state) => state.viewMode);
   const sessionSource = useBlueprint((state) => state.prSessionSource);
   const index = useBlueprint((state) => state.index);
@@ -60,7 +61,8 @@ export function PrReviewSection() {
   const resumable = prReviewed !== null && !reviewOpen && hasReviewPayload;
   const resuming = resumable && prReviewStatus === "preparing";
   const resumeFailed = resumable && prReviewStatus === "error";
-  const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
+  const viewed = countViewedReviewFiles(reviewProgress, unitTicks, fileTicks, showTests);
+  const reviewFileCount = reviewProgress?.order.length ?? 0;
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
   const disconnected = !githubSource;
@@ -130,8 +132,8 @@ export function PrReviewSection() {
               {resuming ? `Resuming review #${prReviewed}…` : resumeFailed ? `Retry review #${prReviewed}` : `Resume review #${prReviewed}`}
             </span>
             <span style={{ flex: 1 }} />
-            {reviewFiles.length > 0
-              ? <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFiles.length} viewed</CountBadge>
+            {reviewFileCount > 0
+              ? <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFileCount} viewed</CountBadge>
               : null}
           </button>
         ) : null}

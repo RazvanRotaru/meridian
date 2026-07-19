@@ -1,5 +1,5 @@
 /** Shared, strict protocol version for graph manifests, requests, responses, and identities. */
-export const GRAPH_PROJECTION_PROTOCOL_VERSION = 6;
+export const GRAPH_PROJECTION_PROTOCOL_VERSION = 9;
 
 /** Maximum exact UTF-8 JSON body accepted for one canonical graph projection request. */
 export const GRAPH_PROJECTION_MAX_REQUEST_BYTES = 64_000;
@@ -42,17 +42,86 @@ export interface GraphProjectionReviewSelectionFacts {
   readonly entry: GraphProjectionReviewFile;
   readonly graphPath: string | null;
   readonly graphMatched: boolean;
+  /** Canonical graph-backed verdict for this side, or null when the path is absent or unmapped. */
+  readonly isTest: boolean | null;
+}
+
+/** Graph-backed test truth for one canonical changed-file coordinate. */
+export interface GraphProjectionReviewTestClassification {
+  readonly index: number;
+  readonly isTest: boolean;
+}
+
+/** Immutable, graph-free classification truth shared by every coordinate of one PR comparison. */
+export interface GraphProjectionReviewMetadata {
+  readonly version: 1;
+  readonly metadataId: string;
+  readonly contextId: string;
+  readonly headGraphId: string;
+  readonly mergeBaseGraphId: string;
+  readonly headContentId: string;
+  readonly mergeBaseContentId: string;
+  readonly totalFiles: number;
+  readonly testClassifications: readonly GraphProjectionReviewTestClassification[];
+}
+
+export type GraphProjectionReviewMetadataIdentity = Pick<
+  GraphProjectionReviewMetadata,
+  | "contextId"
+  | "headGraphId"
+  | "mergeBaseGraphId"
+  | "headContentId"
+  | "mergeBaseContentId"
+>;
+
+/** Exact SHA-256 input binding review metadata to both immutable graph capabilities. */
+export function graphProjectionReviewMetadataIdentityPreimage(
+  identity: GraphProjectionReviewMetadataIdentity,
+): string {
+  return [
+    "review-metadata-v1",
+    identity.contextId,
+    identity.headGraphId,
+    identity.mergeBaseGraphId,
+    identity.headContentId,
+    identity.mergeBaseContentId,
+  ].join("\0");
+}
+
+export type GraphProjectionReviewOverviewEntryState =
+  | "included"
+  | "unmapped"
+  | "filtered"
+  | "deferred"
+  | "absent";
+
+/** Exact graph coverage for the manifest page carried by one overview coordinate. */
+export interface GraphProjectionReviewOverviewFacts {
+  readonly entries: readonly {
+    readonly index: number;
+    readonly state: GraphProjectionReviewOverviewEntryState;
+    /**
+     * Canonical graph-backed test classification for this side's source path. Null means that side
+     * has no indexed graph path (`absent` or `unmapped`); mapped entries retain the verdict even
+     * when the representative is filtered by Tests or deferred by a response budget.
+     */
+    readonly isTest: boolean | null;
+  }[];
 }
 
 /** Bounded metadata facts returned for one page or one selected comparison file. */
 export interface GraphProjectionReviewFacts {
   readonly contextId: string;
+  /** Digest of the immutable comparison metadata required to interpret this coordinate. */
+  readonly metadataId: string;
   readonly side: GraphProjectionReviewSide;
   readonly totalFiles: number;
   readonly statusCounts: GraphProjectionReviewStatusCounts;
   readonly pageCount: number;
   readonly page: GraphProjectionReviewPageFacts | null;
   readonly selection: GraphProjectionReviewSelectionFacts | null;
+  /** Null for exact file coordinates; present for overview/page coordinates. */
+  readonly overview: GraphProjectionReviewOverviewFacts | null;
 }
 
 /** Structural request contract used only after each boundary has performed its own validation. */
@@ -79,7 +148,7 @@ export interface GraphProjectionContractRequest {
   readonly maxResponseBytes: number;
 }
 
-/** Exact v6 field set in the one order used for transport keys and cryptographic identity. */
+/** Exact v9 field set in the one order used for transport keys and cryptographic identity. */
 export const GRAPH_PROJECTION_REQUEST_FIELDS = [
   "version",
   "view",

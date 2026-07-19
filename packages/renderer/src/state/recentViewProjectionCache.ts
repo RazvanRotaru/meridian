@@ -262,6 +262,19 @@ export class RecentViewProjectionCache<Key, Projection> {
     this.activeEntry = undefined;
   }
 
+  /**
+   * Release every inactive projection accepted by `predicate` without touching the active view.
+   *
+   * Higher-level caches use this ownership boundary to discard a whole semantic allocation class
+   * without keeping an independent registry of opaque keys. Matching entries are removed through
+   * the normal accounting path, including their browser-wide allocation reservations.
+   */
+  discardRecentWhere(predicate: (key: Key, projection: Projection) => boolean): void {
+    for (const [key, entry] of this.recentEntries) {
+      if (predicate(key, entry.projection)) this.removeRecent(key);
+    }
+  }
+
   /** Release the active projection and every decoded recent view. */
   clear(): void {
     this.activeEntry = undefined;

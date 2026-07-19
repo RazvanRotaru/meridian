@@ -29,6 +29,7 @@ import type { ReviewFlowSplitView } from "./reviewPreferences";
 import {
   preparedArtifactReviewFilesForTest,
   reviewProjectionFactsForTest,
+  reviewProjectionMetadataForTest,
 } from "./reviewProjectionTestSupport";
 
 function node(
@@ -301,7 +302,7 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
     const graphId = graphIdForOptions(options);
     const artifact = graphId.endsWith("-base") ? this.mergeBase : this.preparedHead ?? this.mergeBase;
     return {
-      version: 6,
+      version: 9,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: {
@@ -341,6 +342,14 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
       projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
       head,
       mergeBase,
+      reviewMetadata: reviewProjectionMetadataForTest(
+        preparedArtifactReviewFilesForTest(this.preparedHead ?? head.artifact),
+        head.graphId,
+        mergeBase.graphId,
+        this.preparedHead ?? head.artifact,
+        this.mergeBase,
+      ),
+      reviewMetadataResidentBytes: 1,
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     } satisfies LoadedReviewProjection;
@@ -362,6 +371,12 @@ class FlowReviewProjectionSource implements GraphProjectionDataSource {
   stageCachedReview(key: string): StagedReviewProjection | undefined {
     const review = this.reviews.get(key);
     return review === undefined ? undefined : reviewStage(review, () => { this.activeKey = key; });
+  }
+
+  discardInactiveReviewProjections(): void {
+    for (const key of this.reviews.keys()) {
+      if (key !== this.activeKey) this.reviews.delete(key);
+    }
   }
 
   searchSymbols(): Promise<never> {
@@ -1016,8 +1031,10 @@ describe("PR-review logic-flow selection", () => {
     store.getState().buildMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     store.getState().toggleShowTests();
-    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    expect(store.getState().showTests).toBe(true);
+    await vi.waitFor(() => {
+      expect(store.getState().showTests).toBe(true);
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+    });
 
     store.getState().backMinimalGraph();
     await vi.waitFor(() => {

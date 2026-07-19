@@ -21,7 +21,7 @@ import { applyChangedIds, type GraphIndex } from "../graph/graphIndex";
 import type {
   GraphProjectionEndpoints,
   GraphProjectionRequest,
-  StagedReviewProjection,
+  LoadedReviewProjection,
 } from "../graph/graphProjectionClient";
 import type { BlueprintState } from "./store";
 import type { PrChangedFile } from "./prTypes";
@@ -70,44 +70,43 @@ export async function fetchPreparedSyntheticCapability(
   return capability;
 }
 
+export interface PreparedReviewProjectionCommit {
+  /** Graph-independent session fields published with the fully-derived review presentation. */
+  readonly state: Partial<BlueprintState>;
+  /** The outgoing prepared coordinate has no navigation owner after a revision replacement. */
+  readonly supersededKeys: readonly string[];
+}
+
 /**
- * Make the prepared PR-head projection current. The original projection identity is saved once;
- * re-reviewing never creates a second decoded baseline outside the bounded transport cache.
+ * Build the graph-independent half of one prepared-review commit. Callers derive presentation
+ * against `prepared` while it is still staged, then transfer staged cache ownership and publish
+ * this state together with the derived artifact/index in one synchronous store update.
  */
-export function swapToPreparedReviewProjection(
-  get: () => BlueprintState,
-  set: (partial: Partial<BlueprintState>) => void,
-  staged: StagedReviewProjection,
-  invalidateArtifactCaches: () => void,
+export function preparedReviewProjectionCommit(
+  state: BlueprintState,
+  prepared: LoadedReviewProjection,
   headEndpoints: GraphProjectionEndpoints,
-  capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
+  capability: PreparedSyntheticCapability = currentSyntheticCapability(state),
   commitState: Partial<BlueprintState> = {},
-): void {
-  try {
-    const state = get();
-    const baseline = state.prReviewBaseline ?? activeBaseline(state);
-    const prepared = staged.projection;
-    const head = prepared.head;
-    // First entry retains the exact pre-review coordinate as its return target. On Resume/Refresh,
-    // however, the currently mounted base/review projection may be a transient derivative of that
-    // saved coordinate. It has no durable navigation owner once the prepared pair becomes active,
-    // so supersede it atomically instead of leaking it into the recent-view LRU.
-    const supersededCurrent = state.prReviewBaseline !== null
-      && state.activeProjectionKey !== null
-      && state.activeProjectionKey !== baseline.projectionKey
-      ? [state.activeProjectionKey]
-      : [];
-    staged.commit({ supersededKeys: supersededCurrent });
-    invalidateArtifactCaches();
-    set({
-      artifact: head.artifact,
-      index: head.index,
+): PreparedReviewProjectionCommit {
+  const baseline = state.prReviewBaseline ?? activeBaseline(state);
+  const head = prepared.head;
+  // First entry retains the exact pre-review coordinate as its return target. On Resume/Refresh,
+  // however, the currently mounted review projection has no durable navigation owner after the
+  // new revision becomes active, so prevent it from leaking into the recent-view LRU.
+  const supersededKeys = state.prReviewBaseline !== null
+    && state.activeProjectionKey !== null
+    && state.activeProjectionKey !== baseline.projectionKey
+    ? [state.activeProjectionKey]
+    : [];
+  return {
+    supersededKeys,
+    state: {
       activeProjectionGraphId: head.graphId,
       activeProjectionRequest: head.request,
       activeProjectionKey: prepared.key,
       activeProjectionId: prepared.projectionId,
       activeProjectionEndpoints: headEndpoints,
-      prReviewComparison: prepared.mergeBase,
       prReviewBaseline: baseline,
       prPreparedArtifactCurrent: true,
       reviewHeadRef: null,
@@ -116,9 +115,6 @@ export function swapToPreparedReviewProjection(
       syntheticScenarios: [...capability.syntheticScenarios],
       syntheticExecutionTrust: capability.syntheticExecutionTrust,
       ...resetSyntheticRunState(state),
-      reviewBaseNodeIds: new Set<string>(),
-      reviewDeletedNodeIds: new Set<string>(),
-      reviewBaseSpanByHeadId: new Map<string, LineRange>(),
       // The outgoing report belongs to another revision. Prepared projections carry repository-wide
       // claims plus paint facts for this exact HEAD slice; never recompute claims from partial nodes.
       coverage: state.coverageMode && head.reachability !== null
@@ -131,10 +127,8 @@ export function swapToPreparedReviewProjection(
       // Descriptor/cursor state which identifies this exact pair publishes with the graph. Callers
       // must never expose a new projection beneath the prior review coordinate.
       ...commitState,
-    });
-  } finally {
-    staged.release();
-  }
+    },
+  };
 }
 
 /**
@@ -156,24 +150,20 @@ export function resetChangedIdsToArtifact(artifact: GraphArtifact, index: GraphI
  * The decoded prior projection is deliberately not retained here; the store promotes it from the
  * bounded recent-view LRU when present, otherwise the next layout reloads it by request identity.
  */
-export function restorePrReviewBaseline(
-  get: () => BlueprintState,
-  set: (partial: Partial<BlueprintState>) => void,
-  invalidateArtifactCaches: () => void,
+export function prReviewBaselineRestoreCommit(
+  state: BlueprintState,
   options: { endSession?: boolean } = {},
-): boolean {
+): Partial<BlueprintState> | null {
   const endSession = options.endSession ?? true;
-  const state = get();
   const baseline = state.prReviewBaseline;
   if (baseline === null) {
-    return false;
+    return null;
   }
-  invalidateArtifactCaches();
   const restoredSession: Partial<BlueprintState> = {
     prPreparedArtifactCurrent: false,
     prReviewComparison: null,
-    prPreparedFileProjectionPending: null,
-    prPreparedFileProjectionError: null,
+    prPreparedProjectionPending: null,
+    prPreparedProjectionError: null,
     reviewBaseNodeIds: new Set<string>(),
     reviewDeletedNodeIds: new Set<string>(),
     reviewBaseSpanByHeadId: new Map<string, LineRange>(),
@@ -182,7 +172,7 @@ export function restorePrReviewBaseline(
     syntheticExecutionUrl: baseline.syntheticExecutionUrl,
     syntheticScenarios: [...baseline.syntheticScenarios],
     syntheticExecutionTrust: baseline.syntheticExecutionTrust,
-    ...resetSyntheticRunState(get()),
+    ...resetSyntheticRunState(state),
   };
   if (!endSession) {
     // Park only restart coordinates and user progress. ReviewData owns the artifact's LogicFlows,
@@ -192,7 +182,7 @@ export function restorePrReviewBaseline(
     const parkedSource = state.prReviewSource === null
       ? null
       : { ...state.prReviewSource, files: lightweightReviewFiles(state.prReviewSource.files) };
-    set({
+    return {
       ...restoredSession,
       review: null,
       reviewAffectedIds: new Set<string>(),
@@ -210,10 +200,9 @@ export function restorePrReviewBaseline(
       ...(parkedSource !== null && state.prSelected === parkedSource.number
         ? { prFiles: parkedSource.files }
         : {}),
-    });
-    return true;
+    };
   }
-  set({
+  return {
     ...restoredSession,
     review: null,
     reviewTicks: {},
@@ -221,16 +210,29 @@ export function restorePrReviewBaseline(
     reviewFileTicks: {},
     reviewComments: [],
     reviewFiles: [],
+    reviewProgressCatalog: null,
     reviewPanelHidden: false,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
+    reviewSubmitNotice: null,
     reviewSubmittedUrl: null,
+    reviewLineComposer: null,
+    reviewCommentsVisible: true,
+    prCommentMutationStatus: "idle",
+    prCommentMutationId: null,
+    prCommentMutationError: null,
     reviewAffectedIds: new Set(),
+    reviewFileDelta: {},
     reviewDiffOnly: false,
     reviewLitNodeIds: null,
     reviewSelectedId: null,
     flowSelection: null,
+    reviewFlowExplicitView: null,
+    flowPaneOrigin: null,
     flowPaneExpansionOverrides: new Set<string>(),
+    flowPaneCollapsedEdges: new Set<string>(),
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
     logicSelected: null,
     flowPaneRfNodes: [],
     flowPaneRfEdges: [],
@@ -260,9 +262,11 @@ export function restorePrReviewBaseline(
     prPreparedHead: null,
     prPreparedMergeBase: null,
     prPreparedReviewCursor: null,
-    prPreparedFileProjectionPending: null,
-    prPreparedFileProjectionError: null,
+    prPreparedProjectionPending: null,
+    prPreparedProjectionError: null,
     prPreparedChangedFiles: [],
+    prPreparedOverviewCoverage: null,
+    prPreparedTestClassifications: null,
     prPreparedHeadSha: null,
     prPreparedMergeBaseSha: null,
     // The review pre-expanded/seeded the Map around the PR; none of that is the reader's own
@@ -270,16 +274,29 @@ export function restorePrReviewBaseline(
     moduleFocus: null,
     moduleSelected: new Set<string>(),
     moduleExpanded: new Set<string>(),
+    moduleRfNodes: [],
+    moduleRfEdges: [],
+    moduleSemanticLayers: [],
+    moduleEffectiveFocus: null,
+    moduleLayoutStatus: "idle",
+    moduleLayoutActivity: null,
     minimalSeedIds: [],
     minimalMemberIds: [],
+    minimalProjectionExtraIds: new Set<string>(),
     minimalRollups: {},
     minimalBasePositions: {},
     minimalArrange: false,
     minimalRfNodes: [],
     minimalRfEdges: [],
     minimalLayoutStatus: "idle",
-  });
-  return true;
+    minimalLayoutActivity: null,
+    minimalView: "graph",
+    minimalShowGhostNodes: true,
+    minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    minimalCodebaseTargetIds: [],
+    minimalCodebaseRetainedExpandedIds: new Set<string>(),
+    minimalCodebaseProjectionPending: false,
+  };
 }
 
 /** Keep only canonical PR membership/provenance while parked. Patch bodies, ranges, removed text,

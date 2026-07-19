@@ -35,6 +35,7 @@ import { handleGraphProjectionRequest } from "./graph-projection-response";
 import type { ArtifactSource } from "./web-source";
 import type { SyntheticExecutionTrust } from "./web-boot";
 import type { GraphCapabilityHandle } from "./graph-capability-store";
+import { reviewMetadataForContext } from "./review-comparison-context";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const stream = acceptsNdjson(request);
@@ -421,6 +422,41 @@ export async function sendProjectionManifest(
   }
 }
 
+/** Serve the one disk-owned, graph-bound classification catalog shared by every PR coordinate. */
+export async function sendReviewMetadata(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  searchParams: URLSearchParams,
+): Promise<void> {
+  const lifecycle = graphRequestLifecycle(ctx, request, response, "The client closed the review metadata request");
+  try {
+    const id = requiredGraphId(searchParams, "graph review metadata");
+    const acquired = await acquireProjectionBundle(ctx, id, lifecycle.signal);
+    if (!acquired || acquired.review === null) {
+      sendJson(response, 404, { error: "review metadata is unavailable" });
+      return;
+    }
+    await withOwnedResource(acquired, "graph review metadata capability", async () => {
+      lifecycle.signal.throwIfAborted();
+      const review = acquired.review!;
+      // GraphCapabilityStore has already verified the peer's reciprocal descriptor and the shared
+      // context/content identity. Do not reacquire and re-verify the peer generation on this hot
+      // metadata path; the browser independently holds both graph capabilities for its projections.
+      const headGraphId = review.side === "head" ? acquired.id : review.peerGraphId;
+      const mergeBaseGraphId = review.side === "mergeBase" ? acquired.id : review.peerGraphId;
+      sendJson(response, 200, reviewMetadataForContext(
+        review.context,
+        review.contextId,
+        headGraphId,
+        mergeBaseGraphId,
+      ));
+    });
+  } finally {
+    lifecycle.dispose();
+  }
+}
+
 /** Materialize one bounded current-view projection from immutable disk shards. */
 export async function handleGraphProjection(
   ctx: Context,
@@ -506,6 +542,7 @@ function requiredGraphId(searchParams: URLSearchParams, label: string): string {
 }
 
 interface AcquiredProjectionBundle {
+  readonly id: string;
   readonly root: string;
   readonly review: GraphCapabilityHandle["review"];
   readonly signal: AbortSignal;
@@ -520,6 +557,7 @@ async function acquireProjectionBundle(
   if (id === null) return null;
   const handle = await ctx.graphCapabilities.acquire(id, { signal });
   return handle ? {
+    id,
     root: handle.projectionDirectory,
     review: handle.review,
     signal: handle.signal,
@@ -530,7 +568,21 @@ async function acquireProjectionBundle(
 function projectionQueryOptions(
   acquired: AcquiredProjectionBundle,
 ): GraphProjectionQueryOptions {
-  return acquired.review === null ? {} : { review: acquired.review };
+  if (acquired.review === null) return {};
+  const review = acquired.review;
+  const headGraphId = review.side === "head" ? acquired.id : review.peerGraphId;
+  const mergeBaseGraphId = review.side === "mergeBase" ? acquired.id : review.peerGraphId;
+  return {
+    review: {
+      ...review,
+      metadataId: reviewMetadataForContext(
+        review.context,
+        review.contextId,
+        headGraphId,
+        mergeBaseGraphId,
+      ).metadataId,
+    },
+  };
 }
 
 const PROJECTION_READER_COUNT = 4;

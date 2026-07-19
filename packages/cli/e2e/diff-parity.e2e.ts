@@ -217,8 +217,9 @@ async function assertTextualFileDiff(
   await modal.waitFor({ state: "detached" });
 }
 
-/** The review overview intentionally carries no graph. A file-row selection is the public action
- * that hydrates its exact two-sided projection; the E2E must exercise that contract explicitly. */
+/** The review overview carries one bounded representative per matched changed file. A file-row
+ * selection remains the public action that hydrates its exact two-sided projection; the E2E must
+ * exercise that narrower coordinate explicitly. */
 async function focusReviewFile(page: Page, path: string): Promise<void> {
   const sourceOnly = page.getByTitle(`${path} — click to view the changed source`, { exact: true });
   if (await sourceOnly.count() > 0) {
@@ -229,7 +230,7 @@ async function focusReviewFile(page: Page, path: string): Promise<void> {
   const unloaded = page.getByTitle(`${path} — click to load its graph`, { exact: true });
   if (await unloaded.count() > 0) {
     await unloaded.first().click();
-    // A prepared review deliberately starts as a source-only manifest. The click is the public
+    // A prepared review starts with a bounded representative overview. The click is the public
     // transition which fetches and atomically commits this file's HEAD + merge-base projections;
     // require the row to reach one honest committed state before any graph/source assertion runs.
     const committed = sourceOnly.or(projected);

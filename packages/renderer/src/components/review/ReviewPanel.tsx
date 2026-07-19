@@ -9,7 +9,8 @@
 
 import { memo, useEffect, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
+import { isReviewTestPath } from "../../derive/reviewFiles";
+import { countViewedReviewFiles } from "../../state/reviewFileProgress";
 import type { ReviewData } from "../../derive/reviewData";
 import type { PrSummary } from "../../state/prTypes";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
@@ -22,6 +23,7 @@ import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 import { selectedPrSummary } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
+import { preparedReviewTestVerdicts } from "../../state/preparedReviewProjection";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
@@ -35,13 +37,19 @@ function ReviewPanelImpl() {
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const prSelected = useBlueprint((state) => state.prSelected);
   const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
-  const footerVisible = useBlueprint((state) => state.prReviewed !== null || (state.showTests
-    ? state.reviewComments.length > 0
-    : state.reviewComments.some((comment) => !isReviewTestPath(
+  const footerVisible = useBlueprint((state) => {
+    if (state.prReviewed !== null || state.showTests) return state.prReviewed !== null || state.reviewComments.length > 0;
+    const testVerdicts = preparedReviewTestVerdicts(
+      state.prPreparedTestClassifications,
+      state.prPreparedChangedFiles,
+    );
+    return state.reviewComments.some((comment) => !isReviewTestPath(
       comment.path,
       state.index,
       state.prReviewComparison?.index ?? null,
-    ))));
+      testVerdicts,
+    ));
+  });
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
@@ -326,12 +334,14 @@ function usePrReviewFreshnessWatcher() {
 /** The hidden panel folds to a slim rail in place — the reopen affordance stays exactly where the
  * panel was instead of popping up somewhere else. The whole rail is the button. */
 function CollapsedRail() {
-  const files = useBlueprint((state) => state.reviewFiles);
+  const progress = useBlueprint((state) => state.reviewProgressCatalog);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const showTests = useBlueprint((state) => state.showTests);
   const stale = useBlueprint((state) => state.prReviewStale || state.prReviewRefreshing);
   const { toggleReviewPanel } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks);
+  const viewed = countViewedReviewFiles(progress, unitTicks, fileTicks, showTests);
+  const total = progress?.order.length ?? 0;
   return (
     <button
       type="button"
@@ -343,7 +353,7 @@ function CollapsedRail() {
       <span style={RAIL_GLYPH}>«</span>
       <span style={RAIL_LABEL}>PR review</span>
       {stale && <span style={RAIL_STALE_DOT} aria-hidden="true" />}
-      {files.length > 0 && <span style={RAIL_COUNT}>{viewed}/{files.length}</span>}
+      {total > 0 && <span style={RAIL_COUNT}>{viewed}/{total}</span>}
     </button>
   );
 }
@@ -356,16 +366,21 @@ function Header(props: {
 }) {
   const { review, preferencesOpen, preferencesButtonRef, onTogglePreferences } = props;
   const [preferencesFocusVisible, setPreferencesFocusVisible] = useState(false);
-  const files = useBlueprint((state) => state.reviewFiles);
+  const progress = useBlueprint((state) => state.reviewProgressCatalog);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const showTests = useBlueprint((state) => state.showTests);
   const existingCommentCount = useBlueprint((state) => {
-    return state.showTests
-      ? state.prDiscussion?.comments.length ?? 0
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(
+    if (state.showTests) return state.prDiscussion?.comments.length ?? 0;
+    const testVerdicts = preparedReviewTestVerdicts(
+      state.prPreparedTestClassifications,
+      state.prPreparedChangedFiles,
+    );
+    return state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(
           comment.path,
           state.index,
           state.prReviewComparison?.index ?? null,
+          testVerdicts,
         )).length ?? 0;
   });
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
@@ -375,8 +390,8 @@ function Header(props: {
   const stale = useBlueprint((state) => state.prReviewStale);
   const refreshing = useBlueprint((state) => state.prReviewRefreshing);
   const { resetReviewTicks, toggleReviewPanel, toggleReviewCommentsVisible, refreshPrReview } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks);
-  const total = files.length;
+  const viewed = countViewedReviewFiles(progress, unitTicks, fileTicks, showTests);
+  const total = progress?.order.length ?? 0;
   const ctx = review.context;
   return (
     <div style={HEADER}>

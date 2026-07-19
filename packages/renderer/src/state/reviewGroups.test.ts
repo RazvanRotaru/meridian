@@ -31,6 +31,7 @@ import type { PrSummary } from "./prTypes";
 import {
   preparedArtifactReviewFilesForTest,
   reviewProjectionFactsForTest,
+  reviewProjectionMetadataForTest,
 } from "./reviewProjectionTestSupport";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
@@ -124,7 +125,7 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
     const graphId = graphIdFrom(options);
     const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
     return {
-      version: 6,
+      version: 9,
       graphId,
       contentId: "0".repeat(64),
       graphSummary: graphSummary(artifact),
@@ -159,6 +160,14 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
       projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
       head,
       mergeBase,
+      reviewMetadata: reviewProjectionMetadataForTest(
+        preparedArtifactReviewFilesForTest(this.headArtifact),
+        head.graphId,
+        mergeBase.graphId,
+        this.headArtifact,
+        this.mergeBaseArtifact,
+      ),
+      reviewMetadataResidentBytes: 1,
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     };
@@ -180,6 +189,12 @@ class ReviewProjectionSource implements GraphProjectionDataSource {
   stageCachedReview(key: string): StagedReviewProjection | undefined {
     const review = this.cachedReviews.get(key);
     return review === undefined ? undefined : stagedReview(review, () => { this.activeKey = key; });
+  }
+
+  discardInactiveReviewProjections(): void {
+    for (const key of this.cachedReviews.keys()) {
+      if (key !== this.activeKey) this.cachedReviews.delete(key);
+    }
   }
 
   searchSymbols(): Promise<never> {

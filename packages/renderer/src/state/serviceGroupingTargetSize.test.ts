@@ -3,7 +3,6 @@ import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore } from "./store";
 import { decodeNavState } from "./urlState";
-import { structuralState } from "./urlSync";
 import {
   DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
   SERVICE_GROUPING_TARGET_SIZES,
@@ -52,10 +51,13 @@ describe("Service grouping target size", () => {
   });
 
   it("restores a URL value and resets an absent value back to 12", () => {
-    const restored = structuralState(decodeNavState(new URLSearchParams("view=call&sgsize=24")));
-    expect(restored).toHaveProperty("serviceGroupingTargetSize", 24);
+    const store = freshStore();
+    store.getState().installNavigationRestore(
+      decodeNavState(new URLSearchParams("view=call&sgsize=24")),
+    );
+    expect(store.getState().serviceGroupingTargetSize).toBe(24);
 
-    const reset = structuralState(decodeNavState(new URLSearchParams("view=call")));
-    expect(reset).toHaveProperty("serviceGroupingTargetSize", DEFAULT_SERVICE_GROUPING_TARGET_SIZE);
+    store.getState().installNavigationRestore(decodeNavState(new URLSearchParams("view=call")));
+    expect(store.getState().serviceGroupingTargetSize).toBe(DEFAULT_SERVICE_GROUPING_TARGET_SIZE);
   });
 });

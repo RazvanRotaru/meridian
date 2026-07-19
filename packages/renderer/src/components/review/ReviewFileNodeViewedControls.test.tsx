@@ -2,7 +2,10 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { buildGraphIndex } from "../../graph/graphIndex";
+import type { ReviewFileRow } from "../../derive/reviewFiles";
 import { createBlueprintStore } from "../../state/store";
+import { reconcileReviewProgress } from "../../state/reviewFileProgress";
+import type { ReviewTick } from "../../state/reviewTicksPref";
 import { StoreProvider } from "../../state/StoreContext";
 import { SurfaceInteractionScope } from "../canvas/SurfaceInteractionContext";
 import {
@@ -221,8 +224,7 @@ function reviewStore({
     prChecksUrl: "",
     prReviewUrl: "",
   });
-  store.setState({
-    reviewFiles: [{
+  const reviewFiles: ReviewFileRow[] = [{
       path: "src/ServiceContainerFactory.ts",
       status: "modified",
       moduleId: FILE_ID,
@@ -237,7 +239,6 @@ function reviewStore({
         isTest: false,
         fingerprint: "unit-fingerprint",
       }],
-      fingerprint: "file-fingerprint",
       blastRadius: 0,
       deletedImpact: null,
     }, {
@@ -246,11 +247,26 @@ function reviewStore({
       moduleId: OUTSIDE_FILE_ID,
       isTest: false,
       units: [],
-      fingerprint: "outside-file-fingerprint",
       blastRadius: 0,
       deletedImpact: null,
-    }],
-    reviewUnitTicks: fingerprint === undefined ? {} : { [UNIT_ID]: { at: "now", fingerprint } },
+    }];
+  const unitTicks: Record<string, ReviewTick> = fingerprint === undefined
+    ? {}
+    : { [UNIT_ID]: { at: "now", fingerprint } };
+  const progress = reconcileReviewProgress({
+    previous: null,
+    reviewKey: "fixture",
+    revisionKey: "revision",
+    changedFiles: reviewFiles.map((file) => ({ path: file.path, status: file.status })),
+    authoritativeFiles: reviewFiles,
+    includeTests: false,
+    unitTicks,
+    fileTicks: {},
+  });
+  store.setState({
+    reviewFiles,
+    reviewProgressCatalog: progress.catalog,
+    reviewUnitTicks: progress.unitTicks,
     reviewFileTicks: {},
     minimalRollups: folderMembers.length === 0 ? {} : { [FOLDER_ID]: folderMembers },
   });

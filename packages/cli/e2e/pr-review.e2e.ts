@@ -109,9 +109,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await extractedReviewSurface.waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
-    // Preparation lands on an honest manifest overview. No changed-file graph is resident until
-    // the reader selects one, and graph-only actions stay unavailable on that zero-node surface.
-    expect(await extractedReviewSurface.locator(".react-flow__node").count()).toBe(0);
+    // Preparation lands on a bounded representative overview. It must be immediately useful while
+    // keeping exact per-file subgraphs lazy; selecting a row replaces this coordinate atomically.
+    const overviewNodes = extractedReviewSurface.locator(".react-flow__node");
+    await expect.poll(() => overviewNodes.count()).toBeGreaterThan(0);
     const codebaseButton = page.getByRole("button", { name: "Highlight code in codebase" });
     expect(await codebaseButton.getAttribute("aria-disabled")).toBe("true");
     let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
@@ -457,10 +458,17 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await syncProvenance.waitFor();
     expect(await storedUnitTicks(page)).toEqual(storedTick);
     const restoredExtractedSurface = page.getByRole("region", { name: "Extracted graph" });
-    expect(await restoredExtractedSurface.locator(".react-flow__node").count()).toBe(0);
+    await expect.poll(() => restoredExtractedSurface.locator(".react-flow__node").count())
+      .toBeGreaterThan(0);
     const orderFile = reviewFileButton(page, "src/services/orderService.ts");
     await orderFile.getByText("load graph", { exact: true }).waitFor();
     await orderFile.click();
+    // The bounded overview may already contain this module. Wait for the file row's committed
+    // coordinate instead of treating pre-existing node presence as a projection-hydration barrier.
+    await page.getByTitle(
+      "src/services/orderService.ts — click to reveal on the graph",
+      { exact: true },
+    ).waitFor({ timeout: 60_000 });
     await restoredExtractedSurface.locator(
       `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`,
     ).waitFor({ timeout: 60_000 });

@@ -182,6 +182,7 @@ export interface ResolvedGraphReviewComparisonContext {
   readonly context: ReviewComparisonContext;
   readonly contextId: string;
   readonly side: ReviewComparisonSide;
+  readonly peerGraphId: string;
 }
 
 export interface PublishGraphCapability {
@@ -283,6 +284,7 @@ interface ResolvedGraphCapabilityPaths {
   readonly projectionDirectory: string;
   readonly generationDirectory: string;
   readonly reviewContextPath: string | null;
+  readonly reviewPeerDescriptor: GraphCapabilityDescriptor | null;
   readonly source: GraphCapabilitySource;
 }
 
@@ -615,7 +617,11 @@ export class GraphCapabilityStore {
         graphSummary: acquired.descriptor.graphSummary,
         revision: acquired.descriptor.artifact.revision,
       }, options.signal);
-      review = this.resolveReviewForPaths(acquired.descriptor, acquired.reviewContextPath);
+      review = this.resolveReviewForPaths(
+        acquired.descriptor,
+        acquired.reviewContextPath,
+        acquired.reviewPeerDescriptor,
+      );
       if (acquired.descriptor.reviewContext !== null && review === null) {
         throw new Error("graph review comparison context failed immutable verification");
       }
@@ -1352,7 +1358,11 @@ export class GraphCapabilityStore {
     });
     if (!context
       || review.generation.revision.commit !== context.headSha
-      || input.generation.revision.commit !== (review.side === "head" ? context.headSha : context.mergeBaseSha)) {
+      || review.generation.projectionContentId !== context.headContentId
+      || input.generation.revision.commit !== (review.side === "head" ? context.headSha : context.mergeBaseSha)
+      || input.generation.projectionContentId !== (
+        review.side === "head" ? context.headContentId : context.mergeBaseContentId
+      )) {
       throw new TypeError("graph review comparison context does not match its revisions");
     }
     return {
@@ -1423,8 +1433,12 @@ export class GraphCapabilityStore {
     const reviewContext = descriptor.reviewContext === null
       ? null
       : this.resolveReviewContextReference(descriptor.reviewContext);
+    const reviewPeerDescriptor = descriptor.reviewContext === null
+      ? null
+      : this.resolveReviewPeerDescriptor(descriptor);
     if (!artifactPath || !projectionDirectory || !generationDirectory || !rootDir
       || (descriptor.reviewContext !== null && reviewContext === null)
+      || (descriptor.reviewContext !== null && reviewPeerDescriptor === null)
       || (descriptor.reviewContext?.side === "head"
         && reviewContext?.generationRoot !== generationDirectory)
       || dirname(artifactPath) !== dirname(projectionDirectory)
@@ -1446,6 +1460,7 @@ export class GraphCapabilityStore {
       projectionDirectory,
       generationDirectory,
       reviewContextPath: reviewContext?.path ?? null,
+      reviewPeerDescriptor,
       source: {
         rootDir,
         sourceDir,
@@ -1474,22 +1489,44 @@ export class GraphCapabilityStore {
   private resolveReviewForPaths(
     descriptor: GraphCapabilityDescriptor,
     path: string | null,
+    peerDescriptor: GraphCapabilityDescriptor | null,
   ): ResolvedGraphReviewComparisonContext | null {
     const reference = descriptor.reviewContext;
     if (reference === null) return null;
-    if (path === null || descriptor.artifact.revision.kind !== "git") return null;
+    if (path === null || peerDescriptor === null) return null;
     const context = readReviewComparisonContext({
       path,
       sha256: reference.sha256,
       bytes: reference.bytes,
     });
-    const expectedCommit = reference.side === "head" ? context?.headSha : context?.mergeBaseSha;
-    if (!context || descriptor.artifact.revision.commit !== expectedCommit) return null;
+    if (!context
+      || !descriptorMatchesReviewContext(descriptor, context)
+      || !descriptorMatchesReviewContext(peerDescriptor, context)) return null;
     return Object.freeze({
       context,
       contextId: reference.sha256,
       side: reference.side,
+      peerGraphId: reference.peerGraphId,
     });
+  }
+
+  private resolveReviewPeerDescriptor(
+    descriptor: GraphCapabilityDescriptor,
+  ): GraphCapabilityDescriptor | null {
+    const reference = descriptor.reviewContext;
+    if (reference === null) return null;
+    const peer = this.readDescriptorFromDisk(reference.peerGraphId)?.descriptor ?? null;
+    const peerReference = peer?.reviewContext ?? null;
+    if (!peer || !peerReference
+      || peerReference.side === reference.side
+      || peerReference.peerGraphId !== descriptor.id
+      || peerReference.path !== reference.path
+      || peerReference.sha256 !== reference.sha256
+      || peerReference.bytes !== reference.bytes
+      || peerReference.generationRoot !== reference.generationRoot
+      || (peerReference.side === "head"
+        && peerReference.generationRoot !== peer.artifact.generationPath)) return null;
+    return peer;
   }
 
   private listDescriptorIdsInternal(): string[] {
@@ -2420,6 +2457,20 @@ function durableSourceOwnership(source: GraphCapabilitySourceDescriptor): {
   return source.kind === "managed-cache" && source.owner
     ? { sourceLease: source.owner, sourceRootPath: source.rootPath }
     : { sourceLease: null, sourceRootPath: null };
+}
+
+function descriptorMatchesReviewContext(
+  descriptor: GraphCapabilityDescriptor,
+  context: ReviewComparisonContext,
+): boolean {
+  const reference = descriptor.reviewContext;
+  if (reference === null || descriptor.artifact.revision.kind !== "git") return false;
+  const expectedCommit = reference.side === "head" ? context.headSha : context.mergeBaseSha;
+  const expectedContentId = reference.side === "head"
+    ? context.headContentId
+    : context.mergeBaseContentId;
+  return descriptor.artifact.revision.commit === expectedCommit
+    && descriptor.artifact.projectionContentId === expectedContentId;
 }
 
 function validDurableSourceOwnership(

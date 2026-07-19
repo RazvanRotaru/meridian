@@ -15,6 +15,7 @@ import {
   compareCanonicalPrPreparePaths,
   deriveGraphStructure,
   graphProjectionIdentityPreimage,
+  graphProjectionReviewMetadataIdentityPreimage,
   isGraphProjectionReviewCursor,
   parseGraphModuleOverview,
   parseReachabilityProjectionFacts,
@@ -25,6 +26,7 @@ import type {
   GraphModuleOverview,
   GraphProjectionReviewFacts,
   GraphProjectionReviewFile,
+  GraphProjectionReviewMetadata,
   GraphProjectionReviewStatusCounts,
   GraphRepositorySummary,
   GraphStructureFacts,
@@ -78,6 +80,8 @@ const MIN_MAX_RESPONSE_BYTES = 64 * 1024;
 const MAX_IN_FLIGHT_ESTIMATED_RESIDENT_BYTES = 192 * 1024 * 1024;
 const MAX_PENDING_PROJECTION_ENTRIES = 4;
 const MAX_MANIFEST_RESPONSE_BYTES = 64 * 1024;
+const MAX_REVIEW_METADATA_RESPONSE_BYTES = 8 * 1024 * 1024;
+const MAX_IN_FLIGHT_REVIEW_METADATA = 4;
 const MAX_SYMBOL_SEARCH_QUERY_BYTES = 256;
 const MAX_SYMBOL_SEARCH_RESPONSE_BYTES = 512 * 1024;
 const PROJECTION_MANIFEST_FIELDS = [
@@ -160,6 +164,10 @@ export interface LoadedReviewProjection {
   projectionId: string;
   head: LoadedGraphProjection;
   mergeBase: LoadedGraphProjection;
+  /** One shared immutable catalog object for every coordinate in this comparison. */
+  reviewMetadata: GraphProjectionReviewMetadata;
+  /** Shared catalog charge, accounted once by the client rather than once per coordinate. */
+  reviewMetadataResidentBytes: number;
   serializedBytes: number;
   residentBytes: number;
 }
@@ -220,6 +228,8 @@ export interface GraphProjectionDataSource {
   stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection>;
   stageCached(key: string): StagedGraphProjection | undefined;
   stageCachedReview(key: string): StagedReviewProjection | undefined;
+  /** Release every inactive review pair while preserving the projection currently in use. */
+  discardInactiveReviewProjections(): void;
   searchSymbols(
     request: GraphSymbolSearchRequest,
     options: GraphProjectionActivateOptions,
@@ -250,6 +260,12 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
    * decodes/indexes that HEAD exactly once. Each flight aborts only after its final subscriber. */
   private readonly inFlightSides = new Map<string, SharedDecodedProjectionFlight<LoadedGraphProjection>>();
   private readonly inFlightReviews = new Map<string, SharedDecodedProjectionFlight<LoadedReviewProjection>>();
+  private readonly inFlightReviewMetadata = new Map<
+    string,
+    SharedProjectionFlight<LoadedReviewMetadataDocument>
+  >();
+  /** One settled whole-manifest catalog; coordinate pairs share it by reference. */
+  private reviewMetadata: { key: string; document: LoadedReviewMetadataDocument } | null = null;
   private readonly decodeAdmission: ProjectionDecodeAdmission;
   private decodedTransferOwners = 0;
   /** String-only aliases keep a cached review pair as the sole owner of both decoded sides. */
@@ -304,6 +320,23 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
   /** Number of physically decoded side allocations transferring through subscribers/aggregation. */
   get decodedTransferOwnerCount(): number {
     return this.decodedTransferOwners;
+  }
+
+  /** Parsed whole-manifest review metadata retained outside coordinate projection entries. */
+  get reviewMetadataResidentByteLength(): number {
+    return this.reviewMetadata?.document.residentBytes ?? 0;
+  }
+
+  /** Active + inactive coordinate allocations plus the one shared review catalog. */
+  get retainedResidentByteLength(): number {
+    const active = this.cache.active;
+    const activeBytes = active === undefined
+      ? 0
+      : active.kind === "review" ? active.projection.residentBytes : active.projection.residentBytes;
+    return safeByteSum(
+      safeByteSum(activeBytes, this.cache.recentResidentByteLength),
+      this.reviewMetadataResidentByteLength,
+    );
   }
 
   async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
@@ -403,54 +436,75 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
       return this.stageDecodedReview(cached.projection, headKey, mergeBaseKey);
     }
 
-    // Decode/index both sides before publishing either. A malformed or stale merge-base therefore
-    // cannot replace a still-usable active projection with a half-loaded review.
+    // Decode/index both sides and verify their one shared immutable metadata document before
+    // publishing either. A malformed or stale lane cannot replace a usable review.
     const decoded = await this.subscribeDecodedProjection(this.inFlightReviews, key, async (reviewSignal) => {
-      const [headOwner, mergeBaseOwner] = await loadAtomicPair(
+      const [reviewMetadataDocument, sideOwners] = await loadAtomicPair(
         reviewSignal,
-        (pairSignal) => this.subscribeDecodedProjection(
-          this.inFlightSides,
-          headKey,
-          (signal) => this.decodeWithAdmission(
-            headRequest,
-            signal,
-            () => this.fetchProjection(
-              headManifest,
-              headRequest,
-              options.head.endpoints.projectionUrl,
-              signal,
-            ),
-          ),
+        (pairSignal) => this.loadReviewMetadata(
+          headManifest,
+          mergeBaseManifest,
+          options.head.endpoints,
+          options.mergeBase.endpoints,
           pairSignal,
         ),
-        (pairSignal) => this.subscribeDecodedProjection(
-          this.inFlightSides,
-          mergeBaseKey,
-          (signal) => this.decodeWithAdmission(
-            mergeBaseRequest,
-            signal,
-            () => this.fetchProjection(
-              mergeBaseManifest,
-              mergeBaseRequest,
-              options.mergeBase.endpoints.projectionUrl,
-              signal,
-            ),
-          ),
+        (pairSignal) => loadAtomicPair(
           pairSignal,
+          (sideSignal) => this.subscribeDecodedProjection(
+            this.inFlightSides,
+            headKey,
+            (signal) => this.decodeWithAdmission(
+              headRequest,
+              signal,
+              () => this.fetchProjection(
+                headManifest,
+                headRequest,
+                options.head.endpoints.projectionUrl,
+                signal,
+              ),
+            ),
+            sideSignal,
+          ),
+          (sideSignal) => this.subscribeDecodedProjection(
+            this.inFlightSides,
+            mergeBaseKey,
+            (signal) => this.decodeWithAdmission(
+              mergeBaseRequest,
+              signal,
+              () => this.fetchProjection(
+                mergeBaseManifest,
+                mergeBaseRequest,
+                options.mergeBase.endpoints.projectionUrl,
+                signal,
+              ),
+            ),
+            sideSignal,
+          ),
+          {
+            disposeLeft: (owner) => owner.release(),
+            disposeRight: (owner) => owner.release(),
+          },
         ),
         {
-          disposeLeft: (owner) => owner.release(),
-          disposeRight: (owner) => owner.release(),
+          disposeRight: ([headOwner, mergeBaseOwner]) => {
+            headOwner.release();
+            mergeBaseOwner.release();
+          },
         },
       );
+      const [headOwner, mergeBaseOwner] = sideOwners;
       try {
         const head = headOwner.projection;
         const mergeBase = mergeBaseOwner.projection;
+        const reviewMetadata = reviewMetadataDocument.metadata;
+        assertReviewMetadataMatchesProjections(reviewMetadata, head, mergeBase);
         const projection: LoadedReviewProjection = {
           key,
           projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
           head,
           mergeBase,
+          reviewMetadata,
+          reviewMetadataResidentBytes: reviewMetadataDocument.residentBytes,
           serializedBytes: safeByteSum(head.serializedBytes, mergeBase.serializedBytes),
           residentBytes: safeByteSum(
             safeByteSum(head.residentBytes, mergeBase.residentBytes),
@@ -496,6 +550,60 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
       cached.projection,
       cached.projection.head.key,
       cached.projection.mergeBase.key,
+    );
+  }
+
+  discardInactiveReviewProjections(): void {
+    this.cache.discardRecentWhere((_key, cached) => cached.kind === "review");
+    this.pruneReviewSideAliases();
+    const active = this.cache.activeKey === undefined
+      ? undefined
+      : this.cache.peek(this.cache.activeKey);
+    if (active?.kind !== "review") this.reviewMetadata = null;
+  }
+
+  private async loadReviewMetadata(
+    headManifest: GraphProjectionManifest,
+    mergeBaseManifest: GraphProjectionManifest,
+    headEndpoints: GraphProjectionEndpoints,
+    mergeBaseEndpoints: GraphProjectionEndpoints,
+    signal?: AbortSignal,
+  ): Promise<LoadedReviewMetadataDocument> {
+    const endpoint = reviewMetadataEndpoint(headEndpoints.projectionUrl);
+    const key = JSON.stringify([
+      headEndpoints.graphId,
+      mergeBaseEndpoints.graphId,
+      headManifest.contentId,
+      mergeBaseManifest.contentId,
+    ]);
+    throwIfAborted(signal);
+    if (this.reviewMetadata?.key === key) return this.reviewMetadata.document;
+    return this.subscribeProjection(
+      this.inFlightReviewMetadata,
+      key,
+      async (flightSignal) => {
+        const liability = estimatedDecodeLiability(
+          MAX_REVIEW_METADATA_RESPONSE_BYTES,
+          DEFAULT_RESIDENT_EXPANSION_FACTOR + TRANSIENT_RESPONSE_EXPANSION_FACTOR,
+        );
+        const release = await this.decodeAdmission.acquire(liability, flightSignal);
+        try {
+          return await fetchReviewMetadata(
+            this.fetchImpl,
+            endpoint,
+            headManifest,
+            mergeBaseManifest,
+            headEndpoints,
+            mergeBaseEndpoints,
+            flightSignal,
+          );
+        } finally {
+          release();
+        }
+      },
+      signal,
+      MAX_IN_FLIGHT_REVIEW_METADATA,
+      "too many review metadata documents are already in flight",
     );
   }
 
@@ -552,11 +660,23 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
     headKey: string,
     mergeBaseKey: string,
   ): StagedReviewProjection {
+    const metadataAlreadyOwned = this.reviewMetadata?.document.metadata.metadataId
+      === candidate.reviewMetadata.metadataId;
     return this.stageAllocation(
       candidate,
-      candidate.residentBytes,
+      metadataAlreadyOwned
+        ? candidate.residentBytes
+        : safeByteSum(candidate.residentBytes, candidate.reviewMetadataResidentBytes),
       "graph review projection",
       (current, options) => {
+        const outgoing = this.cache.active;
+        const outgoingKey = this.cache.activeKey;
+        const supersededOutgoing = outgoing?.kind === "review"
+          && outgoing.projection.reviewMetadata.metadataId !== current.reviewMetadata.metadataId
+          ? outgoingKey
+          : undefined;
+        this.cache.discardRecentWhere((_key, cached) => cached.kind === "review"
+          && cached.projection.reviewMetadata.metadataId !== current.reviewMetadata.metadataId);
         const supersededReviews = [
           this.reviewSideAliases.get(headKey)?.reviewKey,
           this.reviewSideAliases.get(mergeBaseKey)?.reviewKey,
@@ -568,11 +688,20 @@ export class GraphProjectionClient implements GraphProjectionDataSource {
           [
             headKey,
             mergeBaseKey,
+            ...(supersededOutgoing === undefined ? [] : [supersededOutgoing]),
             ...supersededReviews,
             ...(options.supersededKeys ?? []),
           ],
         );
         this.rememberReviewSideAliases(current.key, headKey, mergeBaseKey);
+        this.reviewMetadata = {
+          key: reviewMetadataCacheKey(current.reviewMetadata),
+          document: {
+            metadata: current.reviewMetadata,
+            serializedBytes: 0,
+            residentBytes: current.reviewMetadataResidentBytes,
+          },
+        };
         this.pruneReviewSideAliases();
       },
     );
@@ -929,6 +1058,13 @@ interface ReviewSideAlias {
   side: "head" | "mergeBase";
 }
 
+interface LoadedReviewMetadataDocument {
+  readonly metadata: GraphProjectionReviewMetadata;
+  readonly serializedBytes: number;
+  /** Settled parsed-object liability; transient response/decode bytes are admitted separately. */
+  readonly residentBytes: number;
+}
+
 interface SharedProjectionFlight<T> {
   promise: Promise<T>;
   controller: AbortController;
@@ -1144,7 +1280,7 @@ export function canonicalReviewProjectionKey(headKey: string, mergeBaseKey: stri
 }
 
 export function canonicalizeProjectionRequest(request: GraphProjectionRequest): GraphProjectionRequest {
-  exactRecord(request, GRAPH_PROJECTION_REQUEST_FIELDS, "graph projection request", "v6");
+  exactRecord(request, GRAPH_PROJECTION_REQUEST_FIELDS, "graph projection request", "v9");
   if (request.version !== GRAPH_PROJECTION_PROTOCOL_VERSION) {
     throw new TypeError(`graph projection request version must be ${GRAPH_PROJECTION_PROTOCOL_VERSION}`);
   }
@@ -1299,6 +1435,108 @@ async function fetchManifest(
   return parseManifest(raw);
 }
 
+function reviewMetadataEndpoint(projectionUrl: string): string {
+  const absolute = /^[a-z][a-z0-9+.-]*:/i.test(projectionUrl);
+  const parsed = new URL(projectionUrl, "http://meridian.invalid");
+  if (!parsed.pathname.endsWith("/projection") || parsed.hash !== "") {
+    throw new TypeError("review projection endpoint cannot derive immutable metadata endpoint");
+  }
+  parsed.pathname = `${parsed.pathname.slice(0, -"projection".length)}review-metadata`;
+  return absolute ? parsed.toString() : `${parsed.pathname}${parsed.search}`;
+}
+
+function reviewMetadataCacheKey(metadata: Pick<
+  GraphProjectionReviewMetadata,
+  "headGraphId" | "mergeBaseGraphId" | "headContentId" | "mergeBaseContentId"
+>): string {
+  return JSON.stringify([
+    metadata.headGraphId,
+    metadata.mergeBaseGraphId,
+    metadata.headContentId,
+    metadata.mergeBaseContentId,
+  ]);
+}
+
+async function fetchReviewMetadata(
+  fetchImpl: typeof fetch,
+  endpoint: string,
+  headManifest: GraphProjectionManifest,
+  mergeBaseManifest: GraphProjectionManifest,
+  headEndpoints: GraphProjectionEndpoints,
+  mergeBaseEndpoints: GraphProjectionEndpoints,
+  signal?: AbortSignal,
+): Promise<LoadedReviewMetadataDocument> {
+  const response = await fetchImpl(endpoint, {
+    credentials: "same-origin",
+    headers: { accept: "application/json" },
+    signal,
+  });
+  if (!response.ok) {
+    await cancelUnreadResponse(response, "graph review metadata request failed");
+    throw new Error(`graph review metadata fetch failed (${response.status}) from ${response.url || endpoint}`);
+  }
+  const bytes = await readBoundedResponse(
+    response,
+    MAX_REVIEW_METADATA_RESPONSE_BYTES,
+    "graph review metadata",
+  );
+  let raw: unknown;
+  try {
+    raw = JSON.parse(decodeStrictUtf8(bytes, "graph review metadata"));
+  } catch {
+    throw new Error("invalid graph review metadata: expected JSON");
+  }
+  const metadata = exactRecord(raw, [
+    "version", "metadataId", "contextId", "headGraphId", "mergeBaseGraphId", "headContentId",
+    "mergeBaseContentId", "totalFiles", "testClassifications",
+  ], "graph review metadata", "v1");
+  if (metadata.version !== 1
+    || typeof metadata.metadataId !== "string" || !/^[0-9a-f]{64}$/.test(metadata.metadataId)
+    || typeof metadata.contextId !== "string" || !/^[0-9a-f]{64}$/.test(metadata.contextId)
+    || metadata.headGraphId !== headEndpoints.graphId
+    || metadata.mergeBaseGraphId !== mergeBaseEndpoints.graphId
+    || metadata.headContentId !== headManifest.contentId
+    || metadata.mergeBaseContentId !== mergeBaseManifest.contentId) {
+    throw new Error("invalid graph review metadata: immutable graph identity is inconsistent");
+  }
+  const totalFiles = boundedReviewInteger(metadata.totalFiles, 0, 100_000, "metadata.totalFiles");
+  const testClassifications = parseReviewTestClassifications(metadata.testClassifications, totalFiles);
+  const identity = {
+    contextId: metadata.contextId,
+    headGraphId: metadata.headGraphId as string,
+    mergeBaseGraphId: metadata.mergeBaseGraphId as string,
+    headContentId: metadata.headContentId as string,
+    mergeBaseContentId: metadata.mergeBaseContentId as string,
+  };
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(graphProjectionReviewMetadataIdentityPreimage(identity)),
+  );
+  const expectedId = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  if (metadata.metadataId !== expectedId) {
+    throw new Error("invalid graph review metadata: metadata identity does not match its capabilities");
+  }
+  const metadataValue: GraphProjectionReviewMetadata = Object.freeze({
+    version: 1,
+    metadataId: metadata.metadataId,
+    ...identity,
+    totalFiles,
+    testClassifications: Object.freeze(testClassifications),
+  });
+  return Object.freeze({
+    metadata: metadataValue,
+    serializedBytes: bytes.byteLength,
+    residentBytes: conservativeResidentBytes(
+      bytes.byteLength,
+      bytes.byteLength * DEFAULT_RESIDENT_EXPANSION_FACTOR,
+      DEFAULT_RESIDENT_EXPANSION_FACTOR,
+    ),
+  });
+}
+
 function parseManifest(raw: unknown): GraphProjectionManifest {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error("invalid graph projection manifest: expected an object");
@@ -1306,7 +1544,7 @@ function parseManifest(raw: unknown): GraphProjectionManifest {
   if ((raw as Record<string, unknown>).version !== GRAPH_PROJECTION_PROTOCOL_VERSION) {
     throw new Error(`invalid graph projection manifest: expected version ${GRAPH_PROJECTION_PROTOCOL_VERSION}`);
   }
-  const candidate = exactRecord(raw, PROJECTION_MANIFEST_FIELDS, "graph projection manifest", "v6");
+  const candidate = exactRecord(raw, PROJECTION_MANIFEST_FIELDS, "graph projection manifest", "v9");
   if (typeof candidate.graphId !== "string" || candidate.graphId.length === 0) {
     throw new Error("invalid graph projection manifest: graphId is required");
   }
@@ -1318,7 +1556,7 @@ function parseManifest(raw: unknown): GraphProjectionManifest {
     "generatedAt",
     "nodeCount",
     "edgeCount",
-  ], "graph projection manifest graphSummary", "v6");
+  ], "graph projection manifest graphSummary", "v9");
   if (typeof summary.schemaVersion !== "string" || summary.schemaVersion.length === 0
     || typeof summary.generatedAt !== "string" || summary.generatedAt.length === 0
     || !Number.isSafeInteger(summary.nodeCount) || Number(summary.nodeCount) < 0
@@ -1380,7 +1618,7 @@ function parseManifestDefaultView(raw: unknown): GraphProjectionRequest {
     raw,
     GRAPH_PROJECTION_REQUEST_FIELDS,
     "graph projection manifest defaultView",
-    "v6",
+    "v9",
   );
   return canonicalizeProjectionRequest({
     version: candidate.version as typeof GRAPH_PROJECTION_PROTOCOL_VERSION,
@@ -1406,7 +1644,7 @@ function parseReturnedProjectionRequest(raw: unknown): GraphProjectionRequest {
     raw,
     GRAPH_PROJECTION_REQUEST_FIELDS,
     "graph projection response request",
-    "v6",
+    "v9",
   );
   return canonicalizeProjectionRequest({
     version: candidate.version as typeof GRAPH_PROJECTION_PROTOCOL_VERSION,
@@ -1623,7 +1861,7 @@ async function decodeProjectionResponse(
   const record = raw as Record<string, unknown>;
   const expectedFields = [...PROJECTION_RESPONSE_FIELDS].sort();
   if (JSON.stringify(Object.keys(record).sort()) !== JSON.stringify(expectedFields)) {
-    throw new Error("invalid graph projection response: fields do not match the v6 contract");
+    throw new Error("invalid graph projection response: fields do not match the v9 contract");
   }
   if (record.version !== GRAPH_PROJECTION_PROTOCOL_VERSION) {
     throw new Error(`invalid graph projection response: expected version ${GRAPH_PROJECTION_PROTOCOL_VERSION}`);
@@ -1659,7 +1897,7 @@ async function decodeProjectionResponse(
   }
   const expectedProjectionId = await deriveProjectionId(manifest.contentId, returnedRequest);
   if (record.projectionId !== expectedProjectionId) {
-    throw new Error("invalid graph projection response: projection identity does not match its v6 content and request");
+    throw new Error("invalid graph projection response: projection identity does not match its v9 content and request");
   }
   const headerResidentBytes = headers.get("x-meridian-resident-bytes");
   if (headerResidentBytes === null
@@ -1669,7 +1907,6 @@ async function decodeProjectionResponse(
     throw new Error("invalid graph projection response: resident byte header does not match the body");
   }
   const viewFacts = parseProjectionViewFacts(record.viewFacts, expectedRequest);
-  assertReviewGraphMatch(viewFacts.review, artifact);
   const analysis = parseProjectionAnalysis(record.analysis, expectedRequest, artifact);
   const hierarchy = parseProjectionHierarchy(
     record.hierarchy,
@@ -1677,6 +1914,7 @@ async function decodeProjectionResponse(
     expectedRequest,
     viewFacts.moduleOverview,
   );
+  assertReviewGraphMatch(viewFacts.review, artifact, hierarchy.hierarchyById);
   return {
     artifact,
     projectionId: record.projectionId,
@@ -1691,17 +1929,106 @@ async function decodeProjectionResponse(
 function assertReviewGraphMatch(
   review: GraphProjectionReviewFacts | null,
   artifact: GraphArtifact,
+  hierarchyById: ReadonlyMap<string, GraphHierarchyFact>,
 ): void {
-  const selection = review?.selection;
-  if (selection === null || selection === undefined) return;
-  const matched = selection.graphPath !== null && artifact.nodes.some((node) => {
+  if (review === null) return;
+  const residentFiles = new Set<string>();
+  for (const node of artifact.nodes) {
     const file = node.location?.file;
-    if (typeof file !== "string") return false;
-    return file.replace(/\\/g, "/") === selection.graphPath;
-  });
-  if (selection.graphMatched !== matched) {
-    throw new Error("invalid graph projection response: review graphMatched contradicts the decoded artifact");
+    if (typeof file === "string") residentFiles.add(file.replace(/\\/g, "/"));
   }
+  const selection = review.selection;
+  if (selection !== null) {
+    const matched = selection.graphPath !== null && residentFiles.has(selection.graphPath);
+    if (selection.graphMatched !== matched) {
+      throw new Error("invalid graph projection response: review graphMatched contradicts the decoded artifact");
+    }
+    if (matched && selection.isTest !== null) {
+      const representative = reviewRepresentativeForPath(artifact.nodes, selection.graphPath!);
+      if (representative === undefined
+        || hierarchyById.get(representative.id)?.isTest !== selection.isTest) {
+        throw new Error("invalid graph projection response: review selection test verdict contradicts its hierarchy");
+      }
+    }
+  }
+  const overview = review.overview;
+  if (overview === null) return;
+  const pageEntries = review.page?.entries ?? [];
+  for (let offset = 0; offset < overview.entries.length; offset += 1) {
+    const coverage = overview.entries[offset]!;
+    const entry = pageEntries[offset]!;
+    const graphPath = reviewGraphPathForSide(entry, review.side);
+    const graphMatched = graphPath !== null && residentFiles.has(graphPath);
+    if (graphPath === null) {
+      if (coverage.state !== "absent") {
+        throw new Error("invalid graph projection response: review overview absent-side coverage is inconsistent");
+      }
+    } else if (coverage.state === "absent") {
+      throw new Error("invalid graph projection response: review overview marks a present graph path absent");
+    }
+    if ((coverage.state === "included") !== graphMatched) {
+      throw new Error("invalid graph projection response: review overview coverage contradicts the decoded artifact");
+    }
+    if (coverage.state === "included" && coverage.isTest !== null) {
+      const representative = reviewRepresentativeForPath(artifact.nodes, graphPath!);
+      if (representative === undefined
+        || hierarchyById.get(representative.id)?.isTest !== coverage.isTest) {
+        throw new Error("invalid graph projection response: review overview test verdict contradicts its hierarchy");
+      }
+    }
+  }
+}
+
+function assertReviewMetadataMatchesProjections(
+  metadata: GraphProjectionReviewMetadata,
+  head: LoadedGraphProjection,
+  mergeBase: LoadedGraphProjection,
+): void {
+  const headFacts = head.review;
+  const mergeBaseFacts = mergeBase.review;
+  if (headFacts === null || mergeBaseFacts === null
+    || headFacts.side !== "head" || mergeBaseFacts.side !== "mergeBase"
+    || headFacts.contextId !== metadata.contextId || mergeBaseFacts.contextId !== metadata.contextId
+    || headFacts.metadataId !== metadata.metadataId || mergeBaseFacts.metadataId !== metadata.metadataId
+    || headFacts.totalFiles !== metadata.totalFiles || mergeBaseFacts.totalFiles !== metadata.totalFiles
+    || head.graphId !== metadata.headGraphId || mergeBase.graphId !== metadata.mergeBaseGraphId) {
+    throw new Error("graph review coordinate does not match its immutable metadata document");
+  }
+  const catalog = new Map(
+    metadata.testClassifications.map((entry) => [entry.index, entry.isTest] as const),
+  );
+  const headVerdicts = coordinateReviewVerdicts(headFacts);
+  const mergeBaseVerdicts = coordinateReviewVerdicts(mergeBaseFacts);
+  const indexes = new Set([...headVerdicts.keys(), ...mergeBaseVerdicts.keys()]);
+  for (const index of indexes) {
+    const expected = headVerdicts.get(index) ?? mergeBaseVerdicts.get(index) ?? null;
+    if ((catalog.get(index) ?? null) !== expected) {
+      throw new Error("graph review coordinate classification contradicts its immutable metadata document");
+    }
+  }
+}
+
+function coordinateReviewVerdicts(facts: GraphProjectionReviewFacts): ReadonlyMap<number, boolean | null> {
+  const verdicts = new Map<number, boolean | null>();
+  if (facts.selection !== null) verdicts.set(facts.selection.index, facts.selection.isTest);
+  for (const entry of facts.overview?.entries ?? []) verdicts.set(entry.index, entry.isTest);
+  return verdicts;
+}
+
+function reviewRepresentativeForPath(
+  nodes: ReadonlyArray<GraphArtifact["nodes"][number]>,
+  graphPath: string,
+): GraphArtifact["nodes"][number] | undefined {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const rank = (node: GraphArtifact["nodes"][number]): number => {
+    if (node.kind === "module") return 0;
+    const parentPath = byId.get(node.parentId ?? "")?.location?.file.replace(/\\/g, "/");
+    return parentPath === graphPath ? 2 : 1;
+  };
+  return nodes
+    .filter((node) => node.location?.file.replace(/\\/g, "/") === graphPath)
+    .sort((left, right) => rank(left) - rank(right)
+      || compareCanonicalPrPreparePaths(left.id, right.id))[0];
 }
 
 async function deriveProjectionId(
@@ -1727,7 +2054,7 @@ function parseProjectionViewFacts(
     value,
     PROJECTION_VIEW_FACT_FIELDS,
     "graph projection response viewFacts",
-    "v6",
+    "v9",
   );
   const expectsModuleOverview = request.focusIds.length === 0
     && (request.view === "modules" || request.view === "ui");
@@ -1772,10 +2099,14 @@ function parseProjectionReviewFacts(
     throw new Error("invalid graph projection response: review facts require a context-bound review request");
   }
   const facts = exactRecord(value, [
-    "contextId", "side", "totalFiles", "statusCounts", "pageCount", "page", "selection",
-  ], "graph projection response review facts", "v6");
+    "contextId", "metadataId", "side", "totalFiles", "statusCounts", "pageCount", "page",
+    "selection", "overview",
+  ], "graph projection response review facts", "v9");
   if (typeof facts.contextId !== "string" || !/^[0-9a-f]{64}$/.test(facts.contextId)) {
     throw new Error("invalid graph projection response: review contextId is malformed");
+  }
+  if (typeof facts.metadataId !== "string" || !/^[0-9a-f]{64}$/.test(facts.metadataId)) {
+    throw new Error("invalid graph projection response: review metadataId is malformed");
   }
   if (facts.side !== "head" && facts.side !== "mergeBase") {
     throw new Error("invalid graph projection response: review side is malformed");
@@ -1793,11 +2124,18 @@ function parseProjectionReviewFacts(
   const selection = facts.selection === null
     ? null
     : parseReviewSelection(facts.selection, totalFiles, facts.side);
+  const overview = facts.overview === null
+    ? null
+    : parseReviewOverview(facts.overview, page, request.includeTests);
   if (totalFiles === 0 && selection !== null) {
     throw new Error("invalid graph projection response: an empty review cannot select a file");
   }
   if (page !== null && selection !== null) {
     throw new Error("invalid graph projection response: review facts cannot contain a page and selection together");
+  }
+  const expectsOverview = request.reviewCursor === null || request.reviewCursor.startsWith("page:");
+  if ((overview !== null) !== expectsOverview) {
+    throw new Error("invalid graph projection response: review overview coverage does not match its coordinate");
   }
   if (request.reviewCursor === null) {
     if (selection !== null || (totalFiles === 0 ? page !== null : page?.index !== 0)) {
@@ -1817,13 +2155,103 @@ function parseProjectionReviewFacts(
   }
   return {
     contextId: facts.contextId,
+    metadataId: facts.metadataId,
     side: facts.side,
     totalFiles,
     statusCounts,
     pageCount,
     page,
     selection,
+    overview,
   };
+}
+
+function parseReviewOverview(
+  value: unknown,
+  page: GraphProjectionReviewFacts["page"],
+  includeTests: boolean,
+): NonNullable<GraphProjectionReviewFacts["overview"]> {
+  const overview = exactRecord(
+    value,
+    ["entries"],
+    "graph projection response review overview",
+    "v9",
+  );
+  if (!Array.isArray(overview.entries)) {
+    throw new Error("invalid graph projection response: review overview entries are malformed");
+  }
+  const pageEntries = page?.entries ?? [];
+  if (overview.entries.length !== pageEntries.length) {
+    throw new Error("invalid graph projection response: review overview coverage is incomplete");
+  }
+  const entries = overview.entries.map((value, offset) => {
+    const coverage = exactRecord(
+      value,
+      ["index", "state", "isTest"],
+      "graph projection response review overview entry",
+      "v9",
+    );
+    if (coverage.index !== pageEntries[offset]!.index) {
+      throw new Error("invalid graph projection response: review overview coverage is not in page order");
+    }
+    if (coverage.state !== "included"
+      && coverage.state !== "unmapped"
+      && coverage.state !== "filtered"
+      && coverage.state !== "deferred"
+      && coverage.state !== "absent") {
+      throw new Error("invalid graph projection response: review overview coverage state is malformed");
+    }
+    if (coverage.isTest !== null && typeof coverage.isTest !== "boolean") {
+      throw new Error("invalid graph projection response: review overview test verdict is malformed");
+    }
+    const graphBacked = coverage.state === "included"
+      || coverage.state === "filtered"
+      || coverage.state === "deferred";
+    if (graphBacked === (coverage.isTest === null)) {
+      throw new Error("invalid graph projection response: review overview test verdict has no graph evidence");
+    }
+    if ((coverage.state === "filtered") !== (!includeTests && coverage.isTest === true)) {
+      throw new Error("invalid graph projection response: review overview test filtering is inconsistent");
+    }
+    return {
+      index: pageEntries[offset]!.index,
+      state: coverage.state as NonNullable<GraphProjectionReviewFacts["overview"]>["entries"][number]["state"],
+      isTest: coverage.isTest,
+    };
+  });
+  return { entries };
+}
+
+function parseReviewTestClassifications(
+  value: unknown,
+  totalFiles: number,
+): GraphProjectionReviewMetadata["testClassifications"] {
+  if (!Array.isArray(value) || value.length > totalFiles) {
+    throw new Error("invalid graph projection response: review test classifications are malformed");
+  }
+  let previousIndex = -1;
+  return value.map((entry) => {
+    const classification = exactRecord(
+      entry,
+      ["index", "isTest"],
+      "graph projection response review test classification",
+      "v9",
+    );
+    const index = boundedReviewInteger(
+      classification.index,
+      0,
+      Math.max(0, totalFiles - 1),
+      "testClassifications.index",
+    );
+    if (index <= previousIndex) {
+      throw new Error("invalid graph projection response: review test classifications are not canonical");
+    }
+    if (typeof classification.isTest !== "boolean") {
+      throw new Error("invalid graph projection response: review test classification verdict is malformed");
+    }
+    previousIndex = index;
+    return { index, isTest: classification.isTest };
+  });
 }
 
 function parseReviewPage(
@@ -1833,7 +2261,7 @@ function parseReviewPage(
 ): NonNullable<GraphProjectionReviewFacts["page"]> {
   const page = exactRecord(value, [
     "index", "entries", "statusCounts", "previousCursor", "nextCursor",
-  ], "graph projection response review page", "v6");
+  ], "graph projection response review page", "v9");
   const index = boundedReviewInteger(page.index, 0, Math.max(0, pageCount - 1), "page.index");
   if (!Array.isArray(page.entries) || page.entries.length === 0 || page.entries.length > 64) {
     throw new Error("invalid graph projection response: review page entries are malformed");
@@ -1878,20 +2306,40 @@ function parseReviewSelection(
   side: "head" | "mergeBase",
 ): NonNullable<GraphProjectionReviewFacts["selection"]> {
   const selection = exactRecord(value, [
-    "index", "entry", "graphPath", "graphMatched",
-  ], "graph projection response review selection", "v6");
+    "index", "entry", "graphPath", "graphMatched", "isTest",
+  ], "graph projection response review selection", "v9");
   const index = boundedReviewInteger(selection.index, 0, Math.max(0, totalFiles - 1), "selection.index");
   const entry = parseReviewFile(selection.entry, totalFiles);
   if (entry.index !== index || typeof selection.graphMatched !== "boolean") {
     throw new Error("invalid graph projection response: review selection is inconsistent");
   }
-  const expectedPath = side === "head"
-    ? entry.status === "deleted" ? null : entry.path
-    : entry.status === "added" ? null : entry.status === "renamed" ? entry.previousPath! : entry.path;
+  const expectedPath = reviewGraphPathForSide(entry, side);
   if (selection.graphPath !== expectedPath || (expectedPath === null && selection.graphMatched)) {
     throw new Error("invalid graph projection response: review selection path does not match its side");
   }
-  return { index, entry, graphPath: expectedPath, graphMatched: selection.graphMatched };
+  if (selection.isTest !== null && typeof selection.isTest !== "boolean") {
+    throw new Error("invalid graph projection response: review selection test verdict is malformed");
+  }
+  if ((expectedPath === null && selection.isTest !== null)
+    || (selection.graphMatched && selection.isTest === null)) {
+    throw new Error("invalid graph projection response: review selection test verdict has no graph evidence");
+  }
+  return {
+    index,
+    entry,
+    graphPath: expectedPath,
+    graphMatched: selection.graphMatched,
+    isTest: selection.isTest,
+  };
+}
+
+function reviewGraphPathForSide(
+  entry: GraphProjectionReviewFile,
+  side: "head" | "mergeBase",
+): string | null {
+  return side === "head"
+    ? entry.status === "deleted" ? null : entry.path
+    : entry.status === "added" ? null : entry.status === "renamed" ? entry.previousPath! : entry.path;
 }
 
 function parseReviewFile(value: unknown, totalFiles: number): GraphProjectionReviewFile {
@@ -1908,7 +2356,7 @@ function parseReviewFile(value: unknown, totalFiles: number): GraphProjectionRev
     value,
     renamed ? ["index", "path", "status", "previousPath"] : ["index", "path", "status"],
     "graph projection response review file",
-    "v6",
+    "v9",
   );
   const index = boundedReviewInteger(file.index, 0, Math.max(0, totalFiles - 1), "file.index");
   const path = reviewPath(file.path, "file.path");
@@ -1925,7 +2373,7 @@ function parseReviewStatusCounts(value: unknown, label: string): GraphProjection
     value,
     ["added", "modified", "deleted", "renamed"],
     `graph projection response review ${label}`,
-    "v6",
+    "v9",
   );
   return {
     added: boundedReviewInteger(counts.added, 0, 100_000, `${label}.added`),
@@ -1964,7 +2412,7 @@ function parseProjectionAnalysis(
     value,
     PROJECTION_ANALYSIS_FIELDS,
     "graph projection response analysis",
-    "v6",
+    "v9",
   );
   let reachability: ReachabilityProjectionFacts | null = null;
   if (analysis.reachability !== null) {
@@ -2098,7 +2546,7 @@ function assertCompleteProjection(value: unknown): void {
     value,
     PROJECTION_COMPLETENESS_FIELDS,
     "graph projection response completeness",
-    "v6",
+    "v9",
   );
   if (!Array.isArray(completeness.reasons)
     || completeness.reasons.some((reason) => typeof reason !== "string")

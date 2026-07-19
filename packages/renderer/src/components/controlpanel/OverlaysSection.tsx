@@ -12,6 +12,7 @@ import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { accentForKind } from "../../theme/kindColors";
 import { matchAffectedFiles } from "../../derive/matchAffectedFiles";
 import { isReviewTestPath } from "../../derive/reviewFiles";
+import { preparedReviewTestVerdicts } from "../../state/preparedReviewProjection";
 import { runtimeCoverageSummary, type RuntimeCoverageMetric } from "../../derive/runtimeCoverageSummary";
 import { Pill } from "./panelKit";
 
@@ -194,6 +195,10 @@ function metricDescription(metric: RuntimeCoverageMetric): string {
 
 export function countTestFiles(state: BlueprintState): number {
   const paths = new Set<string>();
+  const preparedTestVerdicts = preparedReviewTestVerdicts(
+    state.prPreparedTestClassifications,
+    state.prPreparedChangedFiles,
+  );
   const addIndexTests = (index: BlueprintState["index"]) => {
     for (const id of index.testIds) {
       const node = index.nodesById.get(id);
@@ -204,7 +209,12 @@ export function countTestFiles(state: BlueprintState): number {
   };
   addIndexTests(state.index);
   const addReviewTestPath = (path: string) => {
-    if (!isReviewTestPath(path, state.index, state.prReviewComparison?.index ?? null)) {
+    if (!isReviewTestPath(
+      path,
+      state.index,
+      state.prReviewComparison?.index ?? null,
+      preparedTestVerdicts,
+    )) {
       return;
     }
     const activeMatch = matchAffectedFiles(state.index, [path]).matched[0];
