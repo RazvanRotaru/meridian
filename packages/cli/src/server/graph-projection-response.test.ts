@@ -148,7 +148,7 @@ describe("graph projection response", () => {
 function projectionResult(payloadBytes: number): GraphProjectionResult {
   const request = defaultGraphProjectionRequest();
   return {
-    version: 6,
+    version: 9,
     contentId: "a".repeat(64),
     projectionId: "b".repeat(64),
     request,

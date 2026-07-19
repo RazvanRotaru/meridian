@@ -50,6 +50,7 @@ describe("BlueprintCanvas scene ownership", () => {
       moduleRfNodes: [],
       moduleLayoutStatus: "idle",
       minimalSeedIds: ["ts:src/services/orderService.ts"],
+      minimalMemberIds: ["ts:src/services/orderService.ts"],
       review: null,
       prReviewed: null,
     })).toBe(false);
@@ -61,6 +62,7 @@ describe("BlueprintCanvas scene ownership", () => {
       moduleRfNodes: [],
       moduleLayoutStatus: "idle",
       minimalSeedIds: [],
+      minimalMemberIds: [],
       prReviewed: 7,
       review: {
         context: {
@@ -83,6 +85,7 @@ describe("BlueprintCanvas scene ownership", () => {
       moduleRfNodes: [],
       moduleLayoutStatus: "idle",
       minimalSeedIds: [],
+      minimalMemberIds: [],
       review: null,
       prReviewed: null,
     })).toBe(true);

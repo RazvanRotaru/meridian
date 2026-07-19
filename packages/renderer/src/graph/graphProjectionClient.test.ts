@@ -3,7 +3,9 @@ import {
   buildReachabilityProjection,
   deriveGraphStructure,
   graphProjectionIdentityPreimage,
+  graphProjectionReviewMetadataIdentityPreimage,
   type GraphArtifact,
+  type GraphProjectionReviewMetadata,
 } from "@meridian/core";
 import { deriveSerializedServiceTopology } from "@meridian/design-metrics";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -17,6 +19,10 @@ import {
 } from "./graphProjectionClient";
 import { estimateGraphPresentationResidentBytes } from "./graphIndex";
 import { RecentAllocationBudget } from "../state/recentViewProjectionCache";
+import {
+  reviewProjectionFactsForTest,
+  reviewProjectionMetadataForTest,
+} from "../state/reviewProjectionTestSupport";
 import type { GraphSymbolSearchRequest } from "./graphSymbolSearch";
 
 const ARTIFACT: GraphArtifact = {
@@ -35,7 +41,7 @@ const ARTIFACT: GraphArtifact = {
 };
 
 const REQUEST: GraphProjectionRequest = {
-  version: 6,
+  version: 9,
   view: "modules",
   filePaths: [],
   reviewCursor: null,
@@ -50,6 +56,14 @@ const REQUEST: GraphProjectionRequest = {
   maxNodes: 5_000,
   maxEdges: 20_000,
   maxResponseBytes: 16 * 1024 * 1024,
+};
+
+const REVIEW_CHANGED_FILES = [{ path: "src", status: "modified" as const }];
+const REVIEW_REQUEST: GraphProjectionRequest = {
+  ...REQUEST,
+  view: "review",
+  filePaths: [],
+  reviewCursor: "file:0",
 };
 
 async function commitReviewPair(
@@ -384,6 +398,7 @@ describe("GraphProjectionClient", () => {
               service: null,
               review: {
                 contextId: "c".repeat(64),
+                metadataId: "1".repeat(64),
                 side: "head",
                 totalFiles: files.length,
                 statusCounts,
@@ -396,6 +411,13 @@ describe("GraphProjectionClient", () => {
                   nextCursor: "page:1",
                 },
                 selection: null,
+                overview: {
+                  entries: files.slice(0, 64).map((entry) => ({
+                    index: entry.index,
+                    state: "unmapped",
+                    isTest: null,
+                  })),
+                },
               },
             },
           }),
@@ -424,6 +446,7 @@ describe("GraphProjectionClient", () => {
               service: null,
               review: {
                 contextId: "c".repeat(64),
+                metadataId: "1".repeat(64),
                 side: "head",
                 totalFiles: files.length,
                 statusCounts,
@@ -434,7 +457,9 @@ describe("GraphProjectionClient", () => {
                   entry: selectedEntry,
                   graphPath: selectedEntry.path,
                   graphMatched: true,
+                  isTest: false,
                 },
+                overview: null,
               },
             },
           }),
@@ -444,6 +469,264 @@ describe("GraphProjectionClient", () => {
     });
     expect(loadedFile.review?.selection).toMatchObject({ index: 64, graphMatched: true });
     expect(loadedFile.artifact.nodes.map((node) => node.location?.file)).toEqual([selectedEntry.path]);
+  });
+
+  it("keeps a tagged test classification beyond page zero when its exact Tests-off graph is empty", async () => {
+    const files = Array.from({ length: 65 }, (_value, index) => ({
+      index,
+      path: `src/${String(index).padStart(3, "0")}.ts`,
+      status: "modified" as const,
+    }));
+    const statusCounts = { added: 0, modified: files.length, deleted: 0, renamed: 0 };
+    const overviewRequest = {
+      ...REQUEST,
+      view: "review" as const,
+      filePaths: [],
+      reviewCursor: null,
+      includeTests: false,
+    };
+    const emptyArtifact: GraphArtifact = { ...ARTIFACT, nodes: [], edges: [] };
+    const overview = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("tagged-test-overview"))
+        : projectionResponse(requestFrom(init), {
+            artifact: emptyArtifact,
+            viewFacts: {
+              moduleOverview: null,
+              service: null,
+              review: {
+                contextId: "f".repeat(64),
+                metadataId: "1".repeat(64),
+                side: "head",
+                totalFiles: files.length,
+                statusCounts,
+                pageCount: 2,
+                page: {
+                  index: 0,
+                  entries: files.slice(0, 64),
+                  statusCounts: { added: 0, modified: 64, deleted: 0, renamed: 0 },
+                  previousCursor: null,
+                  nextCursor: "page:1",
+                },
+                selection: null,
+                overview: {
+                  entries: files.slice(0, 64).map((entry) => ({
+                    index: entry.index,
+                    state: "unmapped",
+                    isTest: null,
+                  })),
+                },
+              },
+            },
+          }),
+    });
+    const loadedOverview = await commitProjection(overview, overviewRequest, {
+      endpoints: graphEndpoints("tagged-test-overview"),
+    });
+    expect(loadedOverview.artifact.nodes).toEqual([]);
+
+    const selectedEntry = files[64]!;
+    const fileRequest = { ...overviewRequest, reviewCursor: "file:64" };
+    const exact = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("tagged-test-exact"))
+        : projectionResponse(requestFrom(init), {
+            artifact: emptyArtifact,
+            viewFacts: {
+              moduleOverview: null,
+              service: null,
+              review: {
+                contextId: "f".repeat(64),
+                metadataId: "1".repeat(64),
+                side: "head",
+                totalFiles: files.length,
+                statusCounts,
+                pageCount: 2,
+                page: null,
+                selection: {
+                  index: 64,
+                  entry: selectedEntry,
+                  graphPath: selectedEntry.path,
+                  graphMatched: false,
+                  isTest: true,
+                },
+                overview: null,
+              },
+            },
+          }),
+    });
+    const loadedExact = await commitProjection(exact, fileRequest, {
+      endpoints: graphEndpoints("tagged-test-exact"),
+    });
+    expect(loadedExact.review?.selection).toMatchObject({
+      index: 64,
+      graphMatched: false,
+      isTest: true,
+    });
+    expect(loadedExact.artifact.nodes).toEqual([]);
+  });
+
+  it("builds full-manifest fixture classifications independently of the bounded projection", () => {
+    const files = Array.from({ length: 65 }, (_value, index) => ({
+      path: `src/${String(index).padStart(3, "0")}.ts`,
+      status: "modified" as const,
+    }));
+    const ordinaryTaggedTest: GraphArtifact = {
+      ...ARTIFACT,
+      nodes: [{
+        ...ARTIFACT.nodes[0]!,
+        id: "ts:ordinary-tagged-test",
+        kind: "module",
+        location: { file: files[64]!.path, startLine: 1 },
+        tags: ["test"],
+      }],
+      edges: [],
+    };
+    const boundedArtifact: GraphArtifact = { ...ARTIFACT, nodes: [], edges: [] };
+    const exactFacts = reviewProjectionFactsForTest(
+      files,
+      {
+        ...REQUEST,
+        view: "review",
+        filePaths: [],
+        reviewCursor: "file:64",
+        includeTests: false,
+      },
+      "head",
+      boundedArtifact,
+      ordinaryTaggedTest,
+    );
+    expect(reviewProjectionMetadataForTest(
+      files,
+      "head",
+      "merge-base",
+      ordinaryTaggedTest,
+      boundedArtifact,
+    ).testClassifications).toEqual([{ index: 64, isTest: true }]);
+    expect(exactFacts.selection).toMatchObject({
+      index: 64,
+      graphMatched: false,
+      isTest: true,
+    });
+
+    const pageFacts = reviewProjectionFactsForTest(
+      files,
+      {
+        ...REQUEST,
+        view: "review",
+        filePaths: [],
+        reviewCursor: "page:1",
+        includeTests: false,
+      },
+      "head",
+      boundedArtifact,
+      ordinaryTaggedTest,
+    );
+    expect(reviewProjectionMetadataForTest(
+      files,
+      "head",
+      "merge-base",
+      ordinaryTaggedTest,
+      boundedArtifact,
+    ).testClassifications).toEqual([{ index: 64, isTest: true }]);
+    expect(pageFacts.overview?.entries).toEqual([{ index: 64, state: "filtered", isTest: true }]);
+  });
+
+  it("requires complete ordered overview coverage and binds included entries to decoded nodes", async () => {
+    const request = { ...REQUEST, view: "review" as const, filePaths: [], reviewCursor: null };
+    const files = [
+      { index: 0, path: "src/a.ts", status: "modified" as const },
+      { index: 1, path: "src/b.ts", status: "modified" as const },
+    ];
+    const artifact: GraphArtifact = {
+      ...ARTIFACT,
+      nodes: [{ ...ARTIFACT.nodes[0]!, location: { file: "src/a.ts", startLine: 1 } }],
+      edges: [],
+    };
+    const review = (entries: unknown) => ({
+      moduleOverview: null,
+      service: null,
+      review: {
+        contextId: "e".repeat(64),
+        metadataId: "1".repeat(64),
+        side: "head",
+        totalFiles: 2,
+        statusCounts: { added: 0, modified: 2, deleted: 0, renamed: 0 },
+        pageCount: 1,
+        page: {
+          index: 0,
+          entries: files,
+          statusCounts: { added: 0, modified: 2, deleted: 0, renamed: 0 },
+          previousCursor: null,
+          nextCursor: null,
+        },
+        selection: null,
+        overview: { entries },
+      },
+    });
+    const client = (entries: unknown) => new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("coverage"))
+        : projectionResponse(requestFrom(init), {
+            artifact,
+            viewFacts: review(entries),
+          }),
+    });
+
+    await expect(commitProjection(client([
+      { index: 0, state: "included", isTest: false },
+      { index: 1, state: "unmapped", isTest: null },
+    ]), request, { endpoints: graphEndpoints("coverage") })).resolves.toMatchObject({
+      review: {
+        overview: {
+          entries: [
+            { index: 0, state: "included", isTest: false },
+            { index: 1, state: "unmapped", isTest: null },
+          ],
+        },
+      },
+    });
+    await expect(commitProjection(client([
+      { index: 1, state: "included", isTest: false },
+      { index: 0, state: "unmapped", isTest: null },
+    ]), request, { endpoints: graphEndpoints("coverage") }))
+      .rejects.toThrow("review overview coverage is not in page order");
+    await expect(commitProjection(client([
+      { index: 0, state: "unmapped", isTest: null },
+      { index: 1, state: "unmapped", isTest: null },
+    ]), request, { endpoints: graphEndpoints("coverage") }))
+      .rejects.toThrow("review overview coverage contradicts the decoded artifact");
+    await expect(commitProjection(client([
+      { index: 0, state: "included" },
+      { index: 1, state: "unmapped", isTest: null },
+    ]), request, { endpoints: graphEndpoints("coverage") }))
+      .rejects.toThrow("review overview entry: fields do not match the v9 contract");
+    await expect(commitProjection(client([
+      { index: 0, state: "included", isTest: false },
+      { index: 1, state: "unmapped", isTest: false },
+    ]), request, { endpoints: graphEndpoints("coverage") }))
+      .rejects.toThrow("review overview test verdict has no graph evidence");
+    await expect(commitProjection(client([
+      { index: 0, state: "included", isTest: false },
+      { index: 1, state: "filtered", isTest: false },
+    ]), request, {
+      endpoints: graphEndpoints("coverage"),
+    }))
+      .rejects.toThrow("review overview test filtering is inconsistent");
+
+    const legacyViewFacts = review([
+      { index: 0, state: "included", isTest: false },
+      { index: 1, state: "unmapped", isTest: null },
+    ]);
+    delete (legacyViewFacts.review as unknown as Record<string, unknown>).metadataId;
+    const legacyFacts = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("coverage-legacy"))
+        : projectionResponse(requestFrom(init), { artifact, viewFacts: legacyViewFacts }),
+    });
+    await expect(commitProjection(legacyFacts, request, {
+      endpoints: graphEndpoints("coverage-legacy"),
+    })).rejects.toThrow("review facts: fields do not match the v9 contract");
   });
 
   it("binds review graphMatched and renamed paths to the decoded artifact and comparison side", async () => {
@@ -464,17 +747,23 @@ describe("GraphProjectionClient", () => {
       nodes: [{ ...ARTIFACT.nodes[0]!, location: { file: "src/old.ts", startLine: 1 } }],
       edges: [],
     };
-    const facts = (graphMatched: boolean, graphPath: string | null = "src/old.ts") => ({
+    const facts = (
+      graphMatched: boolean,
+      graphPath: string | null = "src/old.ts",
+      isTest: unknown = false,
+    ) => ({
       moduleOverview: null,
       service: null,
       review: {
         contextId: "d".repeat(64),
+        metadataId: "1".repeat(64),
         side: "mergeBase",
         totalFiles: 1,
         statusCounts: { added: 0, modified: 0, deleted: 0, renamed: 1 },
         pageCount: 1,
         page: null,
-        selection: { index: 0, entry: renamedEntry, graphPath, graphMatched },
+        selection: { index: 0, entry: renamedEntry, graphPath, graphMatched, isTest },
+        overview: null,
       },
     });
     const valid = new GraphProjectionClient({
@@ -514,6 +803,46 @@ describe("GraphProjectionClient", () => {
     });
     await expect(commitProjection(wrongSidePath, request, { endpoints: graphEndpoints("renamed-path") }))
       .rejects.toThrow("review selection path does not match its side");
+
+    const missingClassification = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("renamed-no-classification"))
+        : projectionResponse(requestFrom(init), {
+            artifact: baseArtifact,
+            viewFacts: facts(true, "src/old.ts", null),
+          }),
+    });
+    await expect(commitProjection(missingClassification, request, {
+      endpoints: graphEndpoints("renamed-no-classification"),
+    })).rejects.toThrow("review selection test verdict has no graph evidence");
+
+    const classificationAgainstHierarchy = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("renamed-wrong-hierarchy"))
+        : projectionResponse(requestFrom(init), {
+            artifact: baseArtifact,
+            viewFacts: facts(true, "src/old.ts", true),
+          }),
+    });
+    await expect(commitProjection(classificationAgainstHierarchy, request, {
+      endpoints: graphEndpoints("renamed-wrong-hierarchy"),
+    })).rejects.toThrow("review selection test verdict contradicts its hierarchy");
+
+    const legacySelectionFacts = facts(true);
+    delete (
+      legacySelectionFacts.review.selection as unknown as Record<string, unknown>
+    ).isTest;
+    const legacySelection = new GraphProjectionClient({
+      fetch: async (input, init) => String(input).includes("manifest")
+        ? jsonResponse(manifest("renamed-legacy-selection"))
+        : projectionResponse(requestFrom(init), {
+            artifact: baseArtifact,
+            viewFacts: legacySelectionFacts,
+          }),
+    });
+    await expect(commitProjection(legacySelection, request, {
+      endpoints: graphEndpoints("renamed-legacy-selection"),
+    })).rejects.toThrow("review selection: fields do not match the v9 contract");
   });
 
   it("shares inactive projection eviction across independent clients", async () => {
@@ -558,19 +887,27 @@ describe("GraphProjectionClient", () => {
     const budget = new RecentAllocationBudget({ maxRecentEntries: 1, maxRecentBytes: 1_000_000 });
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input), "http://meridian.local");
-      const graphId = url.searchParams.get("id") ?? "base";
-      return url.pathname.includes("manifest")
-        ? jsonResponse(manifest(graphId))
-        : projectionResponse(requestFrom(init), { residentBytes: 10 });
+      const graphId = url.searchParams.get("id")!;
+      if (graphId !== "head" && graphId !== "merge-base") {
+        return url.pathname.includes("manifest")
+          ? jsonResponse(manifest(graphId))
+          : projectionResponse(requestFrom(init), { residentBytes: 10 });
+      }
+      return reviewTransportResponse(
+        input,
+        init,
+        "head",
+        "merge-base",
+        { residentBytes: 10 },
+      );
     });
     const client = new GraphProjectionClient({
       fetch: fetchMock,
       recentBudget: budget,
     });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const pairOptions = {
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     };
     const pair = await commitReviewPair(client, pairOptions);
 
@@ -644,6 +981,13 @@ describe("GraphProjectionClient", () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id") ?? "base";
+      if (graphId !== "graph-1") {
+        const response = await reviewTransportResponse(input, init, "head", "merge-base");
+        if (!url.pathname.includes("manifest") && !url.pathname.includes("review-metadata")) {
+          projectionCalls.push(graphId);
+        }
+        return response;
+      }
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
       projectionCalls.push(graphId);
       return projectionResponse(requestFrom(init));
@@ -655,11 +999,10 @@ describe("GraphProjectionClient", () => {
       recentBudget,
       pendingBudget,
     });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const base = await commitProjection(client, REQUEST, { endpoints: BASE_ENDPOINTS });
     const pairOptions = {
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     };
     const staged = await client.stageReviewPair(pairOptions);
     const pair = staged.projection;
@@ -689,11 +1032,203 @@ describe("GraphProjectionClient", () => {
     expect(projectionCalls).toEqual(["graph-1", "head", "merge-base"]);
   });
 
+  it("derives one review-metadata capability and accounts one shared catalog across coordinates", async () => {
+    const metadata = await reviewMetadataForTransport("head", "merge-base");
+    const metadataGate = deferredResponse();
+    const metadataUrls: string[] = [];
+    const projectionFacts: unknown[] = [];
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      const graphId = url.searchParams.get("id")!;
+      if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (url.pathname.includes("review-metadata")) {
+        metadataUrls.push(`${url.pathname}${url.search}`);
+        return metadataGate.promise;
+      }
+      const request = requestFrom(init);
+      const facts = reviewFactsForTransport(
+        request,
+        graphId === "head" ? "head" : "mergeBase",
+        metadata,
+      );
+      projectionFacts.push(facts);
+      return projectionResponse(request, {
+        viewFacts: { moduleOverview: null, service: null, review: facts },
+      });
+    });
+    const client = new GraphProjectionClient({ fetch: fetchMock });
+    const endpoints = {
+      head: apiGraphEndpoints("head"),
+      mergeBase: apiGraphEndpoints("merge-base"),
+    };
+
+    const pending = client.stageReviewPair({
+      head: { request: REVIEW_REQUEST, endpoints: endpoints.head },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: endpoints.mergeBase },
+    });
+    await vi.waitFor(() => expect(metadataUrls).toEqual(["/api/graph/review-metadata?id=head"]));
+    await vi.waitFor(() => expect(client.decodedTransferOwnerCount).toBe(1));
+    expect(client.queuedDecodeCount).toBe(1);
+    expect(client.decodeAdmissionResidentByteLength).toBe(144 * 1024 * 1024);
+
+    metadataGate.resolve(jsonResponse(metadata));
+    const staged = await pending;
+    const selected = staged.commit();
+    staged.release();
+    expect(client.decodeAdmissionResidentByteLength).toBe(0);
+    expect(client.reviewMetadataResidentByteLength).toBe(selected.reviewMetadataResidentBytes);
+    expect(client.retainedResidentByteLength).toBe(
+      selected.residentBytes + selected.reviewMetadataResidentBytes,
+    );
+    expect(projectionFacts.every((facts) => !Object.hasOwn(facts as object, "testClassifications"))).toBe(true);
+
+    const overviewRequest = { ...REVIEW_REQUEST, reviewCursor: null };
+    const overviewStage = await client.stageReviewPair({
+      head: { request: overviewRequest, endpoints: endpoints.head },
+      mergeBase: { request: overviewRequest, endpoints: endpoints.mergeBase },
+    });
+    const overview = overviewStage.commit();
+    overviewStage.release();
+    expect(overview.reviewMetadata).toBe(selected.reviewMetadata);
+    expect(overview.reviewMetadataResidentBytes).toBe(selected.reviewMetadataResidentBytes);
+    expect(metadataUrls).toHaveLength(1);
+  });
+
+  it("fails closed when review metadata is missing or disagrees with either immutable capability", async () => {
+    const valid = await reviewMetadataForTransport("head", "merge-base");
+    const run = async (
+      rawMetadata: unknown,
+      mutateFacts?: (facts: ReturnType<typeof reviewFactsForTransport>, side: "head" | "mergeBase") => unknown,
+    ) => {
+      const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+        const url = new URL(String(input), "http://meridian.local");
+        const graphId = url.searchParams.get("id")!;
+        if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+        if (url.pathname.includes("review-metadata")) {
+          return rawMetadata === null
+            ? new Response("missing", { status: 404, headers: { "content-type": "text/plain" } })
+            : jsonResponse(rawMetadata);
+        }
+        const side = graphId === "head" ? "head" as const : "mergeBase" as const;
+        const facts = reviewFactsForTransport(requestFrom(init), side, valid);
+        return projectionResponse(requestFrom(init), {
+          viewFacts: {
+            moduleOverview: null,
+            service: null,
+            review: mutateFacts?.(facts, side) ?? facts,
+          },
+        });
+      });
+      return new GraphProjectionClient({ fetch: fetchMock }).stageReviewPair({
+        head: { request: REVIEW_REQUEST, endpoints: apiGraphEndpoints("head") },
+        mergeBase: { request: REVIEW_REQUEST, endpoints: apiGraphEndpoints("merge-base") },
+      });
+    };
+
+    await expect(run(null)).rejects.toThrow("graph review metadata fetch failed (404)");
+    await expect(run({ ...valid, mergeBaseGraphId: "attacker" }))
+      .rejects.toThrow("immutable graph identity is inconsistent");
+    await expect(run({ ...valid, headContentId: "f".repeat(64) }))
+      .rejects.toThrow("immutable graph identity is inconsistent");
+    await expect(run({ ...valid, legacyCatalog: [] }))
+      .rejects.toThrow("fields do not match the v1 contract");
+    await expect(run(valid, (facts, side) => side === "head"
+      ? { ...facts, contextId: "e".repeat(64) }
+      : facts))
+      .rejects.toThrow("coordinate does not match its immutable metadata document");
+  });
+
+  it("rejects projection URLs that cannot derive the exact review-metadata endpoint", async () => {
+    const client = new GraphProjectionClient({
+      fetch: async (input, init) => {
+        const url = new URL(String(input), "http://meridian.local");
+        const graphId = url.searchParams.get("id")!;
+        if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+        return reviewProjectionResponseForTransport(
+          requestFrom(init),
+          graphId === "head" ? "head" : "mergeBase",
+          await reviewMetadataForTransport("head", "merge-base"),
+        );
+      },
+    });
+
+    await expect(client.stageReviewPair({
+      head: {
+        request: REVIEW_REQUEST,
+        endpoints: { ...apiGraphEndpoints("head"), projectionUrl: "/api/graph/custom?id=head" },
+      },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: apiGraphEndpoints("merge-base") },
+    })).rejects.toThrow("cannot derive immutable metadata endpoint");
+  });
+
+  it("discards every inactive review pair and its side aliases while preserving the active pair", async () => {
+    const recentBudget = new RecentAllocationBudget({ maxRecentEntries: 4, maxRecentBytes: 4_000_000 });
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
+      const url = new URL(String(input), "http://meridian.local");
+      const graphId = url.searchParams.get("id") ?? "graph-1";
+      if (graphId === "graph-1") {
+        return url.pathname.includes("manifest")
+          ? jsonResponse(manifest(graphId))
+          : projectionResponse(requestFrom(init), { residentBytes: 10 });
+      }
+      const name = graphId.replace(/-(?:head|base)$/, "");
+      return reviewTransportResponse(
+        input,
+        init,
+        `${name}-head`,
+        `${name}-base`,
+        { residentBytes: 10 },
+      );
+    });
+    const client = new GraphProjectionClient({
+      fetch: fetchMock,
+      recentBudget,
+      recentCache: { maxRecentEntries: 4, maxRecentBytes: 4_000_000 },
+    });
+    const pair = async (name: string) => {
+      const staged = await client.stageReviewPair({
+        head: { request: REVIEW_REQUEST, endpoints: graphEndpoints(`${name}-head`) },
+        mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints(`${name}-base`) },
+      });
+      return staged.commit();
+    };
+    const baseline = await commitProjection(client, REQUEST, { endpoints: BASE_ENDPOINTS });
+    const first = await pair("first");
+    const second = await pair("second");
+    const active = await pair("active");
+    // A different comparison replaces the prior catalog and its coordinate pairs atomically;
+    // only the graph baseline remains eligible for Back/Forward retention.
+    expect(recentBudget.inactiveEntryCount).toBe(1);
+    expect(client.stageCachedReview(first.key)).toBeUndefined();
+    expect(client.stageCachedReview(second.key)).toBeUndefined();
+
+    client.discardInactiveReviewProjections();
+
+    expect(client.activeKey).toBe(active.key);
+    expect(client.stageCachedReview(first.key)).toBeUndefined();
+    expect(client.stageCachedReview(second.key)).toBeUndefined();
+    expect(client.stageCached(first.head.key)).toBeUndefined();
+    expect(client.stageCached(second.mergeBase.key)).toBeUndefined();
+    const cachedActive = client.stageCachedReview(active.key);
+    const cachedActiveHead = client.stageCached(active.head.key);
+    const cachedBaseline = client.stageCached(baseline.key);
+    expect(cachedActive?.projection).toBe(active);
+    expect(cachedActiveHead?.projection).toBe(active.head);
+    expect(cachedBaseline?.projection).toBe(baseline);
+    expect(recentBudget.inactiveEntryCount).toBe(1);
+    cachedActive?.release();
+    cachedActiveHead?.release();
+    cachedBaseline?.release();
+  });
+
   it("atomically discards an unreachable transition coordinate while retaining the saved baseline", async () => {
     const recentBudget = new RecentAllocationBudget({ maxRecentEntries: 3, maxRecentBytes: 1_000_000 });
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id") ?? "graph-1";
+      if (graphId !== "graph-1") {
+        return reviewTransportResponse(input, init, "head", "merge-base");
+      }
       return url.pathname.includes("manifest")
         ? jsonResponse(manifest(graphId))
         : projectionResponse(requestFrom(init));
@@ -712,10 +1247,9 @@ describe("GraphProjectionClient", () => {
     );
     expect(recentBudget.inactiveEntryCount).toBe(1);
 
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const staged = await client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     });
     staged.commit({ supersededKeys: [transient.key] });
 
@@ -777,26 +1311,35 @@ describe("GraphProjectionClient", () => {
     const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
-      return url.pathname.includes("manifest")
-        ? jsonResponse(manifest(graphId))
-        : projectionResponse(requestFrom(init), { residentBytes: sideBytes });
+      if (graphId === "graph-1") {
+        return url.pathname.includes("manifest")
+          ? jsonResponse(manifest(graphId))
+          : projectionResponse(requestFrom(init));
+      }
+      return reviewTransportResponse(
+        input,
+        init,
+        "large-head",
+        "large-base",
+        { residentBytes: sideBytes },
+      );
     });
     const client = new GraphProjectionClient({
       fetch: fetchMock,
       recentBudget,
       pendingBudget,
     });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
-
     const staged = await client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("large-head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("large-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("large-head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("large-base") },
     });
 
     expect(staged.projection.residentBytes).toBe(
       sideBytes * 2 + estimateGraphPresentationResidentBytes(2, 0),
     );
-    expect(pendingBudget.inactiveResidentByteLength).toBe(staged.projection.residentBytes);
+    expect(pendingBudget.inactiveResidentByteLength).toBe(
+      staged.projection.residentBytes + staged.projection.reviewMetadataResidentBytes,
+    );
     expect(recentBudget.inactiveEntryCount).toBe(0);
     const pair = staged.commit();
     staged.release();
@@ -876,24 +1419,35 @@ describe("GraphProjectionClient", () => {
       maxRecentEntries: 4,
       maxRecentBytes: 192 * 1024 * 1024,
     });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
-    const envelope = await projectionEnvelope(reviewRequest, { residentBytes: sideReservation });
     const slowA = deferredResponse();
     const slowB = deferredResponse();
     const projectionStarts: string[] = [];
-    const fetchMock = vi.fn<typeof fetch>(async (input) => {
+    const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      const name = graphId.replace(/-(?:head|base)$/, "");
+      if (url.pathname.includes("review-metadata")) {
+        return jsonResponse(await reviewMetadataForTransport(`${name}-head`, `${name}-base`));
+      }
+      // Observe the transport boundary before the asynchronous digest fixture is assembled. The
+      // admission invariant is FIFO fetch start order; recording after digest construction makes
+      // two already-admitted sibling requests appear reordered under full-suite CPU contention.
       projectionStarts.push(graphId);
+      const metadata = await reviewMetadataForTransport(`${name}-head`, `${name}-base`);
       if (graphId === "a-base") return slowA.promise;
       if (graphId === "b-base") return slowB.promise;
-      return jsonResponse(envelope);
+      return reviewProjectionResponseForTransport(
+        requestFrom(init),
+        graphId.endsWith("-head") ? "head" : "mergeBase",
+        metadata,
+        { residentBytes: sideReservation },
+      );
     });
     const client = new GraphProjectionClient({ fetch: fetchMock, pendingBudget });
     const pair = (name: string) => client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints(`${name}-head`) },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints(`${name}-base`) },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints(`${name}-head`) },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints(`${name}-base`) },
     });
 
     const pendingA = pair("a");
@@ -907,15 +1461,27 @@ describe("GraphProjectionClient", () => {
     expect(projectionStarts).not.toContain("c-base");
     expect(pendingBudget.inactiveEntryCount).toBe(0);
 
-    slowA.resolve(jsonResponse(envelope));
+    slowA.resolve(await reviewProjectionResponseForTransport(
+      REVIEW_REQUEST,
+      "mergeBase",
+      await reviewMetadataForTransport("a-head", "a-base"),
+      { residentBytes: sideReservation },
+    ));
     const stagedA = await pendingA;
     // A's two decode leases transfer synchronously into one pending pair before B takes the freed
     // physical slots. There is no point where the decoded pair is retained by neither owner.
-    expect(pendingBudget.inactiveResidentByteLength).toBe(stagedA.projection.residentBytes);
+    expect(pendingBudget.inactiveResidentByteLength).toBe(
+      stagedA.projection.residentBytes + stagedA.projection.reviewMetadataResidentBytes,
+    );
     await vi.waitFor(() => expect(projectionStarts).toEqual(["a-head", "a-base", "b-head", "b-base"]));
     stagedA.release();
 
-    slowB.resolve(jsonResponse(envelope));
+    slowB.resolve(await reviewProjectionResponseForTransport(
+      REVIEW_REQUEST,
+      "mergeBase",
+      await reviewMetadataForTransport("b-head", "b-base"),
+      { residentBytes: sideReservation },
+    ));
     const stagedB = await pendingB;
     await vi.waitFor(() => expect(projectionStarts).toEqual([
       "a-head", "a-base", "b-head", "b-base", "c-head", "c-base",
@@ -930,7 +1496,6 @@ describe("GraphProjectionClient", () => {
   });
 
   it("retains an abort-ignorant sibling reservation until its physical decode flight settles", async () => {
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const ignoredSibling = deferredResponse();
     const projectionStarts: string[] = [];
     const client = new GraphProjectionClient({
@@ -938,6 +1503,9 @@ describe("GraphProjectionClient", () => {
         const url = new URL(String(input), "http://meridian.local");
         const graphId = url.searchParams.get("id")!;
         if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+        if (url.pathname.includes("review-metadata")) {
+          return jsonResponse(await reviewMetadataForTransport("failure-head", "ignored-base"));
+        }
         projectionStarts.push(graphId);
         if (graphId === "failure-head") {
           return new Response("failed", { status: 500, headers: { "content-type": "text/plain" } });
@@ -950,8 +1518,8 @@ describe("GraphProjectionClient", () => {
     });
 
     const failed = client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("failure-head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("ignored-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("failure-head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("ignored-base") },
     });
     const failedOutcome = failed.then(
       () => new Error("review unexpectedly succeeded"),
@@ -962,7 +1530,11 @@ describe("GraphProjectionClient", () => {
     expect(client.decodeAdmissionResidentByteLength).toBe(96 * 1024 * 1024);
     expect(client.decodedTransferOwnerCount).toBe(0);
 
-    ignoredSibling.resolve(await projectionResponse(reviewRequest));
+    ignoredSibling.resolve(await reviewProjectionResponseForTransport(
+      REVIEW_REQUEST,
+      "mergeBase",
+      await reviewMetadataForTransport("failure-head", "ignored-base"),
+    ));
     await vi.waitFor(() => expect(client.decodeAdmissionResidentByteLength).toBe(0));
     expect(client.decodedTransferOwnerCount).toBe(0);
   });
@@ -1002,19 +1574,25 @@ describe("GraphProjectionClient", () => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (graphId === "graph-1") return projectionResponse(requestFrom(init));
+      const metadata = await reviewMetadataForTransport("head", "merge-base");
+      if (url.pathname.includes("review-metadata")) return jsonResponse(metadata);
       await pairGate;
-      return projectionResponse(requestFrom(init));
+      return reviewProjectionResponseForTransport(
+        requestFrom(init),
+        graphId === "head" ? "head" : "mergeBase",
+        metadata,
+      );
     });
     const pairClient = new GraphProjectionClient({ fetch: pairFetch });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const pairOptions = {
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     };
     const first = pairClient.stageReviewPair(pairOptions);
     const second = pairClient.stageReviewPair(pairOptions);
-    const headOnly = commitProjection(pairClient, reviewRequest, { endpoints: graphEndpoints("head") });
-    await vi.waitFor(() => expect(pairFetch).toHaveBeenCalledTimes(4)); // two manifests + one POST per side
+    const headOnly = commitProjection(pairClient, REVIEW_REQUEST, { endpoints: graphEndpoints("head") });
+    await vi.waitFor(() => expect(pairFetch).toHaveBeenCalledTimes(5)); // two manifests + metadata + one POST per side
     releasePair();
     const firstStage = await first;
     const secondStage = await second;
@@ -1055,20 +1633,26 @@ describe("GraphProjectionClient", () => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (url.pathname.includes("review-metadata")) {
+        return jsonResponse(await reviewMetadataForTransport("head", "merge-base"));
+      }
       return new Promise<Response>((resolve) => {
         pending.set(graphId, { init, resolve });
       });
     });
     const client = new GraphProjectionClient({ fetch: fetchMock });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const pairRead = client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     });
 
     await vi.waitFor(() => expect([...pending.keys()].sort()).toEqual(["head", "merge-base"]));
-    for (const gate of pending.values()) {
-      gate.resolve(await projectionResponse(requestFrom(gate.init)));
+    for (const [graphId, gate] of pending) {
+      gate.resolve(await reviewProjectionResponseForTransport(
+        requestFrom(gate.init),
+        graphId === "head" ? "head" : "mergeBase",
+        await reviewMetadataForTransport("head", "merge-base"),
+      ));
     }
     const staged = await pairRead;
     expect(staged.projection.head.graphId).toBe("head");
@@ -1204,24 +1788,33 @@ describe("GraphProjectionClient", () => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id") ?? "base";
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (url.pathname.includes("review-metadata")) {
+        return jsonResponse(await reviewMetadataForTransport("head", "merge-base"));
+      }
       projectionCalls.set(graphId, (projectionCalls.get(graphId) ?? 0) + 1);
       if (graphId === "merge-base") return mergeBaseResponse;
+      if (graphId === "head") {
+        return reviewProjectionResponseForTransport(
+          requestFrom(init),
+          "head",
+          await reviewMetadataForTransport("head", "merge-base"),
+        );
+      }
       return projectionResponse(requestFrom(init));
     });
     const client = new GraphProjectionClient({
       fetch: fetchMock,
       recentCache: { maxRecentEntries: 1, maxRecentBytes: 1024 * 1024 },
     });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
     const pairRead = client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     });
     const pairOutcome = pairRead.then(
       () => new Error("expected the review pair to reject"),
       (error: unknown) => error,
     );
-    const head = await commitProjection(client, reviewRequest, { endpoints: graphEndpoints("head") });
+    const head = await commitProjection(client, REVIEW_REQUEST, { endpoints: graphEndpoints("head") });
 
     expect(client.activeKey).toBe(head.key);
     expect(projectionCalls.get("head")).toBe(1);
@@ -1266,11 +1859,10 @@ describe("GraphProjectionClient", () => {
       });
     });
     const client = new GraphProjectionClient({ fetch: fetchMock });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
 
     await expect(client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     })).rejects.toBe(failure);
 
     expect(mergeBaseSignal?.aborted).toBe(true);
@@ -1289,6 +1881,9 @@ describe("GraphProjectionClient", () => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (url.pathname.includes("review-metadata")) {
+        return jsonResponse(await reviewMetadataForTransport("head", "merge-base"));
+      }
       if (graphId === "head") {
         await mergeBaseStarted;
         throw failure;
@@ -1305,11 +1900,10 @@ describe("GraphProjectionClient", () => {
       });
     });
     const client = new GraphProjectionClient({ fetch: fetchMock });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
 
     await expect(client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     })).rejects.toBe(failure);
 
     expect(mergeBaseSignal?.aborted).toBe(true);
@@ -1329,6 +1923,9 @@ describe("GraphProjectionClient", () => {
       const url = new URL(String(input), "http://meridian.local");
       const graphId = url.searchParams.get("id")!;
       if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+      if (url.pathname.includes("review-metadata")) {
+        return jsonResponse(await reviewMetadataForTransport("head", "merge-base"));
+      }
       if (graphId === "head") throw failure;
       mergeBaseSignal = init?.signal as AbortSignal;
       mergeBaseInit = init;
@@ -1336,17 +1933,20 @@ describe("GraphProjectionClient", () => {
       return mergeBaseResponse;
     });
     const client = new GraphProjectionClient({ fetch: fetchMock });
-    const reviewRequest = { ...REQUEST, view: "review" as const, filePaths: ["src/a.ts"] };
-    const retained = commitProjection(client, reviewRequest, { endpoints: graphEndpoints("merge-base") });
+    const retained = commitProjection(client, REVIEW_REQUEST, { endpoints: graphEndpoints("merge-base") });
     await mergeBaseStarted;
 
     await expect(client.stageReviewPair({
-      head: { request: reviewRequest, endpoints: graphEndpoints("head") },
-      mergeBase: { request: reviewRequest, endpoints: graphEndpoints("merge-base") },
+      head: { request: REVIEW_REQUEST, endpoints: graphEndpoints("head") },
+      mergeBase: { request: REVIEW_REQUEST, endpoints: graphEndpoints("merge-base") },
     })).rejects.toBe(failure);
 
     expect(mergeBaseSignal?.aborted).toBe(false);
-    resolveMergeBase(await projectionResponse(requestFrom(mergeBaseInit)));
+    resolveMergeBase(await reviewProjectionResponseForTransport(
+      requestFrom(mergeBaseInit),
+      "mergeBase",
+      await reviewMetadataForTransport("head", "merge-base"),
+    ));
     await expect(retained).resolves.toMatchObject({ graphId: "merge-base" });
     expect(mergeBaseSignal?.aborted).toBe(false);
   });
@@ -1420,7 +2020,7 @@ describe("GraphProjectionClient", () => {
       fetch: async () => jsonResponse({ version: 1, graphId: "old" }),
     });
     await expect(commitProjection(unsupported, REQUEST, { endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("expected version 6");
+      .rejects.toThrow("expected version 9");
 
     const skeletal = new GraphProjectionClient({
       fetch: async () => jsonResponse({ ...manifest("skeletal"), contentId: "bad" }),
@@ -1461,7 +2061,7 @@ describe("GraphProjectionClient", () => {
       .rejects.toThrow("exceeds the 65536-byte view limit");
   });
 
-  it("bounds manifests and rejects fields outside the exact v6 manifest shapes", async () => {
+  it("bounds manifests and rejects fields outside the exact v9 manifest shapes", async () => {
     const oversized = new GraphProjectionClient({
       fetch: async () => new Response("{}", {
         status: 200,
@@ -1475,7 +2075,7 @@ describe("GraphProjectionClient", () => {
       fetch: async () => jsonResponse({ ...manifest("graph-1"), legacyGraphId: "graph-1" }),
     });
     await expect(unknownTopLevel.loadManifest({ endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("fields do not match the v6 contract");
+      .rejects.toThrow("fields do not match the v9 contract");
 
     const base = manifest("graph-1");
     const unknownDefaultView = new GraphProjectionClient({
@@ -1485,7 +2085,7 @@ describe("GraphProjectionClient", () => {
       }),
     });
     await expect(unknownDefaultView.loadManifest({ endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("defaultView: fields do not match the v6 contract");
+      .rejects.toThrow("defaultView: fields do not match the v9 contract");
   });
 
   it("rejects malformed UTF-8 at every graph JSON boundary", async () => {
@@ -1602,7 +2202,7 @@ describe("GraphProjectionClient", () => {
           }),
     });
     await expect(commitProjection(unknownRequestField, REQUEST, { endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("response request: fields do not match the v6 contract");
+      .rejects.toThrow("response request: fields do not match the v9 contract");
 
     const contradictory = new GraphProjectionClient({
       fetch: async (input, init) => String(input).includes("manifest")
@@ -1676,7 +2276,7 @@ describe("GraphProjectionClient", () => {
           }),
     });
     await expect(commitProjection(selfConsistentForgery, REQUEST, { endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("projection identity does not match its v6 content and request");
+      .rejects.toThrow("projection identity does not match its v9 content and request");
     expect(selfConsistentForgery.activeKey).toBeUndefined();
   });
 
@@ -1812,7 +2412,7 @@ describe("GraphProjectionClient", () => {
     const client = new GraphProjectionClient({ fetch: fetchMock });
 
     await expect(commitProjection(client, REQUEST, { endpoints: BASE_ENDPOINTS }))
-      .rejects.toThrow("fields do not match the v6 contract");
+      .rejects.toThrow("fields do not match the v9 contract");
   });
 
   it("bounds and promotes the per-graph manifest cache", async () => {
@@ -2021,7 +2621,7 @@ async function projectionEnvelope(
     ? deriveSerializedServiceTopology(artifact.nodes, artifact.edges)
     : null;
   const envelope: Record<string, unknown> = {
-    version: 6,
+    version: 9,
     contentId: "0".repeat(64),
     request: canonical,
     artifact,
@@ -2069,12 +2669,114 @@ async function projectionIdForTest(contentId: string, request: unknown): Promise
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function reviewMetadataForTransport(
+  headGraphId: string,
+  mergeBaseGraphId: string,
+): Promise<GraphProjectionReviewMetadata> {
+  const identity = {
+    contextId: "c".repeat(64),
+    headGraphId,
+    mergeBaseGraphId,
+    headContentId: "0".repeat(64),
+    mergeBaseContentId: "0".repeat(64),
+  };
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(graphProjectionReviewMetadataIdentityPreimage(identity)),
+  );
+  const metadataId = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return {
+    version: 1,
+    metadataId,
+    ...identity,
+    totalFiles: 1,
+    testClassifications: [{ index: 0, isTest: false }],
+  };
+}
+
+function reviewFactsForTransport(
+  request: GraphProjectionRequest,
+  side: "head" | "mergeBase",
+  metadata: GraphProjectionReviewMetadata,
+  artifact: GraphArtifact = ARTIFACT,
+) {
+  return {
+    ...reviewProjectionFactsForTest(
+      REVIEW_CHANGED_FILES,
+      request,
+      side,
+      artifact,
+      ARTIFACT,
+    ),
+    contextId: metadata.contextId,
+    metadataId: metadata.metadataId,
+  };
+}
+
+async function reviewProjectionResponseForTransport(
+  request: GraphProjectionRequest,
+  side: "head" | "mergeBase",
+  metadata: GraphProjectionReviewMetadata,
+  overrides: Record<string, unknown> = {},
+): Promise<Response> {
+  const artifact = isGraphArtifactFixture(overrides.artifact) ? overrides.artifact : ARTIFACT;
+  return projectionResponse(request, {
+    ...overrides,
+    viewFacts: {
+      moduleOverview: null,
+      service: null,
+      review: reviewFactsForTransport(request, side, metadata, artifact),
+    },
+  });
+}
+
+async function reviewTransportResponse(
+  input: RequestInfo | URL,
+  init: RequestInit | undefined,
+  headGraphId: string,
+  mergeBaseGraphId: string,
+  projectionOverrides: Record<string, unknown> = {},
+): Promise<Response> {
+  const url = new URL(String(input), "http://meridian.local");
+  const graphId = url.searchParams.get("id")!;
+  if (url.pathname.includes("manifest")) return jsonResponse(manifest(graphId));
+  const metadata = await reviewMetadataForTransport(headGraphId, mergeBaseGraphId);
+  if (url.pathname.includes("review-metadata")) {
+    expect(graphId).toBe(headGraphId);
+    return jsonResponse(metadata);
+  }
+  const side = graphId === headGraphId
+    ? "head"
+    : graphId === mergeBaseGraphId
+      ? "mergeBase"
+      : undefined;
+  if (side === undefined) throw new Error(`unexpected review graph ${graphId}`);
+  return reviewProjectionResponseForTransport(
+    requestFrom(init),
+    side,
+    metadata,
+    projectionOverrides,
+  );
+}
+
 function graphEndpoints(graphId: string) {
   return {
     graphId,
     manifestUrl: `/manifest?id=${graphId}`,
     projectionUrl: `/projection?id=${graphId}`,
     searchUrl: `/search?id=${graphId}`,
+  };
+}
+
+function apiGraphEndpoints(graphId: string) {
+  return {
+    graphId,
+    manifestUrl: `/api/graph/manifest?id=${graphId}`,
+    projectionUrl: `/api/graph/projection?id=${graphId}`,
+    searchUrl: `/api/graph/search?id=${graphId}`,
   };
 }
 
@@ -2101,7 +2803,7 @@ function symbolSearchResponse(graphId: string) {
 function manifest(graphId: string) {
   const structure = deriveGraphStructure(ARTIFACT.nodes, ARTIFACT.edges);
   return {
-    version: 6,
+    version: 9,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {

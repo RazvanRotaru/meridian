@@ -79,7 +79,7 @@ describe("view-scoped projection store integration", () => {
     })).toThrow("PR preparation requires graph projection transport");
   });
 
-  it("describes current module, logic, and review navigation without sending whole review membership", () => {
+  it("keeps overview selectors empty and bounds exact-file review navigation", () => {
     const store = freshStore(null);
     store.setState({
       viewMode: "logic",
@@ -94,18 +94,35 @@ describe("view-scoped projection store integration", () => {
       showTests: true,
     });
 
-    const request = projectionRequestForState(store.getState());
-    expect(request).toMatchObject({
-      version: 6,
+    const overviewRequest = projectionRequestForState(store.getState());
+    expect(overviewRequest).toMatchObject({
+      version: 9,
       view: "review",
+      reviewCursor: null,
+      focusIds: [],
+      expandedIds: [],
+      extraIds: [],
+      causalIds: [],
+      serviceExpandedLeadIds: [],
+      depth: 3,
+      includeTests: true,
+      includeReachability: false,
+    });
+
+    store.setState({ prPreparedReviewCursor: "file:0" });
+    const fileRequest = projectionRequestForState(store.getState());
+    expect(fileRequest).toMatchObject({
+      version: 9,
+      view: "review",
+      reviewCursor: "file:0",
       focusIds: [UNIT],
-      expandedIds: [`${UNIT}.run`],
+      expandedIds: [],
       extraIds: [FILE],
       depth: 3,
       includeTests: true,
       includeReachability: false,
     });
-    expect(JSON.stringify(request)).not.toContain("changed-999");
+    expect(JSON.stringify(fileRequest)).not.toContain("changed-999");
   });
 
   it("translates renderer-only Service frames into real graph anchors", () => {
@@ -453,6 +470,7 @@ class DestinationProjectionSource implements GraphProjectionDataSource {
   stageCached(): StagedGraphProjection | undefined { return undefined; }
   stageReviewPair(): Promise<never> { return Promise.reject(new Error("review pair not used")); }
   stageCachedReview(): undefined { return undefined; }
+  discardInactiveReviewProjections(): void {}
   searchSymbols(): Promise<never> { return Promise.reject(new Error("symbol search not used")); }
 }
 
@@ -504,6 +522,7 @@ class FlowProjectionSource implements GraphProjectionDataSource {
   stageCached(): StagedGraphProjection | undefined { return undefined; }
   stageReviewPair(): Promise<never> { return Promise.reject(new Error("review pair not used")); }
   stageCachedReview(): undefined { return undefined; }
+  discardInactiveReviewProjections(): void {}
   searchSymbols(): Promise<never> { return Promise.reject(new Error("symbol search not used")); }
 }
 
@@ -521,7 +540,7 @@ class RecordingProjectionSource implements GraphProjectionDataSource {
 
   async loadManifest(): Promise<GraphProjectionManifest> {
     return {
-      version: 6,
+      version: 9,
       graphId: "graph-1",
       contentId: "0".repeat(64),
       graphSummary: {
@@ -564,6 +583,8 @@ class RecordingProjectionSource implements GraphProjectionDataSource {
   }
 
   stageCachedReview(): undefined { return undefined; }
+
+  discardInactiveReviewProjections(): void {}
 
   searchSymbols(): Promise<never> {
     return Promise.reject(new Error("symbol search is not exercised by this projection source"));
@@ -639,6 +660,7 @@ class OutOfOrderProjectionSource implements GraphProjectionDataSource {
   stageCached(): StagedGraphProjection | undefined { return undefined; }
   stageReviewPair(): Promise<never> { return Promise.reject(new Error("review pair not used")); }
   stageCachedReview(): undefined { return undefined; }
+  discardInactiveReviewProjections(): void {}
   searchSymbols(): Promise<never> { return Promise.reject(new Error("symbol search not used")); }
 }
 
@@ -731,7 +753,7 @@ function boundedIndex(
 function manifestFor(graph: GraphArtifact): GraphProjectionManifest {
   const index = buildGraphIndex(graph);
   return {
-    version: 6,
+    version: 9,
     graphId: "graph-1",
     contentId: "0".repeat(64),
     graphSummary: index.graphSummary,

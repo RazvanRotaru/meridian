@@ -42,7 +42,6 @@ const FILE_ROW: ReviewFileRow = {
   isTest: false,
   moduleId: FILE,
   units: [],
-  fingerprint: "fixture",
   blastRadius: 0,
   deletedImpact: null,
 };

@@ -86,6 +86,26 @@ describe("deriveReviewProjection", () => {
     expect(projection.excludedTestFileCount).toBe(0);
   });
 
+  it("filters an ordinary test path from canonical overview metadata when its graph node is absent", () => {
+    const path = "src/ordinary.ts";
+    const artifact = { ...ARTIFACT, nodes: [], edges: [], extensions: {} } as unknown as GraphArtifact;
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [{ path, status: "modified" }],
+    };
+    const projection = deriveReviewProjection(context, artifact, buildGraphIndex(artifact), {
+      baseIndex: null,
+      showTests: false,
+      reviewFileTestVerdicts: new Map([[path, true]]),
+    });
+
+    expect(projection.visibleContext.changedFiles).toEqual([]);
+    expect(projection.files).toEqual([]);
+    expect(projection.affected).toEqual([]);
+    expect(projection.excludedTestFileCount).toBe(1);
+    expect(projection.review.context).toBe(context);
+  });
+
   it("warns when changed code belongs to a language absent from the flow inventory", () => {
     const pythonFile = "src/backend/service.py";
     const pythonModule = "py:backend.service";

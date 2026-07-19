@@ -196,7 +196,7 @@ async function projectionJson(init: RequestInit | undefined): Promise<Response> 
     ? structure.moduleOverview
     : null;
   return json({
-    version: 6,
+    version: 9,
     contentId: "0".repeat(64),
     projectionId,
     request,
@@ -230,7 +230,7 @@ async function projectionIdForTest(request: GraphProjectionRequest): Promise<str
 function manifest() {
   const structure = deriveGraphStructure(ARTIFACT.nodes, ARTIFACT.edges);
   return {
-    version: 6,
+    version: 9,
     graphId: "graph-1",
     contentId: "0".repeat(64),
     graphSummary: {

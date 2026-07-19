@@ -63,7 +63,10 @@ export function CanvasActionBar({
   const removableCount = useBlueprint(removableModuleSelectionCount);
   const minimalOpen = useBlueprint(moduleGraphOverlayIsOpen);
   const surfaceOwner = useBlueprint(moduleGraphSurfaceOwner);
-  const overviewOnly = surfaceOwner === "prepared-review-overview";
+  const emptyReview = surfaceOwner === "prepared-review-empty";
+  const preparedOverview = useBlueprint((state) => (
+    state.prPreparedArtifactCurrent && state.prPreparedReviewCursor === null
+  ));
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalLayoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
@@ -126,7 +129,7 @@ export function CanvasActionBar({
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
-  const showExtract = !overviewOnly && selectedCount > 0
+  const showExtract = !emptyReview && selectedCount > 0
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";
   const canExtract = showExtract
@@ -155,7 +158,7 @@ export function CanvasActionBar({
             title="Recenter on the current selection, or the whole graph if nothing is selected"
             icon={<RecenterIcon size={18} />}
             onClick={recenter}
-            disabled={overviewOnly}
+            disabled={emptyReview}
           />
           {codebaseView ? null : (
             <>
@@ -164,14 +167,14 @@ export function CanvasActionBar({
                 title="Expand the selection one level, or the whole view when nothing is selected"
                 icon={<ExpandIcon size={18} />}
                 onClick={expandAll}
-                disabled={overviewOnly}
+                disabled={emptyReview}
               />
               <CanvasActionButton
                 ariaLabel="Collapse all"
                 title="Collapse all open containers in the selection, or the whole view when nothing is selected"
                 icon={<CollapseIcon size={18} />}
                 onClick={collapseAll}
-                disabled={overviewOnly}
+                disabled={emptyReview}
               />
               {minimalOpen ? (
                 <CanvasActionButton
@@ -183,7 +186,7 @@ export function CanvasActionBar({
                   }
                   icon={<RemoveSelectionIcon size={18} />}
                   onClick={removeSelectionFromView}
-                  disabled={overviewOnly || removableCount === 0}
+                  disabled={emptyReview || removableCount === 0}
                 />
               ) : null}
             </>
@@ -261,7 +264,7 @@ export function CanvasActionBar({
                   }
                   icon={<GhostVisibilityIcon size={18} visible={ghostNodesVisible} />}
                   onClick={onToggleGhostNodes}
-                  disabled={overviewOnly || !hasGhostNodes}
+                  disabled={emptyReview || !hasGhostNodes}
                   pressed={ghostNodesVisible}
                 />
               )}
@@ -273,9 +276,9 @@ export function CanvasActionBar({
                 icon={<HighwaysIcon size={18} />}
                 onClick={toggleHighways}
                 pressed={showHighways}
-                disabled={overviewOnly}
+                disabled={emptyReview}
               />
-              {overviewOnly || relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
+              {emptyReview || relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
               <CanvasActionButton
                 ariaLabel="Rearrange extracted graph"
                 title={
@@ -287,7 +290,7 @@ export function CanvasActionBar({
                 }
                 icon={<RearrangeIcon size={18} />}
                 onClick={rearrangeMinimalGraph}
-                disabled={overviewOnly || !minimalHasMembers}
+                disabled={emptyReview || !minimalHasMembers}
               />
               <CanvasActionButton
                 ariaLabel="Reset extracted graph"
@@ -298,16 +301,18 @@ export function CanvasActionBar({
                 }
                 icon={<ResetIcon size={18} />}
                 onClick={resetMinimalGraph}
-                disabled={overviewOnly || !minimalChanged}
+                disabled={emptyReview || !minimalChanged}
               />
               {onShowCodebase === undefined ? null : (
                 <CanvasActionButton
                   ariaLabel="Highlight code in codebase"
-                  title="Show this extracted graph highlighted in its whole-codebase context"
+                  title={preparedOverview
+                    ? "Select a changed file before opening its codebase context"
+                    : "Show this extracted graph highlighted in its whole-codebase context"}
                   icon={<CodebaseHighlightIcon size={18} />}
                   onClick={onShowCodebase}
                   buttonRef={codebaseButtonRef}
-                  disabled={overviewOnly}
+                  disabled={emptyReview || preparedOverview}
                 />
               )}
               <CanvasActionSeparator orientation="vertical" />

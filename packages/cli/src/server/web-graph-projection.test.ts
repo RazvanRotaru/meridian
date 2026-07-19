@@ -15,11 +15,13 @@ import {
 import { graphSummaryFor } from "./graph-generation-contract";
 import type { GraphCapabilityHandle } from "./graph-capability-store";
 import { createGraphProjectionAdmission } from "./graph-projection-response";
+import type { ReviewComparisonContext } from "./review-comparison-context";
 import {
   GraphProjectionRegistry,
   handleGraphProjection,
   handleGraphSymbolSearch,
   sendProjectionManifest,
+  sendReviewMetadata,
 } from "./web-graph";
 import type { Context } from "./web-server";
 
@@ -171,6 +173,42 @@ describe("web graph projection routes", () => {
     }
   });
 
+  it("strictly rejects missing, duplicate, extra, and invalid review metadata graph ids", async () => {
+    const { ctx } = context();
+
+    for (const searchParams of [
+      new URLSearchParams(),
+      new URLSearchParams("id=one&id=two"),
+      new URLSearchParams("id=local-projection&legacy=1"),
+      new URLSearchParams("id=../../artifact"),
+    ]) {
+      await expect(sendReviewMetadata(ctx, jsonRequest({}), capturedResponse().value, searchParams))
+        .rejects.toMatchObject({ status: 400 });
+    }
+  });
+
+  it("serves one identical ordered metadata document through either trusted comparison side", async () => {
+    const { ctx, headId, baseId } = reviewPairContext();
+    const head = capturedResponse();
+    const base = capturedResponse();
+
+    await sendReviewMetadata(ctx, jsonRequest({}), head.value, new URLSearchParams({ id: headId }));
+    await sendReviewMetadata(ctx, jsonRequest({}), base.value, new URLSearchParams({ id: baseId }));
+
+    expect(head.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(base.writeHead).toHaveBeenCalledWith(200, expect.any(Object));
+    expect(responseJson(base)).toEqual(responseJson(head));
+    expect(responseJson<Record<string, unknown>>(head)).toMatchObject({
+      version: 1,
+      headGraphId: headId,
+      mergeBaseGraphId: baseId,
+      headContentId: expect.stringMatching(/^[0-9a-f]{64}$/),
+      mergeBaseContentId: expect.stringMatching(/^[0-9a-f]{64}$/),
+      totalFiles: 1,
+      testClassifications: [{ index: 0, isTest: false }],
+    });
+  });
+
   it("searches the immutable catalog of a persisted generated snapshot", async () => {
     const { ctx, id, contentId } = snapshotContext();
     const response = capturedResponse();
@@ -276,6 +314,65 @@ function snapshotContext(): { ctx: Context; id: string; contentId: string } {
       shutdownSignal: new AbortController().signal,
       graphCapabilities: {
         acquire: async (candidate: string) => candidate === id ? handle : null,
+      },
+      graphProjectionRegistry: new GraphProjectionRegistry(),
+    } as unknown as Context,
+  };
+}
+
+function reviewPairContext(): { ctx: Context; headId: string; baseId: string } {
+  const root = mkdtempSync(join(tmpdir(), "meridian-web-review-metadata-"));
+  temporary.push(root);
+  const artifact = fixture();
+  const artifactPath = join(root, "artifact.json");
+  const projectionDirectory = join(root, GRAPH_PROJECTION_DIRECTORY);
+  const headId = "review-head";
+  const baseId = "review-base";
+  const statusCounts = { added: 0, modified: 1, deleted: 0, renamed: 0 } as const;
+  const reviewContext: ReviewComparisonContext = {
+    version: 2,
+    headSha: "1".repeat(40),
+    mergeBaseSha: "2".repeat(40),
+    headContentId: "a".repeat(64),
+    mergeBaseContentId: "b".repeat(64),
+    analysisKey: "review-metadata-test",
+    changedFiles: [{ path: "src/a.ts", status: "modified" }],
+    testClassifications: [{ index: 0, isTest: false }],
+    statusCounts,
+    pages: [{
+      start: 0,
+      end: 1,
+      pathBytes: Buffer.byteLength("src/a.ts"),
+      statusCounts,
+      headPathCount: 1,
+      mergeBasePathCount: 1,
+    }],
+  };
+  const head = {
+    ...projectionCapability(headId, artifactPath, projectionDirectory, graphSummaryFor(artifact)),
+    review: {
+      context: reviewContext,
+      contextId: "c".repeat(64),
+      side: "head" as const,
+      peerGraphId: baseId,
+    },
+  };
+  const base = {
+    ...projectionCapability(baseId, artifactPath, projectionDirectory, graphSummaryFor(artifact)),
+    review: {
+      context: reviewContext,
+      contextId: "c".repeat(64),
+      side: "mergeBase" as const,
+      peerGraphId: headId,
+    },
+  };
+  return {
+    headId,
+    baseId,
+    ctx: {
+      shutdownSignal: new AbortController().signal,
+      graphCapabilities: {
+        acquire: async (id: string) => id === headId ? head : id === baseId ? base : null,
       },
       graphProjectionRegistry: new GraphProjectionRegistry(),
     } as unknown as Context,

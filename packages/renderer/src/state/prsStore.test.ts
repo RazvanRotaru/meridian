@@ -4,6 +4,7 @@ import {
   compareCanonicalPrPreparePaths,
   deriveGraphStructure,
   graphProjectionIdentityPreimage,
+  graphProjectionReviewMetadataIdentityPreimage,
   SOURCE_TEXT_HEADERS,
   type GraphArtifact,
   type GraphNode,
@@ -34,10 +35,11 @@ import {
   type StagedProjection,
   type StagedReviewProjection,
 } from "../graph/graphProjectionClient";
-import { restorePrReviewBaseline, swapToPreparedReviewProjection } from "./prReviewSession";
+import { preparedReviewProjectionCommit, prReviewBaselineRestoreCommit } from "./prReviewSession";
+import { countViewedReviewFiles } from "./reviewFileProgress";
 import type { PreparedChangedFile } from "./prPreparation";
 import { DEFAULT_MINIMAL_GRAPH_NAVIGATION_LIMITS } from "./minimalGraphHistory";
-import { RecentAllocationBudget } from "./recentViewProjectionCache";
+import { RecentAllocationBudget, RecentViewProjectionCache } from "./recentViewProjectionCache";
 import {
   createBlueprintStore,
   reviewSurfaceIsOpen,
@@ -49,6 +51,7 @@ import type { PrChangedFile, PrGitHubComment, PrSummary } from "./prTypes";
 import {
   preparedArtifactReviewFilesForTest,
   reviewProjectionFactsForTest,
+  reviewProjectionMetadataForTest,
 } from "./reviewProjectionTestSupport";
 
 function node(id: string, kind: string, file: string, parentId?: string, lines?: { start: number; end: number }): GraphNode {
@@ -601,6 +604,7 @@ describe("PR store slice", () => {
       prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
     });
     await enterPreparedReview(store);
+    await store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     store.getState().toggleReviewDiffOnly();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
@@ -732,6 +736,7 @@ describe("PR store slice", () => {
     ]);
 
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
 
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
       "src/a.test.ts",
@@ -754,10 +759,13 @@ describe("PR store slice", () => {
       reviewSelectedId: FILE_ID,
       reviewLitNodeIds: new Set([METHOD_ID]),
     });
-    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    // The bounded overview does not claim a complete unit inventory. A whole-file confirmation is
+    // retained graph-free and will be promoted to unit ticks only when this exact file is loaded.
+    expect(store.getState().reviewFileTicks[testFile.path]).toBeDefined();
     expect(store.getState().reviewComments).toHaveLength(1);
 
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(false));
 
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
@@ -770,7 +778,7 @@ describe("PR store slice", () => {
       "src/a.test.ts",
       "src/a.ts",
     ]);
-    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewFileTicks[testFile.path]).toBeDefined();
     expect(store.getState().reviewComments).toHaveLength(1);
 
     await store.getState().submitReviewComments();
@@ -778,8 +786,9 @@ describe("PR store slice", () => {
     expect(store.getState().reviewComments).toHaveLength(1);
 
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
     expect(store.getState().reviewFiles.some((file) => file.path === testFile.path)).toBe(true);
-    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewFileTicks[testFile.path]).toBeDefined();
     expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden test draft");
   });
 
@@ -805,8 +814,8 @@ describe("PR store slice", () => {
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
 
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    expect(store.getState().showTests).toBe(true);
     expect(store.getState().minimalSeedIds).toEqual([METHOD_ID]);
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: METHOD_ID }));
@@ -832,6 +841,7 @@ describe("PR store slice", () => {
     });
     await enterPreparedReview(store);
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
     store.getState().selectModule(TEST_METHOD_ID);
@@ -870,8 +880,8 @@ describe("PR store slice", () => {
     });
 
     store.getState().toggleShowTests();
-    expect(store.getState().showTests).toBe(false);
-    expect(store.getState().minimalSeedIds).toEqual([TEST_METHOD_ID]);
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(false));
+    expect(store.getState().minimalSeedIds).toEqual([]);
     expect(store.getState().minimalMemberIds).toEqual([]);
     expect(store.getState().minimalLayoutStatus).toBe("idle");
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
@@ -932,6 +942,7 @@ describe("PR store slice", () => {
     expect(hiddenPanel).toContain("turn off <strong>Exclude test changes</strong>");
 
     store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
 
     expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
     expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
@@ -1312,12 +1323,13 @@ describe("PR store slice", () => {
 
   it("does not apply a late comment mutation response after its review ended", async () => {
     let resolveMutation!: (response: Response) => void;
-    vi.stubGlobal("fetch", vi.fn(() => new Promise<Response>((resolve) => {
-      resolveMutation = resolve;
-    })));
-    const store = freshStore();
-    store.setState(selectedPrState(7));
-    await enterPreparedReview(store);
+    const { store } = await swappedReviewStore();
+    vi.stubGlobal("fetch", vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      // GitHub writes are not safely abortable: closing only invalidates the local generation and
+      // lets the remote outcome settle so the same draft is not retried into a duplicate.
+      expect(init?.signal).toBeUndefined();
+      return new Promise<Response>((resolve) => { resolveMutation = resolve; });
+    }));
     const root = githubComment({ id: 501 });
     const discussion = {
       comments: [root],
@@ -1326,7 +1338,10 @@ describe("PR store slice", () => {
     store.setState({ prDiscussion: discussion });
 
     const editing = store.getState().editPrReviewComment(root.id, "Late edit");
-    store.setState({ review: null, prReviewed: null });
+    expect(store.getState().prCommentMutationStatus).toBe("submitting");
+    await store.getState().selectPr(null, { endReviewSession: true });
+    const ended = store.getState();
+    expect(ended.prDiscussion).toBeNull();
     resolveMutation(Response.json({
       comments: [{ ...root, body: "Late edit" }],
       reviews: discussion.reviews,
@@ -1334,9 +1349,12 @@ describe("PR store slice", () => {
     }));
 
     expect(await editing).toBe(false);
-    expect(store.getState().prDiscussion).toBe(discussion);
+    expect(store.getState().prReviewed).toBeNull();
+    expect(store.getState().review).toBeNull();
+    expect(store.getState().prDiscussion).toBeNull();
     expect(store.getState().prCommentMutationStatus).toBe("idle");
     expect(store.getState().prCommentMutationId).toBeNull();
+    expect(store.getState().prCommentMutationError).toBeNull();
   });
 
   it("toggles existing canvas comments while keeping rail links and unsafe full-body fallbacks", async () => {
@@ -1532,6 +1550,43 @@ describe("PR store slice", () => {
     await submit;
     expect(store.getState().reviewSubmitStatus).toBe("idle");
     expect(store.getState().reviewComments).toEqual([]);
+  });
+
+  it("does not let a late review submission settle into the next review session", async () => {
+    const { store } = await swappedReviewStore();
+    const oldPath = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(oldPath, null, "Old session draft");
+    let resolveOldSubmit!: (response: Response) => void;
+    const oldSubmit = new Promise<Response>((resolve) => { resolveOldSubmit = resolve; });
+    const nextSessionFetch = routedFetch({ graphId: "pr-head-next-session", headSha: "f".repeat(40) });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (input.toString().includes("/api/prs/review")) {
+        expect(init?.signal).toBeUndefined();
+        return oldSubmit;
+      }
+      return nextSessionFetch(input, init);
+    }));
+
+    const submitting = store.getState().submitReviewComments();
+    expect(store.getState().reviewSubmitStatus).toBe("submitting");
+    await store.getState().selectPr(null, { endReviewSession: true });
+    store.setState(headSelectedPrState(9));
+    await store.getState().reviewPrInGraph();
+    const newPath = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(newPath, null, "New session draft");
+    const nextSession = store.getState();
+
+    resolveOldSubmit(Response.json({ url: "https://github.com/o/r/pull/7#old-review" }));
+    await submitting;
+
+    expect(store.getState().prReviewed).toBe(9);
+    expect(store.getState().review).toBe(nextSession.review);
+    expect(store.getState().prReviewRevision).toBe(nextSession.prReviewRevision);
+    expect(store.getState().reviewComments).toBe(nextSession.reviewComments);
+    expect(store.getState().reviewComments.map((comment) => comment.body)).toEqual(["New session draft"]);
+    expect(store.getState().reviewSubmitStatus).toBe("idle");
+    expect(store.getState().reviewSubmitError).toBeNull();
+    expect(store.getState().reviewSubmittedUrl).toBeNull();
   });
 
   it("lets only the newest post-submit discussion refresh update the canvas comments", async () => {
@@ -2224,7 +2279,6 @@ describe("PR store slice", () => {
         moduleId: null,
         isTest: false,
         units: [],
-        fingerprint: `${status}-whole-file`,
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -2254,7 +2308,6 @@ describe("PR store slice", () => {
         moduleId: null,
         isTest: false,
         units: [],
-        fingerprint: "empty-head-file",
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -2285,7 +2338,6 @@ describe("PR store slice", () => {
         moduleId: null,
         isTest: false,
         units: [],
-        fingerprint: "whole-file",
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -2327,7 +2379,6 @@ describe("PR store slice", () => {
         moduleId: null,
         isTest: false,
         units: [],
-        fingerprint: "empty-head-file",
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -2538,13 +2589,22 @@ class TestProjectionSource implements GraphProjectionDataSource {
 
   constructor(
     private readonly baseArtifact: GraphArtifact,
-    private resolvePrepared?: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact>,
+    private resolvePrepared?: (
+      graphId: string,
+      signal?: AbortSignal,
+      request?: GraphProjectionRequest,
+    ) => GraphArtifact | Promise<GraphArtifact>,
     private readonly strictReviewSlices = false,
     private readonly preparedManifest: readonly PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }],
+    private readonly classificationArtifact: GraphArtifact | null = null,
   ) {}
 
   setPreparedResolver(
-    resolvePrepared: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact>,
+    resolvePrepared: (
+      graphId: string,
+      signal?: AbortSignal,
+      request?: GraphProjectionRequest,
+    ) => GraphArtifact | Promise<GraphArtifact>,
   ): void {
     this.resolvePrepared = resolvePrepared;
   }
@@ -2574,7 +2634,7 @@ class TestProjectionSource implements GraphProjectionDataSource {
     const artifact = graphId === "artifact-1"
       ? this.baseArtifact
       : this.resolvePrepared
-        ? await abortableProjection(this.resolvePrepared(graphId, options.signal), options.signal)
+        ? await abortableProjection(this.resolvePrepared(graphId, options.signal, request), options.signal)
         : graphId.endsWith("-base")
           ? this.baseArtifact
         : graphId === REFRESHED_GRAPH_ID
@@ -2612,7 +2672,10 @@ class TestProjectionSource implements GraphProjectionDataSource {
       const artifact = graphId === "artifact-1"
         ? this.baseArtifact
         : this.resolvePrepared
-          ? await abortableProjection(this.resolvePrepared(graphId, activateOptions.signal), activateOptions.signal)
+          ? await abortableProjection(
+              this.resolvePrepared(graphId, activateOptions.signal, request),
+              activateOptions.signal,
+            )
           : graphId.endsWith("-base")
             ? this.baseArtifact
             : graphId === REFRESHED_GRAPH_ID
@@ -2635,21 +2698,27 @@ class TestProjectionSource implements GraphProjectionDataSource {
     );
     const headProjection = this.strictReviewSlices
       ? testProjection(
-          reviewSliceArtifactForTest(rawHead.artifact, headFacts.selection?.graphPath ?? null),
+          reviewSliceArtifactForTest(rawHead.artifact, headFacts),
           rawHead.graphId,
           rawHead.request,
         )
       : rawHead;
     const mergeBaseProjection = this.strictReviewSlices
       ? testProjection(
-          reviewSliceArtifactForTest(rawMergeBase.artifact, mergeBaseFacts.selection?.graphPath ?? null),
+          reviewSliceArtifactForTest(rawMergeBase.artifact, mergeBaseFacts),
           rawMergeBase.graphId,
           rawMergeBase.request,
         )
       : rawMergeBase;
     const head = {
       ...headProjection,
-      review: reviewProjectionFactsForTest(files, headProjection.request, "head", headProjection.artifact),
+      review: reviewProjectionFactsForTest(
+        files,
+        headProjection.request,
+        "head",
+        headProjection.artifact,
+        this.classificationArtifact ?? rawHead.artifact,
+      ),
     };
     const mergeBase = {
       ...mergeBaseProjection,
@@ -2658,6 +2727,7 @@ class TestProjectionSource implements GraphProjectionDataSource {
         mergeBaseProjection.request,
         "mergeBase",
         mergeBaseProjection.artifact,
+        this.classificationArtifact ?? rawMergeBase.artifact,
       ),
     };
     const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
@@ -2666,6 +2736,14 @@ class TestProjectionSource implements GraphProjectionDataSource {
       projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
       head,
       mergeBase,
+      reviewMetadata: reviewProjectionMetadataForTest(
+        files,
+        head.graphId,
+        mergeBase.graphId,
+        this.classificationArtifact ?? rawHead.artifact,
+        this.classificationArtifact ?? rawMergeBase.artifact,
+      ),
+      reviewMetadataResidentBytes: 1,
       serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
       residentBytes: head.residentBytes + mergeBase.residentBytes,
     };
@@ -2682,6 +2760,12 @@ class TestProjectionSource implements GraphProjectionDataSource {
     return projection === undefined
       ? undefined
       : detachedReviewStage(projection, () => { this.activeKey = key; });
+  }
+
+  discardInactiveReviewProjections(): void {
+    for (const key of this.cachedReviews.keys()) {
+      if (key !== this.activeKey) this.cachedReviews.delete(key);
+    }
   }
 
   searchSymbols(): Promise<never> {
@@ -2758,7 +2842,7 @@ function graphIdFromOptions(options: GraphProjectionActivateOptions): string {
 
 function testManifest(graphId: string): GraphProjectionManifest {
   return {
-    version: 6,
+    version: 9,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {
@@ -2806,11 +2890,41 @@ function testProjection(
   };
 }
 
-function reviewSliceArtifactForTest(artifact: GraphArtifact, graphPath: string | null): GraphArtifact {
-  const nodes = graphPath === null
-    ? []
-    : artifact.nodes.filter((candidate) => candidate.location?.file.replace(/\\/g, "/") === graphPath);
-  const ids = new Set(nodes.map((candidate) => candidate.id));
+function reviewSliceArtifactForTest(
+  artifact: GraphArtifact,
+  facts: ReturnType<typeof reviewProjectionFactsForTest>,
+): GraphArtifact {
+  const graphPaths = facts.selection !== null
+    ? facts.selection.graphPath === null ? [] : [facts.selection.graphPath]
+    : (facts.page?.entries ?? []).flatMap((entry) => {
+        if (facts.side === "head") return entry.status === "deleted" ? [] : [entry.path];
+        if (entry.status === "added") return [];
+        return [entry.status === "renamed" ? entry.previousPath! : entry.path];
+      });
+  const byId = new Map(artifact.nodes.map((candidate) => [candidate.id, candidate]));
+  const ids = new Set<string>();
+  const addWithAncestors = (candidate: GraphNode): void => {
+    let current: GraphNode | undefined = candidate;
+    while (current !== undefined && !ids.has(current.id)) {
+      ids.add(current.id);
+      current = current.parentId == null ? undefined : byId.get(current.parentId);
+    }
+  };
+  for (const graphPath of graphPaths) {
+    const candidates = artifact.nodes.filter((candidate) => (
+      candidate.location?.file.replace(/\\/g, "/") === graphPath
+    ));
+    if (facts.overview !== null) {
+      const representative = [...candidates].sort((left, right) => (
+        Number(right.kind === "module") - Number(left.kind === "module")
+        || left.id.localeCompare(right.id)
+      ))[0];
+      if (representative !== undefined) addWithAncestors(representative);
+    } else {
+      for (const candidate of candidates) addWithAncestors(candidate);
+    }
+  }
+  const nodes = artifact.nodes.filter((candidate) => ids.has(candidate.id));
   return {
     ...artifact,
     nodes,
@@ -2819,25 +2933,45 @@ function reviewSliceArtifactForTest(artifact: GraphArtifact, graphPath: string |
 }
 
 function testReviewProjection(head: LoadedGraphProjection, mergeBase: LoadedGraphProjection): LoadedReviewProjection {
+  const files = preparedArtifactReviewFilesForTest(head.artifact, [{ path: "src/a.ts", status: "modified" }]);
   return {
     key: `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`,
     projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
     head,
     mergeBase,
+    reviewMetadata: reviewProjectionMetadataForTest(
+      files,
+      head.graphId,
+      mergeBase.graphId,
+      head.artifact,
+      mergeBase.artifact,
+    ),
+    reviewMetadataResidentBytes: 1,
     serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
     residentBytes: head.residentBytes + mergeBase.residentBytes,
   };
 }
 
 function projectionOverrides(
-  resolvePrepared: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact>,
-  resolveMergeBase: (graphId: string, signal?: AbortSignal) => GraphArtifact | Promise<GraphArtifact> = () => ARTIFACT,
+  resolvePrepared: (
+    graphId: string,
+    signal?: AbortSignal,
+    request?: GraphProjectionRequest,
+  ) => GraphArtifact | Promise<GraphArtifact>,
+  resolveMergeBase: (
+    graphId: string,
+    signal?: AbortSignal,
+    request?: GraphProjectionRequest,
+  ) => GraphArtifact | Promise<GraphArtifact> = () => ARTIFACT,
   strictReviewSlices = false,
   preparedManifest: readonly PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }],
+  classificationArtifact: GraphArtifact | null = null,
 ): Pick<StoreDependencies, "projectionDataSource" | "initialProjection" | "projectionEndpoints"> {
-  const source = new TestProjectionSource(ARTIFACT, (graphId, signal) =>
-    graphId.endsWith("-base") ? resolveMergeBase(graphId, signal) : resolvePrepared(graphId, signal),
-  strictReviewSlices, preparedManifest);
+  const source = new TestProjectionSource(ARTIFACT, (graphId, signal, request) =>
+    graphId.endsWith("-base")
+      ? resolveMergeBase(graphId, signal, request)
+      : resolvePrepared(graphId, signal, request),
+  strictReviewSlices, preparedManifest, classificationArtifact);
   const projection = testProjection(ARTIFACT, "artifact-1", BASE_PROJECTION_REQUEST);
   source.seed(projection);
   return {
@@ -2882,6 +3016,28 @@ function realProjectionFetch(
         artifactForGraphId(graphId),
       ));
     }
+    if (url.pathname === "/api/graph/review-metadata") {
+      if (graphId === null) throw new Error("test review metadata request is missing graph id");
+      if (init?.method !== undefined && init.method !== "GET") {
+        throw new Error("test review metadata request must use GET");
+      }
+      const headGraphId = graphId.endsWith("-base")
+        ? graphId.slice(0, -"-base".length)
+        : graphId;
+      const mergeBaseGraphId = `${headGraphId}-base`;
+      const headArtifact = artifactForGraphId(headGraphId);
+      const mergeBaseArtifact = artifactForGraphId(mergeBaseGraphId);
+      const files = preparedArtifactReviewFilesForTest(headArtifact, [
+        { path: "src/a.ts", status: "modified" },
+      ]);
+      return strictProjectionJson(await realReviewMetadata(
+        files,
+        headGraphId,
+        mergeBaseGraphId,
+        headArtifact,
+        mergeBaseArtifact,
+      ));
+    }
     if (url.pathname === "/api/graph/projection") {
       if (graphId === null) throw new Error("test projection request is missing graph id");
       const request = canonicalizeProjectionRequest(
@@ -2892,7 +3048,15 @@ function realProjectionFetch(
       const files = preparedArtifactReviewFilesForTest(artifactForGraphId(headGraphId), [
         { path: "src/a.ts", status: "modified" },
       ]);
-      return strictProjectionResponse(request, artifact, graphId, files);
+      const mergeBaseGraphId = `${headGraphId}-base`;
+      const metadata = await realReviewMetadata(
+        files,
+        headGraphId,
+        mergeBaseGraphId,
+        artifactForGraphId(headGraphId),
+        artifactForGraphId(mergeBaseGraphId),
+      );
+      return strictProjectionResponse(request, artifact, graphId, files, metadata.metadataId);
     }
     return applicationFetch(input, init);
   });
@@ -2943,7 +3107,7 @@ async function realProjectionDependencies(
 function realProjectionManifest(graphId: string, artifact: GraphArtifact): GraphProjectionManifest {
   const structure = deriveGraphStructure(artifact.nodes, artifact.edges);
   return {
-    version: 6,
+    version: 9,
     graphId,
     contentId: "0".repeat(64),
     graphSummary: {
@@ -2962,6 +3126,7 @@ async function strictProjectionResponse(
   artifact: GraphArtifact,
   graphId: string,
   reviewFiles: readonly object[],
+  metadataId: string,
 ): Promise<Response> {
   const structure = deriveGraphStructure(artifact.nodes, artifact.edges);
   const moduleOverview = request.focusIds.length === 0
@@ -2973,7 +3138,7 @@ async function strictProjectionResponse(
     : null;
   const projectionId = await projectionIdForRealClientTest("0".repeat(64), request);
   return strictProjectionJson({
-    version: 6,
+    version: 9,
     contentId: "0".repeat(64),
     projectionId,
     request,
@@ -2986,12 +3151,15 @@ async function strictProjectionResponse(
       moduleOverview,
       service,
       review: request.view === "review" && request.filePaths.length === 0
-        ? reviewProjectionFactsForTest(
-            reviewFiles,
-            request,
-            graphId.endsWith("-base") ? "mergeBase" : "head",
-            artifact,
-          )
+        ? {
+            ...reviewProjectionFactsForTest(
+              reviewFiles,
+              request,
+              graphId.endsWith("-base") ? "mergeBase" : "head",
+              artifact,
+            ),
+            metadataId,
+          }
         : null,
     },
     analysis: {
@@ -3002,6 +3170,42 @@ async function strictProjectionResponse(
     completeness: { complete: true, reasons: [], omittedNodes: 0, omittedEdges: 0 },
     residentBytes: 4_096,
   });
+}
+
+async function realReviewMetadata(
+  reviewFiles: unknown,
+  headGraphId: string,
+  mergeBaseGraphId: string,
+  headArtifact: GraphArtifact,
+  mergeBaseArtifact: GraphArtifact,
+) {
+  const fixture = reviewProjectionMetadataForTest(
+    reviewFiles,
+    headGraphId,
+    mergeBaseGraphId,
+    headArtifact,
+    mergeBaseArtifact,
+  );
+  const identity = {
+    contextId: fixture.contextId,
+    headGraphId,
+    mergeBaseGraphId,
+    headContentId: "0".repeat(64),
+    mergeBaseContentId: "0".repeat(64),
+  };
+  const digest = await globalThis.crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(graphProjectionReviewMetadataIdentityPreimage(identity)),
+  );
+  const metadataId = Array.from(
+    new Uint8Array(digest),
+    (byte) => byte.toString(16).padStart(2, "0"),
+  ).join("");
+  return {
+    ...fixture,
+    ...identity,
+    metadataId,
+  };
 }
 
 function strictProjectionJson(value: unknown): Response {
@@ -3353,6 +3557,217 @@ async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
   return { store, bootIndex, fetchMock };
 }
 
+interface AtomicPreparedReviewExpectation {
+  graphId: string;
+  headSha: string;
+  mergeBaseSha: string;
+  generatedAt: string;
+  cursor?: string | null;
+}
+
+/** Capture the synchronous observer boundary around one prepared-review pair installation. A
+ * target-key publication includes every later status/layout update while that key is active, while
+ * `keyTransitions` isolates the one notification which first made the pair visible. */
+function observeAtomicPreparedReviewTarget(
+  store: ReturnType<typeof freshStore>,
+  targetGraphId: string,
+) {
+  type State = ReturnType<typeof store.getState>;
+  const capture = (state: State) => ({
+    activeProjectionKey: state.activeProjectionKey,
+    activeProjectionGraphId: state.activeProjectionGraphId,
+    activeEndpointGraphId: state.activeProjectionEndpoints?.graphId ?? null,
+    activeCursor: state.activeProjectionRequest?.reviewCursor ?? null,
+    preparedHeadGraphId: state.prPreparedHead?.graphId ?? null,
+    preparedMergeBaseGraphId: state.prPreparedMergeBase?.graphId ?? null,
+    preparedHeadSha: state.prPreparedHeadSha,
+    preparedMergeBaseSha: state.prPreparedMergeBaseSha,
+    comparisonGraphId: state.prReviewComparison?.graphId ?? null,
+    comparisonCursor: state.prReviewComparison?.request.reviewCursor ?? null,
+    preparedArtifactCurrent: state.prPreparedArtifactCurrent,
+    generatedAt: state.artifact.generatedAt,
+    viewMode: state.viewMode,
+    reviewPresent: state.review !== null,
+    reviewChangedPaths: state.review?.context.changedFiles.map((file) => file.path) ?? [],
+    reviewFilePaths: state.reviewFiles.map((file) => file.path),
+    reviewFileModuleIds: state.reviewFiles.map((file) => file.moduleId),
+    reviewAllSeedIds: [...state.reviewAllSeedIds],
+    minimalSeedIds: [...state.minimalSeedIds],
+    minimalMemberIds: [...state.minimalMemberIds],
+    overviewCoverage: state.prPreparedOverviewCoverage,
+  });
+  type Snapshot = ReturnType<typeof capture>;
+  const initialKey = store.getState().activeProjectionKey;
+  let previousKey = initialKey;
+  let targetKey: string | null = null;
+  const keyTransitions: Snapshot[] = [];
+  const targetPublications: Snapshot[] = [];
+  const unsubscribe = store.subscribe((state) => {
+    const snapshot = capture(state);
+    if (snapshot.activeProjectionKey !== previousKey) {
+      keyTransitions.push(snapshot);
+      previousKey = snapshot.activeProjectionKey;
+      if (snapshot.activeProjectionGraphId === targetGraphId) {
+        targetKey = snapshot.activeProjectionKey;
+      }
+    }
+    if (targetKey !== null && snapshot.activeProjectionKey === targetKey) {
+      targetPublications.push(snapshot);
+    }
+  });
+  return { initialKey, keyTransitions, targetPublications, unsubscribe };
+}
+
+function expectAtomicPreparedReviewTarget(
+  trace: ReturnType<typeof observeAtomicPreparedReviewTarget>,
+  expected: AtomicPreparedReviewExpectation,
+): void {
+  const expectedCursor = expected.cursor ?? null;
+  const targetTransitions = trace.keyTransitions.filter((snapshot) => (
+    snapshot.activeProjectionGraphId === expected.graphId
+  ));
+  expect(targetTransitions).toHaveLength(1);
+  expect(targetTransitions[0]?.activeProjectionKey).not.toBe(trace.initialKey);
+  expect(trace.targetPublications.length).toBeGreaterThan(0);
+  expect(trace.targetPublications[0]).toEqual(targetTransitions[0]);
+  for (const snapshot of trace.targetPublications) {
+    expect(snapshot).toMatchObject({
+      activeProjectionKey: targetTransitions[0]!.activeProjectionKey,
+      activeProjectionGraphId: expected.graphId,
+      activeEndpointGraphId: expected.graphId,
+      activeCursor: expectedCursor,
+      preparedHeadGraphId: expected.graphId,
+      preparedMergeBaseGraphId: `${expected.graphId}-base`,
+      preparedHeadSha: expected.headSha,
+      preparedMergeBaseSha: expected.mergeBaseSha,
+      comparisonGraphId: `${expected.graphId}-base`,
+      comparisonCursor: expectedCursor,
+      preparedArtifactCurrent: true,
+      generatedAt: expected.generatedAt,
+      viewMode: "modules",
+      reviewPresent: true,
+      reviewChangedPaths: ["src/a.ts"],
+      reviewFilePaths: ["src/a.ts"],
+      reviewFileModuleIds: [FILE_ID],
+      reviewAllSeedIds: [FILE_ID],
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+    });
+    if (expectedCursor === null) {
+      expect(snapshot.overviewCoverage).toMatchObject({
+        pageIndex: 0,
+        entries: [{
+          index: 0,
+          head: { state: "included", isTest: false },
+          mergeBase: { state: "included", isTest: false },
+          isTest: false,
+        }],
+      });
+    }
+  }
+}
+
+/** Record every synchronous publication while a prepared review leaves the canvas. The important
+ * invariant is bidirectional: review-derived presentation may exist only with the prepared HEAD,
+ * and the baseline projection may publish only after all graph-derived review fields are gone. */
+function observePreparedReviewExit(store: ReturnType<typeof freshStore>) {
+  type State = ReturnType<typeof store.getState>;
+  const capture = (state: State) => ({
+    graphId: state.activeProjectionGraphId,
+    generatedAt: state.artifact.generatedAt,
+    preparedArtifactCurrent: state.prPreparedArtifactCurrent,
+    comparisonGraphId: state.prReviewComparison?.graphId ?? null,
+    reviewPresent: state.review !== null,
+    reviewFiles: state.reviewFiles.map((file) => file.path),
+    reviewAffectedIds: [...state.reviewAffectedIds].sort(),
+    reviewAllSeedIds: [...state.reviewAllSeedIds],
+    minimalSeedIds: [...state.minimalSeedIds],
+    minimalMemberIds: [...state.minimalMemberIds],
+    minimalRfNodeIds: state.minimalRfNodes.map((node) => node.id),
+    minimalRfEdgeIds: state.minimalRfEdges.map((edge) => edge.id),
+    prReviewed: state.prReviewed,
+    baselinePresent: state.prReviewBaseline !== null,
+    preparedHeadGraphId: state.prPreparedHead?.graphId ?? null,
+    preparedMergeBaseGraphId: state.prPreparedMergeBase?.graphId ?? null,
+  });
+  type Snapshot = ReturnType<typeof capture>;
+  const publications: Snapshot[] = [];
+  const unsubscribe = store.subscribe((state) => publications.push(capture(state)));
+  return { publications, unsubscribe };
+}
+
+function expectAtomicPreparedReviewExit(
+  trace: ReturnType<typeof observePreparedReviewExit>,
+  endSession: boolean,
+): void {
+  const baselinePublications = trace.publications.filter((snapshot) => snapshot.graphId === "artifact-1");
+  expect(baselinePublications.length).toBeGreaterThan(0);
+  for (const snapshot of trace.publications) {
+    const retainsReviewPresentation = snapshot.reviewPresent
+      || snapshot.comparisonGraphId !== null
+      || snapshot.reviewFiles.length > 0
+      || snapshot.reviewAffectedIds.length > 0
+      || snapshot.reviewAllSeedIds.length > 0
+      || snapshot.minimalSeedIds.length > 0
+      || snapshot.minimalMemberIds.length > 0
+      || snapshot.minimalRfNodeIds.length > 0
+      || snapshot.minimalRfEdgeIds.length > 0;
+    if (retainsReviewPresentation) {
+      expect(snapshot.graphId).toBe("pr-head-1");
+    }
+  }
+  for (const snapshot of baselinePublications) {
+    expect(snapshot).toMatchObject({
+      graphId: "artifact-1",
+      generatedAt: ARTIFACT.generatedAt,
+      preparedArtifactCurrent: false,
+      comparisonGraphId: null,
+      reviewPresent: false,
+      reviewFiles: [],
+      reviewAffectedIds: [],
+      reviewAllSeedIds: [],
+      minimalSeedIds: [],
+      minimalMemberIds: [],
+      minimalRfNodeIds: [],
+      minimalRfEdgeIds: [],
+      ...(endSession
+        ? {
+            prReviewed: null,
+            baselinePresent: false,
+            preparedHeadGraphId: null,
+            preparedMergeBaseGraphId: null,
+          }
+        : {
+            prReviewed: 7,
+            baselinePresent: true,
+            preparedHeadGraphId: "pr-head-1",
+            preparedMergeBaseGraphId: "pr-head-1-base",
+          }),
+    });
+  }
+}
+
+function visibleReviewRevisionInputs(
+  state: ReturnType<ReturnType<typeof freshStore>["getState"]>,
+) {
+  const summary = selectedPrSummary(state);
+  return {
+    summaryHeadSha: summary?.headSha ?? null,
+    summaryUpdatedAt: summary?.updatedAt ?? null,
+    files: state.prFiles?.map((file) => ({
+      path: file.path,
+      status: file.status,
+      hunks: file.hunks?.map((hunk) => ({ ...hunk })) ?? [],
+    })) ?? null,
+    reviewChangedFiles: state.review?.context.changedFiles.map((file) => ({
+      path: file.path,
+      status: file.status,
+      hunks: file.hunks?.map((hunk) => ({ ...hunk })) ?? [],
+    })) ?? null,
+    revisionHeadSha: state.prReviewRevision?.headSha ?? null,
+  };
+}
+
 describe("PR head preparation (prepareHeadGraph)", () => {
   it("prepares a broader-root review through v1 and returns only its immutable handoff URL", async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
@@ -3642,7 +4057,10 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().prFiles).toEqual([
       expect.objectContaining({ path: "src/a.ts", status: "modified" }),
     ]);
-    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      FILE_ID,
+    ]);
     const restoredSource = testProjectionSources.get(store)!;
     const restoredReviewReads = restoredSource.activationCalls.filter((call) => call.request.view === "review");
     expect(restoredReviewReads).toHaveLength(2);
@@ -3937,7 +4355,117 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
   });
 
-  it("mounts a source-only overview and hydrates graph data only for an explicit file click", async () => {
+  it("publishes a normal prepared entry as one complete projection/review transaction", async () => {
+    const graphId = "pr-atomic-entry";
+    vi.stubGlobal("fetch", routedFetch({ graphId }));
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(() => HEAD_ARTIFACT, () => ARTIFACT, true),
+    });
+    store.setState(headSelectedPrState(7));
+    const trace = observeAtomicPreparedReviewTarget(store, graphId);
+
+    await store.getState().reviewPrInGraph();
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewTarget(trace, {
+      graphId,
+      headSha: INITIAL_HEAD_SHA,
+      mergeBaseSha: "c".repeat(40),
+      generatedAt: HEAD_ARTIFACT.generatedAt,
+    });
+  });
+
+  it("publishes a refreshed prepared revision without exposing it under the old descriptors", async () => {
+    const { store } = await swappedReviewStore();
+    store.setState({ prReviewStale: true });
+    vi.stubGlobal("fetch", preparedRefreshFetch());
+    const trace = observeAtomicPreparedReviewTarget(store, REFRESHED_GRAPH_ID);
+
+    await store.getState().refreshPrReview();
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewTarget(trace, {
+      graphId: REFRESHED_GRAPH_ID,
+      headSha: REFRESHED_HEAD_SHA,
+      mergeBaseSha: "c".repeat(40),
+      generatedAt: REFRESHED_HEAD_ARTIFACT.generatedAt,
+    });
+  });
+
+  it("publishes a prepared URL restore only after its complete pair and presentation are ready", async () => {
+    // A prepared URL boots from its immutable HEAD graph id; the transaction changes the active
+    // projection KEY from the boot overview to its bounded two-sided review coordinate.
+    const graphId = "artifact-1";
+    const summary = { ...pr(7), headSha: INITIAL_HEAD_SHA };
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/prepared")) {
+        return Promise.resolve(Response.json({
+          version: 1,
+          request: { owner: "o", repo: "r", prNumber: 7, baseRef: "main", headRef: "feature" },
+          ...prepareResult(graphId, INITIAL_HEAD_SHA),
+        }));
+      }
+      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: summary }));
+      if (url.includes("/api/prs/files")) {
+        return Promise.resolve(Response.json({ files: [], truncated: false }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 0 },
+        }));
+      }
+      if (url.includes("/api/prs/checks")) {
+        return Promise.resolve(Response.json({ total: 0, passed: 0, failed: 0, pending: 0, url: null }));
+      }
+      if (url.includes(`/api/meta?id=${graphId}`)) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(graphId, INITIAL_HEAD_SHA)));
+      }
+      if (url.includes("/api/pr/prepare") || init?.method === "POST") {
+        return Promise.reject(new Error("prepared restore must not POST"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...projectionOverrides(() => HEAD_ARTIFACT, () => ARTIFACT, true),
+      preparedReviewUrl: "/api/pr/prepared?id=opaque",
+    });
+    store.setState({ viewMode: "prs" });
+    const trace = observeAtomicPreparedReviewTarget(store, graphId);
+
+    await expect(store.getState().restorePreparedPrReview(7)).resolves.toBe(true);
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewTarget(trace, {
+      graphId,
+      headSha: INITIAL_HEAD_SHA,
+      mergeBaseSha: "c".repeat(40),
+      generatedAt: ARTIFACT.generatedAt,
+    });
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("publishes a resumed prepared review as one complete pair/presentation transaction", async () => {
+    const { store } = await swappedReviewStore();
+    await store.getState().closeMinimalGraph();
+    expect(store.getState().activeProjectionGraphId).toBe("artifact-1");
+    const trace = observeAtomicPreparedReviewTarget(store, "pr-head-1");
+
+    await store.getState().resumePrReview();
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewTarget(trace, {
+      graphId: "pr-head-1",
+      headSha: INITIAL_HEAD_SHA,
+      mergeBaseSha: "c".repeat(40),
+      generatedAt: HEAD_ARTIFACT.generatedAt,
+    });
+  });
+
+  it("mounts a bounded review graph before hydrating an exact file coordinate", async () => {
     const fetchMock = routedFetch({ graphId: "pr-strict-cursor" });
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore({
@@ -3954,14 +4482,53 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(overviewReads.every((call) => (
       call.request.reviewCursor === null && call.request.filePaths.length === 0
     ))).toBe(true);
-    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      FILE_ID,
+    ]);
     expect(store.getState().reviewFiles).toEqual([
-      expect.objectContaining({ path: "src/a.ts", moduleId: null }),
+      expect.objectContaining({ path: "src/a.ts", moduleId: FILE_ID }),
     ]);
     expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().reviewSelectedId).toBeNull();
+    const overviewCoverage = store.getState().prPreparedOverviewCoverage;
+    expect(overviewCoverage).toMatchObject({
+      pageIndex: 0,
+      entries: [{
+        index: 0,
+        head: { state: "included", isTest: false },
+        mergeBase: { state: "included", isTest: false },
+        isTest: false,
+      }],
+    });
 
     source.activationCalls.length = 0;
+    await store.getState().setMinimalView("codebase");
+    expect(store.getState().minimalView).toBe("graph");
+    expect(source.activationCalls).toEqual([]);
+    await expect(store.getState().revealInView(FILE_ID, store.getState().activeProjectionGraphId))
+      .rejects.toThrow("Select a changed file");
+    await expect(store.getState().addToView(FILE_ID, store.getState().activeProjectionGraphId))
+      .rejects.toThrow("Select a changed file");
+
+    source.activationCalls.length = 0;
+    const committedFilePublications: Array<{
+      paths: string[];
+      seeds: string[];
+      nodeIds: string[];
+    }> = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.prPreparedReviewCursor === "file:0") {
+        committedFilePublications.push({
+          paths: state.reviewFiles.map((file) => file.path),
+          seeds: [...state.minimalSeedIds],
+          nodeIds: state.artifact.nodes.map((candidate) => candidate.id),
+        });
+      }
+    });
     await store.getState().focusReviewFile("src/a.ts");
+    unsubscribe();
 
     const fileReads = source.activationCalls.filter((call) => call.request.view === "review");
     expect(fileReads.length).toBeGreaterThanOrEqual(2);
@@ -3970,9 +4537,390 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       call.request.reviewCursor === "file:0" && call.request.filePaths.length === 0
     ))).toBe(true);
     expect(store.getState().artifact.nodes.length).toBeGreaterThan(0);
-    expect(store.getState().artifact.nodes.every((candidate) => candidate.location?.file === "src/a.ts")).toBe(true);
+    expect(store.getState().artifact.nodes.every((candidate) =>
+      candidate.kind === "package" || candidate.location?.file === "src/a.ts")).toBe(true);
     expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    expect(store.getState().prPreparedOverviewCoverage).toBe(overviewCoverage);
     expect(store.getState().reviewSelectedId).toBe(FILE_ID);
+    expect(committedFilePublications.length).toBeGreaterThan(0);
+    expect(committedFilePublications.every((state) => (
+      state.paths.includes("src/a.ts")
+      && state.seeds.includes(FILE_ID)
+      && state.nodeIds.includes(FILE_ID)
+    ))).toBe(true);
+  });
+
+  it("keeps viewed progress stable while exact units hydrate and the overview is restored", async () => {
+    const fetchMock = routedFetch({ graphId: "pr-stable-progress" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(() => HEAD_ARTIFACT, () => ARTIFACT, true),
+    });
+    const source = testProjectionSources.get(store)!;
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    const overview = store.getState();
+    expect(overview.reviewFiles[0]?.units).toEqual([]);
+    expect(overview.reviewProgressCatalog?.byPath.get("src/a.ts")).not.toHaveProperty("units");
+    expect(overview.reviewProgressCatalog?.byPath.get("src/a.ts")?.tickedUnitIds).toEqual([]);
+    overview.toggleReviewFileViewed("src/a.ts");
+    expect(store.getState().reviewFileTicks["src/a.ts"]).toBeDefined();
+    expect(countViewedReviewFiles(
+      store.getState().reviewProgressCatalog,
+      store.getState().reviewUnitTicks,
+      store.getState().reviewFileTicks,
+      store.getState().showTests,
+    )).toBe(1);
+
+    const publications: Array<{ count: number; total: number }> = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.prReviewed !== 7 || state.reviewProgressCatalog === null) return;
+      publications.push({
+        count: countViewedReviewFiles(
+          state.reviewProgressCatalog,
+          state.reviewUnitTicks,
+          state.reviewFileTicks,
+          state.showTests,
+        ),
+        total: state.reviewProgressCatalog.order.length,
+      });
+    });
+    await store.getState().focusReviewFile("src/a.ts");
+
+    const exact = store.getState();
+    expect(exact.reviewProgressCatalog?.byPath.get("src/a.ts")).not.toHaveProperty("units");
+    expect(exact.reviewProgressCatalog?.byPath.get("src/a.ts")?.tickedUnitIds).toContain(METHOD_ID);
+    expect(exact.reviewFileTicks["src/a.ts"]).toBeUndefined();
+    expect(exact.reviewUnitTicks[METHOD_ID]).toBeDefined();
+    await exact.focusReviewOverview();
+    unsubscribe();
+
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().reviewFiles[0]?.units).toEqual([]);
+    expect(store.getState().reviewProgressCatalog?.byPath.get("src/a.ts")).not.toHaveProperty("units");
+    expect(store.getState().reviewProgressCatalog?.byPath.get("src/a.ts")?.tickedUnitIds).toContain(METHOD_ID);
+    expect(publications.length).toBeGreaterThan(0);
+    expect(publications.every((entry) => entry.count === 1 && entry.total === 1)).toBe(true);
+
+    // Back to the exact coordinate promotes its decoded pair without retaining a second unit
+    // inventory in progress state. A transport eviction then refetches the same pair and derives
+    // the aggregate from current fingerprints plus user-owned ticks.
+    const cachedReads = source.activationCalls.length;
+    await store.getState().focusReviewFile("src/a.ts");
+    expect(source.activationCalls).toHaveLength(cachedReads);
+    expect(store.getState().reviewProgressCatalog?.byPath.get("src/a.ts")).not.toHaveProperty("units");
+    expect(countViewedReviewFiles(
+      store.getState().reviewProgressCatalog,
+      store.getState().reviewUnitTicks,
+      store.getState().reviewFileTicks,
+      store.getState().showTests,
+    )).toBe(1);
+
+    await store.getState().focusReviewOverview();
+    source.clearCache();
+    const evictedReads = source.activationCalls.length;
+    await store.getState().focusReviewFile("src/a.ts");
+    expect(source.activationCalls.length).toBeGreaterThan(evictedReads);
+    expect(store.getState().reviewProgressCatalog?.byPath.get("src/a.ts")).not.toHaveProperty("units");
+    expect(countViewedReviewFiles(
+      store.getState().reviewProgressCatalog,
+      store.getState().reviewUnitTicks,
+      store.getState().reviewFileTicks,
+      store.getState().showTests,
+    )).toBe(1);
+  });
+
+  it("stages the includeTests pair before deriving an initially all-test prepared overview", async () => {
+    const discardActive = vi.spyOn(RecentViewProjectionCache.prototype, "discardActive");
+    const changedFiles: PreparedChangedFile[] = [{ path: "src/a.test.ts", status: "modified" }];
+    const prFiles: PrChangedFile[] = [{
+      path: "src/a.test.ts",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      hunks: [{ start: 5, end: 5 }],
+    }];
+    const withTests = preparedArtifactForFiles(REVIEW_WITH_TESTS_ARTIFACT, prFiles);
+    const withoutTests: GraphArtifact = { ...withTests, nodes: [], edges: [] };
+    const resolve = (_graphId: string, _signal?: AbortSignal, request?: GraphProjectionRequest) => (
+      request?.includeTests ? withTests : withoutTests
+    );
+    const fetchMock = routedFetch({ graphId: "pr-all-test-overview", changedFiles });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(resolve, resolve, true, changedFiles),
+    });
+    store.setState({
+      viewMode: "prs",
+      prSelected: 8,
+      prsList: { open: [pr(8)], closed: null },
+      prFiles,
+    });
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().prReviewed).toBe(8);
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().review).not.toBeNull();
+
+    const published: Array<{ showTests: boolean; nodeIds: string[]; reviewPaths: string[] }> = [];
+    const unsubscribe = store.subscribe((state) => published.push({
+      showTests: state.showTests,
+      nodeIds: state.artifact.nodes.map((candidate) => candidate.id),
+      reviewPaths: state.reviewFiles.map((file) => file.path),
+    }));
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
+    unsubscribe();
+
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      TEST_FILE_ID,
+    ]);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.test.ts"]);
+    expect(published.filter((state) => state.showTests).every((state) => (
+      state.nodeIds.includes(TEST_FILE_ID) && state.reviewPaths.includes("src/a.test.ts")
+    ))).toBe(true);
+
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    discardActive.mockClear();
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(false));
+
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalRfNodes).toEqual([]);
+    expect(store.getState().minimalRfEdges).toEqual([]);
+    expect(discardActive).toHaveBeenCalledTimes(1);
+    discardActive.mockRestore();
+  });
+
+  it("keeps graph-backed test truth for an ordinary path outside the overview page and exact slice", async () => {
+    const changedFiles: PreparedChangedFile[] = [
+      ...Array.from({ length: 64 }, (_value, index) => ({
+        path: `src/${String(index).padStart(3, "0")}.ts`,
+        status: "modified" as const,
+      })),
+      { path: "src/ordinary.ts", status: "modified" as const },
+    ];
+    const prFiles: PrChangedFile[] = changedFiles.map((file) => ({
+      path: file.path,
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+    }));
+    const ordinaryId = "ts:src/ordinary.ts";
+    const ordinaryUnitId = `${ordinaryId}#verify`;
+    const classificationArtifact = preparedArtifactForFiles({
+      ...ARTIFACT,
+      nodes: [
+        node(PACKAGE_ID, "package", "src"),
+        { ...node(ordinaryId, "module", "src/ordinary.ts", PACKAGE_ID), tags: ["test"] },
+        node(ordinaryUnitId, "function", "src/ordinary.ts", ordinaryId, { start: 2, end: 4 }),
+      ],
+      edges: [],
+    }, prFiles);
+    const withoutTests: GraphArtifact = {
+      ...classificationArtifact,
+      nodes: classificationArtifact.nodes.filter((candidate) => (
+        candidate.id !== ordinaryId && candidate.id !== ordinaryUnitId
+      )),
+      edges: [],
+    };
+    const resolve = (_graphId: string, _signal?: AbortSignal, request?: GraphProjectionRequest) => (
+      request?.includeTests ? classificationArtifact : withoutTests
+    );
+    vi.stubGlobal("fetch", routedFetch({ graphId: "pr-page-two-test", changedFiles }));
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(
+        resolve,
+        resolve,
+        true,
+        changedFiles,
+        classificationArtifact,
+      ),
+    });
+    store.setState({
+      viewMode: "prs",
+      prSelected: 9,
+      prsList: { open: [pr(9)], closed: null },
+      prFiles,
+    });
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().prPreparedTestClassifications?.entries).toContainEqual({
+      index: 64,
+      isTest: true,
+    });
+    expect(store.getState().reviewFiles.some((file) => file.path === "src/ordinary.ts")).toBe(false);
+
+    await store.getState().focusReviewFile("src/ordinary.ts");
+
+    expect(store.getState().prPreparedReviewCursor).toBe("file:64");
+    expect(store.getState().prPreparedTestClassifications?.entries).toContainEqual({
+      index: 64,
+      isTest: true,
+    });
+    expect(store.getState().reviewFiles.some((file) => file.path === "src/ordinary.ts")).toBe(false);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().showTests).toBe(true));
+    expect(store.getState().reviewFiles).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "src/ordinary.ts", isTest: true }),
+    ]));
+  });
+
+  it("re-derives a prepared overview when reachability bytes change structural admission", async () => {
+    const changedFiles: PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }];
+    const prFiles: PrChangedFile[] = [{
+      path: "src/a.ts",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      hunks: [{ start: 21, end: 21 }],
+    }];
+    const withoutCoverage = preparedArtifactForFiles(HEAD_ARTIFACT, prFiles);
+    const deferredWithCoverage: GraphArtifact = { ...withoutCoverage, nodes: [], edges: [] };
+    const resolve = (_graphId: string, _signal?: AbortSignal, request?: GraphProjectionRequest) => (
+      request?.includeReachability ? deferredWithCoverage : withoutCoverage
+    );
+    const fetchMock = routedFetch({ graphId: "pr-coverage-admission", changedFiles });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(resolve, resolve, true, changedFiles),
+    });
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles,
+    });
+
+    await store.getState().reviewPrInGraph();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    store.setState({
+      moduleSelected: new Set([FILE_ID]),
+      reviewSelectedId: FILE_ID,
+      reviewLitNodeIds: new Set([FILE_ID]),
+      compSelectedId: FILE_ID,
+      compRoot: FILE_ID,
+    });
+
+    const published: Array<{ coverageMode: boolean; nodeIds: string[]; seedIds: string[] }> = [];
+    const unsubscribe = store.subscribe((state) => published.push({
+      coverageMode: state.coverageMode,
+      nodeIds: state.artifact.nodes.map((candidate) => candidate.id),
+      seedIds: [...state.minimalSeedIds],
+    }));
+    store.getState().toggleCoverageMode();
+    await vi.waitFor(() => expect(store.getState().coverageMode).toBe(true));
+
+    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set());
+    expect(store.getState()).toMatchObject({
+      moduleSelected: new Set(),
+      reviewSelectedId: null,
+      reviewLitNodeIds: null,
+      compSelectedId: null,
+      compRoot: null,
+    });
+    expect(published.filter((state) => state.coverageMode).every((state) => (
+      state.nodeIds.length === 0 && state.seedIds.length === 0
+    ))).toBe(true);
+
+    store.getState().toggleCoverageMode();
+    await vi.waitFor(() => expect(store.getState().coverageMode).toBe(false));
+    unsubscribe();
+
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      FILE_ID,
+    ]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+  });
+
+  it("keeps nested Back metadata bounded while coverage removes the resident child", async () => {
+    const discardActive = vi.spyOn(RecentViewProjectionCache.prototype, "discardActive");
+    const changedFiles: PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }];
+    const prFiles: PrChangedFile[] = [{
+      path: "src/a.ts",
+      status: "modified",
+      additions: 1,
+      deletions: 0,
+      hunks: [{ start: 21, end: 21 }],
+    }];
+    const withoutCoverage = preparedArtifactForFiles(HEAD_ARTIFACT, prFiles);
+    const deferredWithCoverage: GraphArtifact = { ...withoutCoverage, nodes: [], edges: [] };
+    const resolve = (_graphId: string, _signal?: AbortSignal, request?: GraphProjectionRequest) => (
+      request?.includeReachability ? deferredWithCoverage : withoutCoverage
+    );
+    vi.stubGlobal("fetch", routedFetch({ graphId: "pr-nested-coverage-admission", changedFiles }));
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(resolve, resolve, true, changedFiles),
+    });
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles,
+    });
+
+    await store.getState().reviewPrInGraph();
+    store.setState({
+      moduleSelected: new Set([FILE_ID]),
+      reviewSelectedId: FILE_ID,
+      reviewLitNodeIds: new Set([FILE_ID]),
+      compSelectedId: FILE_ID,
+      compRoot: FILE_ID,
+    });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    discardActive.mockClear();
+
+    const publications: Array<{ coverageMode: boolean; historyDepth: number }> = [];
+    const unsubscribe = store.subscribe((state) => publications.push({
+      coverageMode: state.coverageMode,
+      historyDepth: state.minimalGraphHistory.length,
+    }));
+    store.getState().toggleCoverageMode();
+    await vi.waitFor(() => expect(store.getState().coverageMode).toBe(true));
+    unsubscribe();
+
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState()).toMatchObject({
+      moduleSelected: new Set(),
+      reviewSelectedId: null,
+      reviewLitNodeIds: null,
+      compSelectedId: null,
+      compRoot: null,
+    });
+    expect(publications.filter((state) => state.coverageMode).every((state) => (
+      state.historyDepth === 1
+    ))).toBe(true);
+    expect(discardActive).toHaveBeenCalledTimes(1);
+
+    await store.getState().backMinimalGraph();
+    expect(store.getState().coverageMode).toBe(true);
+    expect(store.getState().artifact.nodes).toEqual([]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalLayoutStatus).toBe("idle");
+    expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    discardActive.mockRestore();
   });
 
   it("keeps the committed overview on file-load failure and retries through the same file lane", async () => {
@@ -3995,8 +4943,9 @@ describe("PR head preparation (prepareHeadGraph)", () => {
 
     expect(store.getState().artifact).toBe(committedArtifact);
     expect(store.getState().prPreparedReviewCursor).toBeNull();
-    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
-    expect(store.getState().prPreparedFileProjectionError).toEqual({
+    expect(store.getState().prPreparedProjectionPending).toBeNull();
+    expect(store.getState().prPreparedProjectionError).toEqual({
+      kind: "file",
       path: "src/a.ts",
       message: "file projection unavailable",
     });
@@ -4005,7 +4954,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     failFileLoad = false;
     await store.getState().focusReviewFile("src/a.ts");
     expect(store.getState().prPreparedReviewCursor).toBe("file:0");
-    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().prPreparedProjectionError).toBeNull();
     expect(store.getState().reviewSelectedId).toBe(FILE_ID);
   });
 
@@ -4034,7 +4983,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const firstA = store.getState().focusReviewFile("src/a.ts");
     const secondA = store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(releases).toHaveLength(1));
-    expect(store.getState().prPreparedFileProjectionPending?.path).toBe("src/a.ts");
+    expect(store.getState().prPreparedProjectionPending).toMatchObject({ kind: "file", path: "src/a.ts" });
     expect(store.getState().prPreparedReviewCursor).toBeNull();
 
     const fileB = store.getState().focusReviewFile("src/b.ts");
@@ -4042,21 +4991,143 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       expect(releases).toHaveLength(2);
       expect(signals[0]?.aborted).toBe(true);
     });
-    expect(store.getState().prPreparedFileProjectionPending?.path).toBe("src/b.ts");
+    expect(store.getState().prPreparedProjectionPending).toMatchObject({ kind: "file", path: "src/b.ts" });
     releases[1]!(TWO_FILE_HEAD_ARTIFACT);
     await vi.waitFor(() => expect({
       cursor: store.getState().prPreparedReviewCursor,
-      pending: store.getState().prPreparedFileProjectionPending,
-      error: store.getState().prPreparedFileProjectionError,
+      pending: store.getState().prPreparedProjectionPending,
+      error: store.getState().prPreparedProjectionError,
     }).toEqual({ cursor: "file:1", pending: null, error: null }), { timeout: 3_000 });
     await Promise.all([firstA, secondA, fileB]);
 
     expect(store.getState().prPreparedReviewCursor).toBe("file:1");
-    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
-    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().prPreparedProjectionPending).toBeNull();
+    expect(store.getState().prPreparedProjectionError).toBeNull();
     expect(store.getState().artifact.nodes.every((candidate) =>
       candidate.kind === "package" || candidate.location?.file === "src/b.ts")).toBe(true);
     expect(store.getState().reviewSelectedId).toBe(SECOND_FILE_ID);
+  });
+
+  it("makes later file navigation cancel an older Tests projection intent", async () => {
+    let delayOption = false;
+    let releaseOption!: (artifact: GraphArtifact) => void;
+    let optionSignal: AbortSignal | undefined;
+    const fetchMock = routedFetch({ graphId: "pr-option-file-race" });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides((_graphId, signal, request) => {
+        if (delayOption && request?.reviewCursor === null && request.includeTests) {
+          optionSignal = signal;
+          return new Promise<GraphArtifact>((resolve) => { releaseOption = resolve; });
+        }
+        return HEAD_ARTIFACT;
+      }, () => ARTIFACT, true),
+    });
+    const source = testProjectionSources.get(store)!;
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    source.activationCalls.length = 0;
+    delayOption = true;
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(optionSignal).toBeInstanceOf(AbortSignal));
+    await store.getState().focusReviewFile("src/a.ts");
+    expect(optionSignal?.aborted).toBe(true);
+    releaseOption(HEAD_ARTIFACT);
+    await Promise.resolve();
+
+    expect(store.getState()).toMatchObject({
+      showTests: false,
+      prPreparedReviewCursor: "file:0",
+      prPreparedProjectionPending: null,
+      prPreparedProjectionError: null,
+    });
+    expect(store.getState().activeProjectionRequest).toMatchObject({
+      reviewCursor: "file:0",
+      includeTests: false,
+    });
+    expect(source.activationCalls.filter((call) => call.request.reviewCursor === "file:0"))
+      .toHaveLength(2);
+    expect(source.activationCalls.filter((call) => call.request.reviewCursor === "file:0")
+      .every((call) => !call.request.includeTests)).toBe(true);
+  });
+
+  it("leaves the complete prepared review untouched when an option stage fails", async () => {
+    let failOption = false;
+    vi.stubGlobal("fetch", routedFetch({ graphId: "pr-option-stage-failure" }));
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides((_graphId, _signal, request) => {
+        if (failOption && request?.includeTests) throw new Error("option projection unavailable");
+        return HEAD_ARTIFACT;
+      }, () => ARTIFACT, true),
+    });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const before = store.getState();
+    failOption = true;
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().prPrepareError).toContain("option projection unavailable"));
+
+    expect(store.getState()).toMatchObject({
+      showTests: false,
+      coverageMode: false,
+      artifact: before.artifact,
+      index: before.index,
+      activeProjectionKey: before.activeProjectionKey,
+      activeProjectionId: before.activeProjectionId,
+      activeProjectionRequest: before.activeProjectionRequest,
+      prReviewComparison: before.prReviewComparison,
+      review: before.review,
+      prPreparedReviewCursor: before.prPreparedReviewCursor,
+    });
+  });
+
+  it("restores A to B to overview from cache and refetches the overview after eviction", async () => {
+    const fetchMock = routedFetch({ graphId: "pr-overview-navigation", changedFiles: TWO_FILE_MANIFEST });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...PREPARE_DEPS,
+      ...projectionOverrides(
+        () => TWO_FILE_HEAD_ARTIFACT,
+        () => TWO_FILE_BASE_ARTIFACT,
+        true,
+        TWO_FILE_MANIFEST,
+      ),
+    });
+    const source = testProjectionSources.get(store)!;
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    await store.getState().focusReviewFile("src/a.ts");
+    await store.getState().focusReviewFile("src/b.ts");
+    source.activationCalls.length = 0;
+    await store.getState().focusReviewOverview();
+
+    expect(source.activationCalls).toEqual([]);
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      FILE_ID,
+      SECOND_FILE_ID,
+    ]);
+    expect(store.getState().reviewSelectedId).toBeNull();
+
+    await store.getState().focusReviewFile("src/a.ts");
+    await store.getState().focusReviewFile("src/b.ts");
+    source.clearCache();
+    source.activationCalls.length = 0;
+    await store.getState().focusReviewOverview();
+
+    expect(source.activationCalls.filter((call) => call.request.view === "review")).toHaveLength(2);
+    expect(store.getState().prPreparedReviewCursor).toBeNull();
+    expect(store.getState().artifact.nodes.map((candidate) => candidate.id)).toEqual([
+      PACKAGE_ID,
+      FILE_ID,
+      SECOND_FILE_ID,
+    ]);
   });
 
   it("cancels a pending file projection on Close without borrowing the preparation status lane", async () => {
@@ -4082,8 +5153,8 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     await Promise.all([focus, close]);
 
     expect(fileSignal?.aborted).toBe(true);
-    expect(store.getState().prPreparedFileProjectionPending).toBeNull();
-    expect(store.getState().prPreparedFileProjectionError).toBeNull();
+    expect(store.getState().prPreparedProjectionPending).toBeNull();
+    expect(store.getState().prPreparedProjectionError).toBeNull();
     expect(store.getState().prPreparedReviewCursor).toBeNull();
     expect(store.getState().prPreparedArtifactCurrent).toBe(false);
     expect(store.getState().prReviewStatus).toBe("idle");
@@ -4254,6 +5325,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     // HEAD projection endpoint or silently degrade the review to a HEAD-only graph.
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     const source = testProjectionSources.get(store)!;
+    await store.getState().focusReviewFile("src/a.ts");
     const extractedPairKey = store.getState().activeProjectionKey!;
     source.activationCalls.length = 0;
     store.getState().setMinimalView("codebase");
@@ -4552,8 +5624,8 @@ describe("PR head preparation (prepareHeadGraph)", () => {
   });
 });
 
-describe("PR review artifact swap and restore", () => {
-  it("drops source ghost inspection on both prepared swap and soft baseline restore", () => {
+describe("PR review projection commit and restore", () => {
+  it("drops source ghost inspection on both prepared commit and soft baseline restore", () => {
     const store = freshStore();
     const inspection = {
       anchorIds: new Set([CLASS_ID]),
@@ -4562,38 +5634,49 @@ describe("PR review artifact swap and restore", () => {
     const invalidateArtifactCaches = vi.fn();
     store.setState({ moduleGhostInspection: inspection });
 
-    const head = testProjection(HEAD_ARTIFACT, "pr-head-1", {
+    const files: PreparedChangedFile[] = [{ path: "src/a.ts", status: "modified" }];
+    const rawHead = testProjection(HEAD_ARTIFACT, "pr-head-1", {
       ...BASE_PROJECTION_REQUEST,
       view: "review",
       filePaths: ["src/a.ts"],
     });
-    const mergeBase = testProjection(ARTIFACT, "pr-head-1-base", {
+    const rawMergeBase = testProjection(ARTIFACT, "pr-head-1-base", {
       ...BASE_PROJECTION_REQUEST,
       view: "review",
       filePaths: ["src/a.ts"],
     });
-    swapToPreparedReviewProjection(
-      store.getState,
-      store.setState,
-      detachedReviewStage(testReviewProjection(head, mergeBase)),
-      invalidateArtifactCaches,
+    const head = {
+      ...rawHead,
+      review: reviewProjectionFactsForTest(files, rawHead.request, "head", rawHead.artifact),
+    };
+    const mergeBase = {
+      ...rawMergeBase,
+      review: reviewProjectionFactsForTest(files, rawMergeBase.request, "mergeBase", rawMergeBase.artifact),
+    };
+    const transition = preparedReviewProjectionCommit(
+      store.getState(),
+      testReviewProjection(head, mergeBase),
       {
         graphId: "pr-head-1",
         manifestUrl: "/api/graph/manifest?id=pr-head-1",
         projectionUrl: "/api/graph/projection?id=pr-head-1",
         searchUrl: "/api/graph/search?id=pr-head-1",
       },
+      undefined,
+      {
+        prPreparedChangedFiles: files,
+        prPreparedReviewCursor: null,
+      },
     );
+    store.setState(transition.state);
 
     expect(store.getState().moduleGhostInspection).toBeNull();
     store.setState({ moduleGhostInspection: inspection });
 
-    expect(restorePrReviewBaseline(
-      store.getState,
-      store.setState,
-      invalidateArtifactCaches,
-      { endSession: false },
-    )).toBe(true);
+    const restoreCommit = prReviewBaselineRestoreCommit(store.getState(), { endSession: false });
+    expect(restoreCommit).not.toBeNull();
+    invalidateArtifactCaches();
+    store.setState(restoreCommit!);
     expect(store.getState().moduleGhostInspection).toBeNull();
   });
 
@@ -4655,11 +5738,13 @@ describe("PR review artifact swap and restore", () => {
       ],
     };
     const { store } = await swappedReviewStore(projectionOverrides(() => repositoryHead));
+    await store.getState().focusReviewFile("src/a.ts");
     const source = testProjectionSources.get(store);
     if (source === undefined) throw new Error("missing projection source fixture");
 
-    // Model the actual bounded review slice: the repository catalog knows the symbol, while the
-    // currently decoded HEAD projection contains only the changed path.
+    // Model the exact-file review slice: the repository catalog knows the symbol, while the
+    // currently decoded HEAD projection contains only the selected changed path. Overview
+    // coordinates intentionally reject palette widening.
     const current = store.getState();
     const remoteIds = new Set([galleryFile, galleryClass, galleryMethod]);
     const boundedArtifact = {
@@ -4703,6 +5788,7 @@ describe("PR review artifact swap and restore", () => {
     const path = store.getState().reviewFiles[0].path;
     await store.getState().focusReviewFile(path);
     expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    expect(store.getState().prPreparedOverviewCoverage).not.toBeNull();
     const previousArtifact = store.getState().artifact;
     store.getState().addReviewComment(path, null, "Carry this draft to the new head");
     // L31 exists in both revisions and remains inside the refreshed hunk context. The numeric
@@ -4722,6 +5808,7 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPreparedHead?.graphId).toBe(REFRESHED_GRAPH_ID);
     expect(store.getState().prPreparedHeadSha).toBe(REFRESHED_HEAD_SHA);
     expect(store.getState().prPreparedReviewCursor).toBe("file:0");
+    expect(store.getState().prPreparedOverviewCoverage).toBeNull();
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
     expect(store.getState().prReviewStale).toBe(false);
@@ -4736,6 +5823,51 @@ describe("PR review artifact swap and restore", () => {
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes(`/api/meta?id=${REFRESHED_GRAPH_ID}`))).toBe(true);
     expect(store.getState()).toMatchObject(preparedSyntheticMeta(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA));
     expectSyntheticSessionReset(store);
+  });
+
+  it("keeps refreshed summary and file inputs private until their matching graph transaction commits", async () => {
+    const { store } = await swappedReviewStore();
+    const oldGraphId = store.getState().activeProjectionGraphId;
+    const oldInputs = visibleReviewRevisionInputs(store.getState());
+    store.setState({ prReviewStale: true });
+    let prepareRequested = false;
+    let releasePrepare!: (response: Response) => void;
+    const pendingPrepare = new Promise<Response>((resolve) => { releasePrepare = resolve; });
+    const fallback = preparedRefreshFetch();
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      if (input.toString().includes("/api/pr/prepare")) {
+        prepareRequested = true;
+        return pendingPrepare;
+      }
+      return fallback(input);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const oldGraphPublications: ReturnType<typeof visibleReviewRevisionInputs>[] = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.activeProjectionGraphId === oldGraphId) {
+        oldGraphPublications.push(visibleReviewRevisionInputs(state));
+      }
+    });
+
+    const refresh = store.getState().refreshPrReview();
+    await vi.waitFor(() => expect(prepareRequested).toBe(true));
+
+    expect(oldGraphPublications.length).toBeGreaterThan(0);
+    expect(oldGraphPublications).toEqual(oldGraphPublications.map(() => oldInputs));
+    expect(visibleReviewRevisionInputs(store.getState())).toEqual(oldInputs);
+
+    releasePrepare(ndjsonResponse(prepareLines(REFRESHED_GRAPH_ID, REFRESHED_HEAD_SHA)));
+    await refresh;
+    unsubscribe();
+
+    expect(store.getState().activeProjectionGraphId).toBe(REFRESHED_GRAPH_ID);
+    expect(visibleReviewRevisionInputs(store.getState())).toMatchObject({
+      summaryHeadSha: REFRESHED_HEAD_SHA,
+      summaryUpdatedAt: REFRESHED_SUMMARY.updatedAt,
+      files: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 31, end: 31 }] }],
+      reviewChangedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 31, end: 31 }] }],
+      revisionHeadSha: REFRESHED_HEAD_SHA,
+    });
   });
 
   it("disarms a persisted line draft when a new session opens on a later head", async () => {
@@ -4769,11 +5901,19 @@ describe("PR review artifact swap and restore", () => {
     const path = store.getState().reviewFiles[0].path;
     store.getState().addReviewComment(path, null, "Do not lose this draft on refresh failure", 31);
     const before = store.getState();
+    const oldInputs = visibleReviewRevisionInputs(before);
     store.setState({ prReviewStale: true });
     const fetchMock = preparedRefreshFetch({ prepareError: "refresh clone failed" });
     vi.stubGlobal("fetch", fetchMock);
+    const oldGraphPublications: ReturnType<typeof visibleReviewRevisionInputs>[] = [];
+    const unsubscribe = store.subscribe((state) => {
+      if (state.activeProjectionGraphId === before.activeProjectionGraphId) {
+        oldGraphPublications.push(visibleReviewRevisionInputs(state));
+      }
+    });
 
     await store.getState().refreshPrReview();
+    unsubscribe();
 
     expect(store.getState().artifact).toBe(before.artifact);
     expect(store.getState().index).toBe(before.index);
@@ -4789,6 +5929,9 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPrepareError).toBe("refresh clone failed");
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
+    expect(oldGraphPublications.length).toBeGreaterThan(0);
+    expect(oldGraphPublications).toEqual(oldGraphPublications.map(() => oldInputs));
+    expect(visibleReviewRevisionInputs(store.getState())).toEqual(oldInputs);
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph"))).toBe(false);
   });
 
@@ -4947,6 +6090,18 @@ describe("PR review artifact swap and restore", () => {
     const before = store.getState();
     const visibleKey = before.activeProjectionKey;
     store.setState({ prReviewStale: true });
+    const targetPublications: string[] = [];
+    const keyTransitions: Array<string | null> = [];
+    let previousPublishedKey = visibleKey;
+    const unsubscribe = store.subscribe((state) => {
+      if (state.activeProjectionKey !== previousPublishedKey) {
+        keyTransitions.push(state.activeProjectionKey);
+        previousPublishedKey = state.activeProjectionKey;
+      }
+      if (state.activeProjectionGraphId === REFRESHED_GRAPH_ID) {
+        targetPublications.push(state.activeProjectionKey ?? "missing-key");
+      }
+    });
 
     const refresh = store.getState().refreshPrReview();
     await vi.waitFor(() => expect(refreshedMetaRequested).toBe(true));
@@ -4961,11 +6116,26 @@ describe("PR review artifact swap and restore", () => {
       preparedSyntheticMeta(REFRESHED_GRAPH_ID, "e".repeat(40)),
     ));
     await refresh;
+    unsubscribe();
 
     expect(projectionDataSource.activeKey).toBe(visibleKey);
     expect(store.getState().activeProjectionKey).toBe(visibleKey);
     expect(store.getState().artifact).toBe(before.artifact);
     expect(store.getState().index).toBe(before.index);
+    expect(store.getState().review).toBe(before.review);
+    expect(store.getState().prReviewComparison).toBe(before.prReviewComparison);
+    expect(store.getState().reviewDeletedNodeIds).toBe(before.reviewDeletedNodeIds);
+    expect(store.getState().reviewBaseNodeIds).toBe(before.reviewBaseNodeIds);
+    expect(store.getState().coverage).toBe(before.coverage);
+    expect(store.getState().prPreparedOverviewCoverage).toBe(before.prPreparedOverviewCoverage);
+    expect(store.getState().prPreparedHead).toBe(before.prPreparedHead);
+    expect(store.getState().prPreparedMergeBase).toBe(before.prPreparedMergeBase);
+    expect(store.getState().prPreparedHeadSha).toBe(before.prPreparedHeadSha);
+    expect(store.getState().prPreparedMergeBaseSha).toBe(before.prPreparedMergeBaseSha);
+    expect(store.getState().minimalSeedIds).toEqual(before.minimalSeedIds);
+    expect(store.getState().minimalMemberIds).toEqual(before.minimalMemberIds);
+    expect(keyTransitions).toEqual([]);
+    expect(targetPublications).toEqual([]);
     expect(pendingAllocationBudget.inactiveEntryCount).toBe(0);
     expect(store.getState().prReviewStatus).toBe("error");
     expect(store.getState().prPrepareError).toContain("head SHA provenance");
@@ -5149,12 +6319,33 @@ describe("PR review artifact swap and restore", () => {
 
   it("an explicit history exit promotes the prior projection and ends the review", async () => {
     const { store } = await swappedReviewStore();
+    const trace = observePreparedReviewExit(store);
     await store.getState().selectPr(null, { endReviewSession: true });
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewExit(trace, true);
     expect(store.getState().artifact.generatedAt).toBe(ARTIFACT.generatedAt);
     expect(store.getState().index.nodesById.get(METHOD_ID)?.location.startLine).toBe(10);
     expect(store.getState().prReviewBaseline).toBe(null);
     expect(store.getState().prReviewed).toBe(null);
     expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
+  it("soft-closes a prepared review without ever publishing baseline graph data beside review presentation", async () => {
+    const { store } = await swappedReviewStore();
+    const trace = observePreparedReviewExit(store);
+
+    await store.getState().closeMinimalGraph();
+    trace.unsubscribe();
+
+    expectAtomicPreparedReviewExit(trace, false);
+    expect(store.getState()).toMatchObject({
+      activeProjectionGraphId: "artifact-1",
+      prReviewed: 7,
+      prPreparedArtifactCurrent: false,
+      review: null,
+      prReviewComparison: null,
+    });
   });
 
   it("atomically replaces a mounted review and preserves its exact two-sided coordinate", async () => {
@@ -5190,6 +6381,7 @@ describe("PR review artifact swap and restore", () => {
   it("loads bounded codebase context as a paired projection and restores the extracted pair from cache", async () => {
     const { store } = await swappedReviewStore();
     const source = testProjectionSources.get(store)!;
+    await store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     const extractedPairKey = store.getState().activeProjectionKey!;
     const extractedHeadRequest = store.getState().activeProjectionRequest!;
@@ -5250,6 +6442,7 @@ describe("PR review artifact swap and restore", () => {
   it("lets a rapid Codebase collapse abort and supersede a slower expansion projection", async () => {
     const { store } = await swappedReviewStore();
     const source = testProjectionSources.get(store)!;
+    await store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     await store.getState().setMinimalView("codebase");
 
@@ -5291,6 +6484,7 @@ describe("PR review artifact swap and restore", () => {
   it("lets Back retire a stalled Codebase refresh without leaving the parent busy", async () => {
     const { store } = await swappedReviewStore();
     const source = testProjectionSources.get(store)!;
+    await store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     store.getState().selectModule(METHOD_ID);
     await store.getState().buildMinimalGraph();
@@ -5331,6 +6525,7 @@ describe("PR review artifact swap and restore", () => {
   it("rejects an old Codebase pair when the same PR receives new revision descriptors", async () => {
     const { store } = await swappedReviewStore();
     const source = testProjectionSources.get(store)!;
+    await store.getState().focusReviewFile("src/a.ts");
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     const extractedPairKey = store.getState().activeProjectionKey;
 
@@ -5392,6 +6587,116 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().prReviewBaseline).toBe(baseline);
     expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
+  it.each([
+    { label: "active", park: false },
+    { label: "parked", park: true },
+  ])("retires an $label review to its exact baseline while retaining only its bounded pair", async ({ park }) => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    const reviewKey = store.getState().activeProjectionKey!;
+    const baseline = store.getState().prReviewBaseline!;
+    if (park) {
+      await store.getState().closeMinimalGraph();
+      expect(store.getState()).toMatchObject({
+        prReviewed: 7,
+        prPreparedArtifactCurrent: false,
+      });
+    }
+
+    const retired = await store.getState().retirePrReviewForReplacement();
+
+    expect(retired).toBe(true);
+    expect(store.getState()).toMatchObject({
+      artifact: ARTIFACT,
+      activeProjectionGraphId: baseline.graphId,
+      activeProjectionKey: baseline.projectionKey,
+      prReviewed: null,
+      prReviewBaseline: null,
+      prPreparedArtifactCurrent: false,
+      prPreparedHead: null,
+      prPreparedMergeBase: null,
+      prReviewComparison: null,
+      review: null,
+    });
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().reviewFiles).toEqual([]);
+    const retained = source.stageCachedReview(reviewKey);
+    expect(retained).toBeDefined();
+    retained?.release();
+  });
+
+  it("does not let an older delayed history exit overwrite a newer PR selection", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    const originalStage = source.stage.bind(source);
+    let delayedSignal: AbortSignal | undefined;
+    let releaseBaseline!: () => void;
+    vi.spyOn(source, "stage").mockImplementation((request, options) => {
+      if (request.view !== "modules") return originalStage(request, options);
+      delayedSignal = options.signal;
+      return new Promise<StagedGraphProjection>((resolve, reject) => {
+        releaseBaseline = () => {
+          // Model an abort-ignorant transport. Store ownership, not fetch cooperation, must reject
+          // the stale restore after this decoded candidate finally arrives.
+          void originalStage(request, { ...options, signal: undefined }).then(resolve, reject);
+        };
+      });
+    });
+    source.clearCache();
+
+    const olderExit = store.getState().selectPr(null, { endReviewSession: true });
+    await vi.waitFor(() => expect(delayedSignal).toBeInstanceOf(AbortSignal));
+    const newerSelection = store.getState().selectPr(9);
+    await newerSelection;
+
+    expect(delayedSignal?.aborted).toBe(true);
+    expect(store.getState().prSelected).toBe(9);
+    releaseBaseline();
+    await olderExit;
+
+    expect(store.getState().prSelected).toBe(9);
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+    expect(store.getState().activeProjectionGraphId).toBe("pr-head-1");
+  });
+
+  it("clears canceled preparation lanes atomically when baseline restoration fails", async () => {
+    const { store } = await swappedReviewStore();
+    const source = testProjectionSources.get(store)!;
+    source.clearCache();
+    vi.spyOn(source, "stage").mockRejectedValueOnce(new Error("baseline projection unavailable"));
+    store.setState({
+      prReviewRefreshing: true,
+      prReviewStatus: "preparing",
+      prPrepareStage: "extract-head",
+      prPrepareElapsedMs: 17,
+      prPreparedProjectionPending: {
+        token: 999,
+        kind: "file",
+        path: "src/a.ts",
+        cursor: "file:0",
+      },
+      prPreparedProjectionError: { kind: "overview", message: "stale error" },
+    });
+
+    await store.getState().closeMinimalGraph();
+
+    expect(store.getState()).toMatchObject({
+      prReviewed: 7,
+      prPreparedArtifactCurrent: true,
+      prReviewRefreshing: false,
+      prReviewStatus: "error",
+      prPrepareStage: null,
+      prPrepareElapsedMs: null,
+      prPrepareError: "baseline projection unavailable",
+      prPreparedProjectionPending: null,
+      prPreparedProjectionError: null,
+    });
+    expect(store.getState().review).not.toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().artifact).toBe(HEAD_ARTIFACT);
   });
 
   it("defers a lens transition until an evicted review baseline is restored", async () => {

@@ -59,7 +59,6 @@ function file(path: string, moduleId: string, units: ReviewUnitRow[]): ReviewFil
     moduleId,
     isTest: false,
     units,
-    fingerprint: path,
     blastRadius: 0,
     deletedImpact: null,
   };

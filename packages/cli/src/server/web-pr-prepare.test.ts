@@ -15,7 +15,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { SCHEMA_VERSION, graphProjectionIdentityPreimage } from "@meridian/core";
+import {
+  SCHEMA_VERSION,
+  graphProjectionIdentityPreimage,
+  graphProjectionReviewMetadataIdentityPreimage,
+} from "@meridian/core";
 import type { ChangedFileManifestEntry, GraphArtifact } from "@meridian/core";
 import { runGit } from "./git-exec";
 import {
@@ -60,6 +64,7 @@ import {
   handleGraphProjection,
   handleGraphSymbolSearch,
   sendProjectionManifest,
+  sendReviewMetadata,
 } from "./web-graph";
 import { createGraphProjectionAdmission } from "./graph-projection-response";
 import { InspectionScheduler } from "./inspection-scheduler";
@@ -1088,6 +1093,42 @@ describe("POST /api/pr/prepare transport", () => {
     ));
     expect(baseManifest.contentId).not.toBe(headManifest.contentId);
 
+    const metadataFor = async (id: string) => {
+      const response = capturedJsonResponse();
+      await sendReviewMetadata(ctx, requestWith({}), response.value, new URLSearchParams({ id }));
+      expect(response.status()).toBe(200);
+      return response.json<{
+        version: number;
+        metadataId: string;
+        contextId: string;
+        headGraphId: string;
+        mergeBaseGraphId: string;
+        headContentId: string;
+        mergeBaseContentId: string;
+        totalFiles: number;
+        testClassifications: Array<{ index: number; isTest: boolean }>;
+      }>();
+    };
+    const headMetadata = await metadataFor(headId);
+    const baseMetadata = await metadataFor(baseId);
+    const metadataIdentity = {
+      contextId: prepared.reviewContext.sha256,
+      headGraphId: headId,
+      mergeBaseGraphId: baseId,
+      headContentId: headManifest.contentId,
+      mergeBaseContentId: baseManifest.contentId,
+    };
+    expect(headMetadata).toEqual({
+      version: 1,
+      metadataId: createHash("sha256")
+        .update(graphProjectionReviewMetadataIdentityPreimage(metadataIdentity))
+        .digest("hex"),
+      ...metadataIdentity,
+      totalFiles: MANIFEST.length,
+      testClassifications: [],
+    });
+    expect(baseMetadata).toEqual(headMetadata);
+
     const projectionFor = async (id: string, reviewCursor: string | null) => {
       const response = capturedJsonResponse();
       await handleGraphProjection(
@@ -1105,6 +1146,13 @@ describe("POST /api/pr/prepare transport", () => {
         viewFacts: {
           review: {
             page: { entries: Array<ChangedFileManifestEntry & { index: number }> } | null;
+            overview: {
+              entries: Array<{
+                index: number;
+                state: "included" | "unmapped" | "filtered" | "deferred" | "absent";
+                isTest: boolean | null;
+              }>;
+            } | null;
             selection: {
               graphPath: string | null;
               graphMatched: boolean;
@@ -1124,9 +1172,24 @@ describe("POST /api/pr/prepare transport", () => {
         .update(graphProjectionIdentityPreimage(contentId, overview.request))
         .digest("hex"));
       expect(overview.request).toEqual(expect.objectContaining({ view: "review", reviewCursor: null }));
-      expect(overview.artifact.nodes).toEqual([]);
+      const expectedOverviewPaths = id === headId
+        ? ["src/added.ts", "src/modified.ts", "src/new-name.ts"]
+        : ["src/deleted.ts", "src/modified.ts", "src/old-name.ts"];
+      expect(overview.artifact.nodes.map((node) => node.location?.file))
+        .toEqual(expectedOverviewPaths);
       expect(overview.viewFacts.review.page?.entries)
         .toEqual(MANIFEST.map((entry, index) => ({ index, ...entry })));
+      expect(overview.viewFacts.review.overview?.entries).toEqual(
+        MANIFEST.map((entry, index) => ({
+          index,
+          state: id === headId
+            ? entry.status === "deleted" ? "absent" : "included"
+            : entry.status === "added" ? "absent" : "included",
+          isTest: id === headId
+            ? entry.status === "deleted" ? null : false
+            : entry.status === "added" ? null : false,
+        })),
+      );
       expect(overview.viewFacts.review.selection).toBeNull();
     }
 
@@ -1170,6 +1233,9 @@ describe("POST /api/pr/prepare transport", () => {
 
     makeTamperable(prepared.reviewContext.path);
     writeFileSync(prepared.reviewContext.path, "{}\n");
+    const tamperedMetadata = capturedJsonResponse();
+    await sendReviewMetadata(ctx, requestWith({}), tamperedMetadata.value, new URLSearchParams({ id: baseId }));
+    expect(tamperedMetadata.status()).toBe(404);
     const tampered = capturedJsonResponse();
     await sendProjectionManifest(ctx, requestWith({}), tampered.value, baseId);
     expect(tampered.status()).toBe(404);
@@ -1324,6 +1390,7 @@ describe("POST /api/pr/prepare transport", () => {
       "shared-base-second",
       MERGE_BASE,
       HEAD_TWO,
+      firstPrepared.mergeBase.verifiedGeneration.projectionContentId,
     );
     const { reviewContext, ...secondHead } = secondHeadSide;
     if (!reviewContext) throw new Error("second HEAD fixture omitted its review context");
@@ -1775,10 +1842,17 @@ async function standalonePreparation(
   storageKey = "",
   mergeBaseSha = MERGE_BASE,
 ): Promise<CachedPrPreparation> {
-  const headSide = await standaloneSide("head", HEAD_ONE, storageKey, mergeBaseSha);
+  const mergeBase = await standaloneSide("base", mergeBaseSha, storageKey);
+  const headSide = await standaloneSide(
+    "head",
+    HEAD_ONE,
+    storageKey,
+    mergeBaseSha,
+    HEAD_ONE,
+    mergeBase.verifiedGeneration.projectionContentId,
+  );
   const { reviewContext, ...head } = headSide;
   if (!reviewContext) throw new Error("standalone HEAD fixture omitted its review context");
-  const mergeBase = await standaloneSide("base", mergeBaseSha, storageKey);
   const generationSuffix = storageKey ? `-${storageKey}` : "";
   return {
     analysisKey: "analysis",
@@ -1805,6 +1879,7 @@ async function standaloneSide(
   storageKey = "",
   reviewMergeBaseSha = MERGE_BASE,
   reviewHeadSha = HEAD_ONE,
+  reviewMergeBaseContentId?: string,
 ) {
   const physicalName = storageKey ? `${storageKey}-${name}` : name;
   const lifecycle = new GraphGenerationLifecycle({ cacheRoot });
@@ -1849,8 +1924,11 @@ async function standaloneSide(
     ? writeReviewComparisonContext(join(sideRoot, REVIEW_COMPARISON_CONTEXT_FILE), {
         headSha: reviewHeadSha,
         mergeBaseSha: reviewMergeBaseSha,
+        headContentId: manifest.contentId,
+        mergeBaseContentId: reviewMergeBaseContentId ?? manifest.contentId,
         analysisKey: "analysis",
         changedFiles: MANIFEST,
+        testClassifications: [],
       })
     : undefined;
   let generationLease: Awaited<ReturnType<GraphGenerationLifecycle["acquire"]>> | undefined;

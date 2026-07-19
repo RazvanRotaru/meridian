@@ -8,14 +8,11 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import {
-  applyFilesToggle,
-  applyFileToggle,
   applyUnitTick,
   checkStateOf,
   deriveReviewFiles,
-  filesViewState,
-  fileViewState,
   isReviewTestPath,
+  unitsViewState,
 } from "./reviewFiles";
 
 function node(id: string, kind: string, file: string, start: number, end: number, parentId: string | null): GraphNode {
@@ -88,6 +85,41 @@ describe("deriveReviewFiles", () => {
       edges: [],
     } as unknown as GraphArtifact;
     expect(isReviewTestPath("src/checks.ts", buildGraphIndex(untaggedHead), taggedIndex)).toBe(false);
+  });
+
+  it("uses canonical projection verdicts before graph-index inference for ordinary paths", () => {
+    const emptyArtifact = { nodes: [], edges: [] } as unknown as GraphArtifact;
+    const emptyIndex = buildGraphIndex(emptyArtifact);
+    const taggedModule = {
+      ...node("ts:src/ordinary.ts", "module", "src/ordinary.ts", 1, 20, null),
+      tags: ["test"],
+    } as GraphNode;
+    const taggedBase = buildGraphIndex({ nodes: [taggedModule], edges: [] } as unknown as GraphArtifact);
+    const testVerdicts = new Map([["src/ordinary.ts", true]]);
+
+    const [file] = deriveReviewFiles(
+      contextOf([{ path: "src/ordinary.ts", status: "modified" }]),
+      emptyArtifact,
+      emptyIndex,
+      { baseIndex: null, testVerdicts },
+    );
+
+    expect(file.isTest).toBe(true);
+    expect(isReviewTestPath("src/ordinary.ts", emptyIndex, null, testVerdicts)).toBe(true);
+    // Current canonical HEAD truth must also be able to override stale merge-base classification.
+    expect(isReviewTestPath(
+      "src/ordinary.ts",
+      emptyIndex,
+      taggedBase,
+      new Map([["src/ordinary.ts", false]]),
+    )).toBe(false);
+    // The path heuristic remains the safe fallback even if bounded metadata is malformed/stale.
+    expect(isReviewTestPath(
+      "src/ordinary.test.ts",
+      emptyIndex,
+      null,
+      new Map([["src/ordinary.test.ts", false]]),
+    )).toBe(true);
   });
 
   it("groups hunk-overlapping LEAF units per file, in-graph files FIRST, ordered by start line", () => {
@@ -211,82 +243,29 @@ describe("deriveReviewFiles", () => {
   });
 });
 
-describe("view state + tick transitions", () => {
-  // Two hunks so src/a.ts carries TWO leaf units (Repo.save + helper) — the cascade tests need a
-  // partly-viewed state to exist.
+describe("unit view state + tick transitions", () => {
+  // Two hunks so src/a.ts carries TWO leaf units (Repo.save + helper).
   const context = contextOf([
     { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }, { start: 75, end: 80 }] },
     { path: "docs/readme.md", status: "deleted" },
   ]);
-  const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX, { baseIndex: null });
+  const [a] = deriveReviewFiles(context, ARTIFACT, INDEX, { baseIndex: null });
 
-  it("derives a unit-ful file's viewed state from its units (all done ⇒ done)", () => {
+  it("derives aggregate viewed state from its units (all done ⇒ done)", () => {
     let unitTicks: Record<string, { at: string; fingerprint: string }> = {};
-    expect(fileViewState(a, unitTicks, {})).toBe("todo");
+    expect(unitsViewState(a.units, unitTicks)).toBe("todo");
     for (const unit of a.units) {
       unitTicks = applyUnitTick(unitTicks, unit, "2026-07-10T00:00:00Z");
     }
-    expect(fileViewState(a, unitTicks, {})).toBe("done");
+    expect(unitsViewState(a.units, unitTicks)).toBe("done");
     // Toggling one unit off drops the file back to todo.
     unitTicks = applyUnitTick(unitTicks, a.units[0], "2026-07-10T00:00:01Z");
-    expect(fileViewState(a, unitTicks, {})).toBe("todo");
+    expect(unitsViewState(a.units, unitTicks)).toBe("todo");
   });
 
   it("marks a ticked unit stale when its fingerprint no longer matches", () => {
     const tick = { at: "t", fingerprint: "old-fingerprint" };
     expect(checkStateOf(a.units[0].fingerprint, tick)).toBe("stale");
-    expect(fileViewState(a, { [a.units[0].nodeId]: tick }, {})).toBe("stale");
-  });
-
-  it("cascades the file toggle over its units, both on and off", () => {
-    const on = applyFileToggle(a, {}, {}, "t");
-    expect(a.units.every((unit) => checkStateOf(unit.fingerprint, on.unitTicks[unit.nodeId]) === "done")).toBe(true);
-    expect(on.fileTicks).toEqual({});
-    const off = applyFileToggle(a, on.unitTicks, on.fileTicks, "t");
-    expect(Object.keys(off.unitTicks)).toEqual([]);
-  });
-
-  it("re-ticking a PARTLY viewed file completes it instead of clearing the done units", () => {
-    const partial = applyUnitTick({}, a.units[0], "t");
-    const next = applyFileToggle(a, partial, {}, "t");
-    expect(fileViewState(a, next.unitTicks, next.fileTicks)).toBe("done");
-  });
-
-  it("uses the explicit file tick for a unit-less file, with hunk-digest staleness", () => {
-    expect(fileViewState(docs, {}, {})).toBe("todo");
-    const on = applyFileToggle(docs, {}, {}, "t");
-    expect(on.fileTicks[docs.path]).toEqual({ at: "t", fingerprint: docs.fingerprint });
-    expect(fileViewState(docs, {}, on.fileTicks)).toBe("done");
-    expect(fileViewState(docs, {}, { [docs.path]: { at: "t", fingerprint: "other" } })).toBe("stale");
-    const off = applyFileToggle(docs, {}, on.fileTicks, "t");
-    expect(off.fileTicks).toEqual({});
-  });
-
-  it("completes a partly viewed folder without clearing files that were already done", () => {
-    const aDone = applyFileToggle(a, {}, {}, "t1");
-    const unrelatedTick = { at: "earlier", fingerprint: "unrelated" };
-    const partialTicks = { ...aDone.unitTicks, unrelated: unrelatedTick };
-    const partialFileTicks = { ...aDone.fileTicks, "outside.md": unrelatedTick };
-    expect(filesViewState([a, docs], partialTicks, partialFileTicks)).toBe("todo");
-
-    const completed = applyFilesToggle([a, docs], partialTicks, partialFileTicks, "t2");
-    expect(fileViewState(a, completed.unitTicks, completed.fileTicks)).toBe("done");
-    expect(fileViewState(docs, completed.unitTicks, completed.fileTicks)).toBe("done");
-    expect(filesViewState([a, docs], completed.unitTicks, completed.fileTicks)).toBe("done");
-    expect(completed.unitTicks.unrelated).toBe(unrelatedTick);
-    expect(completed.fileTicks["outside.md"]).toBe(unrelatedTick);
-
-    const cleared = applyFilesToggle([a, docs], completed.unitTicks, completed.fileTicks, "t3");
-    expect(filesViewState([a, docs], cleared.unitTicks, cleared.fileTicks)).toBe("todo");
-    expect(cleared.unitTicks).toEqual({ unrelated: unrelatedTick });
-    expect(cleared.fileTicks).toEqual({ "outside.md": unrelatedTick });
-  });
-
-  it("marks a folder stale when any represented file changed, then refreshes every unfinished file", () => {
-    const staleFileTicks = { [docs.path]: { at: "t1", fingerprint: "old" } };
-    expect(filesViewState([a, docs], {}, staleFileTicks)).toBe("stale");
-
-    const refreshed = applyFilesToggle([a, docs], {}, staleFileTicks, "t2");
-    expect(filesViewState([a, docs], refreshed.unitTicks, refreshed.fileTicks)).toBe("done");
+    expect(unitsViewState(a.units, { [a.units[0].nodeId]: tick })).toBe("stale");
   });
 });
