@@ -1199,7 +1199,8 @@ describe("PR store slice", () => {
     expect(store.getState().reviewCommentsVisible).toBe(true);
     const visible = renderPanel();
     expect(visible).toContain("3 existing comments");
-    expect(visible).toMatch(/<button(?=[^>]*aria-pressed="true")[^>]*>Hide comments<\/button>/);
+    expect(visible).toMatch(/<button(?=[^>]*aria-label="Comment focus: All comments, 3 of 3")/);
+    expect(visible).toMatch(/<button(?=[^>]*aria-label="Hide comments on canvas")(?=[^>]*aria-pressed="true")/);
     expect(visible).not.toContain("Moved into the canvas code row");
     expect(visible).toContain("Base-side fallback stays in the rail");
     expect(visible).not.toContain("Truncated-source comment body stays out of the rail");
@@ -1212,7 +1213,7 @@ describe("PR store slice", () => {
     expect(store.getState().prDiscussion).toBe(discussion);
     const hidden = renderPanel();
     expect(hidden).toContain("3 existing comments");
-    expect(hidden).toMatch(/<button(?=[^>]*aria-pressed="false")[^>]*>View comments<\/button>/);
+    expect(hidden).toMatch(/<button(?=[^>]*aria-label="Show comments on canvas")(?=[^>]*aria-pressed="false")/);
     expect(hidden).not.toContain("Moved into the canvas code row");
     expect(hidden).not.toContain("Base-side fallback stays in the rail");
     expect(hidden).not.toContain("Truncated-source comment body stays out of the rail");

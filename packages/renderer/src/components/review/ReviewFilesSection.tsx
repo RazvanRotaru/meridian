@@ -21,6 +21,8 @@ import { UnitRow } from "./ReviewUnitRow";
 import { isHeadSideReviewComment } from "./useCodeReviewComments";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
+import { filterReviewComments } from "../../derive/reviewCommentFilter";
+import { ReviewDiscussionToolbar } from "./ReviewDiscussionToolbar";
 
 const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29922", deleted: "#F85149", renamed: "#7DD3FC" };
 // Large PRs keep every file row visible, but mounting every unit/comment body at once multiplies the
@@ -56,6 +58,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const comments = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
+  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
   const pathScope = useBlueprint((state) => state.reviewPathScope);
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const { setReviewFilesSort } = useBlueprintActions();
@@ -99,12 +102,12 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   }, [comments]);
   const githubCommentsByFile = useMemo(() => {
     const byFile = new Map<string, PrGitHubComment[]>();
-    for (const comment of discussion?.comments ?? NO_GITHUB_COMMENTS) {
+    for (const comment of filterReviewComments(discussion?.comments ?? NO_GITHUB_COMMENTS, commentFilter)) {
       const bucket = byFile.get(comment.path);
       bucket ? bucket.push(comment) : byFile.set(comment.path, [comment]);
     }
     return byFile;
-  }, [discussion]);
+  }, [commentFilter, discussion]);
   if (files.length === 0) {
     return null;
   }
@@ -127,6 +130,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   };
   return (
     <section>
+      <ReviewDiscussionToolbar />
       <div style={{ ...SECTION_HEAD, boxSizing: "border-box", cursor: "default" }}>
         <button type="button" style={SECTION_TOGGLE} aria-expanded={listOpen} onClick={toggleList}>
           <span style={CARET}>{listOpen ? "▾" : "▸"}</span>

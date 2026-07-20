@@ -360,12 +360,6 @@ function Header(props: {
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const existingCommentCount = useBlueprint((state) => {
-    return state.showTests
-      ? state.prDiscussion?.comments.length ?? 0
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length ?? 0;
-  });
-  const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
@@ -376,7 +370,7 @@ function Header(props: {
     && !state.prPreparedArtifactCurrent
     && state.prPreparedGraphId === null
     && state.analyzeUrl !== null);
-  const { resetReviewTicks, toggleReviewPanel, toggleReviewCommentsVisible, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
+  const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
   const viewed = countViewedFiles(files, unitTicks, fileTicks);
   const total = files.length;
   const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
@@ -455,22 +449,6 @@ function Header(props: {
         </a>
       ) : null}
       </div>
-      {existingCommentCount > 0 ? (
-        <div style={COMMENT_CONTROLS}>
-          <span style={COMMENT_COUNT_LABEL}>
-            {existingCommentCount} existing {existingCommentCount === 1 ? "comment" : "comments"}
-          </span>
-          <button
-            type="button"
-            style={commentsVisible ? COMMENTS_BTN_ACTIVE : COMMENTS_BTN}
-            aria-pressed={commentsVisible}
-            title={`${commentsVisible ? "Hide" : "View"} existing comments in canvas code previews`}
-            onClick={toggleReviewCommentsVisible}
-          >
-            {commentsVisible ? "Hide comments" : "View comments"}
-          </button>
-        </div>
-      ) : null}
       {prReviewed !== null && !preparedArtifactCurrent && addedUnmatched > 0 && (
         <div style={ADDED_FILES_NOTE}>
           {addedUnmatched === 1
@@ -642,10 +620,6 @@ const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
 const GITHUB_PR_LINK: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, textDecoration: "none", whiteSpace: "nowrap" };
 const STALE_BTN: React.CSSProperties = { ...HEADER_BTN, borderColor: "#9A7B2D", background: "rgba(210,153,34,0.12)", color: "#D29922" };
 const STALE_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.75 };
-const COMMENT_CONTROLS: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
-const COMMENT_COUNT_LABEL: React.CSSProperties = { color: "#7B8695", fontSize: 10.5 };
-const COMMENTS_BTN: React.CSSProperties = { ...HEADER_BTN };
-const COMMENTS_BTN_ACTIVE: React.CSSProperties = { ...HEADER_BTN, borderColor: "rgba(125,211,252,0.45)", background: "rgba(56,139,253,0.10)", color: "#7DD3FC" };
 const SETTINGS_BTN: React.CSSProperties = { ...HEADER_BTN, width: 25, padding: "3px 0", fontSize: 12 };
 const SETTINGS_BTN_ACTIVE: React.CSSProperties = {
   ...SETTINGS_BTN,
