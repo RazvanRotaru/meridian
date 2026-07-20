@@ -5,7 +5,6 @@ import {
   buildRequestTimeline,
   requestEventKey,
   requestTraceCandidates,
-  traceGraphRevisionIdentity,
   traceGraphRefMismatches,
 } from "./requestTimelineModel";
 
@@ -168,7 +167,7 @@ it("keys repeated event ids by their owning span", () => {
   expect(requestEventKey("span-a", "event-1")).toBe(requestEventKey("span-a", "event-1"));
 });
 
-describe("trace graph revision identity", () => {
+it("compares the bundle graph reference with every loaded artifact identity coordinate", () => {
   const artifact: GraphArtifact = {
     schemaVersion: "1.0.0",
     generatedAt: "2026-01-01T00:00:00.000Z",
@@ -177,33 +176,17 @@ describe("trace graph revision identity", () => {
     nodes: [{ id: ROOT, kind: "function", qualifiedName: "run", displayName: "run", location: { file: "src/a.ts", startLine: 1 } }],
     edges: [],
   };
-  const revision = traceGraphRevisionIdentity({
-    schemaVersion: artifact.schemaVersion,
+  expect(traceGraphRefMismatches({
+    schemaVersion: "1.0.0",
     generatedAt: artifact.generatedAt,
-    // The loaded projection contains one node, while its immutable revision contains 87.
-    nodeCount: 87,
-  }, artifact.target);
-
-  it("matches telemetry against the full revision summary rather than a partial slice", () => {
-    expect(artifact.nodes).toHaveLength(1);
-    expect(traceGraphRefMismatches({
-      schemaVersion: "1.0.0",
-      generatedAt: artifact.generatedAt,
-      nodeCount: 87,
-      commit: "abc123",
-    }, revision)).toEqual([]);
-  });
-
-  it("rejects a genuinely different revision on every identity coordinate", () => {
-    expect(traceGraphRefMismatches({
-      schemaVersion: "1.1.0",
-      generatedAt: "older",
-      nodeCount: 2,
-      commit: "def456",
-    }, revision)).toHaveLength(4);
-  });
-
-  it("rejects telemetry without a graph reference", () => {
-    expect(traceGraphRefMismatches(null, revision)).toEqual(["trace bundle has no graph reference"]);
-  });
+    nodeCount: 1,
+    commit: "abc123",
+  }, artifact)).toEqual([]);
+  expect(traceGraphRefMismatches({
+    schemaVersion: "1.1.0",
+    generatedAt: "older",
+    nodeCount: 2,
+    commit: "def456",
+  }, artifact)).toHaveLength(4);
+  expect(traceGraphRefMismatches(null, artifact)).toEqual(["trace bundle has no graph reference"]);
 });

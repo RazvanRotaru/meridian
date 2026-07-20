@@ -5,33 +5,11 @@
  * connected change, c.ts an unrelated one; all three files arrive in a single PR.
  */
 
-import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  compareCanonicalPrPreparePaths,
-  type GraphArtifact,
-  type GraphNode,
-} from "@meridian/core";
+import { describe, expect, it, vi } from "vitest";
+import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
-import {
-  canonicalProjectionKey,
-  OVERVIEW_PROJECTION_REQUEST,
-  type GraphProjectionActivateOptions,
-  type GraphProjectionDataSource,
-  type GraphProjectionManifest,
-  type GraphProjectionRequest,
-  type GraphProjectionReviewPairOptions,
-  type LoadedGraphProjection,
-  type LoadedReviewProjection,
-  type StagedGraphProjection,
-  type StagedProjection,
-  type StagedReviewProjection,
-} from "../graph/graphProjectionClient";
-import { createBlueprintStore } from "./store";
+import { createBlueprintStore, type StoreDependencies } from "./store";
 import type { PrSummary } from "./prTypes";
-import {
-  preparedArtifactReviewFilesForTest,
-  reviewProjectionFactsForTest,
-} from "./reviewProjectionTestSupport";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
   return {
@@ -68,7 +46,7 @@ const FILE_C = "ts:src/c.ts";
 const FN_A = `${FILE_A}#fnA`;
 const FN_B = `${FILE_B}#fnB`;
 const FN_C = `${FILE_C}#fnC`;
-const DELETED_CLASS_C = `${FILE_C}#RemovedService`;
+const DELETED_CLASS_C = `${FILE_C}#LegacyService`;
 const DELETED_METHOD_C = `${DELETED_CLASS_C}.removed`;
 
 const ARTIFACT: GraphArtifact = {
@@ -97,167 +75,13 @@ const ARTIFACT: GraphArtifact = {
   },
 } as unknown as GraphArtifact;
 
-const BOOT_REQUEST: GraphProjectionRequest = {
-  ...OVERVIEW_PROJECTION_REQUEST,
-};
-
-const HEAD_GRAPH_ID = "pr-5-head";
-const BASE_GRAPH_ID = "pr-5-merge-base";
-const HEAD_SHA = "a".repeat(40);
-
-class ReviewProjectionSource implements GraphProjectionDataSource {
-  activeKey: string | undefined;
-  private readonly cached = new Map<string, LoadedGraphProjection>();
-  private readonly cachedReviews = new Map<string, LoadedReviewProjection>();
-
-  constructor(
-    private readonly headArtifact: GraphArtifact,
-    private readonly mergeBaseArtifact: GraphArtifact,
-  ) {}
-
-  seed(projection: LoadedGraphProjection): void {
-    this.cached.set(projection.key, projection);
-    this.activeKey = projection.key;
-  }
-
-  async loadManifest(options: GraphProjectionActivateOptions): Promise<GraphProjectionManifest> {
-    const graphId = graphIdFrom(options);
-    const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
-    return {
-      version: 6,
-      graphId,
-      contentId: "0".repeat(64),
-      graphSummary: graphSummary(artifact),
-      repositorySummary: buildGraphIndex(artifact).structure.repositorySummary,
-      defaultView: BOOT_REQUEST,
-    };
-  }
-
-  async stage(
-    request: GraphProjectionRequest,
-    options: GraphProjectionActivateOptions,
-  ): Promise<StagedGraphProjection> {
-    const projection = this.project(request, options);
-    return stagedValue(projection, () => {
-      this.cached.set(projection.key, projection);
-      this.activeKey = projection.key;
-    });
-  }
-
-  async stageReviewPair(options: GraphProjectionReviewPairOptions): Promise<StagedReviewProjection> {
-    const headKey = canonicalProjectionKey(graphIdFrom(options.head), options.head.request);
-    const mergeBaseKey = canonicalProjectionKey(graphIdFrom(options.mergeBase), options.mergeBase.request);
-    const cached = this.stageCachedReview(`review-pair\u0000${JSON.stringify([headKey, mergeBaseKey])}`);
-    if (cached !== undefined) return cached;
-    const [head, mergeBase] = await Promise.all([
-      this.project(options.head.request, { endpoints: options.head.endpoints, signal: options.signal }),
-      this.project(options.mergeBase.request, { endpoints: options.mergeBase.endpoints, signal: options.signal }),
-    ]);
-    const key = `review-pair\u0000${JSON.stringify([head.key, mergeBase.key])}`;
-    const review: LoadedReviewProjection = {
-      key,
-      projectionId: `${head.projectionId}\u0000${mergeBase.projectionId}`,
-      head,
-      mergeBase,
-      serializedBytes: head.serializedBytes + mergeBase.serializedBytes,
-      residentBytes: head.residentBytes + mergeBase.residentBytes,
-    };
-    return stagedReview(review, () => {
-      this.cached.set(head.key, head);
-      this.cached.set(mergeBase.key, mergeBase);
-      this.cachedReviews.set(key, review);
-      this.activeKey = key;
-    });
-  }
-
-  stageCached(key: string): StagedGraphProjection | undefined {
-    const projection = this.cached.get(key);
-    return projection === undefined
-      ? undefined
-      : stagedValue(projection, () => { this.activeKey = key; });
-  }
-
-  stageCachedReview(key: string): StagedReviewProjection | undefined {
-    const review = this.cachedReviews.get(key);
-    return review === undefined ? undefined : stagedReview(review, () => { this.activeKey = key; });
-  }
-
-  searchSymbols(): Promise<never> {
-    return Promise.reject(new Error("symbol search is not exercised by this projection source"));
-  }
-
-  private project(request: GraphProjectionRequest, options: GraphProjectionActivateOptions): LoadedGraphProjection {
-    options.signal?.throwIfAborted();
-    const graphId = graphIdFrom(options);
-    const artifact = graphId === HEAD_GRAPH_ID ? this.headArtifact : this.mergeBaseArtifact;
-    const cached = this.cached.get(canonicalProjectionKey(graphId, request));
-    if (cached !== undefined) return cached;
-    const projection = loadedProjection(artifact, graphId, request);
-    if (request.view !== "review" || request.filePaths.length > 0) return projection;
-    const files = preparedArtifactReviewFilesForTest(this.headArtifact);
-    return {
-      ...projection,
-      review: reviewProjectionFactsForTest(
-        files,
-        request,
-        graphId === HEAD_GRAPH_ID ? "head" : "mergeBase",
-        artifact,
-      ),
-    };
-  }
-}
-
-function stagedReview(review: LoadedReviewProjection, onCommit: () => void): StagedReviewProjection {
-  return stagedValue(review, onCommit);
-}
-
-function stagedValue<Projection>(
-  projection: Projection,
-  onCommit: () => void,
-): StagedProjection<Projection> {
-  let released = false;
-  let committed = false;
-  const read = () => {
-    if (released) throw new Error("projection stage released");
-    return projection;
-  };
-  return {
-    get projection() { return read(); },
-    commit: () => {
-      const value = read();
-      if (!committed) {
-        committed = true;
-        onCommit();
-      }
-      return value;
-    },
-    release: () => { if (!committed) released = true; },
-  };
-}
-
-async function reviewedStore(files: Array<{ path: string }>) {
-  const canonicalFiles = [...files].sort((left, right) => (
-    compareCanonicalPrPreparePaths(left.path, right.path)
-  ));
-  const preparedHead = preparedArtifact(canonicalFiles);
-  const projectionDataSource = new ReviewProjectionSource(preparedHead, ARTIFACT);
-  const initialProjection = loadedProjection(ARTIFACT, "artifact-1", BOOT_REQUEST);
-  projectionDataSource.seed(initialProjection);
+function reviewedStore(files: Array<{ path: string }>, extra?: Partial<StoreDependencies>) {
   const store = createBlueprintStore({
     artifact: ARTIFACT,
     index: buildGraphIndex(ARTIFACT),
-    projectionDataSource,
-    initialProjection,
-    projectionEndpoints: {
-      graphId: "artifact-1",
-      manifestUrl: "/api/graph/manifest?id=artifact-1",
-      projectionUrl: "/api/graph/projection?id=artifact-1",
-      searchUrl: "/api/graph/search?id=artifact-1",
-    },
     provider: null,
     hasOverlay: false,
     sourceUrl: null,
-    prSessionSource: { repository: "o/r", subdir: "" },
     prsUrl: "/api/prs?id=artifact-1",
     prOneUrl: "/api/prs/one?id=artifact-1",
     prFilesUrl: "/api/prs/files?id=artifact-1",
@@ -265,122 +89,19 @@ async function reviewedStore(files: Array<{ path: string }>) {
     prCommentsUrl: "/api/prs/comments?id=artifact-1",
     prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
-    prepareUrl: "/api/pr/prepare",
+    ...extra,
   });
-  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
-    const url = input.toString();
-    if (url.includes("/api/pr/prepare")) {
-      return Promise.resolve(ndjsonResponse([{
-        version: 1,
-        type: "done",
-        headSha: HEAD_SHA,
-        baseSha: "b".repeat(40),
-        mergeBaseSha: "c".repeat(40),
-        changedFiles: canonicalFiles.map((file) => ({ path: file.path, status: "modified" })),
-        head: descriptor(HEAD_GRAPH_ID, preparedHead),
-        mergeBase: descriptor(BASE_GRAPH_ID, ARTIFACT),
-        cache: "miss",
-        timings: { publish: 1 },
-        warnings: [],
-        handoff: {
-          id: `handoff-${HEAD_GRAPH_ID}`,
-          url: `/api/pr/prepared?id=handoff-${HEAD_GRAPH_ID}`,
-          viewUrl: `/view?id=${HEAD_GRAPH_ID}&view=modules&prn=5&rev=1&prepared=handoff-${HEAD_GRAPH_ID}`,
-        },
-      }]));
-    }
-    if (url.includes("/api/meta")) {
-      return Promise.resolve(Response.json({
-        syntheticExecutionUrl: null,
-        syntheticScenarios: [],
-        syntheticExecutionTrust: null,
-      }));
-    }
-    return Promise.reject(new Error(`Unexpected review-groups request: ${url}`));
-  }));
   store.setState({
     viewMode: "prs",
     prSelected: 5,
     prsList: { open: [pr(5)], closed: null },
-    prFiles: canonicalFiles.map((file) => ({ path: file.path, status: "modified" as const, additions: 1, deletions: 0 })),
+    prFiles: files.map((file) => ({ path: file.path, status: "modified" as const, additions: 1, deletions: 0 })),
   });
-  await store.getState().reviewPrInGraph();
-  if (store.getState().prReviewed !== 5) {
-    throw new Error(store.getState().prPrepareError ?? "strict prepared review did not enter");
-  }
+  void store.getState().reviewPrInGraph();
   return store;
 }
 
-function graphIdFrom(options: GraphProjectionActivateOptions): string {
-  return new URL(options.endpoints.manifestUrl, "http://meridian.local").searchParams.get("id")
-    ?? "artifact-1";
-}
-
-function loadedProjection(
-  artifact: GraphArtifact,
-  graphId: string,
-  request: GraphProjectionRequest,
-): LoadedGraphProjection {
-  const key = `${graphId}\u0000${JSON.stringify(request)}`;
-  return {
-    key,
-    projectionId: `projection-${key}`,
-    graphId,
-    request,
-    artifact,
-    index: buildGraphIndex(artifact),
-    reachability: null,
-    review: null,
-    serializedBytes: 100,
-    residentBytes: 300,
-  };
-}
-
-function graphSummary(artifact: GraphArtifact) {
-  return {
-    schemaVersion: artifact.schemaVersion,
-    generatedAt: artifact.generatedAt,
-    nodeCount: artifact.nodes.length,
-    edgeCount: artifact.edges.length,
-  };
-}
-
-function descriptor(graphId: string, artifact: GraphArtifact) {
-  return {
-    graphId,
-    manifestUrl: `/api/graph/manifest?id=${graphId}`,
-    projectionUrl: `/api/graph/projection?id=${graphId}`,
-    searchUrl: `/api/graph/search?id=${graphId}`,
-    sourceUrl: `/api/source?id=${graphId}`,
-    metaUrl: `/api/meta?id=${graphId}`,
-    graphSummary: graphSummary(artifact),
-  };
-}
-
-function preparedArtifact(files: Array<{ path: string }>): GraphArtifact {
-  return {
-    ...ARTIFACT,
-    generatedAt: "2026-07-10T00:00:01.000Z",
-    extensions: {
-      ...(ARTIFACT.extensions ?? {}),
-      changedSince: {
-        baseRef: "origin/main",
-        manifest: files.map((file) => ({ path: file.path, status: "modified" })),
-        files: Object.fromEntries(files.map((file) => [file.path, []])),
-        kinds: Object.fromEntries(files.map((file) => [file.path, []])),
-        stats: Object.fromEntries(files.map((file) => [file.path, { added: 0, deleted: 0 }])),
-        diffLines: Object.fromEntries(files.map((file) => [file.path, []])),
-      },
-    } as GraphArtifact["extensions"],
-  };
-}
-
-function ndjsonResponse(lines: readonly object[]): Response {
-  const body = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
-  return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
-}
-
-function attachDeletedNestedUnit(store: Awaited<ReturnType<typeof reviewedStore>>, sourceSide: "base" | undefined = "base") {
+function attachDeletedNestedUnit(store: ReturnType<typeof reviewedStore>, sourceSide: "base" | undefined = "base") {
   const state = store.getState();
   const artifact: GraphArtifact = {
     ...state.artifact,
@@ -416,10 +137,8 @@ function attachDeletedNestedUnit(store: Awaited<ReturnType<typeof reviewedStore>
 
 const MIXED_PR = [{ path: "src/a.ts" }, { path: "src/b.ts" }, { path: "packages/c.ts" }];
 
-afterEach(() => vi.unstubAllGlobals());
-
 async function rolledReviewStore() {
-  const store = await reviewedStore(MIXED_PR);
+  const store = reviewedStore(MIXED_PR);
   await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
   const outerNodes = [
     { id: FS_ID, position: { x: 12, y: 34 }, data: {} },
@@ -446,8 +165,8 @@ async function rolledReviewStore() {
 }
 
 describe("change groups in PR review", () => {
-  it("partitions the reviewed PR into disjoint groups and starts on All", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("partitions the reviewed PR into disjoint groups and starts on All", () => {
+    const store = reviewedStore(MIXED_PR);
     const groups = store.getState().reviewGroups;
     expect(groups?.groups.map((group) => group.files)).toEqual([
       ["src/a.ts", "src/b.ts"],
@@ -458,16 +177,16 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
-  it("assigns each affected flow to the group of the files it touches", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("assigns each affected flow to the group of the files it touches", () => {
+    const store = reviewedStore(MIXED_PR);
     const [connected, isolated] = store.getState().reviewGroups!.groups;
     expect(connected.flowIds).toEqual([FN_A]);
     expect(isolated.flowIds).toEqual([FN_C]);
     expect(store.getState().reviewGroups!.crossGroupFlowIds).toEqual([]);
   });
 
-  it("selecting a group isolates the minimal overlay to its modules only", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("selecting a group isolates the minimal overlay to its modules only", () => {
+    const store = reviewedStore(MIXED_PR);
     const isolated = store.getState().reviewGroups!.groups[1];
     // Group isolation owns its declaration-level expansion too; this simulates switching from a
     // full-review rollup where the isolated file path was deliberately absent.
@@ -480,8 +199,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().reviewSelectedId).toBeNull();
   });
 
-  it("keeps a nested deleted unit visible when selecting its change group", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("keeps a nested deleted unit visible when selecting its change group", () => {
+    const store = reviewedStore(MIXED_PR);
     attachDeletedNestedUnit(store);
     const isolated = store.getState().reviewGroups!.groups[1];
     store.setState({ moduleExpanded: new Set() });
@@ -492,16 +211,16 @@ describe("change groups in PR review", () => {
     expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_C, DELETED_CLASS_C]));
   });
 
-  it("selecting All restores the full review seed set", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("selecting All restores the full review seed set", () => {
+    const store = reviewedStore(MIXED_PR);
     store.getState().selectReviewGroup(store.getState().reviewGroups!.groups[1].id);
     store.getState().selectReviewGroup(null);
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
-  it("narrows the active review to a segment-safe path prefix and clears it losslessly", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("narrows the active review to a segment-safe path prefix and clears it losslessly", () => {
+    const store = reviewedStore(MIXED_PR);
 
     store.getState().selectReviewPathScope("./src/");
     expect(store.getState().reviewPathScope).toBe("src");
@@ -513,9 +232,9 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
-  it("keeps comparison-owned base units visible when narrowing to their path", async () => {
-    const store = await reviewedStore(MIXED_PR);
-    // The optional sourceSide hint may be absent; comparison/deleted membership remains authoritative.
+  it("keeps legacy base-id units visible when narrowing to their path", () => {
+    const store = reviewedStore(MIXED_PR);
+    // Older in-memory rows may omit sourceSide; comparison/deleted membership remains authoritative.
     attachDeletedNestedUnit(store, undefined);
     store.setState({ moduleExpanded: new Set() });
 
@@ -526,7 +245,7 @@ describe("change groups in PR review", () => {
   });
 
   it("resumes the same change group and path scope instead of rebuilding the full PR graph", async () => {
-    const store = await reviewedStore(MIXED_PR);
+    const store = reviewedStore(MIXED_PR);
     const connected = store.getState().reviewGroups!.groups[0];
     store.getState().selectReviewGroup(connected.id);
     store.getState().selectReviewPathScope("src");
@@ -544,8 +263,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
   });
 
-  it("opens a container as an exact-file child graph and restores the outer PR graph verbatim", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("opens a container as an exact-file child graph and restores the outer PR graph verbatim", () => {
+    const store = reviewedStore(MIXED_PR);
     const outerNodes = [{ id: "outer", position: { x: 12, y: 34 }, data: {} }];
     const outerEdges = [{ id: "outer-edge", source: FILE_A, target: FILE_B }];
     const outerExpanded = new Set([PACKAGE_ID, FS_ID]);
@@ -627,22 +346,41 @@ describe("change groups in PR review", () => {
     });
   });
 
-  it("loads the exact file cursor before selecting its changed units", async () => {
-    const { store } = await rolledReviewStore();
+  it("keeps the file paint seed while focusing its changed units so module ghosts remain visible", async () => {
+    const { store, outerNodes, outerEdges } = await rolledReviewStore();
     const file = store.getState().reviewFiles.find((candidate) => candidate.path === "src/a.ts")!;
     const expectedLit = new Set([FILE_A, ...file.units.map((unit) => unit.nodeId)]);
     store.setState({ reviewFlowExplicitView: "timeline" });
 
-    await store.getState().focusReviewFile("src/a.ts");
+    store.getState().focusReviewFile("src/a.ts");
 
-    expect(store.getState().prPreparedReviewCursor).toBe("file:1");
-    expect(store.getState().reviewFocusedSubgraph).toBeNull();
+    expect(store.getState().reviewFocusedSubgraph).toMatchObject({
+      rootId: FS_ID,
+      filePaths: ["src/a.ts", "src/b.ts"],
+      moduleIds: [FILE_A, FILE_B],
+    });
+    expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalRollups).toEqual({});
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().moduleSelected).toEqual(new Set([FILE_A]));
     expect(store.getState().reviewSelectedId).toBe(FILE_A);
     expect(store.getState().reviewLitNodeIds).toEqual(expectedLit);
     expect(store.getState().reviewFlowExplicitView).toBeNull();
-    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().recenterSeq).toBe(0);
+
+    await vi.waitFor(() => {
+      expect(store.getState().minimalLayoutStatus).toBe("ready");
+      expect(store.getState().recenterSeq).toBe(1);
+    });
     expect(store.getState().minimalRfNodes.some((node) => node.id === FILE_A)).toBe(true);
+
+    store.getState().closeReviewSubgraph();
+    expect(store.getState().reviewFocusedSubgraph).toBeNull();
+    expect(store.getState().minimalSeedIds).toEqual([FS_ID, FILE_C]);
+    expect(store.getState().minimalRollups).toEqual({ [FS_ID]: [FILE_A, FILE_B] });
+    expect(store.getState().minimalRfNodes).toBe(outerNodes);
+    expect(store.getState().minimalRfEdges).toBe(outerEdges);
+    expect(store.getState().reviewSelectedId).toBeNull();
   });
 
   it("automatically focuses a rolled unit's owning container and reveals the exact unit", async () => {
@@ -683,7 +421,7 @@ describe("change groups in PR review", () => {
   });
 
   it("lays out an exact-file child graph across columns on its first open", async () => {
-    const store = await reviewedStore(MIXED_PR);
+    const store = reviewedStore(MIXED_PR);
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
     store.getState().openReviewSubgraph(FS_ID);
@@ -705,8 +443,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalArrange).toBe(false);
   });
 
-  it("does not focus a container outside the active change group", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("does not focus a container outside the active change group", () => {
+    const store = reviewedStore(MIXED_PR);
     const isolated = store.getState().reviewGroups!.groups.find((group) => group.files.includes("packages/c.ts"))!;
     store.getState().selectReviewGroup(isolated.id);
     store.setState({ minimalLayoutStatus: "ready" });
@@ -717,8 +455,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
   });
 
-  it("does not let an unmatched path close and strand the review overlay", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("does not let an unmatched path close and strand the review overlay", () => {
+    const store = reviewedStore(MIXED_PR);
     const seeds = store.getState().minimalSeedIds;
 
     store.getState().selectReviewPathScope("src/aria/application");
@@ -727,8 +465,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual(seeds);
   });
 
-  it("selecting a change group replaces an active path filter", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("selecting a change group replaces an active path filter", () => {
+    const store = reviewedStore(MIXED_PR);
     const isolated = store.getState().reviewGroups!.groups[1];
     store.getState().selectReviewPathScope("src");
 
@@ -738,21 +476,21 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
   });
 
-  it("an unknown group id falls back to All rather than stranding the reader", async () => {
-    const store = await reviewedStore(MIXED_PR);
+  it("an unknown group id falls back to All rather than stranding the reader", () => {
+    const store = reviewedStore(MIXED_PR);
     store.getState().selectReviewGroup(store.getState().reviewGroups!.groups[0].id);
     store.getState().selectReviewGroup("no-such-group");
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
   });
 
-  it("a coherent single-component PR still yields one connectivity group", async () => {
-    const store = await reviewedStore([{ path: "src/a.ts" }, { path: "src/b.ts" }]);
+  it("a coherent single-component PR still yields one connectivity group", () => {
+    const store = reviewedStore([{ path: "src/a.ts" }, { path: "src/b.ts" }]);
     expect(store.getState().reviewGroups?.groups).toHaveLength(1);
   });
 
   it("extracts inside the PR without discarding its review session", async () => {
-    const store = await reviewedStore(MIXED_PR);
+    const store = reviewedStore(MIXED_PR);
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     const outerSeeds = [...store.getState().minimalSeedIds];
     const review = store.getState().review;

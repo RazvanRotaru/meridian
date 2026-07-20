@@ -181,7 +181,6 @@ export function useNodeDiffPreview(
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestToken = useRef(0);
-  const sourceRequest = useRef<AbortController | null>(null);
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
   // Opening method and interaction intent are distinct. Click previews are already visually pinned
@@ -202,20 +201,15 @@ export function useNodeDiffPreview(
       closeTimer.current = null;
     }
   }, []);
-  const cancelSourceRequest = useCallback(() => {
-    sourceRequest.current?.abort(new DOMException("Source preview was superseded", "AbortError"));
-    sourceRequest.current = null;
-  }, []);
   const hideNow = useCallback(() => {
     clearOpenTimer();
     clearCloseTimer();
     requestToken.current += 1;
-    cancelSourceRequest();
     activeId.current = null;
     engagedRef.current = false;
     setPinnedNodeId(null);
     setPreview(null);
-  }, [cancelSourceRequest, clearCloseTimer, clearOpenTimer]);
+  }, [clearCloseTimer, clearOpenTimer]);
   const scheduleHide = useCallback(() => {
     if (engagedRef.current || (activeId.current === null && pendingId.current === null)) {
       return;
@@ -262,9 +256,8 @@ export function useNodeDiffPreview(
     clearOpenTimer();
     clearCloseTimer();
     requestToken.current += 1;
-    cancelSourceRequest();
     activeId.current = null;
-  }, [cancelSourceRequest, clearCloseTimer, clearOpenTimer]);
+  }, [clearCloseTimer, clearOpenTimer]);
 
   const activatePreview = useCallback((
     event: ReactMouseEvent,
@@ -310,9 +303,6 @@ export function useNodeDiffPreview(
       openTimer.current = null;
       pendingId.current = null;
       const token = ++requestToken.current;
-      cancelSourceRequest();
-      const controller = new AbortController();
-      sourceRequest.current = controller;
       activeId.current = anchorId;
       engagedRef.current = false;
       setPinnedNodeId(dwell ? null : anchorId);
@@ -330,12 +320,8 @@ export function useNodeDiffPreview(
       // Do not retain a second component-local payload cache. The store already deduplicates source
       // requests by immutable URL, while a mounted hook cache could survive a revision refresh and
       // replay a stale CodeView for a node id that exists in both revisions.
-      const pending = loadCodePreview(graphNode, {
-        ...(focus ? { focus } : {}),
-        signal: controller.signal,
-      }).catch(() => null);
+      const pending = loadCodePreview(graphNode, focus ? { focus } : undefined).catch(() => null);
       void pending.then((view) => {
-        if (sourceRequest.current === controller) sourceRequest.current = null;
         if (requestToken.current !== token || activeId.current !== anchorId) {
           return;
         }
@@ -353,7 +339,7 @@ export function useNodeDiffPreview(
     } else {
       open();
     }
-  }, [cancelSourceRequest, clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, resolveTarget, scheduleHide]);
+  }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, resolveTarget, scheduleHide]);
 
   const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
     if (trigger === "hover") {

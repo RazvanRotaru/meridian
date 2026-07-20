@@ -26,7 +26,7 @@ vi.mock("./flowexplorer/FlowSplitView", () => ({
   ),
 }));
 
-import { BlueprintCanvas, moduleSceneNeedsTransition } from "./BlueprintCanvas";
+import { BlueprintCanvas } from "./BlueprintCanvas";
 
 describe("BlueprintCanvas source modal host", () => {
   it("keeps the modal outside both resizable panes so minimizing either pane cannot hide it", () => {
@@ -40,51 +40,5 @@ describe("BlueprintCanvas source modal host", () => {
     const sourceModalStartsAt = markup.indexOf('data-source-code-backdrop="true"');
     expect(splitEndsAt).toBeGreaterThan(-1);
     expect(sourceModalStartsAt).toBeGreaterThan(splitEndsAt);
-  });
-});
-
-describe("BlueprintCanvas scene ownership", () => {
-  it("lets an extracted scene own a parked module surface", () => {
-    expect(moduleSceneNeedsTransition({
-      viewMode: "modules",
-      moduleRfNodes: [],
-      moduleLayoutStatus: "idle",
-      minimalSeedIds: ["ts:src/services/orderService.ts"],
-      review: null,
-      prReviewed: null,
-    })).toBe(false);
-  });
-
-  it("lets an active zero-node review own the module surface before a file is selected", () => {
-    expect(moduleSceneNeedsTransition({
-      viewMode: "modules",
-      moduleRfNodes: [],
-      moduleLayoutStatus: "idle",
-      minimalSeedIds: [],
-      prReviewed: 7,
-      review: {
-        context: {
-          changedFiles: [{ path: "src/a.ts", status: "modified" }],
-          baseRef: "main",
-          baseSha: "base",
-          headRef: "feature",
-          reviewKey: "zero-node-overview",
-          warnings: [],
-        },
-        rows: [],
-        flows: {},
-      },
-    })).toBe(false);
-  });
-
-  it("keeps the transition shell for an ordinary module scene that is not ready", () => {
-    expect(moduleSceneNeedsTransition({
-      viewMode: "modules",
-      moduleRfNodes: [],
-      moduleLayoutStatus: "idle",
-      minimalSeedIds: [],
-      review: null,
-      prReviewed: null,
-    })).toBe(true);
   });
 });

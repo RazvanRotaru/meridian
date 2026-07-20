@@ -114,7 +114,7 @@ export async function handleRepoBranches(
   sendJson(response, 200, { branches: await ctx.github.listBranches({ ...slug, token }) });
 }
 
-/** The session token feeding a repository fetch (cookie → session), or undefined when not signed in. */
+/** The session token feeding a clone (cookie → session), or undefined when not signed in. */
 export function sessionTokenFor(ctx: AuthContext, request: IncomingMessage): string | undefined {
   const session = ctx.sessions.get(readSessionId(requestHeader(request, "cookie")), Date.now());
   return session?.token ?? undefined;

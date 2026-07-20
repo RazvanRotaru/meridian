@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { PrChangedFile, PrChecks, PrFileStatus, PrReviewRollup } from "../../state/prTypes";
+import { generatePrSubdir } from "../../state/generatePrSubdir";
 import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
@@ -21,23 +22,23 @@ export function PrDetailPanel() {
   const error = useBlueprint((state) => state.prsError);
   const reviewStatus = useBlueprint((state) => state.prReviewStatus);
   const reviewBlocked = useBlueprint((state) => state.prReviewBlocked);
-  const { selectPr, reviewPrInGraph, preparePrReviewNavigation } = useBlueprintActions();
+  const { selectPr, reviewPrInGraph } = useBlueprintActions();
   const preparing = reviewStatus === "preparing";
   const allOutside = files !== null && files.length === 0 && outsideCount > 0;
   const partiallyOutside = files !== null && files.length > 0 && outsideCount > 0;
   const subdirLabel = extractionLabel(sessionSource?.subdir ?? "");
-  const [preparingSubdir, setPreparingSubdir] = useState(false);
-  const [subdirPrepareError, setSubdirPrepareError] = useState<string | null>(null);
-  const subdirPreparation = useRef<AbortController | null>(null);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState<string | null>(null);
+  const extractionRequest = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    subdirPreparation.current?.abort();
-    subdirPreparation.current = null;
-    setPreparingSubdir(false);
-    setSubdirPrepareError(null);
+    extractionRequest.current?.abort();
+    extractionRequest.current = null;
+    setExtracting(false);
+    setExtractError(null);
     return () => {
-      subdirPreparation.current?.abort();
-      subdirPreparation.current = null;
+      extractionRequest.current?.abort();
+      extractionRequest.current = null;
     };
   }, [selected, suggestedSubdir, sessionSource?.repository, sessionSource?.subdir]);
 
@@ -45,32 +46,32 @@ export function PrDetailPanel() {
   const deselect = useCallback(() => void selectPr(null), [selectPr]);
   useClearOnEscape(deselect, selected !== null);
 
-  const prepareAtSuggestedSubdir = useCallback(async () => {
+  const reExtract = useCallback(async () => {
     if (!sessionSource) {
-      setSubdirPrepareError("Could not determine this session's repository.");
+      setExtractError("Could not determine this session's repository.");
       return;
     }
-    subdirPreparation.current?.abort();
+    extractionRequest.current?.abort();
     const controller = new AbortController();
-    subdirPreparation.current = controller;
-    setPreparingSubdir(true);
-    setSubdirPrepareError(null);
+    extractionRequest.current = controller;
+    setExtracting(true);
+    setExtractError(null);
     try {
-      const viewUrl = await preparePrReviewNavigation(suggestedSubdir, controller.signal);
+      const id = await generatePrSubdir(sessionSource, suggestedSubdir, controller.signal);
       if (!controller.signal.aborted) {
-        window.location.assign(viewUrl);
+        window.location.assign(`/view?id=${encodeURIComponent(id)}`);
       }
     } catch (cause) {
       if (!controller.signal.aborted) {
-        setSubdirPrepareError(cause instanceof Error ? cause.message : "Review preparation failed.");
+        setExtractError(cause instanceof Error ? cause.message : "Re-extraction failed.");
       }
     } finally {
-      if (subdirPreparation.current === controller) {
-        subdirPreparation.current = null;
-        setPreparingSubdir(false);
+      if (extractionRequest.current === controller) {
+        extractionRequest.current = null;
+        setExtracting(false);
       }
     }
-  }, [preparePrReviewNavigation, sessionSource, suggestedSubdir]);
+  }, [sessionSource, suggestedSubdir]);
 
   if (selected === null) {
     return (
@@ -98,7 +99,7 @@ export function PrDetailPanel() {
         <button
           type="button"
           style={REVIEW_STYLE}
-          disabled={summary === null || allOutside}
+          disabled={!files || loading || allOutside}
           title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
           onClick={() => void reviewPrInGraph()}
         >
@@ -117,10 +118,10 @@ export function PrDetailPanel() {
       {allOutside ? (
         <div style={EMPTY_STYLE}>
           <div>{totalFiles} changed files — none under {subdirLabel}</div>
-          <button type="button" style={SUBDIR_PREPARE_STYLE} disabled={preparingSubdir} onClick={() => void prepareAtSuggestedSubdir()}>
-            {preparingSubdir ? "Preparing…" : `Review from ${suggestedSubdir || "repo root"}`}
+          <button type="button" style={REEXTRACT_STYLE} disabled={extracting} onClick={() => void reExtract()}>
+            {extracting ? "Extracting…" : `Re-extract from ${suggestedSubdir || "repo root"}`}
           </button>
-          {subdirPrepareError ? <div style={SUBDIR_PREPARE_ERROR_STYLE}>{subdirPrepareError}</div> : null}
+          {extractError ? <div style={REEXTRACT_ERROR_STYLE}>{extractError}</div> : null}
         </div>
       ) : null}
       {files && !allOutside ? <FileList files={files} totalFiles={totalFiles} /> : null}
@@ -209,12 +210,12 @@ const REVIEW_STATE_CHIP_STYLE: React.CSSProperties = { display: "inline-flex", a
 const APPROVED_CHIP_STYLE: React.CSSProperties = { color: "#86EFAC", borderColor: "#166534", background: "#0B1F13" };
 const CHANGES_CHIP_STYLE: React.CSSProperties = { color: "#FCA5A5", borderColor: "#7F1D1D", background: "#1A0E12" };
 const REVIEW_STYLE: React.CSSProperties = { width: "100%", border: "1px solid #56C271", borderRadius: 8, background: "#12301F", color: "#E6F6EA", padding: "10px 12px", cursor: "pointer", fontWeight: 750, marginBottom: 14 };
-const SUBDIR_PREPARE_STYLE: React.CSSProperties = { ...REVIEW_STYLE, marginTop: 12, marginBottom: 0 };
+const REEXTRACT_STYLE: React.CSSProperties = { ...REVIEW_STYLE, marginTop: 12, marginBottom: 0 };
 const OUTSIDE_INFO_STYLE: React.CSSProperties = { color: "#8B949E", fontSize: 12, lineHeight: "18px", margin: "-6px 0 14px" };
 const NOTICE_STYLE: React.CSSProperties = { border: "1px solid #92400E", borderRadius: 8, padding: 10, color: "#FBBF24", background: "#1C1409", fontSize: 12, marginBottom: 12 };
 const LOADING_STYLE: React.CSSProperties = { border: "1px solid #2A2F37", borderRadius: 8, padding: 12, color: "#8B949E", background: "#11161D" };
 const ERROR_STYLE: React.CSSProperties = { border: "1px solid #7F1D1D", borderRadius: 8, padding: 12, color: "#FCA5A5", background: "#1A0E12" };
-const SUBDIR_PREPARE_ERROR_STYLE: React.CSSProperties = { ...ERROR_STYLE, marginTop: 10 };
+const REEXTRACT_ERROR_STYLE: React.CSSProperties = { ...ERROR_STYLE, marginTop: 10 };
 const EMPTY_STYLE: React.CSSProperties = { border: "1px dashed #2A2F37", borderRadius: 8, padding: 14, color: "#8B949E", background: "#0B0F14" };
 const FILES_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8 };
 const FILE_ROW_STYLE: React.CSSProperties = { display: "grid", gridTemplateColumns: "82px minmax(0, 1fr)", gap: 10, alignItems: "center", borderBottom: "1px solid #1F2530", padding: "8px 0" };

@@ -1,12 +1,4 @@
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { access } from "node:fs/promises";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -17,7 +9,6 @@ import type { FlowStep, GraphArtifact, LogicFlows } from "@meridian/core";
 import { extractToArtifact } from "../extract-pipeline";
 import {
   loadSyntheticScenarios,
-  runSyntheticArtifactFileWorker,
   runSyntheticScenario,
   syntheticExecutionRuntimeSupported,
   syntheticSandboxCompilationRuntimeSupported,
@@ -35,76 +26,6 @@ afterEach(() => {
 });
 
 describe("synthetic execution manifest", () => {
-  it("enforces the artifact-worker deadline independently of worker readiness", async () => {
-    const root = temporaryRoot();
-    const artifactPath = join(root, "artifact.json");
-    const workerPath = join(root, "hanging-worker.mjs");
-    writeFileSync(artifactPath, "{}", "utf8");
-    writeFileSync(workerPath, "setInterval(() => {}, 1000);\n", "utf8");
-
-    await expect(runSyntheticArtifactFileWorker(workerPath, root, artifactPath, "{}", {
-      timeoutMs: 25,
-      terminateGraceMs: 25,
-      processTreeWaitMs: 2_000,
-    })).rejects.toMatchObject({ code: "execution-failed", status: 422 });
-  }, 10_000);
-
-  it("terminates the complete artifact-worker process group before cancellation settles", async () => {
-    if (process.platform === "win32") return;
-    const root = temporaryRoot();
-    const artifactPath = join(root, "artifact.json");
-    const workerPath = join(root, "hanging-worker.mjs");
-    const pidPath = join(root, "grandchild.pid");
-    writeFileSync(artifactPath, "{}", "utf8");
-    writeFileSync(workerPath, [
-      "import { spawn } from 'node:child_process';",
-      "import { renameSync, writeFileSync } from 'node:fs';",
-      "import { join } from 'node:path';",
-      "const grandchild = spawn('/bin/sleep', ['60'], { stdio: 'ignore' });",
-      "const pendingPid = join(process.argv[4], 'grandchild.pid.pending');",
-      "writeFileSync(pendingPid, String(grandchild.pid));",
-      "renameSync(pendingPid, join(process.argv[4], 'grandchild.pid'));",
-      "process.stdin.resume();",
-      "setInterval(() => {}, 1000);",
-    ].join("\n"), "utf8");
-
-    const controller = new AbortController();
-    const reason = new Error("synthetic execution cancelled");
-    reason.name = "AbortError";
-    const pending = runSyntheticArtifactFileWorker(workerPath, root, artifactPath, "{}", {
-      signal: controller.signal,
-      terminateGraceMs: 25,
-      processTreeWaitMs: 2_000,
-    });
-    const readiness = new AbortController();
-
-    try {
-      const stoppedBeforeReady = pending.then(
-        () => {
-          const error = new Error("synthetic worker exited before publishing its descendant");
-          readiness.abort(error);
-          throw error;
-        },
-        (error: unknown) => {
-          readiness.abort(error);
-          throw error;
-        },
-      );
-      await Promise.race([waitForPublishedFile(pidPath, readiness.signal), stoppedBeforeReady]);
-      const pid = Number.parseInt(readFileSync(pidPath, "utf8"), 10);
-      expect(Number.isSafeInteger(pid)).toBe(true);
-      expect(() => process.kill(pid, 0)).not.toThrow();
-
-      controller.abort(reason);
-      await expect(pending).rejects.toBe(reason);
-      expect(() => process.kill(pid, 0)).toThrow(expect.objectContaining({ code: "ESRCH" }));
-    } finally {
-      readiness.abort(reason);
-      if (!controller.signal.aborted) controller.abort(reason);
-      await pending.catch(() => undefined);
-    }
-  }, 10_000);
-
   it("reports whether the runtime can enforce both filesystem and network isolation", () => {
     expect(syntheticExecutionRuntimeSupported()).toBe(process.allowedNodeEnvironmentFlags.has("--allow-net")
       && (process.allowedNodeEnvironmentFlags.has("--permission")
@@ -810,19 +731,6 @@ async function extractedArtifact(root: string): Promise<GraphArtifact> {
     project: join(root, "tsconfig.json"),
     materializeBoundary: true,
   })).artifact;
-}
-
-/** Wait for the worker's atomic readiness publication without using elapsed time as readiness. */
-async function waitForPublishedFile(path: string, signal: AbortSignal): Promise<void> {
-  for (;;) {
-    if (signal.aborted) throw signal.reason;
-    try {
-      await access(path);
-      return;
-    } catch {
-      await new Promise<void>((resolveTurn) => setTimeout(resolveTurn, 10));
-    }
-  }
 }
 
 function temporaryRoot(): string {

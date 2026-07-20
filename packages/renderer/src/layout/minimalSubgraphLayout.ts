@@ -32,9 +32,9 @@ import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelat
 import { relationParticipatesInLayout } from "../graph/lensRelationPolicy";
 import { mapWithConcurrency } from "./mapWithConcurrency";
 
-// ELK runs on the renderer's main thread and owns a copy of each pending file-subtree layout input.
-// A PR may expand dozens of changed files at once, so keep only two per-file layouts in flight
-// instead of allocating every expansion up front. The ordered mapper preserves result ordering.
+// ELK runs on the renderer's main thread and owns a full graph copy per pending layout. A PR may
+// expand dozens of changed files at once, so keep only two per-file layouts in flight instead of
+// allocating every expansion up front. The ordered mapper preserves the old Promise.all ordering.
 const EXPANSION_LAYOUT_CONCURRENCY = 2;
 
 /** One expanded Map subtree laid out by the Map's own nested-ELK pass. Its root sits first, ready to

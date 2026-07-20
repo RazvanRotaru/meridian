@@ -49,9 +49,6 @@ importers:
       '@meridian/core':
         specifier: workspace:*
         version: link:../core
-      '@meridian/design-metrics':
-        specifier: workspace:*
-        version: link:../design-metrics
       '@meridian/extractor-python':
         specifier: workspace:*
         version: link:../extractor-python

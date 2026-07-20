@@ -1,6 +1,6 @@
 import type { RequestTrace, SyntheticExecution, SyntheticNodeSnapshot, TimelineSpan } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import { requestSpanMomentId } from "../derive/requestFlowAddress";
+import { requestSpanMomentId } from "../derive/requestExecutionFlow";
 
 /** One already-derived runtime occurrence in capture order. */
 export interface SyntheticFlowStep {

@@ -26,7 +26,7 @@ import { collapseChain } from "./moduleLevel";
 import { frontierRoots } from "./moduleFrontier";
 import { extraRoots, walkContainment } from "./moduleTree";
 import { depWireEdges, flowChainEdges, stepCallEdges, type Skeleton } from "./codeWalk";
-import { finalizeModuleNode, foldById, withModuleOverviewEdges } from "./moduleTreeData";
+import { finalizeModuleNode, foldById } from "./moduleTreeData";
 import { ghostData, nearestVisible, type GhostEmission, type GhostWire } from "./ghostDeps";
 import { finishGhostTier, isDepAnchorKind, rawGhostEmission } from "./ghostLevel";
 import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
@@ -54,7 +54,7 @@ export function deriveUiTree(
   // The lens's implicit root: the render subtree. A dive REPLACES it (containment zoom); with no
   // renders edges in the graph the root falls to null == the Map's whole-repo overview.
   const root = dived ?? uiFocusTarget(index);
-  const roots = [...frontierRoots(index, root), ...extraRoots(index, extraIds)];
+  const roots = [...frontierRoots(index, root, graph), ...extraRoots(index, extraIds)];
   const walked = walkContainment(index, roots, expanded, flows, hiddenIds);
   const visibleIds = new Set(walked.skeleton.map((entry) => entry.id));
   // Hidden (test) endpoints drop BEFORE lifting and ghosting: an edge touching hidden code must not
@@ -65,7 +65,7 @@ export function deriveUiTree(
   );
   const lifted = liftEdges(renders, visibleIds, index.parentOf);
   // Only the true whole-repo fallback wears the overview ownership fold (mirrors the Map).
-  const overviewFold = root === null ? foldById(index, hiddenIds) : new Map<string, ModulePackageData>();
+  const overviewFold = root === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = walked.skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = new Map(walked.skeleton.map((entry) => [entry.id, entry.kind]));
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
@@ -77,17 +77,13 @@ export function deriveUiTree(
     folderGhostEmission(renders, visibleIds, index, hiddenIds),
   );
   const ghosts = finishGhostTier(emission, index, hiddenIds);
-  const locallyDerivedEdges: ModuleTreeEdge[] = [
+  const edges = [
     ...rendersTreeEdges(lifted, kinds, index),
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
     ...flowChainEdges(walked),
     ...stepCallEdges(walked, visibleIds, index),
     ...ghosts.edges,
-  ];
-  const edges = (root === null
-    ? withModuleOverviewEdges(index, visibleIds, locallyDerivedEdges)
-    : locallyDerivedEdges
-  ).sort((a, b) => a.id.localeCompare(b.id));
+  ].sort((a, b) => a.id.localeCompare(b.id));
   return { nodes: [...nodes, ...ghosts.nodes], edges, effectiveFocus: dived };
 }
 

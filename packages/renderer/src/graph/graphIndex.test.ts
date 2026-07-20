@@ -5,12 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
-import type { SerializedServiceTopologyV1 } from "@meridian/design-metrics";
-import {
-  buildGraphIndex,
-  graphIndexMetadataWithPresentationNodes,
-  graphIndexMetadataWithoutPresentationNodes,
-} from "./graphIndex";
+import { buildGraphIndex } from "./graphIndex";
 import { uiFocusTarget } from "../derive/uiFocus";
 
 function node(id: string, parentId?: string): GraphNode {
@@ -81,70 +76,6 @@ describe("isWithinFocus", () => {
     expect(index.isWithinFocus("app/ui", "app/ui")).toBe(true);
     expect(index.isWithinFocus("app/ui", "app/services#svc")).toBe(false);
     expect(index.isWithinFocus("app/ui", "app")).toBe(false);
-  });
-});
-
-describe("presentation-only index metadata", () => {
-  it("adds and removes overlay facts without redefining the authoritative revision", () => {
-    const serviceTopology: SerializedServiceTopologyV1 = {
-      version: 1,
-      clusters: [],
-      metrics: [],
-      featuresByUnit: [],
-      couplings: [],
-    };
-    const headArtifact: GraphArtifact = {
-      schemaVersion: "1.0.0",
-      generatedAt: "2026-06-27T00:00:00.000Z",
-      generator: { name: "test", version: "0" },
-      target: { name: "fixture", root: ".", language: "typescript" },
-      nodes: NODES,
-      edges: [],
-    };
-    const headIndex = buildGraphIndex(headArtifact, {
-      serviceTopology,
-      artifactComplete: false,
-    });
-    const deletedFile = node("app/deleted", "app");
-    const deletedMember = node("app/deleted#member", deletedFile.id);
-    const presentationNodes = [deletedFile, deletedMember];
-    const compositeArtifact = {
-      ...headArtifact,
-      nodes: [...headArtifact.nodes, ...presentationNodes],
-    };
-    const compositeIndex = buildGraphIndex(
-      compositeArtifact,
-      graphIndexMetadataWithPresentationNodes(headIndex, presentationNodes),
-    );
-
-    expect(compositeIndex.graphSummary).toBe(headIndex.graphSummary);
-    expect(compositeIndex.structure.repositorySummary).toBe(headIndex.structure.repositorySummary);
-    expect(compositeIndex.structure.moduleOverviewRootIds).toBe(headIndex.structure.moduleOverviewRootIds);
-    expect(compositeIndex.structure.moduleOverview).toBe(headIndex.structure.moduleOverview);
-    expect(compositeIndex.serviceTopology).toBe(serviceTopology);
-    expect(compositeIndex.artifactComplete).toBe(false);
-    expect(compositeIndex.structure.hierarchyById.get("app")).toBe(
-      headIndex.structure.hierarchyById.get("app"),
-    );
-    expect(compositeIndex.childCount("app")).toBe(headIndex.childCount("app"));
-    expect(compositeIndex.childCount(deletedFile.id)).toBe(1);
-
-    const removedIds = new Set(presentationNodes.map((candidate) => candidate.id));
-    const restoredIndex = buildGraphIndex(
-      headArtifact,
-      graphIndexMetadataWithoutPresentationNodes(compositeIndex, removedIds),
-    );
-
-    expect(restoredIndex.graphSummary).toBe(headIndex.graphSummary);
-    expect(restoredIndex.structure.repositorySummary).toBe(headIndex.structure.repositorySummary);
-    expect(restoredIndex.structure.moduleOverview).toBe(headIndex.structure.moduleOverview);
-    expect(restoredIndex.serviceTopology).toBe(serviceTopology);
-    expect(restoredIndex.artifactComplete).toBe(false);
-    expect(restoredIndex.structure.hierarchyById.get("app")).toBe(
-      headIndex.structure.hierarchyById.get("app"),
-    );
-    expect(restoredIndex.structure.hierarchyById.has(deletedFile.id)).toBe(false);
-    expect(restoredIndex.structure.hierarchyById.has(deletedMember.id)).toBe(false);
   });
 });
 

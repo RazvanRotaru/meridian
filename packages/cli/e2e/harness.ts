@@ -21,6 +21,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
 import { chromium } from "playwright";
+import { buildCloneArgs } from "../src/server/clone";
 import { parsePatchDetail, parsePatchHunks } from "../src/server/github-parse";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -201,28 +202,14 @@ export function listenServer(server: Server): Promise<string> {
   });
 }
 
-export async function verifySmartHttpMirrorTransport(repoUrl: string): Promise<void> {
-  const mirror = mkdtempSync(join(tmpdir(), "meridian-smart-mirror-"));
+export async function verifySmartHttpClone(repoUrl: string): Promise<void> {
+  const clone = mkdtempSync(join(tmpdir(), "meridian-smart-clone-"));
   try {
-    // Exercise the same partial bare-mirror transport shape used by RepositoryMirrorStore. This
-    // catches fixture smart-HTTP failures without preserving the removed one-clone-per-request path.
-    fixtureGit(["init", "--bare", "--quiet", "."], mirror);
-    fixtureGit(["config", "remote.origin.url", repoUrl], mirror);
-    fixtureGit(["config", "remote.origin.promisor", "true"], mirror);
-    fixtureGit(["config", "remote.origin.partialclonefilter", "blob:none"], mirror);
-    await fixtureGitAsync([
-      "fetch",
-      "--force",
-      "--no-tags",
-      "--filter=blob:none",
-      "--no-write-fetch-head",
-      "--no-auto-maintenance",
-      "origin",
-      "+refs/heads/main:refs/meridian/smoke/head",
-    ], mirror);
-    fixtureGit(["rev-parse", "refs/meridian/smoke/head^{commit}"], mirror);
+    // Verify the exact shallow clone argv used by /api/generate, not a more permissive full clone.
+    await fixtureGitAsync(buildCloneArgs(repoUrl, clone, {}));
+    fixtureGit(["rev-parse", "origin/main"], clone);
   } finally {
-    rmSync(mirror, { recursive: true, force: true });
+    rmSync(clone, { recursive: true, force: true });
   }
 }
 

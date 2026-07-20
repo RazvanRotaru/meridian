@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@meridian/core": "workspace:*",
-    "@meridian/design-metrics": "workspace:*",
     "@meridian/extractor-python": "workspace:*",
     "@meridian/extractor-typescript": "workspace:*",
     "commander": "15.0.0",

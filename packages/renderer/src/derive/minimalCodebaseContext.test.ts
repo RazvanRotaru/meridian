@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { deriveGraphStructure, type GraphArtifact, type GraphNode, type LogicFlows } from "@meridian/core";
+import type { GraphArtifact, GraphNode, LogicFlows } from "@meridian/core";
 import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import { buildBlockDeps } from "./blockDeps";
 import { buildModuleGraph } from "./moduleGraph";
@@ -24,9 +24,6 @@ const TOOLS = "ts:tools";
 const TOOLS_SRC = `${TOOLS}/src`;
 const TOOLS_FILE = `${TOOLS_SRC}/tool.ts`;
 const TOOLS_FUNCTION = `${TOOLS_FILE}#changedTool`;
-const SIBLING_FILE = `${FEATURE_A}/sibling.ts`;
-const UNRELATED = "ts:unrelated";
-const UNRELATED_FILE = `${UNRELATED}/unrelated.ts`;
 
 function node(id: string, kind: string, parentId: string | null, tags?: string[]): GraphNode {
   return {
@@ -92,48 +89,18 @@ function visibleIds(context: MinimalCodebaseContext): Set<string> {
 function applyExpansion(
   context: MinimalCodebaseContext,
   overrides: ReadonlyMap<string, boolean>,
-  index: GraphIndex = INDEX,
 ): MinimalCodebaseContext {
   return applyMinimalCodebaseExpansionOverrides(
     context,
     {
-      index,
-      moduleGraph: buildModuleGraph(index),
-      blockDeps: buildBlockDeps(index),
+      index: INDEX,
+      moduleGraph: buildModuleGraph(INDEX),
+      blockDeps: buildBlockDeps(INDEX),
       flows: {},
       demoteCommons: false,
     },
     overrides,
   );
-}
-
-function projectedMultiRootIndex(): GraphIndex {
-  const artifact: GraphArtifact = {
-    ...ARTIFACT,
-    nodes: [
-      ...ARTIFACT.nodes,
-      node(SIBLING_FILE, "module", FEATURE_A),
-      node(UNRELATED, "package", null, ["npm-package"]),
-      node(UNRELATED_FILE, "module", UNRELATED),
-    ],
-  };
-  const structure = deriveGraphStructure(artifact.nodes, artifact.edges);
-  return buildGraphIndex(artifact, {
-    structure: {
-      ...structure,
-      // Review projections deliberately omit the complete repository overview. Their resident
-      // hierarchy facts remain exact for every node in the bounded response.
-      moduleOverviewRootIds: [],
-      moduleOverview: { roots: [], edges: [] },
-    },
-    graphSummary: {
-      schemaVersion: artifact.schemaVersion,
-      generatedAt: artifact.generatedAt,
-      nodeCount: artifact.nodes.length + 100,
-      edgeCount: artifact.edges.length + 100,
-    },
-    artifactComplete: false,
-  });
 }
 
 function expectHighlightsDrawn(context: MinimalCodebaseContext): void {
@@ -205,39 +172,6 @@ describe("deriveMinimalCodebaseContext", () => {
     );
     expect(context?.highlightTargetIds).toEqual(new Set([METHOD_A, TOOLS_FUNCTION]));
     expectHighlightsDrawn(context as MinimalCodebaseContext);
-  });
-
-  it("derives a target-root forest when a bounded projection omits repository overview roots", () => {
-    const index = projectedMultiRootIndex();
-    const context = derive([METHOD_A, TOOLS_FUNCTION], {}, index);
-
-    expect(index.structure.moduleOverviewRootIds).toEqual([]);
-    expect(context).not.toBeNull();
-    expect(context?.reveal.moduleFocus).toBeNull();
-    expect(context?.rootForestIds).toEqual([APP, TOOLS]);
-    expect(context?.highlightTargetIds).toEqual(new Set([METHOD_A, TOOLS_FUNCTION]));
-    const visible = visibleIds(context as MinimalCodebaseContext);
-    expect(visible.has(METHOD_A)).toBe(true);
-    expect(visible.has(TOOLS_FUNCTION)).toBe(true);
-    expect(visible.has(SIBLING_FILE)).toBe(true);
-    expect(visible.has(UNRELATED)).toBe(false);
-    expectHighlightsDrawn(context as MinimalCodebaseContext);
-  });
-
-  it("retains the target-root forest while applying local expansion overrides", () => {
-    const index = projectedMultiRootIndex();
-    const canonical = derive([METHOD_A, TOOLS_FUNCTION], {}, index) as MinimalCodebaseContext;
-    const context = applyExpansion(canonical, new Map([[APP, false]]), index);
-    const visible = visibleIds(context);
-
-    expect(context.rootForestIds).toEqual([APP, TOOLS]);
-    expect(visible.has(APP)).toBe(true);
-    expect(visible.has(METHOD_A)).toBe(false);
-    expect(visible.has(TOOLS_FUNCTION)).toBe(true);
-    expect(visible.has(UNRELATED)).toBe(false);
-    expect(context.highlightTargetIds).toEqual(new Set([APP, TOOLS_FUNCTION]));
-    expect(context.unresolvedTargetIds).toEqual(new Set());
-    expectHighlightsDrawn(context);
   });
 
   it("drops unknown ids best-effort, reports them, and never accepts a same-id ghost as visible", () => {

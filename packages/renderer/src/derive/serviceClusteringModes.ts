@@ -8,7 +8,7 @@
  * home.
  */
 
-import type { ServiceMemberFeature } from "@meridian/design-metrics";
+import type { GraphNode } from "@meridian/core";
 import { partitionServiceGraph } from "./balancedServicePartition";
 import { groupByPathDomain } from "./pathDomains";
 import type { ServiceCluster, ServiceClustering } from "./serviceComposition";
@@ -463,7 +463,7 @@ function addCouplingProfileFeatures(
   }
 }
 
-function normalizedSignature(member: ServiceMemberFeature): string {
+function normalizedSignature(member: GraphNode): string {
   const signature = member.signature?.trim();
   if (!signature) {
     return "";

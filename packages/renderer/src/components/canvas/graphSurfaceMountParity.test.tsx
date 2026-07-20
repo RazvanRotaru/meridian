@@ -127,57 +127,6 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expect(markup).not.toContain('data-graph-surface="source"');
     expect(markup).toContain('data-graph-surface="minimal"');
   });
-
-  it("mounts the review panel and an intentional empty canvas before a file graph is selected", () => {
-    const store = freshStore();
-    store.setState({
-      prSelected: 31,
-      prReviewed: 31,
-      minimalSeedIds: [],
-      minimalMemberIds: [],
-      minimalRfNodes: [],
-      minimalRfEdges: [],
-      minimalLayoutStatus: "idle",
-      review: {
-        context: {
-          changedFiles: [{ path: "packages/app/src/a.ts", status: "modified" }],
-          baseRef: "main",
-          baseSha: "base",
-          headRef: "feature",
-          reviewKey: "zero-node-overview",
-          warnings: [],
-        },
-        rows: [],
-        flows: {},
-      },
-      reviewFiles: [{
-        path: "packages/app/src/a.ts",
-        status: "modified",
-        moduleId: null,
-        isTest: false,
-        units: [],
-        fingerprint: "file-a",
-        blastRadius: 0,
-        deletedImpact: null,
-      }],
-    });
-    const reviewState = store.getState();
-    Object.assign(store, { getInitialState: () => reviewState });
-
-    const markup = renderToStaticMarkup(
-      <StoreProvider store={store}>
-        <ReactFlowProvider><ModuleMapView /></ReactFlowProvider>
-      </StoreProvider>,
-    );
-
-    expect(graphSurfaceMounts).toHaveLength(1);
-    expectSemanticNavigationDeclaration(graphSurfaceMounts[0], true);
-    expect(markup).not.toContain('data-graph-surface="source"');
-    expect(markup).toContain('data-graph-surface="minimal"');
-    expect(markup).toContain('data-review-empty-canvas="true"');
-    expect(markup).toContain("Select a changed file to load its graph.");
-    expect(markup).toContain("Files changed");
-  });
 });
 
 /** Every shared-canvas mount owes the complete declaration even while fitting temporarily disables

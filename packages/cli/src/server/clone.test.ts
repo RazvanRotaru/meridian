@@ -1,30 +1,19 @@
 /**
- * Repository-input allowlisting, mirror identity, credential scoping, and checkout containment.
+ * The pure, network-free half of source resolution: the GitHub-input allowlist, the git auth
+ * argv (token -> `http.extraHeader`, never the URL), and the subdir containment check. The
+ * clone spawn itself is covered by the live smoke test, not here.
  */
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import {
-  canonicalRepositoryUrl,
-  gitTokenForRemote,
-  parseGitHubSource,
-  sanitizeSubdir,
-} from "./repository-source";
+import { base64Auth, buildCloneArgs, parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { WebError } from "./web-error";
 
 describe("parseGitHubSource", () => {
   it("expands owner/repo to an https clone URL", () => {
     expect(parseGitHubSource("sindresorhus/type-fest")).toBe("https://github.com/sindresorhus/type-fest.git");
-  });
-
-  it("preserves the historical URL spelling used by persistent cache identities", () => {
-    expect(parseGitHubSource("Owner/Repo")).toBe("https://github.com/Owner/Repo.git");
-    expect(parseGitHubSource("owner/repo.git")).toBe("https://github.com/owner/repo.git");
-    expect(parseGitHubSource("https://github.com/Owner/Repo")).toBe("https://github.com/Owner/Repo");
-    expect(parseGitHubSource("https://github.com/owner/repo/")).toBe("https://github.com/owner/repo/");
-    expect(parseGitHubSource("https://github.com/owner/repo.GIT")).toBe("https://github.com/owner/repo.GIT");
   });
 
   it("accepts a full https git URL", () => {
@@ -43,36 +32,44 @@ describe("parseGitHubSource", () => {
   });
 });
 
-describe("canonicalRepositoryUrl", () => {
-  it("converges equivalent GitHub spellings for the shared mirror only", () => {
-    const expected = "https://github.com/owner/repo.git";
-    for (const source of [
-      "https://github.com/Owner/Repo.git",
-      "https://github.com/owner/repo.git",
-      "https://github.com/Owner/Repo",
-      "https://github.com/owner/repo/",
-      "https://github.com/owner/repo.GIT",
-    ]) {
-      expect(canonicalRepositoryUrl(source)).toBe(expected);
-    }
+describe("buildCloneArgs", () => {
+  it("stays anonymous with no token", () => {
+    const args = buildCloneArgs("https://github.com/o/r.git", "/tmp/x", {});
+    expect(args.join(" ")).not.toContain("http.extraHeader");
+    expect(args).toEqual([
+      "-c",
+      "core.longpaths=true",
+      "clone",
+      "--depth",
+      "1",
+      "--single-branch",
+      "--",
+      "https://github.com/o/r.git",
+      "/tmp/x",
+    ]);
   });
 
-  it("does not merge identities on case-sensitive Git hosts", () => {
-    expect(canonicalRepositoryUrl("https://git.example/Owner/Repo.git"))
-      .toBe("https://git.example/Owner/Repo.git");
+  it("injects an Authorization extraHeader from the token, before the subcommand", () => {
+    const token = "ghp_secret123";
+    const args = buildCloneArgs("https://github.com/o/r.git", "/tmp/x", { token });
+    const expected = Buffer.from("x-access-token:ghp_secret123").toString("base64");
+    expect(args[0]).toBe("-c");
+    expect(args[1]).toBe(`http.extraHeader=AUTHORIZATION: basic ${expected}`);
+    expect(args.indexOf("-c")).toBeLessThan(args.indexOf("clone"));
+    // The raw token never appears in the argv — only its base64 header form.
+    expect(args.join(" ")).not.toContain(token);
+  });
+
+  it("adds --branch only when a ref is given", () => {
+    expect(buildCloneArgs("u", "d", { ref: "next" })).toContain("--branch");
+    expect(buildCloneArgs("u", "d", { ref: "next" })).toContain("next");
+    expect(buildCloneArgs("u", "d", {})).not.toContain("--branch");
   });
 });
 
-describe("gitTokenForRemote", () => {
-  it("sends ambient credentials only to github.com", () => {
-    expect(gitTokenForRemote("https://github.com/o/r.git", "ambient")).toBe("ambient");
-    expect(gitTokenForRemote("https://gitlab.example/o/r.git", "ambient")).toBeUndefined();
-    expect(gitTokenForRemote("http://github.com/o/r.git", "ambient")).toBeUndefined();
-  });
-
-  it("allows an explicit token on another HTTPS host but never over HTTP", () => {
-    expect(gitTokenForRemote("https://git.example/o/r.git", "explicit", true)).toBe("explicit");
-    expect(() => gitTokenForRemote("http://git.example/o/r.git", "explicit", true)).toThrow(/only be sent over https/);
+describe("base64Auth", () => {
+  it("encodes x-access-token:<token>", () => {
+    expect(base64Auth("abc")).toBe(Buffer.from("x-access-token:abc").toString("base64"));
   });
 });
 
@@ -132,7 +129,7 @@ describe("sanitizeSubdir", () => {
     try {
       mkdirSync(join(outside, "src"));
       symlinkSync(outside, linked, process.platform === "win32" ? "junction" : "dir");
-      expect(() => sanitizeSubdir(root, "linked")).toThrow("escapes the repository");
+      expect(() => resolveExtractionSubdir(root, "linked")).toThrow("escapes the repository");
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });

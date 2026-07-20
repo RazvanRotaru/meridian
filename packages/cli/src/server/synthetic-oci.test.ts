@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GraphArtifact, SyntheticExecution } from "@meridian/core";
@@ -31,7 +29,6 @@ describe("synthetic OCI boundary", () => {
     const args = buildSyntheticOciDockerArgs(
       "meridian-synthetic-test",
       "/checkout/pr-head",
-      "/cache/artifacts/head.json",
       "/opt/meridian/dist/synthetic-oci-worker.js",
       "1000:1000",
     );
@@ -48,20 +45,19 @@ describe("synthetic OCI boundary", () => {
     expect(option(args, "--tmpfs")).toMatch(/noexec.*nosuid.*nodev/);
     expect(args.filter((value) => value.startsWith("type=bind"))).toEqual([
       "type=bind,src=/checkout/pr-head,dst=/source,readonly",
-      "type=bind,src=/cache/artifacts/head.json,dst=/artifact.json,readonly",
       "type=bind,src=/opt/meridian/dist/synthetic-oci-worker.js,dst=/opt/meridian/synthetic-oci-worker.js,readonly",
     ]);
     expect(args).toContain(SYNTHETIC_OCI_IMAGE);
     expect(SYNTHETIC_OCI_IMAGE).toBe("node:22");
     expect(args.join(" ")).not.toMatch(/docker\.sock|node_modules|--privileged|--network=(?!none)|--pull=(?!never)/);
-    expect(args.filter((value) => value.startsWith("type=bind"))).toHaveLength(3);
+    expect(args.filter((value) => value.startsWith("type=bind"))).toHaveLength(2);
     for (const name of [
       "HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "FTP_PROXY", "ftp_proxy",
       "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy", "NODE_OPTIONS",
     ]) {
       expect(containerEnvironment(args)).toContain(`${name}=`);
     }
-    expect(args.slice(-4)).toEqual(["run-oci", "-", "/source", "/artifact.json"]);
+    expect(args.at(-1)).toBe("-");
   });
 
   it("maps the sandbox to a non-root host identity and refuses root", () => {
@@ -88,15 +84,18 @@ describe("synthetic OCI boundary", () => {
       },
     }).scenario.id).toBe("root");
     expect(parseSyntheticOciJob({
+      artifact,
       scenarioId: "root",
       expectedSourceFingerprint: "a".repeat(64),
     }).inputOverrides).toEqual([]);
     expect(() => parseSyntheticOciJob({
+      artifact,
       scenarioId: "root",
       expectedSourceFingerprint: "a".repeat(64),
       ambientEnvironment: { SECRET: "no" },
     })).toThrow(/invalid/i);
     expect(() => parseSyntheticOciJob({
+      artifact,
       scenarioId: "root",
       expectedSourceFingerprint: "not-a-fingerprint",
     })).toThrow(/invalid/i);
@@ -142,23 +141,16 @@ describe("synthetic OCI boundary", () => {
       project: join(SHOPFRONT, "tsconfig.json"),
       materializeBoundary: true,
     });
-    const root = mkdtempSync(join(tmpdir(), "meridian-oci-test-"));
-    try {
-      const artifactPath = join(root, "artifact.json");
-      writeFileSync(artifactPath, JSON.stringify(artifact), "utf8");
-      const result = await runSyntheticScenarioInOci({
-        sourceRoot: SHOPFRONT,
-        artifactPath,
-        scenarioId: "shopfront-add-item-unavailable",
-        expectedRootId: "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
-        expectedSourceFingerprint: syntheticSourceFingerprint(SHOPFRONT, artifact),
-      });
-      expect(result.outcome).toBe("completed");
-      expect(result.trace.status).toBe("ok");
-      expect(result.output).toMatchObject({ status: 200, body: { id: "synthetic_cart", items: [] } });
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
+    const result = await runSyntheticScenarioInOci({
+      sourceRoot: SHOPFRONT,
+      artifact,
+      scenarioId: "shopfront-add-item-unavailable",
+      expectedRootId: "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
+      expectedSourceFingerprint: syntheticSourceFingerprint(SHOPFRONT, artifact),
+    });
+    expect(result.outcome).toBe("completed");
+    expect(result.trace.status).toBe("ok");
+    expect(result.output).toMatchObject({ status: 200, body: { id: "synthetic_cart", items: [] } });
   }, 60_000);
 });
 

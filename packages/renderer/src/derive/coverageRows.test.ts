@@ -1,9 +1,10 @@
 /** coverageRows: the pure shaping behind the coverage panel — grouping, ordering, reasons. */
 
 import { describe, expect, it } from "vitest";
+import { computeCoverage } from "@meridian/core";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
-import { coverageRows } from "./coverageRows";
-import { buildRendererReachabilityReport } from "./reachabilityFacts";
+import { buildGraphIndex } from "../graph/graphIndex";
+import { buildCoverageRows } from "./coverageRows";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id.split(/[#.]/).pop() ?? id, parentId, location: { file, startLine: 1 } };
@@ -41,9 +42,9 @@ const ARTIFACT: GraphArtifact = {
   edges: EDGES,
 };
 
-describe("coverageRows", () => {
-  const report = buildRendererReachabilityReport(ARTIFACT.nodes, ARTIFACT.edges);
-  const rows = coverageRows(report);
+describe("buildCoverageRows", () => {
+  const index = buildGraphIndex(ARTIFACT);
+  const rows = buildCoverageRows(computeCoverage(ARTIFACT.nodes, ARTIFACT.edges), index);
 
   it("emits one row per container that directly holds callables, worst first", () => {
     expect(rows.map((row) => row.id)).toEqual(["ts:src/email.ts#Email", "ts:src/svc.ts#Svc"]);
@@ -65,15 +66,5 @@ describe("coverageRows", () => {
 
   it("never emits rows for test containers", () => {
     expect(rows.some((row) => row.id.includes("test"))).toBe(false);
-  });
-
-  it("does not rebuild complete-revision rows from bounded paint facts", () => {
-    const bounded = { ...report, leaves: {}, containers: {}, testIds: new Set<string>() };
-
-    expect(coverageRows(bounded)).toBe(report.worstRows);
-    expect(coverageRows(bounded).map((row) => row.id)).toEqual([
-      "ts:src/email.ts#Email",
-      "ts:src/svc.ts#Svc",
-    ]);
   });
 });

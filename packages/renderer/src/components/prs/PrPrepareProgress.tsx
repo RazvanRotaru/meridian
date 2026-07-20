@@ -1,26 +1,23 @@
-/** PR-specific adapters around the shared progress indicator, cancellation, and retry. */
+/** PR-specific adapters around the shared progress indicator, cancellation, and fallback actions. */
 
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import type { PrPrepareStage } from "../../state/prPreparation";
+import type { PrAnalyzeStage } from "../../state/prAnalysis";
 import { PrepareProgress } from "../PrepareProgress";
 import type { PrepareProgressStep } from "../PrepareProgress";
 
-/** User-facing step labels for the strict v1 preparation stream's real stage names. */
+/** User-facing step labels for the analyze stream's real stage names. */
 const STAGES = [
-  { id: "resolve", label: "Resolving immutable revisions…" },
-  { id: "git", label: "Preparing repository snapshots…" },
-  { id: "extract-head", label: "Extracting the HEAD view…" },
-  { id: "extract-merge-base", label: "Extracting the merge-base view…" },
-  { id: "publish", label: "Publishing projection slices…" },
-] as const satisfies readonly [PrepareProgressStep<PrPrepareStage>, ...PrepareProgressStep<PrPrepareStage>[]];
+  { id: "clone", label: "Cloning repository…" },
+  { id: "checkout", label: "Fetching PR head + base…" },
+  { id: "extract", label: "Extracting the head graph…" },
+] as const satisfies readonly [PrepareProgressStep<PrAnalyzeStage>, ...PrepareProgressStep<PrAnalyzeStage>[]];
 
 export function PrPrepareProgress() {
   const stage = useBlueprint((state) => state.prPrepareStage);
-  const elapsedMs = useBlueprint((state) => state.prPrepareElapsedMs);
   const { cancelPrReviewPreparation } = useBlueprintActions();
   return (
     <PrepareProgress
-      title={progressTitle(elapsedMs)}
+      title="Preparing PR review"
       steps={STAGES}
       activeStep={stage}
       style={PROGRESS_CARD}
@@ -36,10 +33,9 @@ export function PrPrepareProgress() {
 /** Compact store-connected adapter for the control-panel review card. */
 export function PrPrepareInline() {
   const stage = useBlueprint((state) => state.prPrepareStage);
-  const elapsedMs = useBlueprint((state) => state.prPrepareElapsedMs);
   return (
     <PrepareProgress
-      title={progressTitle(elapsedMs)}
+      title="Preparing PR review"
       steps={STAGES}
       activeStep={stage}
       variant="inline"
@@ -47,19 +43,18 @@ export function PrPrepareInline() {
   );
 }
 
-function progressTitle(elapsedMs: number | null): string {
-  return elapsedMs === null ? "Preparing PR review" : `Preparing PR review · ${(elapsedMs / 1_000).toFixed(1)}s`;
-}
-
 export function PrPrepareError() {
   const message = useBlueprint((state) => state.prPrepareError);
-  const { reviewPrInGraph } = useBlueprintActions();
+  const { reviewPrInGraph, reviewPrOnBaseGraph } = useBlueprintActions();
   return (
     <section style={ERROR_CARD}>
-      <div style={ERROR_BODY}>{message ?? "PR preparation failed."}</div>
+      <div style={ERROR_BODY}>{message ?? "PR analysis failed."}</div>
       <div style={ERROR_ACTIONS}>
         <button type="button" style={RETRY} onClick={() => void reviewPrInGraph()}>
           Retry
+        </button>
+        <button type="button" style={FALLBACK} onClick={() => void reviewPrOnBaseGraph()}>
+          Review on base graph instead
         </button>
       </div>
     </section>
@@ -90,3 +85,4 @@ const RETRY: React.CSSProperties = {
   fontWeight: 600,
 };
 const CANCEL: React.CSSProperties = { ...RETRY, alignSelf: "flex-start" };
+const FALLBACK: React.CSSProperties = { ...RETRY, borderColor: "#92400E", color: "#FDE68A", background: "transparent" };

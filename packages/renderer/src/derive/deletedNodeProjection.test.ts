@@ -204,31 +204,15 @@ describe("deriveDeletedNodeProjection", () => {
       node(liveModule, "module", "src/live.ts", "src/live.ts", 1, 5, PACKAGE_ID),
       node(liveFunction, "function", "src/live.ts", "live", 2, 4, liveModule),
     ], { edges: [headEdge], extensions: { logicFlow: { [liveFunction]: [] }, headOnly: true } });
-    const headIndex = buildGraphIndex(head);
-    const result = deriveDeletedNodeProjection({
-      headArtifact: head,
-      headIndex,
-      baseArtifact: base,
-      baseIndex: buildGraphIndex(base),
-      context: context([{ path: "src/removed.ts", status: "deleted" }]),
-      prFiles: [{ path: "src/removed.ts", status: "removed", additions: 0, deletions: 30 }],
-    });
+    const result = project(
+      head,
+      base,
+      [{ path: "src/removed.ts", status: "deleted" }],
+      [{ path: "src/removed.ts", status: "removed", additions: 0, deletions: 30 }],
+    );
 
     expect(result.deletedNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
     expect(result.baseSourceNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
-    expect(result.index.graphSummary).toBe(headIndex.graphSummary);
-    expect(result.index.structure.repositorySummary).toBe(headIndex.structure.repositorySummary);
-    expect(result.index.structure.moduleOverviewRootIds).toBe(headIndex.structure.moduleOverviewRootIds);
-    expect(result.index.structure.hierarchyById.get(PACKAGE_ID)).toBe(
-      headIndex.structure.hierarchyById.get(PACKAGE_ID),
-    );
-    expect(result.index.childCount(PACKAGE_ID, new Set(["module"]))).toBe(1);
-    expect(result.index.childCount(removedModule, new Set(["class"]))).toBe(1);
-    expect(result.index.childCount(removedClass, new Set(["method"]))).toBe(1);
-    // The mounted composite owns one derived index, not a third graph body. Its nodes can draw only
-    // from the active pair and its relationships remain exactly HEAD's bounded edge slice.
-    expect(result.artifact.nodes.length).toBeLessThanOrEqual(head.nodes.length + base.nodes.length);
-    expect(result.index.nodesById.size).toBe(result.artifact.nodes.length);
     expect(result.artifact.edges).toBe(head.edges);
     expect(result.artifact.edges).toEqual([headEdge]);
     expect(result.artifact.extensions).toBe(head.extensions);
@@ -312,19 +296,11 @@ describe("deriveDeletedNodeProjection", () => {
       node(newClass, "class", "src/new.ts", "Service", 2, 33, newModule),
       node(newKeep, "method", "src/new.ts", "Service.keep", 8, 12, newClass),
     ]);
-    const headIndex = buildGraphIndex(head);
-    const result = deriveDeletedNodeProjection({
-      headArtifact: head,
-      headIndex,
-      baseArtifact: base,
-      baseIndex: buildGraphIndex(base),
-      context: context([{
-        path: "src/new.ts",
-        previousPath: "src/old.ts",
-        status: "renamed",
-        hunks: [{ start: 20, end: 20 }],
-      }]),
-      prFiles: [{
+    const result = project(
+      head,
+      base,
+      [{ path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", hunks: [{ start: 20, end: 20 }] }],
+      [{
         path: "src/new.ts",
         previousPath: "src/old.ts",
         status: "renamed",
@@ -333,15 +309,11 @@ describe("deriveDeletedNodeProjection", () => {
         diffComplete: true,
         diffLines: rows,
       }],
-    });
+    );
 
     expect(result.deletedNodeIds).toEqual(new Set([oldDeleted]));
     expect(result.baseSourceNodeIds).toEqual(new Set([oldDeleted]));
     expect(result.index.nodesById.get(oldDeleted)?.parentId).toBe(newClass);
-    expect(result.index.structure.hierarchyById.get(newClass)).toBe(
-      headIndex.structure.hierarchyById.get(newClass),
-    );
-    expect(result.index.childCount(newClass, new Set(["method"]))).toBe(1);
     expect(result.index.nodesById.has(oldClass)).toBe(false);
     expect(result.index.nodesById.has(oldModule)).toBe(false);
     expect(result.files[0].moduleId).toBe(newModule);

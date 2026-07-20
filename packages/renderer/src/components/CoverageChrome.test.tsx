@@ -1,8 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
-import type { GraphArtifact, JsonValue, TestExecutionCoverage } from "@meridian/core";
-import { buildRendererReachabilityReport } from "../derive/reachabilityFacts";
+import { computeCoverage, type GraphArtifact, type JsonValue, type TestExecutionCoverage } from "@meridian/core";
 import { freshStore } from "../parity/surfaceFixture";
 import { StoreProvider } from "../state/StoreContext";
 import { CoveragePanel } from "./CoveragePanel";
@@ -25,7 +24,7 @@ describe("coverage chrome", () => {
       artifact,
       coverageMode: true,
       // Static data remains in state for graph painting, but must not be presented as Coverage.
-      coverage: buildRendererReachabilityReport(artifact.nodes, artifact.edges),
+      coverage: computeCoverage(artifact.nodes, artifact.edges),
     });
 
     const overlays = renderWithStore(store, <OverlaysSection />);
@@ -50,10 +49,7 @@ describe("coverage chrome", () => {
   it("labels the static fallback as estimated test reachability", () => {
     const store = freshStore();
     const artifact = store.getState().artifact;
-    store.setState({
-      coverageMode: true,
-      coverage: buildRendererReachabilityReport(artifact.nodes, artifact.edges),
-    });
+    store.setState({ coverageMode: true, coverage: computeCoverage(artifact.nodes, artifact.edges) });
 
     const overlays = renderWithStore(store, <OverlaysSection />);
     expect(overlays).toContain(">Reachability</span>");
