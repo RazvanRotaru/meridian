@@ -31,6 +31,7 @@ import { SessionStore } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
+import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import {
   loadSyntheticScenarios,
   syntheticSourceFingerprint,
@@ -74,7 +75,7 @@ const ARTIFACT = {
   edges: [],
   extensions: {
     changedSince: {
-      baseRef: "origin/main",
+      baseRef: MERGE_BASE_SHA,
       files: { "src/a.ts": [[1, 3]] },
       manifest: [
         { path: "assets/logo.png", status: "modified" },
@@ -96,10 +97,12 @@ const COMPARISON_ARTIFACT = {
   extensions: {},
 } as unknown as GraphArtifact;
 let cacheRoot: string;
+let activeGraphStores: WebGraphStore[];
 
 describe("handlePrAnalyze", () => {
   beforeEach(() => {
     cacheRoot = mkdtempSync(join(tmpdir(), "meridian-pr-cache-test-"));
+    activeGraphStores = [];
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
     vi.mocked(runGitClone).mockImplementation(async (args) => {
@@ -118,6 +121,7 @@ describe("handlePrAnalyze", () => {
   });
 
   afterEach(() => {
+    for (const store of activeGraphStores) store.dispose();
     rmSync(cacheRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
     vi.clearAllMocks();
@@ -148,18 +152,47 @@ describe("handlePrAnalyze", () => {
     ]);
     expect(done.warnings).toEqual(["w1", "base warning"]);
 
-    const sourceDir = ctx.sourceRoots.get(done.graphId as string)!;
-    expect(ctx.graphs.get(done.graphId as string)).toStrictEqual(ARTIFACT);
-    expect(ctx.graphs.get(done.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    const sourceDir = graphDescriptor(ctx, done.graphId as string).sourceRoot;
+    expect(ctx.graphStore.loadArtifact(done.graphId as string)).toStrictEqual(ARTIFACT);
+    expect(ctx.graphStore.loadArtifact(done.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
     expect(sourceDir).toContain(cacheRoot);
-    expect(ctx.sourceRoots.get(done.comparisonGraphId as string)).toContain(cacheRoot);
-    expect(ctx.sources.get(done.graphId as string)).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
-    expect(ctx.syntheticScenarios.has(done.graphId as string)).toBe(false);
-    expect(ctx.syntheticSourceFingerprints.has(done.graphId as string)).toBe(false);
-    expect(ctx.syntheticExecutionTrust.has(done.graphId as string)).toBe(false);
-    expect(ctx.sources.get(done.comparisonGraphId as string)).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
-    expect(ctx.tempCleanups.size).toBe(0);
+    expect(graphDescriptor(ctx, done.comparisonGraphId as string).sourceRoot).toContain(cacheRoot);
+    expect(graphDescriptor(ctx, done.graphId as string).source).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
+    expect(graphDescriptor(ctx, done.graphId as string).synthetic).toEqual({
+      scenarios: [],
+      sourceFingerprint: null,
+      trust: null,
+    });
+    expect(graphDescriptor(ctx, done.comparisonGraphId as string).source).toMatchObject({
+      kind: "github",
+      owner: "org",
+      repo: "repo",
+    });
     expect(existsSync(sourceDir)).toBe(true);
+  });
+
+  it("fails closed instead of downgrading changed files to modified when the canonical manifest is absent", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? {
+        ...ARTIFACT,
+        extensions: {
+          changedSince: {
+            ...((ARTIFACT.extensions?.changedSince ?? {}) as Record<string, unknown>),
+            manifest: undefined,
+          },
+        },
+      } : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+
+    const lines = (await invoke(githubCtx(), BODY)).lines();
+
+    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.at(-1)?.message).toBe("PR analysis did not match its exact HEAD and merge-base coordinates");
+    expect(lines.some((line) => line.stage === "done")).toBe(false);
   });
 
   it("retains validated scenarios, fingerprint, and commit provenance only with PR opt-in plus OCI support", async () => {
@@ -175,18 +208,18 @@ describe("handlePrAnalyze", () => {
 
     const done = (await invoke(ctx, BODY)).lines().at(-1)!;
     const graphId = done.graphId as string;
-    expect(ctx.syntheticScenarios.get(graphId)).toEqual([expect.objectContaining({ id: "add-item" })]);
-    expect(ctx.syntheticSourceFingerprints.get(graphId)).toBe("fixture-fingerprint");
-    expect(ctx.syntheticExecutionTrust.get(graphId)).toEqual({
+    const descriptor = graphDescriptor(ctx, graphId);
+    expect(descriptor.synthetic.scenarios).toEqual([expect.objectContaining({ id: "add-item" })]);
+    expect(descriptor.synthetic.sourceFingerprint).toBe("fixture-fingerprint");
+    expect(descriptor.synthetic.trust).toEqual({
       mode: "sandboxed-pr",
       provenance: {
         repository: "org/repo",
         headSha: "abc1234def5678900000aaaabbbbccccddddeeee",
       },
     });
-    expect(loadSyntheticScenarios).toHaveBeenCalledWith(ctx.sourceRoots.get(graphId));
-    expect(syntheticSourceFingerprint).toHaveBeenCalledWith(ctx.sourceRoots.get(graphId), ARTIFACT);
-    for (const cleanup of ctx.tempCleanups) cleanup();
+    expect(loadSyntheticScenarios).toHaveBeenCalledWith(descriptor.sourceRoot);
+    expect(syntheticSourceFingerprint).toHaveBeenCalledWith(descriptor.sourceRoot, ARTIFACT);
   });
 
   it("retains sandbox provenance when enabled even when the PR has no authored scenarios", async () => {
@@ -196,9 +229,10 @@ describe("handlePrAnalyze", () => {
 
     const done = (await invoke(ctx, BODY)).lines().at(-1)!;
     const graphId = done.graphId as string;
-    expect(ctx.syntheticScenarios.has(graphId)).toBe(false);
-    expect(ctx.syntheticSourceFingerprints.has(graphId)).toBe(false);
-    expect(ctx.syntheticExecutionTrust.get(graphId)).toEqual({
+    const synthetic = graphDescriptor(ctx, graphId).synthetic;
+    expect(synthetic.scenarios).toEqual([]);
+    expect(synthetic.sourceFingerprint).toBeNull();
+    expect(synthetic.trust).toEqual({
       mode: "sandboxed-pr",
       provenance: {
         repository: "org/repo",
@@ -210,7 +244,28 @@ describe("handlePrAnalyze", () => {
       "base warning",
       "Synthetic execution needs a valid meridian.synthetic.json scenario manifest.",
     ]);
-    for (const cleanup of ctx.tempCleanups) cleanup();
+  });
+
+  it("versions the PR graph capability when sandbox admission changes for the same artifact", async () => {
+    const ctx = githubCtx();
+    ctx.allowSyntheticPrExecution = true;
+    let runtimeSupported = false;
+    ctx.syntheticPrSandboxRuntimeSupported = () => runtimeSupported;
+
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    runtimeSupported = true;
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+
+    expect(second.cache).toBe("hit");
+    expect(second.graphId).not.toBe(first.graphId);
+    expect(second.comparisonGraphId).toBe(first.comparisonGraphId);
+    expect(graphDescriptor(ctx, first.graphId as string).synthetic.trust).toBeNull();
+    expect(graphDescriptor(ctx, second.graphId as string).synthetic.trust).toEqual({
+      mode: "sandboxed-pr",
+      provenance: { repository: "org/repo", headSha: HEAD_SHA },
+    });
+    expect(ctx.graphStore.loadArtifact(first.graphId as string)).toStrictEqual(ARTIFACT);
+    expect(ctx.graphStore.loadArtifact(second.graphId as string)).toStrictEqual(ARTIFACT);
   });
 
   it("keeps the PR graph reviewable and leaks no details when its synthetic manifest is malformed", async () => {
@@ -226,10 +281,12 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     const done = lines.at(-1)!;
     const graphId = done.graphId as string;
-    expect(ctx.graphs.get(graphId)).toStrictEqual(ARTIFACT);
-    expect(ctx.syntheticScenarios.has(graphId)).toBe(false);
-    expect(ctx.syntheticSourceFingerprints.has(graphId)).toBe(false);
-    expect(ctx.syntheticExecutionTrust.has(graphId)).toBe(false);
+    expect(ctx.graphStore.loadArtifact(graphId)).toStrictEqual(ARTIFACT);
+    expect(graphDescriptor(ctx, graphId).synthetic).toEqual({
+      scenarios: [],
+      sourceFingerprint: null,
+      trust: null,
+    });
     expect(done.warnings).toEqual([
       "w1",
       "base warning",
@@ -237,7 +294,6 @@ describe("handlePrAnalyze", () => {
     ]);
     expect(JSON.stringify(done)).not.toContain("/tmp/private-clone");
     expect(JSON.stringify(done)).not.toContain("hostile");
-    for (const cleanup of ctx.tempCleanups) cleanup();
   });
 
   it("rejects a PR-controlled extraction subdir symlink before extracting or storing a capability", async () => {
@@ -247,14 +303,13 @@ describe("handlePrAnalyze", () => {
       symlinkSync(outside, join(cloneRoot, "selected"));
     });
     const ctx = githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "selected" });
+    const publish = vi.spyOn(ctx.graphStore, "publish");
     ctx.allowSyntheticPrExecution = true;
     ctx.syntheticPrSandboxRuntimeSupported = () => true;
     try {
       const captured = await invoke(ctx, BODY);
       expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "error"]);
-      expect(ctx.graphs.size).toBe(0);
-      expect(ctx.sourceRoots.size).toBe(0);
-      expect(ctx.syntheticExecutionTrust.size).toBe(0);
+      expect(publish).not.toHaveBeenCalled();
       expect(analyzeRepository).not.toHaveBeenCalled();
       expect(existsSync(clonedDir())).toBe(false);
     } finally {
@@ -271,9 +326,8 @@ describe("handlePrAnalyze", () => {
     expect(first.headSha).not.toBe(second.headSha);
     expect(first.graphId).not.toBe(second.graphId);
     expect(first.comparisonGraphId).toBe(second.comparisonGraphId);
-    expect(ctx.graphs.has(first.graphId as string)).toBe(true);
-    expect(ctx.graphs.has(second.graphId as string)).toBe(true);
-    for (const cleanup of ctx.tempCleanups) cleanup();
+    expect(ctx.graphStore.has(first.graphId as string)).toBe(true);
+    expect(ctx.graphStore.has(second.graphId as string)).toBe(true);
   });
 
   it("reuses an unchanged PR artifact and checkout after a server restart", async () => {
@@ -290,9 +344,62 @@ describe("handlePrAnalyze", () => {
     expect(second.at(-1)?.warnings).toEqual(["w1", "base warning"]);
     expect(runGitClone).toHaveBeenCalledTimes(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
-    expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.graphId as string)!)).toBe(true);
-    expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.comparisonGraphId as string)!)).toBe(true);
-    expect(restarted.graphs.get(second.at(-1)?.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expect(existsSync(graphDescriptor(restarted, second.at(-1)?.graphId as string).sourceRoot)).toBe(true);
+    expect(existsSync(graphDescriptor(restarted, second.at(-1)?.comparisonGraphId as string).sourceRoot)).toBe(true);
+    expect(restarted.graphStore.loadArtifact(second.at(-1)?.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+  });
+
+  it("publishes refreshed PR snapshots under new ids without rebinding the open review", async () => {
+    const ctx = githubCtx();
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const firstHeadId = first.graphId as string;
+    const firstComparisonId = first.comparisonGraphId as string;
+    const firstSourceRoot = graphDescriptor(ctx, firstHeadId).sourceRoot;
+    const refreshedAt = "2026-07-20T01:00:00.000Z";
+    ctx.refreshCache = true;
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: {
+          ...template,
+          generatedAt: refreshedAt,
+          target: { ...template.target, vcs: request.vcs },
+        },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const secondHeadId = second.graphId as string;
+    const secondComparisonId = second.comparisonGraphId as string;
+
+    expect(second.cache).toBe("miss");
+    expect(secondHeadId).not.toBe(firstHeadId);
+    expect(secondComparisonId).not.toBe(firstComparisonId);
+    expect(ctx.graphStore.loadArtifact(firstHeadId)?.generatedAt).toBe(ARTIFACT.generatedAt);
+    expect(ctx.graphStore.loadArtifact(firstComparisonId)?.generatedAt).toBe(COMPARISON_ARTIFACT.generatedAt);
+    expect(ctx.graphStore.loadArtifact(secondHeadId)?.generatedAt).toBe(refreshedAt);
+    expect(ctx.graphStore.loadArtifact(secondComparisonId)?.generatedAt).toBe(refreshedAt);
+    expect(existsSync(firstSourceRoot)).toBe(true);
+  });
+
+  it("keeps the open HEAD and merge-base review intact when refresh extraction fails", async () => {
+    const ctx = githubCtx();
+    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const headId = first.graphId as string;
+    const comparisonId = first.comparisonGraphId as string;
+    const headRoot = graphDescriptor(ctx, headId).sourceRoot;
+    const comparisonRoot = graphDescriptor(ctx, comparisonId).sourceRoot;
+    ctx.refreshCache = true;
+    vi.mocked(analyzeRepository).mockRejectedValueOnce(new Error("refresh extraction failed"));
+
+    const failed = (await invoke(ctx, BODY)).lines();
+
+    expect(failed.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(ctx.graphStore.loadArtifact(headId)).toStrictEqual(ARTIFACT);
+    expect(ctx.graphStore.loadArtifact(comparisonId)).toStrictEqual(COMPARISON_ARTIFACT);
+    expect(existsSync(headRoot)).toBe(true);
+    expect(existsSync(comparisonRoot)).toBe(true);
   });
 
   it("re-analyzes both revisions when cache metadata predates Python Protocol inference", async () => {
@@ -301,7 +408,7 @@ describe("handlePrAnalyze", () => {
     const firstDone = first.at(-1)!;
     expect(firstDone.cache).toBe("miss");
 
-    const metadataPath = join(firstCtx.sourceRoots.get(firstDone.graphId as string)!, "..", "metadata.json");
+    const metadataPath = join(graphDescriptor(firstCtx, firstDone.graphId as string).sourceRoot, "..", "metadata.json");
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
     expect(metadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
     expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
@@ -320,12 +427,20 @@ describe("handlePrAnalyze", () => {
     expect(secondDone.comparisonGraphId).toBe(firstDone.comparisonGraphId);
     expect(secondDone.headSha).toBe(HEAD_SHA);
     expect(secondDone.mergeBaseSha).toBe(MERGE_BASE_SHA);
-    expect(restarted.graphs.get(secondDone.graphId as string)).toStrictEqual(ARTIFACT);
-    expect(restarted.graphs.get(secondDone.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expect(restarted.graphStore.loadArtifact(secondDone.graphId as string)).toStrictEqual(ARTIFACT);
+    expect(restarted.graphStore.loadArtifact(secondDone.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
     expect(runGitClone).toHaveBeenCalledTimes(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
-    const restoredMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    const restoredMetadataPath = join(
+      graphDescriptor(restarted, secondDone.graphId as string).sourceRoot,
+      "..",
+      "metadata.json",
+    );
+    expect(restoredMetadataPath).not.toBe(metadataPath);
+    const retainedLegacyMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
+    const restoredMetadata = JSON.parse(readFileSync(restoredMetadataPath, "utf8")) as Record<string, unknown>;
     expect(restoredMetadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
   });
 
@@ -344,8 +459,8 @@ describe("handlePrAnalyze", () => {
 
     expect(first.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     expect(done.cache).toBe("miss");
-    const headRoot = firstCtx.sourceRoots.get(done.graphId as string)!;
-    const comparisonRoot = firstCtx.sourceRoots.get(done.comparisonGraphId as string)!;
+    const headRoot = graphDescriptor(firstCtx, done.graphId as string).sourceRoot;
+    const comparisonRoot = graphDescriptor(firstCtx, done.comparisonGraphId as string).sourceRoot;
     expect(headRoot.endsWith(subdir)).toBe(true);
     expect(comparisonRoot.endsWith(subdir)).toBe(true);
     expect(readdirSync(comparisonRoot)).toEqual([]);
@@ -360,7 +475,7 @@ describe("handlePrAnalyze", () => {
     const second = (await invoke(restarted, BODY)).lines();
     expect(second.map((line) => line.stage)).toEqual(["done"]);
     expect(second.at(-1)?.cache).toBe("hit");
-    expect(readdirSync(restarted.sourceRoots.get(second.at(-1)?.comparisonGraphId as string)!)).toEqual([]);
+    expect(readdirSync(graphDescriptor(restarted, second.at(-1)?.comparisonGraphId as string).sourceRoot)).toEqual([]);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
   });
 
@@ -406,8 +521,8 @@ describe("handlePrAnalyze", () => {
 
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     expect(done.cache).toBe("miss");
-    const headRoot = ctx.sourceRoots.get(done.graphId as string)!;
-    const comparisonRoot = ctx.sourceRoots.get(done.comparisonGraphId as string)!;
+    const headRoot = graphDescriptor(ctx, done.graphId as string).sourceRoot;
+    const comparisonRoot = graphDescriptor(ctx, done.comparisonGraphId as string).sourceRoot;
     expect(headRoot.endsWith(subdir)).toBe(true);
     expect(comparisonRoot.endsWith(subdir)).toBe(true);
     expect(readdirSync(headRoot)).toEqual([]);
@@ -424,7 +539,7 @@ describe("handlePrAnalyze", () => {
     const cached = (await invoke(restarted, BODY)).lines();
     expect(cached.map((line) => line.stage)).toEqual(["done"]);
     expect(cached.at(-1)?.cache).toBe("hit");
-    expect(readdirSync(restarted.sourceRoots.get(cached.at(-1)?.graphId as string)!)).toEqual([]);
+    expect(readdirSync(graphDescriptor(restarted, cached.at(-1)?.graphId as string).sourceRoot)).toEqual([]);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
   });
 
@@ -526,7 +641,7 @@ describe("handlePrAnalyze", () => {
     const firstDone = (await invoke(firstCtx, BODY)).lines().at(-1)!;
     expect(firstDone.cache).toBe("miss");
 
-    const poisonedSourceDir = firstCtx.sourceRoots.get(firstDone[idField] as string)!;
+    const poisonedSourceDir = graphDescriptor(firstCtx, firstDone[idField] as string).sourceRoot;
     const outside = join(cacheRoot, `outside-${idField}`);
     mkdirSync(outside, { recursive: true });
     rmSync(poisonedSourceDir, { recursive: true, force: true });
@@ -539,7 +654,7 @@ describe("handlePrAnalyze", () => {
     expect(runGitClone).toHaveBeenCalledTimes(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
-    const replacement = restarted.sourceRoots.get(secondLines.at(-1)?.[idField] as string)!;
+    const replacement = graphDescriptor(restarted, secondLines.at(-1)?.[idField] as string).sourceRoot;
     expect(realpathSync.native(replacement)).not.toBe(realpathSync.native(outside));
   });
 
@@ -551,12 +666,12 @@ describe("handlePrAnalyze", () => {
     for (const [request] of vi.mocked(analyzeRepository).mock.calls) {
       expect(request).not.toHaveProperty("language");
     }
-    expect(ctx.sources.get(done.graphId as string)).toEqual({
+    expect(graphDescriptor(ctx, done.graphId as string).source).toEqual({
       kind: "github",
       owner: "org",
       repo: "repo",
     });
-    expect(ctx.sources.get(done.comparisonGraphId as string)).toEqual({
+    expect(graphDescriptor(ctx, done.comparisonGraphId as string).source).toEqual({
       kind: "github",
       owner: "org",
       repo: "repo",
@@ -664,6 +779,7 @@ describe("handlePrAnalyze", () => {
 
   it("emits exactly one error line mid-pipeline and removes the temp dir", async () => {
     const ctx = githubCtx();
+    const publish = vi.spyOn(ctx.graphStore, "publish");
     vi.mocked(runGit).mockImplementation(async (args) => {
       if (args[0] === "fetch") throw new WebError(422, "git failed: boom");
       return gitOutput(args, HEAD_SHA, "main");
@@ -673,8 +789,7 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
     expect(lines[2].message).toBe("git failed: boom");
     expect(existsSync(clonedDir())).toBe(false);
-    expect(ctx.graphs.size).toBe(0);
-    expect(ctx.tempCleanups.size).toBe(0);
+    expect(publish).not.toHaveBeenCalled();
   });
 
   it("never echoes a non-WebError's text into the error line", async () => {
@@ -761,15 +876,20 @@ async function invoke(ctx: Context, body: unknown) {
 }
 
 function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo: "repo" }): Context {
+  const graphStore = new WebGraphStore();
+  activeGraphStores.push(graphStore);
+  graphStore.publish({
+    id: "artifact",
+    material: materializeValidatedArtifact(ARTIFACT),
+    metadata: {
+      sourceRoot: cacheRoot,
+      source,
+      synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+    },
+  });
   return {
-    graphs: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map([["artifact", source]]),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
-    syntheticExecutionTrust: new Map(),
+    graphStore,
     prFilesCache: new Map(),
-    tempCleanups: new Set(),
     rendererIndex: "",
     landingHtml: "",
     staticAssets: { rendererRoot: "", indexHtml: "" },
@@ -783,6 +903,12 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     allowSyntheticPrExecution: false,
     syntheticPrSandboxRuntimeSupported: () => false,
   } as Context;
+}
+
+function graphDescriptor(ctx: Context, id: string) {
+  const descriptor = ctx.graphStore.descriptor(id);
+  expect(descriptor).toBeDefined();
+  return descriptor!;
 }
 
 function requestWith(body: unknown): IncomingMessage {

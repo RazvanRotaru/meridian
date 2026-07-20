@@ -16,7 +16,7 @@ describe("artifact source provenance", () => {
   });
 
   it("does not persist graph language as future extraction configuration", () => {
-    expect(artifactSourceFor({ kind: "github", value: "octo/repo" })).toEqual({
+    expect(artifactSourceFor({ kind: "github", value: "octo/repo" })).toStrictEqual({
       kind: "github",
       owner: "octo",
       repo: "repo",

@@ -10,7 +10,6 @@ import {
   publishImmutable,
   readJson,
   removeEntry,
-  touchMetadata,
   writePrivateJson,
 } from "./web-cache-storage";
 
@@ -43,7 +42,6 @@ export async function checkoutFor(
   const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token);
   const advertisedEntry = join(parent, advertised.commit);
   if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl)) {
-    touchMetadata(join(advertisedEntry, "metadata.json"));
     return { ...advertised, cache: "hit", repoDir: join(advertisedEntry, "repo"), repositoryKey, remoteUrl };
   }
   removeEntry(advertisedEntry);
@@ -62,7 +60,6 @@ export async function probeCheckout(
   if (!(await validCheckout(entry, repositoryKey, advertised.commit, remoteUrl))) {
     return null;
   }
-  touchMetadata(join(entry, "metadata.json"));
   return { ...advertised, cache: "hit", repoDir: join(entry, "repo"), repositoryKey, remoteUrl };
 }
 

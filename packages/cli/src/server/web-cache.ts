@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
@@ -14,23 +15,33 @@ import type { GenerateRequest } from "./web-request";
 import { checkoutFor } from "./web-cache-checkout";
 import type { CachedCheckout } from "./web-cache-checkout";
 import {
+  artifactSummary,
+  materializeValidatedArtifact,
+  verifiedArtifactFile,
+  type VerifiedFileArtifactMaterial,
+  type WebGraphArtifactMaterial,
+} from "./web-graph-store";
+import {
   createStageDirectory,
   createPrivateDirectory,
   publishImmutable,
-  pruneExpiredCache,
   readJson,
   removeEntry,
-  touchMetadata,
   writePrivateJson,
 } from "./web-cache-storage";
 
-export const CACHE_FORMAT_VERSION = 2;
+export const CACHE_FORMAT_VERSION = 4;
 export const ANALYSIS_VERSION = REPOSITORY_ANALYSIS_VERSION;
-const preparedRoots = new Set<string>();
+const SHA256 = /^[a-f0-9]{64}$/;
+const SNAPSHOT_ID = /^[a-f0-9]{16}$/;
 
 export interface CachedGraph {
   analysisKey: string;
   artifact: GraphArtifact;
+  /** Exact prepared bytes, either an already-verified cache file or one branch-restamped buffer. */
+  material: WebGraphArtifactMaterial;
+  /** Branch-neutral semantic extraction identity; never a claim about prepared artifact bytes. */
+  snapshotDigest: string;
   cache: "hit" | "miss";
   checkout: CachedCheckout;
   sourceDir: string;
@@ -44,7 +55,22 @@ export interface ArtifactMetadata {
   repositoryKey: string;
   commit: string;
   analysisKey: string;
+  /** SHA-256 of the exact branch-neutral bytes in artifact.json. */
+  byteDigest: string;
+  /** Compact semantic identity used with selected-ref provenance for graph ids. */
+  snapshotDigest: string;
+  snapshotId: string;
   warnings: string[];
+}
+
+/** Mutable slot state. It selects one complete immutable generation and contains no graph data. */
+export interface ArtifactCachePointer {
+  formatVersion: number;
+  repositoryKey: string;
+  commit: string;
+  analysisKey: string;
+  snapshotDigest: string;
+  snapshotId: string;
 }
 
 export async function cachedRemoteGraph(inputs: {
@@ -60,14 +86,9 @@ export async function cachedRemoteGraph(inputs: {
   const sourceDir = resolveExtractionSubdir(checkout.repoDir, inputs.request.subdir);
   const analysisKey = webAnalysisKey(inputs.request);
   const artifactEntry = join(inputs.cacheRoot, "artifacts", checkout.repositoryKey, checkout.commit, analysisKey);
-  if (inputs.request.refresh) {
-    removeEntry(artifactEntry);
-  } else {
-    const cached = readCachedArtifact(artifactEntry, checkout, analysisKey);
-    if (cached) {
-      return resultFor(cached.artifact, cached.warnings, "hit", checkout, sourceDir, analysisKey, inputs.request);
-    }
-    removeEntry(artifactEntry);
+  const cached = inputs.request.refresh ? null : readCachedArtifact(artifactEntry, checkout, analysisKey);
+  if (cached) {
+    return resultFor(cached, "hit", checkout, sourceDir, analysisKey, inputs.request);
   }
 
   await inputs.onExtract();
@@ -79,16 +100,11 @@ export async function cachedRemoteGraph(inputs: {
     vcs: { repository: checkout.remoteUrl, commit: checkout.commit, branch: checkout.branch },
   });
   const published = publishArtifact(artifactEntry, artifact, warnings, checkout, analysisKey);
-  return resultFor(published.artifact, published.warnings, "miss", checkout, sourceDir, analysisKey, inputs.request);
+  return resultFor(published, "miss", checkout, sourceDir, analysisKey, inputs.request);
 }
 
 export function prepareWebCache(root: string): void {
-  if (preparedRoots.has(root)) {
-    return;
-  }
   createPrivateDirectory(root);
-  pruneExpiredCache(root);
-  preparedRoots.add(root);
 }
 
 export function webAnalysisKey(request: GenerateRequest): string {
@@ -107,21 +123,76 @@ function readCachedArtifact(
   entry: string,
   checkout: CachedCheckout,
   analysisKey: string,
-): { artifact: GraphArtifact; warnings: string[] } | null {
+): CachedArtifact | null {
+  const resolved = resolveCachedArtifact(entry, checkout, analysisKey);
+  if (!resolved) return null;
   try {
-    const metadata = readJson(join(entry, "metadata.json")) as Partial<ArtifactMetadata>;
-    if (!validArtifactMetadata(metadata, checkout, analysisKey)) {
+    const artifactBytes = readFileSync(resolved.artifactPath);
+    if (sha256(artifactBytes) !== resolved.metadata.byteDigest) {
       return null;
     }
-    const { artifact, warnings } = validateOrThrow(readJson(join(entry, "artifact.json")), "cached artifact");
-    if (artifact.target.vcs?.commit !== checkout.commit) {
+    const { artifact, warnings } = validateOrThrow(JSON.parse(artifactBytes.toString("utf8")), "cached artifact");
+    if (artifact.target.vcs?.commit !== checkout.commit || artifact.target.vcs.branch !== undefined) {
       return null;
     }
-    touchMetadata(join(entry, "metadata.json"));
-    return { artifact, warnings: metadata.warnings.length > 0 ? metadata.warnings : warnings };
+    return {
+      artifact,
+      material: verifiedArtifactFile(
+        resolved.artifactPath,
+        resolved.metadata.byteDigest,
+        artifactSummary(artifact),
+      ),
+      snapshotDigest: resolved.metadata.snapshotDigest,
+      warnings: resolved.metadata.warnings.length > 0 ? resolved.metadata.warnings : warnings,
+    };
   } catch {
     return null;
   }
+}
+
+/** Resolve one exact immutable generation without loading its potentially large graph bytes. */
+export function readCachedArtifactPointer(
+  entry: string,
+  checkout: CachedCheckout,
+  analysisKey: string,
+): ArtifactCachePointer | null {
+  return resolveCachedArtifact(entry, checkout, analysisKey)?.pointer ?? null;
+}
+
+function resolveCachedArtifact(
+  entry: string,
+  checkout: CachedCheckout,
+  analysisKey: string,
+): { artifactPath: string; metadata: ArtifactMetadata; pointer: ArtifactCachePointer } | null {
+  try {
+    const pointer = readJson(join(entry, "metadata.json")) as Partial<ArtifactCachePointer>;
+    if (!validArtifactCachePointer(pointer, checkout, analysisKey)) return null;
+    const snapshot = join(entry, "snapshots", pointer.snapshotId);
+    const metadata = readJson(join(snapshot, "metadata.json")) as Partial<ArtifactMetadata>;
+    if (!validArtifactMetadata(metadata, checkout, analysisKey)
+      || metadata.snapshotId !== pointer.snapshotId
+      || metadata.snapshotDigest !== pointer.snapshotDigest) {
+      return null;
+    }
+    const artifactPath = join(snapshot, "artifact.json");
+    if (!existsSync(artifactPath)) return null;
+    return { artifactPath, metadata, pointer };
+  } catch {
+    return null;
+  }
+}
+
+export function validArtifactCachePointer(
+  pointer: Partial<ArtifactCachePointer>,
+  checkout: CachedCheckout,
+  analysisKey: string,
+): pointer is ArtifactCachePointer {
+  return pointer.formatVersion === CACHE_FORMAT_VERSION
+    && pointer.repositoryKey === checkout.repositoryKey
+    && pointer.commit === checkout.commit
+    && pointer.analysisKey === analysisKey
+    && typeof pointer.snapshotDigest === "string" && SHA256.test(pointer.snapshotDigest)
+    && typeof pointer.snapshotId === "string" && SNAPSHOT_ID.test(pointer.snapshotId);
 }
 
 export function validArtifactMetadata(
@@ -134,31 +205,71 @@ export function validArtifactMetadata(
     && metadata.repositoryKey === checkout.repositoryKey
     && metadata.commit === checkout.commit
     && metadata.analysisKey === analysisKey
+    && typeof metadata.byteDigest === "string"
+    && SHA256.test(metadata.byteDigest)
+    && typeof metadata.snapshotDigest === "string"
+    && SHA256.test(metadata.snapshotDigest)
+    && metadata.snapshotDigest === metadata.byteDigest
+    && typeof metadata.snapshotId === "string"
+    && SNAPSHOT_ID.test(metadata.snapshotId)
     && Array.isArray(metadata.warnings)
     && metadata.warnings.every((warning) => typeof warning === "string");
 }
 
 function publishArtifact(
-  destination: string,
+  slot: string,
   artifact: GraphArtifact,
   warnings: string[],
   checkout: CachedCheckout,
   analysisKey: string,
-): { artifact: GraphArtifact; warnings: string[] } {
-  const stage = createStageDirectory(dirname(destination));
+): CachedArtifact {
+  const stage = createStageDirectory(dirname(slot));
   try {
-    writePrivateJson(join(stage, "artifact.json"), artifact);
+    const branchNeutralArtifact = withoutBranchProvenance(artifact);
+    if (branchNeutralArtifact.target.vcs?.commit !== checkout.commit) {
+      throw new Error("generated artifact commit does not match its immutable checkout");
+    }
+    const serialized = materializeValidatedArtifact(branchNeutralArtifact);
+    const artifactPath = join(stage, "artifact.json");
+    writeFileSync(artifactPath, serialized.bytes, { flag: "wx", mode: 0o600 });
+    const snapshotDigest = serialized.byteDigest;
+    // The semantic digest remains branch-neutral and stable. A compact random generation token is
+    // still required because corrupt recovery may recreate identical bytes without being allowed
+    // to replace the old path another process is serving.
+    const snapshotId = randomBytes(8).toString("hex");
     writePrivateJson(join(stage, "metadata.json"), {
       formatVersion: CACHE_FORMAT_VERSION,
       analysisVersion: ANALYSIS_VERSION,
       repositoryKey: checkout.repositoryKey,
       commit: checkout.commit,
       analysisKey,
+      byteDigest: serialized.byteDigest,
+      snapshotDigest,
+      snapshotId,
       warnings,
     } satisfies ArtifactMetadata);
-    return publishImmutable(stage, destination)
-      ? { artifact, warnings }
-      : (readCachedArtifact(destination, checkout, analysisKey) ?? { artifact, warnings });
+    const snapshot = join(slot, "snapshots", snapshotId);
+    if (!publishImmutable(stage, snapshot)) {
+      throw new Error("artifact snapshot generation already exists");
+    }
+    writePrivateJson(join(slot, "metadata.json"), {
+      formatVersion: CACHE_FORMAT_VERSION,
+      repositoryKey: checkout.repositoryKey,
+      commit: checkout.commit,
+      analysisKey,
+      snapshotDigest,
+      snapshotId,
+    } satisfies ArtifactCachePointer);
+    return {
+      artifact: branchNeutralArtifact,
+      material: verifiedArtifactFile(
+        join(snapshot, "artifact.json"),
+        serialized.byteDigest,
+        serialized.summary,
+      ),
+      snapshotDigest,
+      warnings,
+    };
   } catch (error) {
     removeEntry(stage);
     throw error;
@@ -166,17 +277,19 @@ function publishArtifact(
 }
 
 function resultFor(
-  artifact: GraphArtifact,
-  warnings: string[],
+  cached: CachedArtifact,
   cache: "hit" | "miss",
   checkout: CachedCheckout,
   sourceDir: string,
   analysisKey: string,
   request: GenerateRequest,
 ): CachedGraph {
+  const prepared = artifactForCheckout(cached, checkout);
   return {
-    artifact: artifactForCheckout(artifact, checkout),
-    warnings,
+    artifact: prepared.artifact,
+    material: prepared.material,
+    snapshotDigest: cached.snapshotDigest,
+    warnings: cached.warnings,
     cache,
     checkout,
     sourceDir,
@@ -185,10 +298,37 @@ function resultFor(
   };
 }
 
-/** Branch is request provenance, not graph identity; restamp it when commits are shared by refs. */
-function artifactForCheckout(artifact: GraphArtifact, checkout: CachedCheckout): GraphArtifact {
-  if (!artifact.target.vcs) return artifact;
-  const { branch: _cachedBranch, ...vcs } = artifact.target.vcs;
-  const stampedVcs = checkout.branch ? { ...vcs, branch: checkout.branch } : vcs;
-  return { ...artifact, target: { ...artifact.target, vcs: stampedVcs } };
+interface CachedArtifact {
+  artifact: GraphArtifact;
+  material: VerifiedFileArtifactMaterial;
+  snapshotDigest: string;
+  warnings: string[];
+}
+
+function sha256(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Branch is request provenance, not extraction-cache identity; cached bytes are always neutral. */
+function artifactForCheckout(
+  cached: CachedArtifact,
+  checkout: CachedCheckout,
+): { artifact: GraphArtifact; material: WebGraphArtifactMaterial } {
+  if (!checkout.branch) {
+    return { artifact: cached.artifact, material: cached.material };
+  }
+  const vcs = cached.artifact.target.vcs;
+  if (!vcs) throw new Error("cached remote artifact has no VCS coordinates");
+  const artifact = {
+    ...cached.artifact,
+    target: { ...cached.artifact.target, vcs: { ...vcs, branch: checkout.branch } },
+  };
+  return { artifact, material: materializeValidatedArtifact(artifact) };
+}
+
+function withoutBranchProvenance(artifact: GraphArtifact): GraphArtifact {
+  const vcs = artifact.target.vcs;
+  if (!vcs || vcs.branch === undefined) return artifact;
+  const { branch: _branch, ...branchNeutralVcs } = vcs;
+  return { ...artifact, target: { ...artifact.target, vcs: branchNeutralVcs } };
 }

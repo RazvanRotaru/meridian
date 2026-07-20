@@ -3,7 +3,13 @@ import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository } from "../repository-analysis";
 import { resolveSource } from "./clone";
 import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
-import { artifactId, remoteArtifactId } from "./web-request";
+import { materializeValidatedArtifact } from "./web-graph-store";
+import {
+  loadSyntheticScenarios,
+  syntheticExecutionRuntimeSupported,
+  syntheticSourceFingerprint,
+} from "./synthetic-execution";
+import { localArtifactId, remoteArtifactId } from "./web-request";
 import type { GenerateRequest } from "./web-request";
 import type { Context } from "./web-server";
 import { artifactSourceFor } from "./web-source";
@@ -41,7 +47,7 @@ async function generateRemote(
   await onStage("cache");
   const effectiveRequest = ctx.refreshCache ? { ...request, refresh: true } : request;
   const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
-  const jobKey = `${artifactId(effectiveRequest, "", webAnalysisKey(effectiveRequest))}:${credentialKey}:${effectiveRequest.refresh === true}`;
+  const jobKey = remoteGenerationJobKey(effectiveRequest, credentialKey);
   let pending = ctx.cacheJobs.get(jobKey);
   if (!pending) {
     pending = cachedRemoteGraph({
@@ -56,8 +62,22 @@ async function generateRemote(
   }
   try {
     const cached = await pending;
-    const id = remoteArtifactId(cached.checkout.repositoryKey, cached.checkout.commit, cached.analysisKey);
-    registerGraph(ctx, id, cached.artifact, cached.sourceDir, request);
+    const id = remoteArtifactId(
+      cached.checkout.repositoryKey,
+      cached.checkout.commit,
+      cached.analysisKey,
+      request.ref,
+      cached.snapshotDigest,
+    );
+    ctx.graphStore.publish({
+      id,
+      material: cached.material,
+      metadata: {
+        sourceRoot: cached.sourceDir,
+        source: artifactSourceFor(request),
+        synthetic: noSyntheticCapability(),
+      },
+    });
     return {
       id,
       target: cached.target,
@@ -76,7 +96,6 @@ async function generateRemote(
 async function generateLocal(ctx: Context, request: GenerateRequest, onStage: StageReporter): Promise<GenerateResult> {
   await onStage("source");
   const source = await resolveSource(request, ctx.cwd);
-  let retained = false;
   try {
     await onStage("extract");
     const { artifact, warnings } = await analyzeRepository({
@@ -84,10 +103,18 @@ async function generateLocal(ctx: Context, request: GenerateRequest, onStage: St
       cwd: source.dir,
       targetName: source.target,
     });
-    const id = artifactId(request);
-    registerGraph(ctx, id, artifact, source.dir, request);
-    ctx.tempCleanups.add(source.cleanup);
-    retained = true;
+    const synthetic = localSyntheticCapability(ctx, source.dir, artifact);
+    const material = materializeValidatedArtifact(artifact);
+    const id = localArtifactId(source.dir, material.byteDigest, synthetic);
+    ctx.graphStore.publish({
+      id,
+      material,
+      metadata: {
+        sourceRoot: source.dir,
+        source: artifactSourceFor(request),
+        synthetic,
+      },
+    });
     return {
       id,
       target: source.target,
@@ -97,20 +124,38 @@ async function generateLocal(ctx: Context, request: GenerateRequest, onStage: St
       checkoutCache: "bypass",
     };
   } finally {
-    if (!retained) {
-      source.cleanup();
-    }
+    source.cleanup();
   }
 }
 
-function registerGraph(
+function remoteGenerationJobKey(request: GenerateRequest, credentialKey: string): string {
+  return createHash("sha256").update(JSON.stringify({
+    kind: request.kind,
+    value: request.value,
+    ref: request.ref ?? "",
+    subdir: request.subdir ?? "",
+    analysisKey: webAnalysisKey(request),
+    credentialKey,
+    refresh: request.refresh === true,
+  })).digest("hex");
+}
+
+function noSyntheticCapability() {
+  return { scenarios: [], sourceFingerprint: null, trust: null };
+}
+
+function localSyntheticCapability(
   ctx: Context,
-  id: string,
+  sourceRoot: string,
   artifact: GraphArtifact,
-  sourceDir: string,
-  request: GenerateRequest,
-): void {
-  ctx.graphs.set(id, artifact);
-  ctx.sourceRoots.set(id, sourceDir);
-  ctx.sources.set(id, artifactSourceFor(request));
+) {
+  if (!ctx.allowSyntheticExecution || !syntheticExecutionRuntimeSupported()) {
+    return noSyntheticCapability();
+  }
+  const scenarios = loadSyntheticScenarios(sourceRoot);
+  return {
+    scenarios,
+    sourceFingerprint: scenarios.length > 0 ? syntheticSourceFingerprint(sourceRoot, artifact) : null,
+    trust: { mode: "local" as const },
+  };
 }
