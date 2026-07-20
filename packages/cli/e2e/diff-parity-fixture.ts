@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ChangedFileManifestEntry } from "@meridian/core";
 import { FIXTURE } from "./harness";
 
 export interface DiffParityCaseSpec {
@@ -39,7 +40,18 @@ export interface DiffParityCaseSpec {
   targetOmittedFromGitHub?: boolean;
   /** A pure rename in the same PR must be explicit even though it has no +/- rows. */
   metadataOnlyRename?: { path: string; previousPath: string };
+  /** A source-backed added file whose callable is asserted through the prepared HEAD graph. */
+  addedFile?: { path: string; qualname: string; displayName: string };
+  /** The exact local-Git manifest expected from the prepared artifact, in terminal response order. */
+  expectedCanonicalManifest?: readonly ChangedFileManifestEntry[];
 }
+
+export const STATUS_TRANSACTION_MANIFEST = [
+  { path: "src/legacyDiscountService.ts", status: "deleted" },
+  { path: "src/renamedOnly.ts", status: "renamed", previousPath: "src/renameOnly.ts" },
+  { path: "src/services/orderService.ts", status: "modified" },
+  { path: "src/statusAdded.ts", status: "added" },
+] as const satisfies readonly ChangedFileManifestEntry[];
 
 export const DIFF_PARITY_CASES: readonly DiffParityCaseSpec[] = [
   {
@@ -79,6 +91,8 @@ export const DIFF_PARITY_CASES: readonly DiffParityCaseSpec[] = [
     removedFile: true,
     targetOmittedFromGitHub: true,
     metadataOnlyRename: { path: "src/renamedOnly.ts", previousPath: "src/renameOnly.ts" },
+    addedFile: { path: "src/statusAdded.ts", qualname: "statusAdded", displayName: "statusAdded" },
+    expectedCanonicalManifest: STATUS_TRANSACTION_MANIFEST,
     deletedNode: {
       qualname: "LegacyDiscountService.apply",
       displayName: "apply",
@@ -106,7 +120,7 @@ export interface ExpectedSourceRow {
 export interface DiffParityFile {
   api: {
     filename: string;
-    status: "modified" | "removed";
+    status: "added" | "modified" | "removed";
     additions: number;
     deletions: number;
     patch?: string;
@@ -148,6 +162,7 @@ export interface DiffParityPr {
   githubPatch: string;
   oracleDiff: string;
   files: DiffParityFile[];
+  expectedCanonicalManifest: readonly ChangedFileManifestEntry[] | null;
 }
 
 export interface DiffParityFixture {
@@ -274,6 +289,9 @@ function createRemovedFilePr(worktree: string, start: string): void {
   if (spec.metadataOnlyRename) {
     git(["mv", spec.metadataOnlyRename.previousPath, spec.metadataOnlyRename.path], worktree);
   }
+  if (spec.addedFile) {
+    writeFileSync(join(worktree, spec.addedFile.path), STATUS_ADDED_SOURCE);
+  }
   const anchorPath = join(worktree, "src/services/orderService.ts");
   writeFileSync(anchorPath, replaceExactly(
     readFileSync(anchorPath, "utf8"),
@@ -347,7 +365,13 @@ function materializePr(worktree: string, mainSha: string, spec: DiffParityCaseSp
   };
   const files = [targetFile];
   if (spec.targetOmittedFromGitHub) {
-    files.push(materializeSupportingFile(worktree, mergeBaseSha, headSha, "src/services/orderService.ts"));
+    files.push(materializeSupportingFile(worktree, mergeBaseSha, headSha, "src/services/orderService.ts", "modified"));
+  }
+  if (spec.addedFile) {
+    files.push(materializeSupportingFile(worktree, mergeBaseSha, headSha, spec.addedFile.path, "added"));
+  }
+  if (spec.expectedCanonicalManifest) {
+    assertExactStatusTransaction(worktree, mergeBaseSha, headSha, spec.expectedCanonicalManifest);
   }
   return {
     number: spec.number,
@@ -368,6 +392,7 @@ function materializePr(worktree: string, mainSha: string, spec: DiffParityCaseSp
     githubPatch,
     oracleDiff,
     files,
+    expectedCanonicalManifest: spec.expectedCanonicalManifest ?? null,
   };
 }
 
@@ -376,6 +401,7 @@ function materializeSupportingFile(
   mergeBaseSha: string,
   headSha: string,
   path: string,
+  status: "added" | "modified",
 ): DiffParityFile {
   const patchDiff = canonicalDiff(worktree, mergeBaseSha, headSha, path, 3);
   const patchStart = patchDiff.indexOf("@@");
@@ -395,7 +421,7 @@ function materializeSupportingFile(
   return {
     api: {
       filename: path,
-      status: "modified",
+      status,
       additions,
       deletions,
       patch: githubPatch,
@@ -407,6 +433,39 @@ function materializeSupportingFile(
     githubPatch,
     oracleDiff,
   };
+}
+
+/**
+ * Keep this fixture independent of Meridian's manifest parser: raw Git itself must report one and
+ * only one A/M/D/R100 transaction before its values can become the server/browser oracle.
+ */
+function assertExactStatusTransaction(
+  worktree: string,
+  mergeBaseSha: string,
+  headSha: string,
+  expectedManifest: readonly ChangedFileManifestEntry[],
+): void {
+  const actual = git([
+    "diff",
+    "--no-ext-diff",
+    "--no-color",
+    "--name-status",
+    "--find-renames=100%",
+    mergeBaseSha,
+    headSha,
+  ], worktree)
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .sort();
+  const expected = expectedManifest.map((entry) => {
+    if (entry.status === "renamed") return `R100\t${entry.previousPath}\t${entry.path}`;
+    const status = entry.status === "added" ? "A" : entry.status === "modified" ? "M" : "D";
+    return `${status}\t${entry.path}`;
+  }).sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`status transaction differs from A/M/D/R100 oracle:\n${actual.join("\n")}`);
+  }
 }
 
 function sourceRows(lines: readonly string[], lineNumbers: readonly number[]): ExpectedSourceRow[] {
@@ -649,4 +708,9 @@ export class LegacyDiscountService {
 
 const RENAME_ONLY_SOURCE = `/** Stable source used to verify a pure Git rename remains explicit. */
 export const renameOnlyValue = "unchanged";
+`;
+
+const STATUS_ADDED_SOURCE = `export function statusAdded(): string {
+  return "added-by-status-transaction";
+}
 `;
