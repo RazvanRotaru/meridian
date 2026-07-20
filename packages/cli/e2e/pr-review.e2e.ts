@@ -215,13 +215,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await sourceCommentRow.getAttribute("data-diff-origin")).toBe("add");
     expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
-    const hideComments = page.getByRole("button", { name: "Hide comments", exact: true });
+    const hideComments = page.getByRole("button", { name: "Hide comments on canvas", exact: true });
     await hideComments.waitFor();
     expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
     await hideComments.click();
     await loyaltyPreview.waitFor({ state: "detached" });
     await loyaltyCommentIndicator.waitFor({ state: "detached" });
-    const viewComments = page.getByRole("button", { name: "View comments", exact: true });
+    const viewComments = page.getByRole("button", { name: "Show comments on canvas", exact: true });
     await viewComments.waitFor();
     expect(await viewComments.getAttribute("aria-pressed")).toBe("false");
 
