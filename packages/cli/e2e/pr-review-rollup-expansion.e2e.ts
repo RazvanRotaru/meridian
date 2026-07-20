@@ -9,7 +9,7 @@ import type { Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { chromium, type Browser, type Locator, type Page } from "playwright";
+import { chromium, type Browser, type ElementHandle, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
 import { createWebServer } from "../src/server/web-server";
 import {
@@ -78,8 +78,10 @@ describe.skipIf(!HAS_CHROMIUM)("PR review rollup disclosure (headless chromium)"
 
     const rollupDisclosure = disclosure(rollup);
     await expectDisclosureState(rollupDisclosure, false);
-    await rollupDisclosure.click();
+    const rollupDisclosureElement = await focusDisclosure(rollupDisclosure);
+    await page.keyboard.press("Enter");
     await expectDisclosureState(rollupDisclosure, true);
+    await expectConnectedAndFocused(rollupDisclosureElement);
 
     for (const fileId of fileIds) {
       const fileNode = graphNode(reviewSurface, fileId);
@@ -101,19 +103,26 @@ describe.skipIf(!HAS_CHROMIUM)("PR review rollup disclosure (headless chromium)"
     await expectDisclosureState(fileDisclosure, false);
     expect(await graphNode(reviewSurface, functionId).count()).toBe(0);
 
-    await fileDisclosure.click();
+    const fileDisclosureElement = await focusDisclosure(fileDisclosure);
+    await page.keyboard.press("Enter");
     await expectDisclosureState(fileDisclosure, true);
+    await expectConnectedAndFocused(fileDisclosureElement);
     const exportedFunction = graphNode(reviewSurface, functionId);
     await exportedFunction.waitFor({ state: "visible", timeout: 30_000 });
     await exportedFunction.getByText(`reviewUnit${ordinal}`, { exact: true }).waitFor();
 
-    await rollupDisclosure.click();
+    await rollupDisclosure.focus();
+    await expectConnectedAndFocused(rollupDisclosureElement);
+    await page.keyboard.press("Enter");
     await expectDisclosureState(rollupDisclosure, false);
+    await expectConnectedAndFocused(rollupDisclosureElement);
     expect(await visibleGraphNodeIds(reviewSurface, fileIds)).toEqual([]);
     expect(await exportedFunction.count()).toBe(0);
 
-    await rollupDisclosure.click();
+    // The same focused disclosure remains operable after relayout; no refocus or DOM lookup is needed.
+    await page.keyboard.press("Enter");
     await expectDisclosureState(rollupDisclosure, true);
+    await expectConnectedAndFocused(rollupDisclosureElement);
     expect(await visibleGraphNodeIds(reviewSurface, fileIds)).toEqual(fileIds);
     await exportedFunction.waitFor({ state: "visible", timeout: 30_000 });
     await expectDisclosureState(disclosure(graphNode(reviewSurface, firstFileId)), true);
@@ -187,6 +196,21 @@ function disclosure(node: Locator): Locator {
 async function expectDisclosureState(control: Locator, expanded: boolean): Promise<void> {
   await expect.poll(() => control.getAttribute("aria-expanded"), { timeout: 30_000 }).toBe(String(expanded));
   expect(await control.getAttribute("data-node-disclosure-state")).toBe(expanded ? "expanded" : "collapsed");
+}
+
+async function focusDisclosure(control: Locator): Promise<ElementHandle<SVGElement | HTMLElement>> {
+  await control.focus();
+  const element = await control.elementHandle();
+  if (element === null) throw new Error("disclosure control disappeared before activation");
+  await expectConnectedAndFocused(element);
+  return element;
+}
+
+async function expectConnectedAndFocused(element: ElementHandle<SVGElement | HTMLElement>): Promise<void> {
+  await expect.poll(() => element.evaluate((control) => ({
+    connected: control.isConnected,
+    focused: control.ownerDocument.activeElement === control,
+  })), { timeout: 30_000 }).toEqual({ connected: true, focused: true });
 }
 
 async function visibleGraphNodeIds(surface: Locator, expectedIds: readonly string[]): Promise<string[]> {

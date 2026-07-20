@@ -20,7 +20,16 @@ function model(kind: string, expanded = false): BaseNodeModel {
   };
 }
 
-function render(modelValue: BaseNodeModel, actions: React.ReactNode = <span data-decoration="true">status</span>) {
+function render(
+  modelValue: BaseNodeModel,
+  {
+    actions = <span data-decoration="true">status</span>,
+    contentStyle,
+  }: {
+    actions?: React.ReactNode;
+    contentStyle?: React.CSSProperties;
+  } = {},
+) {
   return renderToStaticMarkup(
     <BaseNodeActionScope toggleExpand={() => undefined} navigateInto={() => undefined}>
       <BaseNode
@@ -30,6 +39,7 @@ function render(modelValue: BaseNodeModel, actions: React.ReactNode = <span data
         labelStyle={STYLE}
         leading={<span data-leading="true">kind</span>}
         actions={actions}
+        contentStyle={contentStyle}
       />
     </BaseNodeActionScope>,
   );
@@ -53,6 +63,22 @@ describe("shared base graph node", () => {
     expect(markup).toContain('aria-label="Collapse method"');
     expect(markup).toContain('data-node-disclosure-state="expanded"');
     expect(markup).toContain('<svg');
+  });
+
+  it("keeps one invariant content chassis across card and frame presentation", () => {
+    const card = render(model("file"), {
+      contentStyle: { display: "flex", flexDirection: "column", padding: 8 },
+    });
+    const frame = render(model("file", true));
+
+    for (const markup of [card, frame]) {
+      expect(markup.match(/data-base-node-content="true"/g)).toHaveLength(1);
+      expect(markup.indexOf("data-base-node-content")).toBeLessThan(markup.indexOf("data-base-node-header"));
+      expect(markup.indexOf("data-base-node-header")).toBeLessThan(markup.indexOf("data-base-node-disclosure"));
+    }
+    expect(card).toContain("display:flex");
+    expect(card).toContain("flex-direction:column");
+    expect(frame).toContain('style="display:contents"');
   });
 
   it("composes identity, semantics, indicators, utilities, then disclosure in one stable order", () => {

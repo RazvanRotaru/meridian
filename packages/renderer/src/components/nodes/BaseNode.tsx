@@ -79,7 +79,7 @@ export interface BaseNodeProps {
   /** Handles and other elements that must be direct children of the node shell. */
   ports?: React.ReactNode;
   children?: React.ReactNode;
-  /** Optional wrapper around the header/body (for padded stacked card bodies). */
+  /** Optional styling for the invariant header/body chassis (for padded stacked card bodies). */
   contentStyle?: React.CSSProperties;
   className?: string;
   title?: string;
@@ -154,7 +154,14 @@ export function BaseNode({
       }}
     >
       {ports}
-      {contentStyle === undefined ? content : <div style={contentStyle}>{content}</div>}
+      {/* Keep this chassis mounted when a card becomes a frame. Replacing it would replace the
+          header subtree too, including the focused disclosure that initiated the async relayout. */}
+      <div
+        data-base-node-content="true"
+        style={contentStyle ?? CONTENT_PASSTHROUGH}
+      >
+        {content}
+      </div>
     </div>
   );
 }
@@ -201,6 +208,9 @@ const ACTION_RAIL: React.CSSProperties = {
   flexShrink: 0,
   marginLeft: "auto",
 };
+
+/** Layout-transparent default for the invariant content chassis. */
+const CONTENT_PASSTHROUGH: React.CSSProperties = { display: "contents" };
 
 const DISCLOSURE: React.CSSProperties = {
   flexShrink: 0,
