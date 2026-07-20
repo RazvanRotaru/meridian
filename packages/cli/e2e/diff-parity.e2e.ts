@@ -11,7 +11,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
-import { buildNodeId } from "@meridian/core";
+import {
+  buildNodeId,
+  changedFileManifestFromExtensions,
+  type ChangedFileManifestEntry,
+  type GraphArtifact,
+} from "@meridian/core";
 import { createWebServer } from "../src/server/web-server";
 import {
   DIFF_PARITY_CASES,
@@ -49,6 +54,26 @@ let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const unexpectedGitHubRequests: string[] = [];
 
+type PrAnalysisProgressStage = "clone" | "checkout" | "extract";
+
+interface PrAnalysisProgress {
+  stage: PrAnalysisProgressStage;
+}
+
+interface PrAnalysisDone {
+  stage: "done";
+  graphId: string;
+  comparisonGraphId: string;
+  headSha: string;
+  mergeBaseSha: string;
+  counts: { nodes: number; edges: number };
+  changedFiles: ChangedFileManifestEntry[];
+  warnings: string[];
+  cache: "hit" | "miss";
+}
+
+type PrAnalysisRecord = PrAnalysisProgress | PrAnalysisDone;
+
 describe.skipIf(!HAS_CHROMIUM)("same-file GitHub/Git code diff parity (headless chromium)", () => {
   beforeAll(setup, 240_000);
   afterAll(teardown);
@@ -76,18 +101,43 @@ async function setup(): Promise<void> {
   await verifySmartHttpClone(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
   vi.stubGlobal("fetch", fakeGitHub(fixture));
-  webServer = createWebServer({
-    rendererRoot: dirname(RENDERER_INDEX),
-    webUiPath: WEB_UI,
-    cwd: REPO_ROOT,
-    cacheRoot: join(fixture.dir, "cache"),
-    githubClientId: "Iv1.meridian-diff-e2e",
-    fallbackToken: "meridian-diff-e2e-token",
-    fallbackUser: { login: "diff-e2e-reviewer", avatarUrl: null },
-  });
-  const baseUrl = await listenServer(webServer);
-  const generated = await generateSession(baseUrl);
-  viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
+  const cacheRoot = join(fixture.dir, "cache");
+  const statusPr = fixture.prs.find((candidate) => candidate.number === 34);
+  const statusSpec = DIFF_PARITY_CASES.find((candidate) => candidate.number === 34);
+  if (!statusPr?.expectedCanonicalManifest) throw new Error("diff parity fixture PR #34 has no canonical manifest");
+  if (!statusSpec?.addedFile || !statusSpec.deletedNode) throw new Error("diff parity case PR #34 has no status-specific nodes");
+
+  const cold = await startMeridian(cacheRoot);
+  webServer = cold.server;
+  const coldAnalysis = await analyzePr(cold.baseUrl, cold.sessionId, statusPr);
+  expect(coldAnalysis.map((record) => record.stage), "cold PR analysis must stream every real work stage").toEqual([
+    "clone",
+    "checkout",
+    "extract",
+    "done",
+  ]);
+  const coldDone = terminalAnalysis(coldAnalysis);
+  expect(coldDone.cache).toBe("miss");
+  expect(coldDone.headSha).toBe(statusPr.headSha);
+  expect(coldDone.mergeBaseSha).toBe(statusPr.mergeBaseSha);
+  expect(coldDone.changedFiles).toEqual(statusPr.expectedCanonicalManifest);
+  await assertStoredGraphs(cold.baseUrl, coldDone, statusPr, statusSpec);
+
+  // The restarted server owns an independent Context and cannot access the first server's graph
+  // registrations. It must reconstruct both from the persistent entry without cloning or extracting again.
+  await closeServer(webServer);
+  webServer = undefined;
+  const restarted = await startMeridian(cacheRoot);
+  webServer = restarted.server;
+  const warmAnalysis = await analyzePr(restarted.baseUrl, restarted.sessionId, statusPr);
+  expect(warmAnalysis.map((record) => record.stage), "restart cache hit must emit only its terminal record").toEqual(["done"]);
+  const warmDone = terminalAnalysis(warmAnalysis);
+  expect(warmDone.cache).toBe("hit");
+  expect(analysisIdentity(warmDone)).toEqual(analysisIdentity(coldDone));
+  expect(warmDone.changedFiles).toEqual(statusPr.expectedCanonicalManifest);
+  await assertStoredGraphs(restarted.baseUrl, warmDone, statusPr, statusSpec);
+
+  viewUrl = `${restarted.baseUrl}/view?id=${encodeURIComponent(restarted.sessionId)}`;
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 }
 
@@ -163,8 +213,66 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   if (spec.metadataOnlyRename) {
     await assertMetadataOnlyRename(page, reviewSurface, pr, spec.metadataOnlyRename);
   }
+  if (spec.addedFile) {
+    await assertAddedHeadNodeAndSource(page, reviewSurface, pr, spec.addedFile);
+  }
+  if (spec.expectedCanonicalManifest) {
+    await assertCanonicalPrFileRows(page, spec.expectedCanonicalManifest);
+  }
   expect(pageErrors).toEqual([]);
   expect(unexpectedGitHubRequests).toEqual([]);
+}
+
+async function assertAddedHeadNodeAndSource(
+  page: Page,
+  reviewSurface: Locator,
+  pr: DiffParityPr,
+  added: NonNullable<DiffParityCaseSpec["addedFile"]>,
+): Promise<void> {
+  const file = pr.files.find((candidate) => candidate.api.filename === added.path);
+  if (!file?.headCode) throw new Error(`PR #${pr.number} has no HEAD source fixture for ${added.path}`);
+  const nodeId = buildNodeId({ lang: "ts", modulePath: added.path, qualname: added.qualname });
+  const node = reviewSurface.locator(`.react-flow__node[data-id="${nodeId}"]`);
+  await node.waitFor({ state: "visible", timeout: 60_000 });
+  const baseNode = node.locator('[data-base-node="true"]');
+  expect(await baseNode.getAttribute("data-base-node-kind"), `${added.path} must retain its extracted callable`).toBe("function");
+  await node.getByText(added.displayName, { exact: true }).waitFor();
+
+  await node.getByRole("button", { name: "View source" }).dispatchEvent("click");
+  const modal = page.getByRole("dialog", { name: "Source code" });
+  await modal.waitFor();
+  await expect.poll(() => modal.getByTitle(added.path).count()).toBeGreaterThan(0);
+  expect(
+    await renderedSourceRows(modal),
+    `PR #${pr.number} added callable must expose exact HEAD source for ${added.path}`,
+  ).toEqual(file.expectedVisibleHeadRows);
+  await modal.getByRole("button", { name: "Close source" }).click();
+  await modal.waitFor({ state: "detached" });
+}
+
+async function assertCanonicalPrFileRows(
+  page: Page,
+  manifest: readonly ChangedFileManifestEntry[],
+): Promise<void> {
+  const expectedRows = manifest.map((file) => ({
+    path: file.path,
+    status: file.status,
+  }));
+  await expect.poll(() => reviewFileRowButtons(page).count()).toBe(manifest.length);
+  await expect.poll(() => renderedReviewFileRows(page)).toEqual(expectedRows);
+}
+
+function reviewFileRowButtons(page: Page): Locator {
+  const filesChanged = page.getByText("Files changed", { exact: true }).first().locator("xpath=ancestor::section[1]");
+  return filesChanged.locator('button[title*=" — click to "]:has(> span:first-child[title])');
+}
+
+async function renderedReviewFileRows(page: Page): Promise<Array<{ path: string | null; status: string | null }>> {
+  return reviewFileRowButtons(page).evaluateAll((buttons) => buttons.map((button) => {
+    const title = button.getAttribute("title");
+    const status = button.querySelector(":scope > span[title]")?.getAttribute("title");
+    return { path: title?.split(" — click to ", 1)[0] ?? null, status: status ?? null };
+  }));
 }
 
 async function assertTextualFileDiff(
@@ -457,6 +565,210 @@ function expectSameFileParity(
     rows,
     `PR #${pr.number} ${surface} differs from raw git merge-base oracle for exact path ${path}:\n${file.oracleDiff}`,
   ).toEqual(file.oracleRows);
+}
+
+async function startMeridian(cacheRoot: string): Promise<{ server: Server; baseUrl: string; sessionId: string }> {
+  const server = createWebServer({
+    rendererRoot: dirname(RENDERER_INDEX),
+    webUiPath: WEB_UI,
+    cwd: REPO_ROOT,
+    cacheRoot,
+    githubClientId: "Iv1.meridian-diff-e2e",
+    fallbackToken: "meridian-diff-e2e-token",
+    fallbackUser: { login: "diff-e2e-reviewer", avatarUrl: null },
+  });
+  try {
+    const baseUrl = await listenServer(server);
+    const generated = await generateSession(baseUrl);
+    return { server, baseUrl, sessionId: generated.id };
+  } catch (error) {
+    await closeServer(server);
+    throw error;
+  }
+}
+
+async function analyzePr(baseUrl: string, sessionId: string, pr: DiffParityPr): Promise<PrAnalysisRecord[]> {
+  const response = await nativeFetch(`${baseUrl}/api/pr/analyze`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ id: sessionId, prNumber: pr.number, baseRef: pr.baseRef, headRef: pr.headRef }),
+  });
+  if (!response.ok) {
+    throw new Error(`PR #${pr.number} analysis failed (${response.status}): ${await response.text()}`);
+  }
+  expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+  const body = await response.text();
+  const lines = body.split("\n").filter((line) => line.length > 0);
+  if (lines.length === 0) throw new Error(`PR #${pr.number} analysis returned no NDJSON records`);
+  return lines.map((line, index) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch (error) {
+      throw new Error(`PR #${pr.number} analysis record ${index + 1} is not JSON`, { cause: error });
+    }
+    return parsePrAnalysisRecord(value, index + 1);
+  });
+}
+
+function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord {
+  const record = requireRecord(value, `analysis record ${line}`);
+  const stage = record.stage;
+  if (stage === "clone" || stage === "checkout" || stage === "extract") {
+    requireExactKeys(record, ["stage"], `analysis ${stage} record`);
+    return { stage };
+  }
+  if (stage === "error") {
+    throw new Error(`PR analysis returned an error record: ${typeof record.message === "string" ? record.message : "invalid error"}`);
+  }
+  if (stage !== "done") throw new Error(`analysis record ${line} has unknown stage '${String(stage)}'`);
+  requireExactKeys(record, [
+    "cache",
+    "changedFiles",
+    "comparisonGraphId",
+    "counts",
+    "graphId",
+    "headSha",
+    "mergeBaseSha",
+    "stage",
+    "warnings",
+  ], "analysis done record");
+  const counts = requireRecord(record.counts, "analysis done counts");
+  requireExactKeys(counts, ["edges", "nodes"], "analysis done counts");
+  const cache = record.cache;
+  if (cache !== "hit" && cache !== "miss") throw new Error("analysis done cache must be hit or miss");
+  if (!Array.isArray(record.changedFiles)) throw new Error("analysis done changedFiles must be an array");
+  if (!Array.isArray(record.warnings) || !record.warnings.every((warning) => typeof warning === "string")) {
+    throw new Error("analysis done warnings must be strings");
+  }
+  return {
+    stage,
+    graphId: requireNonEmptyString(record.graphId, "analysis done graphId"),
+    comparisonGraphId: requireNonEmptyString(record.comparisonGraphId, "analysis done comparisonGraphId"),
+    headSha: requireSha(record.headSha, "analysis done headSha"),
+    mergeBaseSha: requireSha(record.mergeBaseSha, "analysis done mergeBaseSha"),
+    counts: {
+      nodes: requireCount(counts.nodes, "analysis done node count"),
+      edges: requireCount(counts.edges, "analysis done edge count"),
+    },
+    changedFiles: record.changedFiles.map((file, index) => parseChangedFile(file, index)),
+    warnings: record.warnings,
+    cache,
+  };
+}
+
+function parseChangedFile(value: unknown, index: number): ChangedFileManifestEntry {
+  const file = requireRecord(value, `changedFiles[${index}]`);
+  const path = requireNonEmptyString(file.path, `changedFiles[${index}].path`);
+  const status = file.status;
+  if (status === "renamed") {
+    requireExactKeys(file, ["path", "previousPath", "status"], `changedFiles[${index}]`);
+    const previousPath = requireNonEmptyString(file.previousPath, `changedFiles[${index}].previousPath`);
+    if (previousPath === path) throw new Error(`changedFiles[${index}] rename must change its path`);
+    return { path, status, previousPath };
+  }
+  if (status !== "added" && status !== "modified" && status !== "deleted") {
+    throw new Error(`changedFiles[${index}] has invalid status '${String(status)}'`);
+  }
+  requireExactKeys(file, ["path", "status"], `changedFiles[${index}]`);
+  return { path, status };
+}
+
+function terminalAnalysis(records: readonly PrAnalysisRecord[]): PrAnalysisDone {
+  const terminal = records.filter((record): record is PrAnalysisDone => record.stage === "done");
+  if (terminal.length !== 1 || records.at(-1) !== terminal[0]) {
+    throw new Error("PR analysis must end with exactly one done record");
+  }
+  return terminal[0];
+}
+
+function analysisIdentity(done: PrAnalysisDone): Omit<PrAnalysisDone, "stage" | "cache"> {
+  return {
+    graphId: done.graphId,
+    comparisonGraphId: done.comparisonGraphId,
+    headSha: done.headSha,
+    mergeBaseSha: done.mergeBaseSha,
+    counts: done.counts,
+    changedFiles: done.changedFiles,
+    warnings: done.warnings,
+  };
+}
+
+async function assertStoredGraphs(
+  baseUrl: string,
+  done: PrAnalysisDone,
+  pr: DiffParityPr,
+  spec: DiffParityCaseSpec & {
+    addedFile: NonNullable<DiffParityCaseSpec["addedFile"]>;
+    deletedNode: NonNullable<DiffParityCaseSpec["deletedNode"]>;
+  },
+): Promise<void> {
+  const head = await fetchGraph(baseUrl, done.graphId);
+  const comparison = await fetchGraph(baseUrl, done.comparisonGraphId);
+  expect(head.target.vcs?.commit, "HEAD graph endpoint must serve the analyzed commit").toBe(done.headSha);
+  expect(comparison.target.vcs?.commit, "comparison graph endpoint must serve the merge-base commit").toBe(done.mergeBaseSha);
+  expect(
+    { nodes: head.nodes.length, edges: head.edges.length },
+    "HEAD graph registration must match the terminal counts",
+  ).toEqual(done.counts);
+  expect(comparison.nodes.length, "comparison graph endpoint must retain its extracted base nodes").toBeGreaterThan(0);
+  expect(
+    changedFileManifestFromExtensions(head.extensions),
+    "HEAD graph endpoint must retain the exact local-Git transaction manifest",
+  ).toEqual(pr.expectedCanonicalManifest);
+
+  const addedId = buildNodeId({ lang: "ts", modulePath: spec.addedFile.path, qualname: spec.addedFile.qualname });
+  const deletedId = buildNodeId({ lang: "ts", modulePath: pr.targetPath, qualname: spec.deletedNode.qualname });
+  const headIds = new Set(head.nodes.map((node) => node.id));
+  const comparisonIds = new Set(comparison.nodes.map((node) => node.id));
+  expect(headIds.has(addedId), "HEAD graph endpoint must contain the added callable").toBe(true);
+  expect(headIds.has(deletedId), "HEAD graph endpoint must not retain the deleted callable").toBe(false);
+  expect(comparisonIds.has(deletedId), "merge-base graph endpoint must contain the later-deleted callable").toBe(true);
+  expect(comparisonIds.has(addedId), "merge-base graph endpoint must not contain the later-added callable").toBe(false);
+}
+
+async function fetchGraph(baseUrl: string, graphId: string): Promise<GraphArtifact> {
+  const response = await nativeFetch(`${baseUrl}/api/graph?id=${encodeURIComponent(graphId)}`);
+  if (!response.ok) throw new Error(`stored graph ${graphId} failed (${response.status}): ${await response.text()}`);
+  const value: unknown = await response.json();
+  const graph = requireRecord(value, `stored graph ${graphId}`);
+  const target = requireRecord(graph.target, `stored graph ${graphId} target`);
+  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
+    throw new Error(`stored graph ${graphId} must contain node and edge arrays`);
+  }
+  if (target.vcs !== undefined) requireRecord(target.vcs, `stored graph ${graphId} target.vcs`);
+  return value as GraphArtifact;
+}
+
+function requireRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
+  return value as Record<string, unknown>;
+}
+
+function requireExactKeys(record: Record<string, unknown>, keys: readonly string[], label: string): void {
+  const actual = Object.keys(record).sort();
+  const expected = [...keys].sort();
+  if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+    throw new Error(`${label} keys must be ${expected.join(", ")}; received ${actual.join(", ")}`);
+  }
+}
+
+function requireNonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== "string" || value.length === 0) throw new Error(`${label} must be a non-empty string`);
+  return value;
+}
+
+function requireSha(value: unknown, label: string): string {
+  const sha = requireNonEmptyString(value, label);
+  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(sha)) throw new Error(`${label} must be a 40- or 64-character Git SHA`);
+  return sha;
+}
+
+function requireCount(value: unknown, label: string): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer`);
+  }
+  return value;
 }
 
 async function generateSession(baseUrl: string): Promise<{ id: string }> {
