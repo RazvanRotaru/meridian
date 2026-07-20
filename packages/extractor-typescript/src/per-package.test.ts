@@ -41,6 +41,7 @@ beforeAll(async () => {
   );
   write("packages/core/src/rootAlias.ts", 'export function rootAliased(): string {\n  return "";\n}\n');
   write("packages/core/src/helpers.ts", "export function helper(): number {\n  return 1;\n}\n");
+  write("packages/core/src/contracts.ts", "export interface WiringContract { value: string }\n");
   write("packages/core/src/alias.ts", "export function aliasOnly(): number {\n  return 1;\n}\n");
   write("packages/ui/package.json", JSON.stringify({ name: "@fix/ui" }));
   write("packages/ui/tsconfig.json", JSON.stringify({
@@ -53,6 +54,7 @@ beforeAll(async () => {
     'import { helper, normalize, parseOrder } from "@fix/core";\nimport { helper as helperDirect } from "@fix/core/helpers";\n' +
       'import { localOnly } from "@ui/local";\n' +
       'import { aliasOnly } from "@alias/alias";\n' +
+      'export type Wiring = import("@fix/core/contracts").WiringContract;\n' +
       "export function runApp(): string {\n  helper();\n  helperDirect();\n  localOnly();\n  aliasOnly();\n  return parseOrder(normalize(\" x \"));\n}\n",
   );
   write("tools/local.ts", "export function auditLocal(): void {}\n");
@@ -124,6 +126,7 @@ describe("extractPerPackage", () => {
     expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/index.ts")).toBeDefined();
     expect(resolvedEdge(result, "imports", "ts:packages/core/src/orders.ts", "ts:packages/util/src/index.ts")).toBeDefined();
     expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/helpers.ts")).toBeDefined();
+    expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/contracts.ts")).toBeDefined();
   });
 
   it("honours a package-local tsconfig alias without externalizing it", () => {
