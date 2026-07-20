@@ -115,16 +115,34 @@ function startViewProcess(graphPath: string, telemetryArgs: string[], port: numb
 }
 
 export function buildPrReviewFixture(): PrReviewFixture {
-  const dir = mkdtempSync(join(tmpdir(), "meridian-pr-review-"));
+  return buildPrReviewFixtureWithHead("meridian-pr-review-", populateDefaultPrReviewHead);
+}
+
+/** A large-review fixture whose changed files all share one package, forcing the renderer's
+ * changed-file rollup path while keeping every returned API/detail record derived from real git. */
+export function buildPrReviewRollupFixture(): PrReviewFixture {
+  return buildPrReviewFixtureWithHead("meridian-pr-review-rollup-", populatePrReviewRollupHead);
+}
+
+type PrReviewHeadFile = Pick<PrReviewFixtureFile["api"], "filename" | "status">;
+
+function buildPrReviewFixtureWithHead(
+  temporaryDirectoryPrefix: string,
+  populateHead: (worktree: string) => PrReviewHeadFile[],
+): PrReviewFixture {
+  const dir = mkdtempSync(join(tmpdir(), temporaryDirectoryPrefix));
   try {
-    return populatePrReviewFixture(dir);
+    return populatePrReviewFixture(dir, populateHead);
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
     throw error;
   }
 }
 
-function populatePrReviewFixture(dir: string): PrReviewFixture {
+function populatePrReviewFixture(
+  dir: string,
+  populateHead: (worktree: string) => PrReviewHeadFile[],
+): PrReviewFixture {
   const bareRepo = join(dir, "repo.git");
   const worktree = join(dir, "worktree");
   fixtureGit(["init", "--bare", bareRepo]);
@@ -139,26 +157,44 @@ function populatePrReviewFixture(dir: string): PrReviewFixture {
   fixtureGit(["symbolic-ref", "HEAD", "refs/heads/main"], bareRepo);
 
   fixtureGit(["switch", "-c", "pr-head"], worktree);
-  writeFileSync(join(worktree, "src/pricing/loyaltyTiers.ts"), LOYALTY_TIERS_SOURCE);
-  appendFileSync(join(worktree, "src/services/orderService.ts"), ORDER_SERVICE_CHANGE);
-  mkdirSync(dirname(join(worktree, PYTHON_REVIEW_PATH)), { recursive: true });
-  writeFileSync(join(worktree, PYTHON_REVIEW_PATH), PYTHON_RISK_HEAD_SOURCE);
+  const changedFiles = populateHead(worktree);
   fixtureGit(["add", "."], worktree);
   fixtureGit(["commit", "-m", "add PR review fixture changes"], worktree);
   fixtureGit(["push", "origin", "pr-head", "pr-head:refs/pull/7/head"], worktree);
 
-  const changedFiles = [
-    { path: "src/pricing/loyaltyTiers.ts", status: "added" },
-    { path: "src/services/orderService.ts", status: "modified" },
-    { path: PYTHON_REVIEW_PATH, status: "added" },
-  ] as const;
   return {
     dir,
     bareRepo,
     worktree,
     headSha: fixtureGit(["rev-parse", "pr-head"], worktree).trim(),
-    files: changedFiles.map(({ path, status }) => fixtureFile(worktree, path, status)),
+    files: changedFiles.map(({ filename, status }) => fixtureFile(worktree, filename, status)),
   };
+}
+
+function populateDefaultPrReviewHead(worktree: string): PrReviewHeadFile[] {
+  writeFileSync(join(worktree, "src/pricing/loyaltyTiers.ts"), LOYALTY_TIERS_SOURCE);
+  appendFileSync(join(worktree, "src/services/orderService.ts"), ORDER_SERVICE_CHANGE);
+  mkdirSync(dirname(join(worktree, PYTHON_REVIEW_PATH)), { recursive: true });
+  writeFileSync(join(worktree, PYTHON_REVIEW_PATH), PYTHON_RISK_HEAD_SOURCE);
+  return [
+    { filename: "src/pricing/loyaltyTiers.ts", status: "added" },
+    { filename: "src/services/orderService.ts", status: "modified" },
+    { filename: PYTHON_REVIEW_PATH, status: "added" },
+  ] satisfies PrReviewHeadFile[];
+}
+
+function populatePrReviewRollupHead(worktree: string): PrReviewHeadFile[] {
+  const rollupDirectory = join(worktree, "src/rollup");
+  mkdirSync(rollupDirectory, { recursive: true });
+  return Array.from({ length: 12 }, (_, index) => {
+    const ordinal = String(index + 1).padStart(2, "0");
+    const filename = `src/rollup/reviewUnit${ordinal}.ts`;
+    writeFileSync(
+      join(worktree, filename),
+      `export function reviewUnit${ordinal}(): string {\n  return "review-unit-${ordinal}";\n}\n`,
+    );
+    return { filename, status: "added" as const };
+  });
 }
 
 export async function startSmartGitServer(fixture: { bareRepo: string }): Promise<{ server: Server; repoUrl: string }> {
