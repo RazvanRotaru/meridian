@@ -1,7 +1,7 @@
 import type { Category, Product, ProductId, ProductView } from "../domain/product.js";
 import { ProductRepository } from "../repository/productRepository.js";
 import { InventoryService } from "./inventoryService.js";
-import { formatMoney } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
 import { log } from "../utils/logger.js";
 
 /** Reads the catalog and shapes it for the UI, folding in live stock signals. */

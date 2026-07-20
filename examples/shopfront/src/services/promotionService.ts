@@ -1,7 +1,8 @@
 import type { Cart } from "../domain/cart.js";
 import { PricingService } from "./pricingService.js";
 import { UserService } from "./userService.js";
-import { clamp, sum } from "../utils/legacy.js";
+import { clamp } from "../utils/numbers.js";
+import { sum } from "../utils/collections.js";
 import { log } from "../utils/logger.js";
 
 /**
@@ -31,7 +32,7 @@ export class PromotionService {
 
   /** Percentage discount rate, higher for fuller carts. */
   private rate(cart: Cart): number {
-    return cart.items.length >= 3 ? 0.1 : 0.05;
+    return cart.items.length > 3 ? 0.1 : 0.05;
   }
 
   /** A flat loyalty bonus for gold-tier shoppers. */

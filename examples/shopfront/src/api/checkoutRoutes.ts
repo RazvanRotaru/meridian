@@ -7,7 +7,7 @@ import { log } from "../utils/logger.js";
 /**
  * HTTP front door for checkout. handlePlaceOrder starts the deepest chain in the graph:
  * handler -> CheckoutService.placeOrder -> PricingService.priceCart -> PromotionService.apply
- * -> PricingService.basePrice -> legacy.clamp.
+ * -> PricingService.basePrice -> numbers.clamp.
  */
 export class CheckoutRoutes {
   constructor(private readonly _checkout: CheckoutService) {}

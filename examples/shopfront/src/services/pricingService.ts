@@ -1,7 +1,8 @@
 import type { Cart, CartItem } from "../domain/cart.js";
-import type { Money, PriceBreakdown } from "../domain/money.js";
+import { formatMoney, money, type Money, type PriceBreakdown } from "../domain/money.js";
 import type { PromotionService } from "./promotionService.js";
-import { clamp, formatMoney, sum } from "../utils/legacy.js";
+import { clamp } from "../utils/numbers.js";
+import { sum } from "../utils/collections.js";
 import { log } from "../utils/logger.js";
 
 const TAX_RATE = 0.2;
@@ -43,9 +44,4 @@ export class PricingService {
   private tax(baseCents: number): number {
     return Math.round(baseCents * TAX_RATE);
   }
-}
-
-/** Small helper to keep USD money literals tidy. */
-function money(amountCents: number): Money {
-  return { amountCents, currency: "USD" };
 }
