@@ -9,9 +9,18 @@ import re
 FUNCTIONS = (ast.FunctionDef, ast.AsyncFunctionDef)
 
 
-def collect_nodes(tree: ast.Module) -> list[dict]:
+def collect_nodes(
+    tree: ast.Module,
+    interface_occurrences: set[tuple[str, int]] | None = None,
+) -> list[dict]:
     nodes: list[dict] = []
-    collect_body(tree.body, nodes, parent=None, direct_class=None)
+    collect_body(
+        tree.body,
+        nodes,
+        parent=None,
+        direct_class=None,
+        interface_occurrences=interface_occurrences or set(),
+    )
     return nodes
 
 
@@ -20,18 +29,32 @@ def collect_body(
     nodes: list[dict],
     parent: str | None,
     direct_class: str | None,
+    interface_occurrences: set[tuple[str, int]],
 ) -> None:
     for statement in body:
         if isinstance(statement, FUNCTIONS):
             qualname = qualify(parent, statement.name)
             nodes.append(callable_node(statement, qualname, parent, direct_class is not None))
-            collect_body(statement.body, nodes, parent=qualname, direct_class=None)
+            collect_body(
+                statement.body,
+                nodes,
+                parent=qualname,
+                direct_class=None,
+                interface_occurrences=interface_occurrences,
+            )
         elif isinstance(statement, ast.ClassDef):
             qualname = qualify(parent, statement.name)
-            nodes.append(class_node(statement, qualname, parent))
-            collect_body(statement.body, nodes, parent=qualname, direct_class=qualname)
+            is_interface = (qualname, statement.lineno) in interface_occurrences
+            nodes.append(class_node(statement, qualname, parent, is_interface))
+            collect_body(
+                statement.body,
+                nodes,
+                parent=qualname,
+                direct_class=qualname,
+                interface_occurrences=interface_occurrences,
+            )
         else:
-            collect_nested(statement, nodes, parent, direct_class)
+            collect_nested(statement, nodes, parent, direct_class, interface_occurrences)
 
 
 def collect_nested(
@@ -39,21 +62,35 @@ def collect_nested(
     nodes: list[dict],
     parent: str | None,
     direct_class: str | None,
+    interface_occurrences: set[tuple[str, int]],
 ) -> None:
     for child in ast.iter_child_nodes(node):
         if isinstance(child, (ast.stmt,)):
-            collect_body([child], nodes, parent, direct_class)
+            collect_body([child], nodes, parent, direct_class, interface_occurrences)
         else:
-            collect_nested(child, nodes, parent, direct_class)
+            collect_nested(child, nodes, parent, direct_class, interface_occurrences)
 
 
-def class_node(classdef: ast.ClassDef, qualname: str, parent: str | None) -> dict:
+def class_node(
+    classdef: ast.ClassDef,
+    qualname: str,
+    parent: str | None,
+    is_interface: bool,
+) -> dict:
     tags: list[str] = []
     if "dataclass" in decorator_names(classdef):
         tags.append("dataclass")
     if classdef.name.startswith("_"):
         tags.append("private")
-    return base_node(classdef, "class", qualname, classdef.name, parent, tags, None)
+    return base_node(
+        classdef,
+        "interface" if is_interface else "class",
+        qualname,
+        classdef.name,
+        parent,
+        tags,
+        None,
+    )
 
 
 def callable_node(
