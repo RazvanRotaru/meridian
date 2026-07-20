@@ -26,7 +26,6 @@ import { parsePatchDetail, parsePatchHunks } from "../src/server/github-parse";
 const HERE = dirname(fileURLToPath(import.meta.url));
 export const CLI = join(HERE, "..", "dist", "bin.js");
 export const RENDERER_INDEX = join(HERE, "..", "renderer-dist", "index.html");
-export const PR_PREPARE_CLIENT = join(HERE, "..", "renderer-dist", "pr-prepare-client.js");
 export const FIXTURE = join(HERE, "..", "..", "..", "examples", "orders-service");
 // Deliberately deeper than the historical detector horizon: the PR introduces Python into an
 // otherwise TypeScript-only base, proving changed-file hints and complete discovery activate it.
@@ -61,9 +60,6 @@ export function ensureBuilt(): void {
   }
   if (!existsSync(RENDERER_INDEX)) {
     throw new Error("renderer bundle missing — run `pnpm --filter @meridian/cli copy-renderer`.");
-  }
-  if (!existsSync(PR_PREPARE_CLIENT)) {
-    throw new Error("PR preparation browser client missing — rebuild and copy the renderer bundle.");
   }
 }
 

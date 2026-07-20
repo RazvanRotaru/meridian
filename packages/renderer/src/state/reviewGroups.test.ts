@@ -270,7 +270,6 @@ async function reviewedStore(files: Array<{ path: string }>) {
   vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
     const url = input.toString();
     if (url.includes("/api/pr/prepare")) {
-      const handoffId = `prh-v1-${"d".repeat(64)}`;
       return Promise.resolve(ndjsonResponse([{
         version: 1,
         type: "done",
@@ -284,9 +283,9 @@ async function reviewedStore(files: Array<{ path: string }>) {
         timings: { publish: 1 },
         warnings: [],
         handoff: {
-          id: handoffId,
-          url: `/api/pr/prepared?id=${handoffId}`,
-          viewUrl: `/view?id=${HEAD_GRAPH_ID}&view=modules&prn=5&rev=1&prepared=${handoffId}`,
+          id: `handoff-${HEAD_GRAPH_ID}`,
+          url: `/api/pr/prepared?id=handoff-${HEAD_GRAPH_ID}`,
+          viewUrl: `/view?id=${HEAD_GRAPH_ID}&view=modules&prn=5&rev=1&prepared=handoff-${HEAD_GRAPH_ID}`,
         },
       }]));
     }

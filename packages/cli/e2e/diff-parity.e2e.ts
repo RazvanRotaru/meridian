@@ -14,7 +14,6 @@ import { chromium, type Browser, type BrowserContext, type Locator, type Page } 
 import { buildNodeId } from "@meridian/core";
 import { createWebServer, type WebServerHandle } from "../src/server/web-server";
 import { removeEntry } from "../src/server/web-cache-storage";
-import { streamPrPreparation } from "../../renderer/src/state/prPreparation";
 import {
   DIFF_PARITY_CASES,
   buildDiffParityFixture,
@@ -472,14 +471,46 @@ function expectSameFileParity(
 }
 
 async function preparePrView(baseUrl: string, pr: DiffParityPr): Promise<string> {
-  const result = await streamPrPreparation(`${baseUrl}/api/pr/prepare`, {
-    owner: "e2e",
-    repo: "shop",
-    prNumber: pr.number,
-    baseRef: pr.baseRef,
-    headRef: pr.headRef,
-  }, () => {});
-  return result.handoff.viewUrl;
+  const response = await nativeFetch(`${baseUrl}/api/pr/prepare`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/x-ndjson" },
+    body: JSON.stringify({
+      owner: "e2e",
+      repo: "shop",
+      prNumber: pr.number,
+      baseRef: pr.baseRef,
+      headRef: pr.headRef,
+    }),
+  });
+  const body = await response.text();
+  if (!response.ok || response.headers.get("content-type")?.split(";", 1)[0] !== "application/x-ndjson") {
+    throw new Error(`diff parity PR preparation failed (${response.status}): ${body}`);
+  }
+  const records = body
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  if (records.some((record) => record.version !== 1)) {
+    throw new Error("diff parity PR preparation returned an unversioned record");
+  }
+  const error = records.find((record) => record.type === "error");
+  if (error) throw new Error(`diff parity PR preparation failed: ${String(error.message)}`);
+  const terminals = records.filter((record) => record.type === "done");
+  if (terminals.length !== 1) {
+    throw new Error(`diff parity PR preparation returned ${terminals.length} terminal done records`);
+  }
+  const done = terminals[0];
+  const head = done.head as Record<string, unknown> | undefined;
+  const mergeBase = done.mergeBase as Record<string, unknown> | undefined;
+  const handoff = done.handoff as Record<string, unknown> | undefined;
+  if (
+    typeof head?.graphId !== "string"
+    || typeof mergeBase?.graphId !== "string"
+    || typeof handoff?.viewUrl !== "string"
+  ) {
+    throw new Error("diff parity PR preparation returned an incomplete two-sided handoff");
+  }
+  return handoff.viewUrl;
 }
 
 function fakeGitHub(source: DiffParityFixture): typeof fetch {

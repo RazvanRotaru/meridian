@@ -20,23 +20,12 @@ import {
   normalizePrPrepareWarnings,
   type PrPrepareStage,
   type PrPrepareTimings,
-} from "@meridian/core/pr-prepare-contract";
+} from "@meridian/core";
 
 const MAX_PATH_LENGTH = 4_096;
 const MAX_ERROR_RESPONSE_BYTES = 64 * 1024;
-const GRAPH_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
-const HANDOFF_ID = /^prh-v1-[0-9a-f]{64}$/;
 
-export type { PrPrepareStage } from "@meridian/core/pr-prepare-contract";
-
-/** A well-formed request received an explicit server or wire-contract failure. Transport failures
- * remain their native error type so the landing page can present a safe connectivity fallback. */
-export class PrPreparationResponseError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "PrPreparationResponseError";
-  }
-}
+export type { PrPrepareStage } from "@meridian/core";
 
 export interface PrPrepareRequest {
   owner: string;
@@ -142,11 +131,15 @@ export async function streamPrPreparation(
   request: PrPrepareRequest,
   onStage: (stage: PrPrepareStage, elapsedMs: number) => void,
   signal?: AbortSignal,
-  onTerminalCandidate?: (result: PrPreparationResult) => void,
 ): Promise<PrPreparationResult> {
   const canonical = canonicalRequest(request);
   const response = await postPreparation(prepareUrl, canonical, signal);
-  return drainPreparationStream(response, canonical.prNumber, onStage, onTerminalCandidate);
+  const result = await drainPreparationStream(response, onStage);
+  const view = new URL(result.handoff.viewUrl, "http://meridian.local");
+  if (view.searchParams.get("prn") !== String(canonical.prNumber)) {
+    throw invalidDone("handoff.viewUrl PR number");
+  }
+  return result;
 }
 
 /** Opaque coordinate for one canonical handoff entry; no path is replayed to graph transport. */
@@ -228,70 +221,54 @@ async function postPreparation(
     signal,
   });
   if (!response.ok || !response.body) {
-    throw new PrPreparationResponseError(await requestErrorMessage(response));
+    throw new Error(await requestErrorMessage(response));
   }
   const contentType = responseMediaType(response);
   if (contentType !== "application/x-ndjson") {
     await cancelResponseBody(response, "PR preparation content type is invalid");
-    throw new PrPreparationResponseError("invalid PR preparation response: expected application/x-ndjson");
+    throw new Error("invalid PR preparation response: expected application/x-ndjson");
   }
   return response;
 }
 
 async function drainPreparationStream(
   response: Response,
-  expectedPrNumber: number,
   onStage: (stage: PrPrepareStage, elapsedMs: number) => void,
-  onTerminalCandidate?: (result: PrPreparationResult) => void,
 ): Promise<PrPreparationResult> {
   if (response.body === null) {
-    throw new PrPreparationResponseError("invalid PR preparation response: body is required");
+    throw new Error("invalid PR preparation response: body is required");
   }
   const reader = response.body.getReader();
   const decoder = new TextDecoder("utf-8", { fatal: true });
-  let lineChunks: Uint8Array[] = [];
-  let lineBytes = 0;
+  let buffer = "";
   let result: PrPreparationResult | null = null;
   try {
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
-      let segmentStart = 0;
-      for (let index = 0; index < value.byteLength; index += 1) {
-        if (value[index] !== 0x0a) continue;
-        const segment = value.subarray(segmentStart, index);
-        assertLineByteSize(lineBytes + segment.byteLength);
-        if (segment.byteLength > 0) lineChunks.push(segment);
-        result = applyLine(
-          decodeLine(lineChunks, lineBytes + segment.byteLength, decoder),
-          expectedPrNumber,
-          onStage,
-          result,
-          onTerminalCandidate,
-        );
-        lineChunks = [];
-        lineBytes = 0;
-        segmentStart = index + 1;
+      try {
+        buffer += decoder.decode(value, { stream: true });
+      } catch {
+        throw new Error("invalid PR preparation stream: expected UTF-8");
       }
-      const remainder = value.subarray(segmentStart);
-      if (remainder.byteLength > 0) {
-        assertLineByteSize(lineBytes + remainder.byteLength);
-        lineChunks.push(remainder);
-        lineBytes += remainder.byteLength;
+      if (utf8ByteLength(buffer) > PR_PREPARE_MAX_LINE_BYTES && !buffer.includes("\n")) {
+        throw new Error("invalid PR preparation stream: NDJSON line is too large");
+      }
+      const lines = buffer.split("\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        assertLineSize(line);
+        result = applyLine(line.trim(), onStage, result);
       }
     }
-    if (lineBytes > 0) {
-      result = applyLine(
-        decodeLine(lineChunks, lineBytes, decoder),
-        expectedPrNumber,
-        onStage,
-        result,
-        onTerminalCandidate,
-      );
+    try {
+      buffer += decoder.decode();
+    } catch {
+      throw new Error("invalid PR preparation stream: expected UTF-8");
     }
-    if (result === null) {
-      throw new PrPreparationResponseError("PR preparation ended without a v1 done line.");
-    }
+    assertLineSize(buffer);
+    result = applyLine(buffer.trim(), onStage, result);
+    if (result === null) throw new Error("PR preparation ended without a v1 done line.");
     return result;
   } catch (error) {
     try {
@@ -305,49 +282,19 @@ async function drainPreparationStream(
   }
 }
 
-function decodeLine(chunks: readonly Uint8Array[], byteLength: number, decoder: TextDecoder): string {
-  const bytes = chunks.length === 1 ? chunks[0]! : new Uint8Array(byteLength);
-  if (chunks.length !== 1) {
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-  }
-  try {
-    return decoder.decode(bytes);
-  } catch {
-    throw new PrPreparationResponseError("invalid PR preparation stream: expected UTF-8");
-  }
-}
-
-function assertLineByteSize(byteLength: number): void {
-  if (byteLength + 1 > PR_PREPARE_MAX_LINE_BYTES) {
-    throw new PrPreparationResponseError("invalid PR preparation stream: NDJSON line is too large");
-  }
-}
-
 function applyLine(
   line: string,
-  expectedPrNumber: number,
   onStage: (stage: PrPrepareStage, elapsedMs: number) => void,
   result: PrPreparationResult | null,
-  onTerminalCandidate?: (result: PrPreparationResult) => void,
 ): PrPreparationResult | null {
-  if (result !== null) {
-    throw new PrPreparationResponseError("invalid PR preparation stream: data followed the done line");
-  }
-  const record = line.trim();
-  if (record.length === 0) {
-    throw new PrPreparationResponseError("invalid PR preparation stream: blank NDJSON record");
-  }
-  const parsed = parseLine(record, expectedPrNumber);
+  if (line.length === 0) return result;
+  if (result !== null) throw new Error("invalid PR preparation stream: data followed the done line");
+  const parsed = parseLine(line);
   if (parsed.type === "progress") {
     onStage(parsed.stage, parsed.elapsedMs);
     return null;
   }
-  if (parsed.type === "error") throw new PrPreparationResponseError(parsed.message);
-  onTerminalCandidate?.(parsed.result);
+  if (parsed.type === "error") throw new Error(parsed.message);
   return parsed.result;
 }
 
@@ -356,58 +303,55 @@ type ParsedLine =
   | { type: "done"; result: PrPreparationResult }
   | { type: "error"; message: string };
 
-function parseLine(line: string, expectedPrNumber: number): ParsedLine {
+function parseLine(line: string): ParsedLine {
   let value: unknown;
   try {
     value = JSON.parse(line);
   } catch {
-    throw new PrPreparationResponseError("invalid PR preparation stream: expected NDJSON");
+    throw new Error("invalid PR preparation stream: expected NDJSON");
   }
   if (!isRecord(value) || value.version !== PR_PREPARE_PROTOCOL_VERSION) {
-    throw new PrPreparationResponseError("invalid PR preparation stream: expected protocol version 1");
+    throw new Error("invalid PR preparation stream: expected protocol version 1");
   }
   if (value.type === "progress") {
     if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.progress)) {
-      throw new PrPreparationResponseError("invalid PR preparation stream: progress fields do not match protocol version 1");
+      throw new Error("invalid PR preparation stream: progress fields do not match protocol version 1");
     }
     if (!isPrPrepareStage(value.stage)) {
-      throw new PrPreparationResponseError("invalid PR preparation stream: progress.stage");
+      throw new Error("invalid PR preparation stream: progress.stage");
     }
     if (!isPrPrepareElapsedMs(value.elapsedMs)) {
-      throw new PrPreparationResponseError("invalid PR preparation stream: progress.elapsedMs");
+      throw new Error("invalid PR preparation stream: progress.elapsedMs");
     }
     return { type: "progress", stage: value.stage, elapsedMs: value.elapsedMs };
   }
   if (value.type === "done") {
     if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.done)) {
-      throw new PrPreparationResponseError("invalid PR preparation stream: done fields do not match protocol version 1");
+      throw new Error("invalid PR preparation stream: done fields do not match protocol version 1");
     }
-    return { type: "done", result: parseDoneLine(value, expectedPrNumber) };
+    return { type: "done", result: parseDoneLine(value) };
   }
   if (value.type === "error") {
     if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.error)) {
-      throw new PrPreparationResponseError("invalid PR preparation stream: error fields do not match protocol version 1");
+      throw new Error("invalid PR preparation stream: error fields do not match protocol version 1");
     }
     return { type: "error", message: requiredString(value.message, "error.message") };
   }
-  throw new PrPreparationResponseError("invalid PR preparation stream: unsupported v1 line type");
+  throw new Error("invalid PR preparation stream: unsupported v1 line type");
 }
 
-function parseDoneLine(line: Record<string, unknown>, expectedPrNumber: number): PrPreparationResult {
+function parseDoneLine(line: Record<string, unknown>): PrPreparationResult {
   const pair = parsePreparedPair(line);
   return {
     ...pair,
-    handoff: parseHandoffLink(line.handoff, pair.head.graphId, expectedPrNumber),
+    handoff: parseHandoffLink(line.handoff, pair.head.graphId),
   };
 }
 
 function parsePreparedPair(line: Record<string, unknown>): PreparedReviewPair {
-  const head = parseGraphDescriptor(line.head, "head");
-  const mergeBase = parseGraphDescriptor(line.mergeBase, "mergeBase");
-  if (head.graphId === mergeBase.graphId) throw invalidDone("graph identities must differ");
   return {
-    head,
-    mergeBase,
+    head: parseGraphDescriptor(line.head, "head"),
+    mergeBase: parseGraphDescriptor(line.mergeBase, "mergeBase"),
     headSha: commitSha(line.headSha, "headSha"),
     baseSha: commitSha(line.baseSha, "baseSha"),
     mergeBaseSha: commitSha(line.mergeBaseSha, "mergeBaseSha"),
@@ -418,23 +362,54 @@ function parsePreparedPair(line: Record<string, unknown>): PreparedReviewPair {
   };
 }
 
-function parseHandoffLink(
-  value: unknown,
-  headGraphId: string,
-  expectedPrNumber: number,
-): PreparedReviewHandoffLink {
+function parseHandoffLink(value: unknown, headGraphId: string): PreparedReviewHandoffLink {
   if (!hasExactPrPrepareFields(value, PR_PREPARE_V1_FIELDS.handoffLink)) throw invalidDone("handoff");
   const id = requiredString(value.id, "handoff.id");
   const url = requiredString(value.url, "handoff.url");
   const viewUrl = requiredString(value.viewUrl, "handoff.viewUrl");
-  if (!HANDOFF_ID.test(id)) throw invalidDone("handoff.id");
-  const encodedId = encodeURIComponent(id);
-  if (url !== `/api/pr/prepared?id=${encodedId}`
-    || viewUrl !== `/view?id=${encodeURIComponent(headGraphId)}`
-      + `&view=modules&prn=${expectedPrNumber}&rev=1&prepared=${encodedId}`) {
+  const parsedUrl = strictRelativeUrl(url, "/api/pr/prepared", ["id"], "handoff.url");
+  const parsedView = strictRelativeUrl(
+    viewUrl,
+    "/view",
+    ["id", "view", "prn", "rev", "prepared"],
+    "handoff.viewUrl",
+  );
+  if (
+    parsedUrl.searchParams.get("id") !== id
+    || parsedView.searchParams.get("id") !== headGraphId
+    || parsedView.searchParams.get("view") !== "modules"
+    || parsedView.searchParams.get("rev") !== "1"
+    || parsedView.searchParams.get("prepared") !== id
+    || !/^[1-9]\d*$/.test(parsedView.searchParams.get("prn") ?? "")
+  ) {
     throw invalidDone("handoff");
   }
   return { id, url, viewUrl };
+}
+
+function strictRelativeUrl(
+  value: string,
+  pathname: string,
+  expectedKeys: readonly string[],
+  label: string,
+): URL {
+  const separatorIndex = value.search(/[?#]/);
+  const rawPathname = separatorIndex < 0 ? value : value.slice(0, separatorIndex);
+  if (!value.startsWith("/") || value.startsWith("//") || rawPathname !== pathname) {
+    throw invalidDone(label);
+  }
+  const parsed = new URL(value, "http://meridian.local");
+  const keys = [...parsed.searchParams.keys()].sort();
+  if (
+    parsed.origin !== "http://meridian.local"
+    || parsed.pathname !== pathname
+    || value.includes("#")
+    || keys.length !== expectedKeys.length
+    || keys.some((key, index) => key !== [...expectedKeys].sort()[index])
+  ) {
+    throw invalidDone(label);
+  }
+  return parsed;
 }
 
 function parseHandoffRequest(value: unknown): PrPrepareRequest {
@@ -469,12 +444,6 @@ function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescr
     throw invalidDone(`${label}.graphSummary`);
   }
   const graphId = requiredString(value.graphId, `${label}.graphId`);
-  if (!GRAPH_ID.test(graphId)) throw invalidDone(`${label}.graphId`);
-  const schemaVersion = requiredString(value.graphSummary.schemaVersion, `${label}.graphSummary.schemaVersion`);
-  const generatedAt = requiredString(value.graphSummary.generatedAt, `${label}.graphSummary.generatedAt`);
-  if (schemaVersion.length > 128
-    || generatedAt.length > 64
-    || !Number.isFinite(Date.parse(generatedAt))) throw invalidDone(`${label}.graphSummary`);
   return {
     graphId,
     manifestUrl: parseDescriptorEndpoint(
@@ -498,8 +467,8 @@ function parseGraphDescriptor(value: unknown, label: string): PreparedGraphDescr
     sourceUrl: parseDescriptorEndpoint(value.sourceUrl, graphId, "/api/source", `${label}.sourceUrl`),
     metaUrl: parseDescriptorEndpoint(value.metaUrl, graphId, "/api/meta", `${label}.metaUrl`),
     graphSummary: {
-      schemaVersion,
-      generatedAt,
+      schemaVersion: requiredString(value.graphSummary.schemaVersion, `${label}.graphSummary.schemaVersion`),
+      generatedAt: requiredString(value.graphSummary.generatedAt, `${label}.graphSummary.generatedAt`),
       nodeCount: nonNegativeInteger(value.graphSummary.nodeCount, `${label}.graphSummary.nodeCount`),
       edgeCount: nonNegativeInteger(value.graphSummary.edgeCount, `${label}.graphSummary.edgeCount`),
     },
@@ -513,7 +482,8 @@ function parseDescriptorEndpoint(
   label: string,
 ): string {
   const endpoint = requiredString(value, label);
-  if (endpoint !== `${pathname}?id=${encodeURIComponent(graphId)}`) throw invalidDone(label);
+  const parsed = strictRelativeUrl(endpoint, pathname, ["id"], label);
+  if (parsed.searchParams.get("id") !== graphId) throw invalidDone(label);
   return endpoint;
 }
 
@@ -594,8 +564,8 @@ function requiredString(value: unknown, label: string): string {
 
 function commitSha(value: unknown, label: string): string {
   const sha = requiredString(value, label);
-  if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha)) throw invalidDone(label);
-  return sha;
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(sha)) throw invalidDone(label);
+  return sha.toLowerCase();
 }
 
 function nonNegativeInteger(value: unknown, label: string): number {
@@ -608,7 +578,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function invalidDone(field: string): Error {
-  return new PrPreparationResponseError(`invalid PR preparation done line: ${field}`);
+  return new Error(`invalid PR preparation done line: ${field}`);
+}
+
+function assertLineSize(line: string): void {
+  if (utf8ByteLength(line) + 1 > PR_PREPARE_MAX_LINE_BYTES) {
+    throw new Error("invalid PR preparation stream: NDJSON line is too large");
+  }
+}
+
+function utf8ByteLength(value: string): number {
+  return new TextEncoder().encode(value).byteLength;
 }
 
 async function cancelResponseBody(response: Response, reason: string): Promise<void> {

@@ -83,9 +83,7 @@ describe("createWebServer landing + errors", () => {
     expect(html).toContain('aria-controls="pr-results"');
     expect(html).toContain('id="pr-results"');
     expect(html).toContain("/api/repos/pulls?repo=");
-    expect(html).toContain('"/pr-prepare-client.js"');
-    expect(html).toContain("import(url)");
-    expect(html).not.toContain('"&view=modules&prn="');
+    expect(html).toContain('"&view=modules&prn="');
     expect(html).toContain('id="repository-selection"');
     expect(html).toContain('id="selected-repository-name"');
     expect(html).toContain('id="change-repository"');
@@ -98,18 +96,6 @@ describe("createWebServer landing + errors", () => {
     expect(html).not.toContain('id="subdir"');
     expect(html).not.toContain("Source subfolder");
     expect(html).not.toContain('$("repo").addEventListener("change"');
-  });
-
-  it("serves the shared PR preparation browser client as an executable module", async () => {
-    const response = await fetch(`${base}/pr-prepare-client.js`);
-    expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-    expect(await response.text()).toBe("export const ready = true;");
-
-    const retry = await fetch(`${base}/pr-prepare-client.js?retry=1`);
-    expect(retry.status).toBe(200);
-    expect(retry.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
-    expect(await retry.text()).toBe("export const ready = true;");
   });
 
   it("ships the staged, accessible blueprint preparation indicator", async () => {
@@ -448,7 +434,6 @@ function writeFakeRenderer(): string {
   mkdirSync(join(dir, "assets"));
   writeFileSync(join(dir, "index.html"), "<!doctype html><html><head></head><body></body></html>");
   writeFileSync(join(dir, "assets", "app.js"), "export const ready = true;");
-  writeFileSync(join(dir, "pr-prepare-client.js"), "export const ready = true;");
   return dir;
 }
 

@@ -15,7 +15,6 @@ import {
   streamPrPreparation,
   type PrPrepareRequest,
   type PrPrepareStage,
-  type PrPreparationResult,
 } from "./prPreparation";
 
 const REQUEST: PrPrepareRequest = {
@@ -32,7 +31,6 @@ const BASE = descriptor("pr-base");
 const HEAD_SHA = "a".repeat(40);
 const BASE_SHA = "b".repeat(40);
 const MERGE_BASE_SHA = "c".repeat(40);
-const HANDOFF_ID = `prh-v1-${"d".repeat(64)}`;
 const INVALID_CHANGED_FILES: unknown[][] = [
   [{ path: "../escape.ts", status: "modified" }],
   [{ path: "/absolute.ts", status: "modified" }],
@@ -105,55 +103,6 @@ describe("streamPrPreparation", () => {
 
     await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
       .rejects.toThrow("invalid PR preparation stream: expected UTF-8");
-  });
-
-  it("accepts one UTF-8 record when a multibyte scalar is split across transport chunks", async () => {
-    const encoded = new TextEncoder().encode(`${JSON.stringify({
-      ...doneLine(),
-      warnings: ["caf\u00e9"],
-    })}\n`);
-    const scalarStart = encoded.indexOf(0xc3);
-    expect(scalarStart).toBeGreaterThan(0);
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(encoded.subarray(0, scalarStart + 1));
-        controller.enqueue(encoded.subarray(scalarStart + 1));
-        controller.close();
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
-      status: 200,
-      headers: { "content-type": "application/x-ndjson" },
-    })));
-
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
-      .resolves.toMatchObject({ warnings: ["caf\u00e9"] });
-  });
-
-  it("rejects and cancels an oversized unfinished suffix without waiting for EOF", async () => {
-    const prefix = new TextEncoder().encode(`${JSON.stringify(progress("resolve", 1))}\n`);
-    const chunk = new Uint8Array(prefix.byteLength + PR_PREPARE_MAX_LINE_BYTES);
-    chunk.set(prefix);
-    chunk.fill(0x78, prefix.byteLength);
-    let canceledWith: unknown;
-    const body = new ReadableStream<Uint8Array>({
-      start(controller) {
-        controller.enqueue(chunk);
-      },
-      cancel(reason) {
-        canceledWith = reason;
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
-      status: 200,
-      headers: { "content-type": "application/x-ndjson" },
-    })));
-    const stages: PrPrepareStage[] = [];
-
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, (stage) => stages.push(stage)))
-      .rejects.toThrow("invalid PR preparation stream: NDJSON line is too large");
-    expect(stages).toEqual(["resolve"]);
-    expect(canceledWith).toBe("invalid PR preparation stream: NDJSON line is too large");
   });
 
   it("addresses one canonical manifest entry without replaying its path", () => {
@@ -313,97 +262,13 @@ describe("streamPrPreparation", () => {
 
   it.each([
     null,
-    { id: HANDOFF_ID, url: "/api/pr/prepared?id=other", viewUrl: `/view?id=pr-head&view=modules&prn=7&rev=1&prepared=${HANDOFF_ID}` },
-    { id: HANDOFF_ID, url: `/api/pr/prepared?id=${HANDOFF_ID}`, viewUrl: `/view?id=other&view=modules&prn=7&rev=1&prepared=${HANDOFF_ID}` },
-    { id: HANDOFF_ID, url: `/api/pr/prepared?id=${HANDOFF_ID}`, viewUrl: `/view?id=pr-head&view=modules&prn=9&rev=1&prepared=${HANDOFF_ID}` },
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=other", viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff" },
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=opaque-handoff", viewUrl: "/view?id=other&view=modules&prn=7&rev=1&prepared=opaque-handoff" },
+    { id: "opaque-handoff", url: "/api/pr/prepared?id=opaque-handoff", viewUrl: "/view?id=pr-head&view=modules&prn=9&rev=1&prepared=opaque-handoff" },
   ])("rejects a missing or mismatched immutable handoff %#", async (handoff) => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([{ ...doneLine(), handoff }])));
     await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
       .rejects.toThrow("handoff");
-  });
-
-  it.each([
-    ["uppercase commit SHA", { ...doneLine(), headSha: HEAD_SHA.toUpperCase() }, "headSha"],
-    ["invalid graph identity", { ...doneLine(), head: descriptor("pr/head") }, "head.graphId"],
-    ["identical graph identities", { ...doneLine(), mergeBase: HEAD }, "graph identities must differ"],
-    [
-      "noncanonical handoff identity",
-      {
-        ...doneLine(),
-        handoff: {
-          ...doneResult().handoff,
-          id: `prh-v1-${"D".repeat(64)}`,
-        },
-      },
-      "handoff.id",
-    ],
-    [
-      "invalid generation timestamp",
-      {
-        ...doneLine(),
-        head: { ...HEAD, graphSummary: { ...HEAD.graphSummary, generatedAt: "not-a-date" } },
-      },
-      "head.graphSummary",
-    ],
-    [
-      "noncanonical changed-file order",
-      {
-        ...doneLine(),
-        changedFiles: [
-          { path: "src/z.ts", status: "modified" },
-          { path: "src/a.ts", status: "modified" },
-        ],
-      },
-      "changedFiles canonical order",
-    ],
-  ])("rejects producer output with a %s", async (_kind, record, field) => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([record])));
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
-      .rejects.toThrow(`invalid PR preparation done line: ${field}`);
-  });
-
-  it("rejects blank records before and after a terminal record", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(rawNdjsonResponse(`\n${JSON.stringify(doneLine())}\n`)));
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
-      .rejects.toThrow("invalid PR preparation stream: blank NDJSON record");
-
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(rawNdjsonResponse(`${JSON.stringify(doneLine())}\n\n`)));
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
-      .rejects.toThrow("invalid PR preparation stream: data followed the done line");
-  });
-
-  it("publishes a validated terminal candidate before EOF but resolves only after EOF", async () => {
-    let controller!: ReadableStreamDefaultController<Uint8Array>;
-    const body = new ReadableStream<Uint8Array>({
-      start(streamController) {
-        controller = streamController;
-        controller.enqueue(new TextEncoder().encode(`${JSON.stringify(doneLine())}\n`));
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
-      status: 200,
-      headers: { "content-type": "application/x-ndjson" },
-    })));
-    let settled = false;
-    let terminalResolve!: (result: PrPreparationResult) => void;
-    const terminal = new Promise<PrPreparationResult>((resolve) => {
-      terminalResolve = resolve;
-    });
-    const preparation = streamPrPreparation(
-      "/api/pr/prepare",
-      REQUEST,
-      () => {},
-      undefined,
-      terminalResolve,
-    ).finally(() => {
-      settled = true;
-    });
-
-    await expect(terminal).resolves.toEqual(expectedResult());
-    expect(settled).toBe(false);
-    controller.close();
-    await expect(preparation).resolves.toEqual(expectedResult());
-    expect(settled).toBe(true);
   });
 
   it("rejects any line after the terminal done response", async () => {
@@ -445,29 +310,6 @@ describe("streamPrPreparation", () => {
     )));
     await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
       .rejects.toThrow("inspection queue is full; retry later");
-  });
-
-  it.each([
-    ["malformed", "not-a-number", "invalid PR preparation error response content length"],
-    ["oversized", String(64 * 1024 + 1), "PR preparation error response exceeded its byte limit"],
-  ])("bounds a %s Content-Length on direct endpoint error responses", async (_kind, contentLength, reason) => {
-    let canceledWith: unknown;
-    const body = new ReadableStream<Uint8Array>({
-      cancel(cancelReason) {
-        canceledWith = cancelReason;
-      },
-    });
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(body, {
-      status: 503,
-      headers: {
-        "content-type": "application/json",
-        "content-length": contentLength,
-      },
-    })));
-
-    await expect(streamPrPreparation("/api/pr/prepare", REQUEST, () => {}))
-      .rejects.toThrow("PR preparation request failed (503).");
-    expect(canceledWith).toBe(reason);
   });
 
   it("cancels a live response whose advertised preparation media type is invalid", async () => {
@@ -625,9 +467,9 @@ function doneResult() {
   return {
     ...pairResult(),
     handoff: {
-      id: HANDOFF_ID,
-      url: `/api/pr/prepared?id=${HANDOFF_ID}`,
-      viewUrl: `/view?id=pr-head&view=modules&prn=7&rev=1&prepared=${HANDOFF_ID}`,
+      id: "opaque-handoff",
+      url: "/api/pr/prepared?id=opaque-handoff",
+      viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff",
     },
   };
 }
@@ -653,9 +495,9 @@ function expectedResult() {
   return {
     ...expectedPair(),
     handoff: {
-      id: HANDOFF_ID,
-      url: `/api/pr/prepared?id=${HANDOFF_ID}`,
-      viewUrl: `/view?id=pr-head&view=modules&prn=7&rev=1&prepared=${HANDOFF_ID}`,
+      id: "opaque-handoff",
+      url: "/api/pr/prepared?id=opaque-handoff",
+      viewUrl: "/view?id=pr-head&view=modules&prn=7&rev=1&prepared=opaque-handoff",
     },
   };
 }
@@ -679,9 +521,5 @@ function expectedPair() {
 
 function ndjsonResponse(lines: readonly unknown[]): Response {
   const body = lines.map((line) => JSON.stringify(line)).join("\n") + "\n";
-  return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
-}
-
-function rawNdjsonResponse(body: string): Response {
   return new Response(body, { status: 200, headers: { "content-type": "application/x-ndjson" } });
 }

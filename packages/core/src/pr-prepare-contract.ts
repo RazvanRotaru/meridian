@@ -165,13 +165,7 @@ function isChangedPath(value: unknown): value is string {
 }
 
 function utf8ByteLength(value: string): number {
-  let bytes = 0;
-  for (let offset = 0; offset < value.length;) {
-    const scalar = utf8ScalarAt(value, offset);
-    bytes += scalar.value <= 0x7f ? 1 : scalar.value <= 0x7ff ? 2 : scalar.value <= 0xffff ? 3 : 4;
-    offset += scalar.width;
-  }
-  return bytes;
+  return new TextEncoder().encode(value).byteLength;
 }
 
 function utf8ScalarAt(value: string, offset: number): { value: number; width: 1 | 2 } {

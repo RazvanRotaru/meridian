@@ -3164,15 +3164,14 @@ function prepareDone(
   prNumber = 7,
   changedFiles?: readonly PreparedChangedFile[],
 ) {
-  const handoffId = `prh-v1-${"d".repeat(64)}`;
   return {
     version: 1,
     type: "done",
     ...prepareResult(graphId, headSha, changedFiles),
     handoff: {
-      id: handoffId,
-      url: `/api/pr/prepared?id=${handoffId}`,
-      viewUrl: `/view?id=${graphId}&view=modules&prn=${prNumber}&rev=1&prepared=${handoffId}`,
+      id: `handoff-${graphId}`,
+      url: `/api/pr/prepared?id=handoff-${graphId}`,
+      viewUrl: `/view?id=${graphId}&view=modules&prn=${prNumber}&rev=1&prepared=handoff-${graphId}`,
     },
   };
 }
@@ -3365,7 +3364,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     store.setState(selectedPrState(7));
 
     await expect(store.getState().preparePrReviewNavigation("packages/web")).resolves.toBe(
-      `/view?id=pr-broader-root&view=modules&prn=7&rev=1&prepared=prh-v1-${"d".repeat(64)}`,
+      "/view?id=pr-broader-root&view=modules&prn=7&rev=1&prepared=handoff-pr-broader-root",
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
