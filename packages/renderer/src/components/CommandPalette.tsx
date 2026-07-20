@@ -69,10 +69,7 @@ export function CommandPalette() {
 }
 
 function OpenCommandPaletteGate({ onClose }: { onClose: () => void }) {
-  const enabled = useBlueprint((state) => (
-    moduleGraphSurfaceOwner(state) !== "prepared-review-empty"
-    && !(state.prPreparedArtifactCurrent && state.prPreparedReviewCursor === null)
-  ));
+  const enabled = useBlueprint((state) => moduleGraphSurfaceOwner(state) !== "prepared-review-overview");
   useEffect(() => {
     if (!enabled) onClose();
   }, [enabled, onClose]);

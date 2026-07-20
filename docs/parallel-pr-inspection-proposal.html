@@ -5,18 +5,18 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src 'unsafe-inline' blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
-<title>Meridian Parallel Inspection V9</title>
+<title>Meridian Stateless Parallel PR Inspection — Final Architecture and Results</title>
 <style>:root{color-scheme:light dark;background:light-dark(rgb(255 255 255), rgb(24 24 24))}html,body{margin:0}body{box-sizing:border-box;padding:1rem;background:inherit}iframe{display:block;width:100%;max-width:736px;height:calc(100vh - 2rem);margin:0 auto;border:0}</style>
 </head>
 <body>
-<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Meridian Parallel Inspection V9" srcdoc="&lt;!doctype html&gt;
+<iframe sandbox="allow-scripts" referrerpolicy="no-referrer" title="Meridian Stateless Parallel PR Inspection — Final Architecture and Results" srcdoc="&lt;!doctype html&gt;
 &lt;html lang=&quot;en&quot;&gt;
 &lt;head&gt;
 &lt;meta charset=&quot;utf-8&quot;&gt;
 &lt;meta name=&quot;viewport&quot; content=&quot;width=device-width, initial-scale=1&quot;&gt;
 &lt;meta name=&quot;referrer&quot; content=&quot;no-referrer&quot;&gt;
 &lt;meta http-equiv=&quot;Content-Security-Policy&quot; content=&quot;default-src &#x27;none&#x27;; script-src &#x27;unsafe-inline&#x27; &#x27;unsafe-eval&#x27; &#x27;wasm-unsafe-eval&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; style-src &#x27;unsafe-inline&#x27; blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; img-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; font-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; media-src blob: data: https://cdnjs.cloudflare.com https://cdn.jsdelivr.net https://esm.sh https://fonts.bunny.net https://fonts.googleapis.com https://fonts.gstatic.com https://unpkg.com; worker-src blob:; connect-src blob: data:; frame-src &#x27;none&#x27;; object-src &#x27;none&#x27;; base-uri &#x27;none&#x27;; form-action &#x27;none&#x27;&quot;&gt;
-&lt;title&gt;Meridian Parallel Inspection V9&lt;/title&gt;
+&lt;title&gt;Meridian Stateless Parallel PR Inspection — Final Architecture and Results&lt;/title&gt;
 &lt;style&gt;:root {
   color-scheme: light dark;
   background-color: var(--background) !important;
@@ -181,71 +181,6 @@ code:not(pre code) {
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
   word-break: break-word;
-}
-
-.table-responsive {
-  width: 100%;
-  overflow-x: auto;
-  scrollbar-width: thin;
-}
-
-.table {
-  width: 100%;
-  border-collapse: collapse;
-  color: var(--foreground);
-  font: inherit;
-  text-align: start;
-}
-
-.table :is(th, td) {
-  padding-block: 10px;
-  padding-inline: 0 24px;
-  overflow-wrap: anywhere;
-  border-bottom: 1px solid var(--border);
-  text-align: start;
-  vertical-align: top;
-}
-
-.table-responsive &gt; .table :is(th, td) {
-  overflow-wrap: break-word;
-}
-
-.table :is(th, td):last-child {
-  padding-inline-end: 0;
-}
-
-.table :is(caption, thead th) {
-  font-weight: 600;
-}
-
-.table thead th {
-  padding-block: 8px;
-  border-bottom-color: color-mix(in srgb, var(--foreground) 16%, transparent);
-}
-
-.table tbody tr:last-child :is(th, td) {
-  border-bottom: 0;
-}
-
-.table.table-sm :is(th, td) {
-  padding-block: 6px;
-}
-
-.table.table-sm :is(th, td):not(:last-child) {
-  padding-inline-end: 16px;
-}
-
-.table :is(.text-end, [align=&quot;right&quot;]) {
-  text-align: end;
-  font-variant-numeric: tabular-nums;
-}
-
-.table :is(.text-center, [align=&quot;center&quot;]) {
-  text-align: center;
-}
-
-.table .text-nowrap {
-  white-space: nowrap;
 }
 
 #widget {
@@ -813,413 +748,696 @@ svg {
 html&gt;body{padding:0}&lt;/style&gt;
 &lt;/head&gt;
 &lt;body&gt;
-&lt;div id=&quot;meridian-parallel-inspection-v7&quot; aria-label=&quot;Meridian parallel pull request inspection decision report&quot;&gt;
+&lt;div id=&quot;meridian-parallel-inspection-v6&quot; aria-label=&quot;Meridian stateless parallel pull request inspection architecture report&quot;&gt;
   &lt;style&gt;
-    #meridian-parallel-inspection-v7 {
+    #meridian-parallel-inspection-v6 {
       color: var(--foreground);
       display: grid;
-      gap: 34px;
+      gap: 32px;
       width: 100%;
     }
-    #meridian-parallel-inspection-v7 * { box-sizing: border-box; }
-    #meridian-parallel-inspection-v7 header,
-    #meridian-parallel-inspection-v7 section,
-    #meridian-parallel-inspection-v7 figure { display: grid; gap: 14px; margin: 0; min-width: 0; }
-    #meridian-parallel-inspection-v7 h1,
-    #meridian-parallel-inspection-v7 h2,
-    #meridian-parallel-inspection-v7 h3,
-    #meridian-parallel-inspection-v7 p,
-    #meridian-parallel-inspection-v7 ol,
-    #meridian-parallel-inspection-v7 ul { margin: 0; }
-    #meridian-parallel-inspection-v7 h1,
-    #meridian-parallel-inspection-v7 h2,
-    #meridian-parallel-inspection-v7 h3,
-    #meridian-parallel-inspection-v7 strong { font-weight: 500; }
-    #meridian-parallel-inspection-v7 .eyebrow {
+    #meridian-parallel-inspection-v6 * { box-sizing: border-box; }
+    #meridian-parallel-inspection-v6 header,
+    #meridian-parallel-inspection-v6 section,
+    #meridian-parallel-inspection-v6 figure { display: grid; gap: 14px; }
+    #meridian-parallel-inspection-v6 figure { margin: 0; min-width: 0; }
+    #meridian-parallel-inspection-v6 h2,
+    #meridian-parallel-inspection-v6 h3,
+    #meridian-parallel-inspection-v6 ol,
+    #meridian-parallel-inspection-v6 ul { margin: 0; }
+    #meridian-parallel-inspection-v6 h3 { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .eyebrow {
       color: var(--muted-foreground);
+      font-weight: 500;
       letter-spacing: .04em;
       text-transform: uppercase;
     }
-    #meridian-parallel-inspection-v7 .lead { max-width: 82ch; }
-    #meridian-parallel-inspection-v7 .decision-line,
-    #meridian-parallel-inspection-v7 .legend,
-    #meridian-parallel-inspection-v7 .manifest-line {
+    #meridian-parallel-inspection-v6 .decision-line {
       align-items: center;
       display: flex;
       flex-wrap: wrap;
+      gap: 10px;
+    }
+    #meridian-parallel-inspection-v6 .decision-line strong { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #meridian-parallel-inspection-v6 .viz-stat { min-width: 0; }
+    #meridian-parallel-inspection-v6 .viz-stat-value { overflow-wrap: anywhere; }
+    #meridian-parallel-inspection-v6 .metric-context { color: var(--card-foreground); opacity: .76; }
+    #meridian-parallel-inspection-v6 .baseline-bars,
+    #meridian-parallel-inspection-v6 .current-grid,
+    #meridian-parallel-inspection-v6 .before-after,
+    #meridian-parallel-inspection-v6 .ownership-grid,
+    #meridian-parallel-inspection-v6 .state-grid,
+    #meridian-parallel-inspection-v6 .cutover-grid,
+    #meridian-parallel-inspection-v6 .implementation-grid {
+      display: grid;
+      gap: 18px 24px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #meridian-parallel-inspection-v6 .bar-group { display: grid; gap: 8px; }
+    #meridian-parallel-inspection-v6 .bar-row {
+      align-items: center;
+      display: grid;
       gap: 9px;
+      grid-template-columns: 84px minmax(0, 1fr) 88px;
     }
-    #meridian-parallel-inspection-v7 .metric-grid {
+    #meridian-parallel-inspection-v6 .bar-track {
+      background: var(--muted);
+      border-radius: 999px;
+      height: 16px;
+      overflow: hidden;
+    }
+    #meridian-parallel-inspection-v6 .bar-mark {
+      background: var(--series);
+      border-radius: inherit;
+      display: block;
+      height: 100%;
+      min-width: 2px;
+      width: var(--fill);
+    }
+    #meridian-parallel-inspection-v6 .bar-value { text-align: right; }
+    #meridian-parallel-inspection-v6 .current-metric {
+      border-left: 2px solid var(--viz-series-1);
       display: grid;
-      gap: 14px;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 3px;
+      min-width: 0;
+      padding-left: 12px;
     }
-    #meridian-parallel-inspection-v7 .viz-stat { min-width: 0; }
-    #meridian-parallel-inspection-v7 .viz-stat-value { overflow-wrap: anywhere; }
-    #meridian-parallel-inspection-v7 .correction {
-      border-left: 3px solid var(--destructive);
-      display: grid;
-      gap: 5px;
-      padding-left: 13px;
+    #meridian-parallel-inspection-v6 .current-value {
+      font-weight: 500;
+      overflow-wrap: anywhere;
     }
-    #meridian-parallel-inspection-v7 .architecture {
+    #meridian-parallel-inspection-v6 .phase-rail {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    #meridian-parallel-inspection-v6 .phase-pipeline {
       align-items: stretch;
       display: grid;
-      gap: 9px;
-      grid-template-columns: minmax(0, .8fr) auto minmax(0, 1.15fr) auto minmax(0, 1.15fr) auto minmax(0, 1fr);
+      gap: 8px;
+      grid-template-columns: minmax(0, .8fr) auto minmax(0, 1.35fr) auto minmax(0, 1fr);
     }
-    #meridian-parallel-inspection-v7 .stack { display: grid; gap: 8px; }
-    #meridian-parallel-inspection-v7 .flow-node {
-      align-content: center;
-      background: color-mix(in srgb, var(--node-color) 12%, transparent);
-      border: 1px solid color-mix(in srgb, var(--node-color) 30%, transparent);
-      border-radius: 9px;
+    #meridian-parallel-inspection-v6 .phase-pipeline &gt; .flow-node { align-content: center; }
+    #meridian-parallel-inspection-v6 .phase-fork {
       display: grid;
-      gap: 4px;
-      min-width: 0;
-      padding: 11px;
-      text-align: center;
+      gap: 7px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
-    #meridian-parallel-inspection-v7 .flow-node span { color: var(--muted-foreground); }
-    #meridian-parallel-inspection-v7 .tone-request { --node-color: var(--viz-series-5); }
-    #meridian-parallel-inspection-v7 .tone-shared { --node-color: var(--viz-series-1); }
-    #meridian-parallel-inspection-v7 .tone-disk { --node-color: var(--viz-series-3); }
-    #meridian-parallel-inspection-v7 .tone-view { --node-color: var(--viz-series-2); }
-    #meridian-parallel-inspection-v7 .arrow {
-      align-self: center;
+    #meridian-parallel-inspection-v6 .phase-stack { display: grid; gap: 7px; }
+    #meridian-parallel-inspection-v6 .phase-rail .arrow,
+    #meridian-parallel-inspection-v6 .flow-arrow,
+    #meridian-parallel-inspection-v6 .merge-arrow {
       color: var(--muted-foreground);
       text-align: center;
     }
-    #meridian-parallel-inspection-v7 .ownership-line {
+    #meridian-parallel-inspection-v6 figcaption { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .flow-column {
+      align-content: start;
       display: grid;
-      gap: 8px;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 9px;
     }
-    #meridian-parallel-inspection-v7 .owner {
-      border-top: 2px solid var(--owner-color);
+    #meridian-parallel-inspection-v6 .flow-sources,
+    #meridian-parallel-inspection-v6 .flow-branches {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+    #meridian-parallel-inspection-v6 .flow-node {
+      background: var(--muted);
+      background: color-mix(in srgb, var(--node-series) 13%, transparent);
+      border: 1px solid transparent;
+      border-color: color-mix(in srgb, var(--node-series) 28%, transparent);
+      border-radius: 9px;
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+      padding: 10px;
+      text-align: center;
+    }
+    #meridian-parallel-inspection-v6 .flow-node strong { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .flow-node span { color: var(--muted-foreground); }
+    #meridian-parallel-inspection-v6 .tone-neutral { --node-series: var(--muted-foreground); }
+    #meridian-parallel-inspection-v6 .tone-shared { --node-series: var(--viz-series-1); }
+    #meridian-parallel-inspection-v6 .tone-job { --node-series: var(--viz-series-2); }
+    #meridian-parallel-inspection-v6 .tone-disk { --node-series: var(--viz-series-3); }
+    #meridian-parallel-inspection-v6 .tone-browser { --node-series: var(--viz-series-5); }
+    #meridian-parallel-inspection-v6 .flow-cross {
+      color: var(--destructive);
+      font-weight: 500;
+      text-align: center;
+    }
+    #meridian-parallel-inspection-v6 table {
+      border-collapse: collapse;
+      width: 100%;
+    }
+    #meridian-parallel-inspection-v6 caption {
+      font-weight: 500;
+      padding-bottom: 9px;
+      text-align: left;
+    }
+    #meridian-parallel-inspection-v6 th,
+    #meridian-parallel-inspection-v6 td {
+      border-bottom: 1px solid var(--border);
+      padding: 10px 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    #meridian-parallel-inspection-v6 th { font-weight: 500; }
+    #meridian-parallel-inspection-v6 td { overflow-wrap: anywhere; }
+    #meridian-parallel-inspection-v6 .selected-row { background: color-mix(in srgb, var(--viz-series-1) 9%, transparent); }
+    #meridian-parallel-inspection-v6 .ownership-item,
+    #meridian-parallel-inspection-v6 .state-item,
+    #meridian-parallel-inspection-v6 .plan-item {
+      border-left: 2px solid var(--item-series);
       display: grid;
       gap: 4px;
-      padding-top: 9px;
+      padding-left: 12px;
     }
-    #meridian-parallel-inspection-v7 .owner:nth-child(1) { --owner-color: var(--viz-series-1); }
-    #meridian-parallel-inspection-v7 .owner:nth-child(2) { --owner-color: var(--viz-series-3); }
-    #meridian-parallel-inspection-v7 .owner:nth-child(3) { --owner-color: var(--viz-series-2); }
-    #meridian-parallel-inspection-v7 .owner:nth-child(4) { --owner-color: var(--viz-series-5); }
-    #meridian-parallel-inspection-v7 .owner span { color: var(--muted-foreground); }
-    #meridian-parallel-inspection-v7 .memory-rail {
+    #meridian-parallel-inspection-v6 .ownership-item:nth-child(1),
+    #meridian-parallel-inspection-v6 .state-item:nth-child(1) { --item-series: var(--viz-series-1); }
+    #meridian-parallel-inspection-v6 .ownership-item:nth-child(2),
+    #meridian-parallel-inspection-v6 .state-item:nth-child(2) { --item-series: var(--viz-series-2); }
+    #meridian-parallel-inspection-v6 .ownership-item:nth-child(3),
+    #meridian-parallel-inspection-v6 .state-item:nth-child(3) { --item-series: var(--viz-series-3); }
+    #meridian-parallel-inspection-v6 .ownership-item:nth-child(4),
+    #meridian-parallel-inspection-v6 .state-item:nth-child(4) { --item-series: var(--viz-series-5); }
+    #meridian-parallel-inspection-v6 .ownership-item strong,
+    #meridian-parallel-inspection-v6 .state-item strong,
+    #meridian-parallel-inspection-v6 .plan-item strong { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .ownership-item span,
+    #meridian-parallel-inspection-v6 .state-item span,
+    #meridian-parallel-inspection-v6 .plan-item span { color: var(--muted-foreground); }
+    #meridian-parallel-inspection-v6 .stage-line {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      list-style: none;
+      padding: 0;
+    }
+    #meridian-parallel-inspection-v6 .stage-line li {
+      border-top: 2px solid var(--viz-series-1);
+      display: grid;
+      gap: 4px;
+      padding-top: 8px;
+    }
+    #meridian-parallel-inspection-v6 .stage-number {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+    #meridian-parallel-inspection-v6 .contract-result {
+      align-items: center;
+      display: grid;
+      gap: 10px;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    }
+    #meridian-parallel-inspection-v6 .descriptor-list {
+      list-style: none;
+      padding: 0;
+    }
+    #meridian-parallel-inspection-v6 .descriptor-list li + li { margin-top: 3px; }
+    #meridian-parallel-inspection-v6 .pair-symbol {
+      color: var(--muted-foreground);
+      font-weight: 500;
+    }
+    #meridian-parallel-inspection-v6 .manifest-line {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    #meridian-parallel-inspection-v6 .memory-flow,
+    #meridian-parallel-inspection-v6 .merge-chain {
       align-items: stretch;
       display: grid;
       gap: 7px;
       grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr) auto minmax(0, 1fr);
     }
-    #meridian-parallel-inspection-v7 .memory-step {
-      border-left: 2px solid var(--viz-series-1);
+    #meridian-parallel-inspection-v6 .memory-flow .flow-node,
+    #meridian-parallel-inspection-v6 .merge-chain .flow-node { align-content: center; }
+    #meridian-parallel-inspection-v6 .cache-budgets {
       display: grid;
-      gap: 4px;
-      padding-left: 11px;
+      gap: 12px;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
-    #meridian-parallel-inspection-v7 .memory-step span { color: var(--muted-foreground); }
-    #meridian-parallel-inspection-v7 .budget-bar {
-      background: var(--muted);
-      border-radius: 999px;
-      height: 15px;
-      overflow: hidden;
-    }
-    #meridian-parallel-inspection-v7 .budget-bar span {
-      background: var(--viz-series-1);
-      border-radius: inherit;
-      display: block;
-      height: 100%;
-      width: var(--fill);
-    }
-    #meridian-parallel-inspection-v7 .two-column,
-    #meridian-parallel-inspection-v7 .proposal-grid,
-    #meridian-parallel-inspection-v7 .guard-grid {
-      display: grid;
-      gap: 18px 24px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-    #meridian-parallel-inspection-v7 .fact,
-    #meridian-parallel-inspection-v7 .proposal,
-    #meridian-parallel-inspection-v7 .guard {
-      border-left: 2px solid var(--viz-series-1);
-      display: grid;
-      gap: 5px;
-      padding-left: 12px;
-    }
-    #meridian-parallel-inspection-v7 .fact:nth-child(even),
-    #meridian-parallel-inspection-v7 .proposal:nth-child(even),
-    #meridian-parallel-inspection-v7 .guard:nth-child(even) { border-left-color: var(--viz-series-2); }
-    #meridian-parallel-inspection-v7 .fact span,
-    #meridian-parallel-inspection-v7 .proposal span,
-    #meridian-parallel-inspection-v7 .guard span { color: var(--muted-foreground); }
-    #meridian-parallel-inspection-v7 table { width: 100%; }
-    #meridian-parallel-inspection-v7 th,
-    #meridian-parallel-inspection-v7 td { vertical-align: top; }
-    #meridian-parallel-inspection-v7 .phase-row {
+    #meridian-parallel-inspection-v6 .cache-budget { display: grid; gap: 6px; }
+    #meridian-parallel-inspection-v6 .cache-budget strong { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .slots {
       align-items: center;
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 150px minmax(0, 1fr) 100px;
-    }
-    #meridian-parallel-inspection-v7 .phase-track {
-      background: var(--muted);
-      border-radius: 999px;
-      height: 15px;
-      overflow: hidden;
-    }
-    #meridian-parallel-inspection-v7 .phase-mark {
-      background: var(--viz-series-2);
-      border-radius: inherit;
-      display: block;
-      height: 100%;
-      min-width: 3px;
-      width: var(--fill);
-    }
-    #meridian-parallel-inspection-v7 .phase-value { text-align: right; }
-    #meridian-parallel-inspection-v7 .plan {
-      display: grid;
-      gap: 10px;
-      grid-template-columns: repeat(5, minmax(0, 1fr));
-      list-style: none;
-      padding: 0;
-    }
-    #meridian-parallel-inspection-v7 .plan li {
-      border-top: 2px solid var(--viz-series-1);
-      display: grid;
+      display: flex;
+      flex-wrap: wrap;
       gap: 5px;
-      padding-top: 9px;
     }
-    #meridian-parallel-inspection-v7 .plan span { color: var(--muted-foreground); }
-    #meridian-parallel-inspection-v7 .check-list {
-      display: grid;
-      gap: 8px;
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-      list-style: none;
-      padding: 0;
+    #meridian-parallel-inspection-v6 .slot {
+      background: color-mix(in srgb, var(--slot-series) 22%, transparent);
+      border: 1px solid color-mix(in srgb, var(--slot-series) 42%, transparent);
+      border-radius: 4px;
+      height: 18px;
+      width: 18px;
     }
-    #meridian-parallel-inspection-v7 .check-list li {
+    #meridian-parallel-inspection-v6 .slot.active { --slot-series: var(--viz-series-1); }
+    #meridian-parallel-inspection-v6 .slot.recent { --slot-series: var(--viz-series-5); }
+    #meridian-parallel-inspection-v6 .slot.none {
+      --slot-series: var(--destructive);
+      align-items: center;
+      color: var(--destructive);
+      display: inline-flex;
+      justify-content: center;
+    }
+    #meridian-parallel-inspection-v6 .gc-lanes { display: grid; gap: 11px; }
+    #meridian-parallel-inspection-v6 .gc-lane {
       align-items: start;
       display: grid;
-      gap: 8px;
-      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      grid-template-columns: 104px minmax(0, 1fr);
     }
-    #meridian-parallel-inspection-v7 .check { color: var(--viz-series-1); font-weight: 500; }
-    #meridian-parallel-inspection-v7 .note { color: var(--muted-foreground); }
-    @media (max-width: 760px) {
-      #meridian-parallel-inspection-v7 .metric-grid,
-      #meridian-parallel-inspection-v7 .two-column,
-      #meridian-parallel-inspection-v7 .proposal-grid,
-      #meridian-parallel-inspection-v7 .guard-grid,
-      #meridian-parallel-inspection-v7 .ownership-line,
-      #meridian-parallel-inspection-v7 .plan,
-      #meridian-parallel-inspection-v7 .check-list { grid-template-columns: 1fr; }
-      #meridian-parallel-inspection-v7 .architecture,
-      #meridian-parallel-inspection-v7 .memory-rail { grid-template-columns: 1fr; }
-      #meridian-parallel-inspection-v7 .arrow { transform: rotate(90deg); }
-      #meridian-parallel-inspection-v7 .phase-row { grid-template-columns: 110px minmax(0, 1fr) 78px; }
+    #meridian-parallel-inspection-v6 .gc-steps {
+      align-items: stretch;
+      display: grid;
+      gap: 7px;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+    #meridian-parallel-inspection-v6 .gc-step {
+      border-top: 2px solid var(--gc-series);
+      display: grid;
+      gap: 3px;
+      padding-top: 7px;
+    }
+    #meridian-parallel-inspection-v6 .gc-step strong { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .gc-step span { color: var(--muted-foreground); }
+    #meridian-parallel-inspection-v6 .gc-lock { --gc-series: var(--viz-series-2); }
+    #meridian-parallel-inspection-v6 .gc-outside { --gc-series: var(--viz-series-1); }
+    #meridian-parallel-inspection-v6 .cutover-list {
+      list-style: none;
+      padding: 0;
+    }
+    #meridian-parallel-inspection-v6 .cutover-list li {
+      display: grid;
+      gap: 8px;
+      grid-template-columns: 18px minmax(0, 1fr);
+    }
+    #meridian-parallel-inspection-v6 .cutover-list li + li { margin-top: 8px; }
+    #meridian-parallel-inspection-v6 .cutover-mark { font-weight: 500; }
+    #meridian-parallel-inspection-v6 .supported .cutover-mark { color: var(--foreground); }
+    #meridian-parallel-inspection-v6 .removed .cutover-mark { color: var(--destructive); }
+    #meridian-parallel-inspection-v6 .implementation-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    #meridian-parallel-inspection-v6 .plan-item { --item-series: var(--viz-series-1); }
+    #meridian-parallel-inspection-v6 .plan-item:nth-child(2) { --item-series: var(--viz-series-2); }
+    #meridian-parallel-inspection-v6 .plan-item:nth-child(3) { --item-series: var(--viz-series-3); }
+    #meridian-parallel-inspection-v6 .plan-label {
+      color: var(--muted-foreground);
+      font-weight: 500;
+      text-transform: uppercase;
+    }
+    #meridian-parallel-inspection-v6 .merge-arrow { align-self: center; }
+    #meridian-parallel-inspection-v6 .gate-row {
+      align-items: center;
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 16px;
+      padding-top: 12px;
+    }
+    #meridian-parallel-inspection-v6 .gate-row span {
+      align-items: center;
+      display: inline-flex;
+      gap: 6px;
+    }
+    #meridian-parallel-inspection-v6 .gate-row span::before {
+      background: var(--viz-series-1);
+      border-radius: 50%;
+      content: &quot;&quot;;
+      height: 8px;
+      width: 8px;
+    }
+    @media (max-width: 700px) {
+      #meridian-parallel-inspection-v6 .metric-grid,
+      #meridian-parallel-inspection-v6 .baseline-bars,
+      #meridian-parallel-inspection-v6 .current-grid,
+      #meridian-parallel-inspection-v6 .before-after,
+      #meridian-parallel-inspection-v6 .ownership-grid,
+      #meridian-parallel-inspection-v6 .state-grid,
+      #meridian-parallel-inspection-v6 .cutover-grid,
+      #meridian-parallel-inspection-v6 .implementation-grid,
+      #meridian-parallel-inspection-v6 .cache-budgets { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 .stage-line { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      #meridian-parallel-inspection-v6 .gc-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      #meridian-parallel-inspection-v6 .phase-pipeline { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 .phase-pipeline &gt; .flow-arrow { transform: rotate(90deg); }
+      #meridian-parallel-inspection-v6 .memory-flow,
+      #meridian-parallel-inspection-v6 .merge-chain { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 .memory-flow &gt; .flow-arrow,
+      #meridian-parallel-inspection-v6 .merge-chain &gt; .merge-arrow { transform: rotate(90deg); }
+    }
+    @media (max-width: 520px) {
+      #meridian-parallel-inspection-v6 .bar-row { grid-template-columns: 72px minmax(0, 1fr) 76px; }
+      #meridian-parallel-inspection-v6 .flow-sources,
+      #meridian-parallel-inspection-v6 .flow-branches,
+      #meridian-parallel-inspection-v6 .phase-fork,
+      #meridian-parallel-inspection-v6 .stage-line,
+      #meridian-parallel-inspection-v6 .gc-steps { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 .contract-result,
+      #meridian-parallel-inspection-v6 .memory-flow,
+      #meridian-parallel-inspection-v6 .merge-chain { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 .pair-symbol,
+      #meridian-parallel-inspection-v6 .memory-flow &gt; .flow-arrow,
+      #meridian-parallel-inspection-v6 .merge-chain &gt; .merge-arrow { transform: rotate(90deg); }
+      #meridian-parallel-inspection-v6 .gc-lane { grid-template-columns: 1fr; }
+      #meridian-parallel-inspection-v6 table,
+      #meridian-parallel-inspection-v6 tbody,
+      #meridian-parallel-inspection-v6 tr,
+      #meridian-parallel-inspection-v6 td { display: block; width: 100%; }
+      #meridian-parallel-inspection-v6 thead { position: absolute; clip: rect(0 0 0 0); clip-path: inset(50%); height: 1px; overflow: hidden; width: 1px; }
+      #meridian-parallel-inspection-v6 tr { border-bottom: 1px solid var(--border); padding: 7px 0; }
+      #meridian-parallel-inspection-v6 td { border: 0; display: grid; gap: 8px; grid-template-columns: 112px minmax(0, 1fr); padding: 5px 0; }
+      #meridian-parallel-inspection-v6 td::before { color: var(--muted-foreground); content: attr(data-label); font-weight: 500; }
     }
   &lt;/style&gt;
 
-  &lt;header aria-labelledby=&quot;mpr7-title&quot;&gt;
-    &lt;span class=&quot;eyebrow text-small&quot;&gt;Architecture decision · protocol v9 · validated on Autopilot #4358&lt;/span&gt;
-    &lt;h1 id=&quot;mpr7-title&quot;&gt;Parallel PR inspection without whole-graph browser state&lt;/h1&gt;
+  &lt;header&gt;
+    &lt;span class=&quot;eyebrow&quot;&gt;Architecture decision · merged implementation · measured outcome&lt;/span&gt;
     &lt;div class=&quot;decision-line&quot;&gt;
-      &lt;span class=&quot;viz-badge&quot;&gt;Decision: adopt&lt;/span&gt;
-      &lt;strong&gt;Stateless request workers, a shared mirror per canonical repository and security domain, immutable two-sided projections, and a bounded client LRU.&lt;/strong&gt;
-    &lt;/div&gt;
-    &lt;p class=&quot;lead&quot;&gt;The analysis graph remains complete on disk. Browser graph payloads contain only the current review coordinate: a bounded changed-file overview or one exact file, for both HEAD and merge-base. The browser separately retains the canonical file manifest, compact review progress, one immutable comparison-classification document, and coordinate-local coverage facts. Parallel inspections share Git and immutable cache work without sharing mutable review state.&lt;/p&gt;
-    &lt;div class=&quot;correction&quot; role=&quot;note&quot; aria-label=&quot;Benchmark correction&quot;&gt;
-      &lt;strong&gt;Regression correction&lt;/strong&gt;
-      &lt;span class=&quot;note&quot;&gt;The prior zero-node overview was not a performance win; it was unusable. Projection transport v9 replaces it with representative changed-file nodes plus ancestor closure and strict coverage for unmapped, filtered, deferred, and absent files. Graph-backed test truth remains available for the complete changed-file manifest through one immutable comparison sidecar, even when a tagged test is outside the current projection.&lt;/span&gt;
+      &lt;span class=&quot;viz-badge&quot;&gt;Delivered&lt;/span&gt;
+      &lt;strong&gt;Stateless inspection jobs over a shared concurrency-safe Git accelerator; bounded projections in the browser.&lt;/strong&gt;
     &lt;/div&gt;
   &lt;/header&gt;
 
-  &lt;section aria-labelledby=&quot;mpr7-proof&quot;&gt;
-    &lt;h2 id=&quot;mpr7-proof&quot;&gt;Real-PR proof&lt;/h2&gt;
-    &lt;div class=&quot;metric-grid viz-grid&quot;&gt;
+  &lt;section aria-labelledby=&quot;mpr6-baseline-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-baseline-heading&quot;&gt;Like-for-like performance · PR #237&lt;/h2&gt;
+    &lt;div class=&quot;viz-grid metric-grid&quot; aria-label=&quot;Legacy baseline measurements for pull request 237&quot;&gt;
       &lt;div class=&quot;card viz-stat&quot;&gt;
-        &lt;span class=&quot;text-muted&quot;&gt;Complete extraction on disk&lt;/span&gt;
-        &lt;span class=&quot;viz-stat-value&quot;&gt;55,274 + 55,144 nodes&lt;/span&gt;
-        &lt;span&gt;HEAD and exact merge-base; never hydrated as one browser graph.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;card viz-stat&quot;&gt;
-        &lt;span class=&quot;text-muted&quot;&gt;Initial bounded pair&lt;/span&gt;
-        &lt;span class=&quot;viz-stat-value&quot;&gt;18 + 13 nodes&lt;/span&gt;
-        &lt;span&gt;82.6 KiB resident · 28,231 B response bodies.&lt;/span&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Legacy cold preparation&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;85,414.12 ms&lt;/span&gt;
+        &lt;span class=&quot;text-small metric-context&quot;&gt;Empty Meridian cache · one sample&lt;/span&gt;
       &lt;/div&gt;
       &lt;div class=&quot;card viz-stat&quot;&gt;
-        &lt;span class=&quot;text-muted&quot;&gt;Warm navigation&lt;/span&gt;
-        &lt;span class=&quot;viz-stat-value&quot;&gt;1.715 s prepare&lt;/span&gt;
-        &lt;span&gt;12 rendered graph cards after exact-file selection · zero browser errors.&lt;/span&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Legacy warm median&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;5,450.55 ms&lt;/span&gt;
+        &lt;span class=&quot;text-small metric-context&quot;&gt;Three cache-hit preparations&lt;/span&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;card viz-stat&quot;&gt;
+        &lt;span class=&quot;text-muted&quot;&gt;Legacy full-artifact pair&lt;/span&gt;
+        &lt;span class=&quot;viz-stat-value&quot;&gt;79.58 MiB&lt;/span&gt;
+        &lt;span class=&quot;text-small metric-context&quot;&gt;83,444,944 uncompressed JSON response bytes&lt;/span&gt;
       &lt;/div&gt;
     &lt;/div&gt;
-    &lt;div class=&quot;two-column&quot;&gt;
-      &lt;div class=&quot;fact&quot;&gt;
-        &lt;strong&gt;Overview is useful&lt;/strong&gt;
-        &lt;span&gt;Seven visible changed-file representatives were rendered for #4358, including &lt;code&gt;Tools.ts&lt;/code&gt;, &lt;code&gt;file.converter.ts&lt;/code&gt;, &lt;code&gt;IPdfService.ts&lt;/code&gt;, and &lt;code&gt;AriaPdfService.ts&lt;/code&gt;.&lt;/span&gt;
+    &lt;div class=&quot;baseline-bars&quot;&gt;
+      &lt;figure aria-labelledby=&quot;mpr6-cold-reduction&quot;&gt;
+        &lt;figcaption id=&quot;mpr6-cold-reduction&quot;&gt;Cold preparation wall time&lt;/figcaption&gt;
+        &lt;div class=&quot;bar-group&quot; role=&quot;img&quot; aria-label=&quot;Final direct preparation median is 38.071 seconds versus 85.414 seconds for the legacy path, 55.4 percent faster&quot;&gt;
+          &lt;div class=&quot;bar-row&quot;&gt;&lt;span&gt;Legacy&lt;/span&gt;&lt;span class=&quot;bar-track&quot;&gt;&lt;span class=&quot;bar-mark&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bar-value&quot;&gt;85.414 s&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bar-row&quot;&gt;&lt;span&gt;Final&lt;/span&gt;&lt;span class=&quot;bar-track&quot;&gt;&lt;span class=&quot;bar-mark&quot; style=&quot;--fill:44.57%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bar-value&quot;&gt;38.071 s&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;span class=&quot;text-small text-muted&quot;&gt;Three empty-cache final runs · 55.4% faster&lt;/span&gt;
+      &lt;/figure&gt;
+      &lt;figure aria-labelledby=&quot;mpr6-warm-reduction&quot;&gt;
+        &lt;figcaption id=&quot;mpr6-warm-reduction&quot;&gt;Warm preparation wall time&lt;/figcaption&gt;
+        &lt;div class=&quot;bar-group&quot; role=&quot;img&quot; aria-label=&quot;Final direct preparation median is 1.321 seconds versus 5.451 seconds for the legacy path, 75.8 percent faster&quot;&gt;
+          &lt;div class=&quot;bar-row&quot;&gt;&lt;span&gt;Legacy&lt;/span&gt;&lt;span class=&quot;bar-track&quot;&gt;&lt;span class=&quot;bar-mark&quot; style=&quot;--fill:100%;--series:var(--viz-series-3)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bar-value&quot;&gt;5.451 s&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;bar-row&quot;&gt;&lt;span&gt;Final&lt;/span&gt;&lt;span class=&quot;bar-track&quot;&gt;&lt;span class=&quot;bar-mark&quot; style=&quot;--fill:24.24%;--series:var(--viz-series-1)&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;bar-value&quot;&gt;1.321 s&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+        &lt;span class=&quot;text-small text-muted&quot;&gt;Seven same-server cache hits · 75.8% faster&lt;/span&gt;
+      &lt;/figure&gt;
+    &lt;/div&gt;
+    &lt;h3&gt;Final merged-main measurements&lt;/h3&gt;
+    &lt;div class=&quot;current-grid&quot; aria-label=&quot;Final merged implementation benchmark results&quot;&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Cold direct-v1 preparation median&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;38,070.54 ms&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Warm direct-v1 preparation median&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;1,321.09 ms&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Initial overview pair · response body&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;0.0046 MiB · 4,806 B&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Two-PR cold parallel makespan&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;57,410.49 ms&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Renderer boot → first usable paint median&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;3,448.80 ms&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;current-metric&quot;&gt;&lt;span class=&quot;text-small text-muted&quot;&gt;Benchmark revision&lt;/span&gt;&lt;span class=&quot;current-value&quot;&gt;&lt;code&gt;f2f6552&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;ownership-grid&quot; aria-label=&quot;Measured implications&quot;&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;17,363× smaller first view&lt;/strong&gt;&lt;span&gt;The initial HEAD + merge-base overview pair replaced 79.58 MiB of whole-graph transfer with 4.69 KiB.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Real overlap under admission&lt;/strong&gt;&lt;span&gt;PRs #237 + #206 overlapped by 29.271 s; 57.410 s parallel versus 64.081 s serial, a 10.4% makespan reduction.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Fast browser work&lt;/strong&gt;&lt;span&gt;Five runs: parse ≤1.0 ms per response, index ≤0.1 ms, and initial layout median 24.8 ms.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Early shell, honest progress&lt;/strong&gt;&lt;span&gt;Renderer shell mounted at a 367.1 ms median; preparation stages remain visible before projection hydration completes.&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;phase-pipeline text-small&quot; role=&quot;img&quot; aria-label=&quot;Cold server-stage medians fan out from Git into concurrent HEAD and merge-base extraction and join at publication; separate prepared-view browser medians show projection transfer, layout, and first usable paint&quot;&gt;
+      &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Resolve + Git&lt;/strong&gt;&lt;span&gt;0.746 s · 4.071 s&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;phase-fork&quot;&gt;
+        &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;HEAD extraction&lt;/strong&gt;&lt;span&gt;28.638 s&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;Merge-base extraction&lt;/strong&gt;&lt;span&gt;30.097 s&lt;/span&gt;&lt;/div&gt;
       &lt;/div&gt;
-      &lt;div class=&quot;fact&quot;&gt;
-        &lt;strong&gt;Exact TypeScript nodes are preserved&lt;/strong&gt;
-        &lt;span&gt;Selecting &lt;code&gt;Tools.ts&lt;/code&gt; loaded a complete 332-node HEAD slice and 330-node base slice, including &lt;code&gt;DelegateTodoTool&lt;/code&gt;, &lt;code&gt;loadTools&lt;/code&gt;, and &lt;code&gt;wrapToolsWithRemoteModeGuard&lt;/code&gt;. Exact slices are complete within strict transport limits or rejected; they are never silently truncated.&lt;/span&gt;
+      &lt;span class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;phase-stack&quot;&gt;
+        &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;Cold publish median&lt;/strong&gt;&lt;span&gt;0.987 s&lt;/span&gt;&lt;/div&gt;
+        &lt;div class=&quot;flow-node tone-browser&quot;&gt;&lt;strong&gt;Separate prepared-view browser medians&lt;/strong&gt;&lt;span&gt;0.539 s pair transfer · 24.8 ms layout · 3.449 s boot→paint&lt;/span&gt;&lt;/div&gt;
       &lt;/div&gt;
-      &lt;div class=&quot;fact&quot;&gt;
-        &lt;strong&gt;No full-artifact fallback&lt;/strong&gt;
-        &lt;span&gt;The #4358 protocol-v9 run used bounded projection responses plus one 927 B immutable metadata document. Overview and exact responses embed no comparison-wide classification catalog, and the browser rendered without hydrating either 55k-node artifact.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;fact&quot;&gt;
-        &lt;strong&gt;Canonical comparison survives&lt;/strong&gt;
-        &lt;span&gt;The canonical 29-file manifest retained 13 added and 16 modified entries for #4358. The same strict schema preserves deleted and renamed entries with &lt;code&gt;previousPath&lt;/code&gt;; base-side ghosts use the exact merge-base.&lt;/span&gt;
-      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;p class=&quot;text-small text-muted&quot;&gt;Method: legacy &lt;code&gt;9fad1e1&lt;/code&gt; versus final &lt;code&gt;f2f65522c79dce071a0ce597963314df9db32c35&lt;/code&gt;; identical PR #237 HEAD &lt;code&gt;23c919c&lt;/code&gt; and merge base &lt;code&gt;f405050&lt;/code&gt;. Final cold n=3, warm n=7, browser n=5 at 1500×950; empty Meridian caches do not imply purged OS caches. Two-PR proof used isolated serial/parallel cache roots, PRs #237 + #206, two admitted 4 GiB extraction workers, and reports one measured arm per mode. Times are observed wall durations; overlapping extraction stages are never summed. Environment: Apple M5 Pro, 18 logical cores, 48 GiB RAM, macOS 26.5 arm64, Git 2.50.1, Node 26.2.0, pnpm 10.33.2, Playwright/Chromium 1.61.1.&lt;/p&gt;
+    &lt;table aria-label=&quot;Raw benchmark observations and payload sizes&quot;&gt;
+      &lt;caption&gt;Raw observations behind the medians&lt;/caption&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Measure&lt;/th&gt;&lt;th&gt;Observations&lt;/th&gt;&lt;th&gt;Published result&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Legacy preparation&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;cold 85,414.12 ms · warm 6,282.78 / 5,450.55 / 5,401.36 ms&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;cold sample 85,414.12 ms · warm median 5,450.55 ms&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Final direct preparation&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;cold 35,875.44 / 38,512.00 / 38,070.54 ms · warm 1,301.67 / 1,314.56 / 1,314.60 / 1,321.09 / 1,345.89 / 1,417.06 / 1,425.47 ms&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;cold median 38,070.54 ms · warm median 1,321.09 ms&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Renderer boot → usable&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;3,448.80 / 3,680.40 / 3,430.90 / 3,422.70 / 3,519.50 ms&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;median 3,448.80 ms&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Initial overview transport&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;HEAD 2,443 B + merge-base 2,363 B&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;4,806 B · 4.69 KiB&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Representative selected file&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;&lt;code&gt;packages/cli/src/server/github-http.ts&lt;/code&gt; · &lt;code&gt;file:1&lt;/code&gt; · HEAD 102,538 B + merge-base 92,677 B&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;195,215 B · this current file only&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Measure&quot;&gt;Two-PR control&lt;/td&gt;&lt;td data-label=&quot;Observations&quot;&gt;serial 64,080.84 ms · parallel 57,410.49 ms · parallel request overlap 29,270.87 ms&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;10.4% lower makespan&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr6-transition-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-transition-heading&quot;&gt;State ownership · before and after&lt;/h2&gt;
+    &lt;div class=&quot;before-after&quot;&gt;
+      &lt;figure aria-labelledby=&quot;mpr6-before-caption&quot;&gt;
+        &lt;figcaption id=&quot;mpr6-before-caption&quot;&gt;Before · shared mutation serializes work&lt;/figcaption&gt;
+        &lt;div class=&quot;flow-column&quot; role=&quot;img&quot; aria-label=&quot;Two pull requests contend for one mutable checkout, generate full graphs, and hydrate the whole graph in the browser&quot;&gt;
+          &lt;div class=&quot;flow-sources&quot;&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;PR A&lt;/strong&gt;&lt;span&gt;inspection request&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;PR B&lt;/strong&gt;&lt;span&gt;inspection request&lt;/span&gt;&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↘ &amp;nbsp; ↙&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-neutral&quot;&gt;&lt;strong&gt;One mutable clone + checkout&lt;/strong&gt;&lt;span&gt;global branch and working-tree state&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;flow-cross&quot;&gt;✕ concurrent checkout&lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;Whole graph artifacts&lt;/strong&gt;&lt;span&gt;HEAD and comparison serialized in full&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-browser&quot;&gt;&lt;strong&gt;Whole graph retained&lt;/strong&gt;&lt;span&gt;fetch · parse · index · layout before usable UI&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/figure&gt;
+      &lt;figure aria-labelledby=&quot;mpr6-after-caption&quot;&gt;
+        &lt;figcaption id=&quot;mpr6-after-caption&quot;&gt;After · immutable sharing, isolated mutation&lt;/figcaption&gt;
+        &lt;div class=&quot;flow-column&quot; role=&quot;img&quot; aria-label=&quot;Two pull request jobs pass through bounded admission, share a bare mirror, use isolated worktrees, publish two-sided immutable projections, and hydrate only the current view&quot;&gt;
+          &lt;div class=&quot;flow-sources&quot;&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;PR A job&lt;/strong&gt;&lt;span&gt;request-scoped owner&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;PR B job&lt;/strong&gt;&lt;span&gt;request-scoped owner&lt;/span&gt;&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Admission + singleflight + cancellation&lt;/strong&gt;&lt;span&gt;bounded workers · shared physical generation · subscriber ownership&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Managed bare partial mirror&lt;/strong&gt;&lt;span&gt;one per repository + credential domain&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-branches&quot;&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;Isolated worktrees A&lt;/strong&gt;&lt;span&gt;HEAD worktree + merge-base worktree&lt;/span&gt;&lt;/div&gt;
+            &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;Isolated worktrees B&lt;/strong&gt;&lt;span&gt;HEAD worktree + merge-base worktree&lt;/span&gt;&lt;/div&gt;
+          &lt;/div&gt;
+          &lt;div class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;↓&lt;/div&gt;
+          &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;Immutable projection descriptors&lt;/strong&gt;&lt;span&gt;two-sided pair · current view fetched on demand&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/figure&gt;
     &lt;/div&gt;
   &lt;/section&gt;
 
-  &lt;figure aria-labelledby=&quot;mpr7-architecture&quot;&gt;
-    &lt;figcaption id=&quot;mpr7-architecture&quot;&gt;&lt;strong&gt;Ownership model: share expensive immutable work, isolate mutable inspection state&lt;/strong&gt;&lt;/figcaption&gt;
-    &lt;div class=&quot;architecture&quot; role=&quot;img&quot; aria-label=&quot;Independent PR requests share a repository mirror and immutable snapshot cache, then receive isolated bounded current-view projections&quot;&gt;
-      &lt;div class=&quot;stack&quot;&gt;
-        &lt;div class=&quot;flow-node tone-request&quot;&gt;&lt;strong&gt;PR inspection A&lt;/strong&gt;&lt;span&gt;request id · cancellation · progress&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;flow-node tone-request&quot;&gt;&lt;strong&gt;PR inspection B&lt;/strong&gt;&lt;span&gt;request id · cancellation · progress&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;stack&quot;&gt;
-        &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Shared bare partial mirror&lt;/strong&gt;&lt;span&gt;repository + authorization domain · fetch under lock&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Admission + singleflight&lt;/strong&gt;&lt;span&gt;bounded workers · duplicate work joins&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;stack&quot;&gt;
-        &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;Immutable HEAD snapshot&lt;/strong&gt;&lt;span&gt;content-addressed extraction&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;Immutable merge-base snapshot&lt;/strong&gt;&lt;span&gt;comparison identity, not moving base tip&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;stack&quot;&gt;
-        &lt;div class=&quot;flow-node tone-view&quot;&gt;&lt;strong&gt;Session A projection pair&lt;/strong&gt;&lt;span&gt;overview or exact file + bounded LRU&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;flow-node tone-view&quot;&gt;&lt;strong&gt;Session B projection pair&lt;/strong&gt;&lt;span&gt;independent cursor, options, cancellation&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-    &lt;div class=&quot;ownership-line&quot; aria-label=&quot;Ownership boundaries&quot;&gt;
-      &lt;div class=&quot;owner&quot;&gt;&lt;strong&gt;Repository&lt;/strong&gt;&lt;span&gt;Mirror and fetch coordination only.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;owner&quot;&gt;&lt;strong&gt;Revision&lt;/strong&gt;&lt;span&gt;Immutable extraction and sidecars.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;owner&quot;&gt;&lt;strong&gt;Request&lt;/strong&gt;&lt;span&gt;Progress, cancellation, admission slot.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;owner&quot;&gt;&lt;strong&gt;Browser session&lt;/strong&gt;&lt;span&gt;Active view, global inactive LRU, and graph-free review metadata.&lt;/span&gt;&lt;/div&gt;
-    &lt;/div&gt;
-  &lt;/figure&gt;
-
-  &lt;section aria-labelledby=&quot;mpr7-memory&quot;&gt;
-    &lt;h2 id=&quot;mpr7-memory&quot;&gt;Bounded-memory navigation&lt;/h2&gt;
-    &lt;div class=&quot;memory-rail&quot; role=&quot;img&quot; aria-label=&quot;The browser moves from a bounded overview to one exact file, caches recent inactive allocations for navigation, and globally evicts the least recently used allocation&quot;&gt;
-      &lt;div class=&quot;memory-step&quot;&gt;&lt;strong&gt;1 · Overview&lt;/strong&gt;&lt;span&gt;18 HEAD + 13 base representatives&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;memory-step&quot;&gt;&lt;strong&gt;2 · Exact file&lt;/strong&gt;&lt;span&gt;&lt;code&gt;Tools.ts&lt;/code&gt;: 332 + 330 nodes&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;memory-step&quot;&gt;&lt;strong&gt;3 · Back / forward&lt;/strong&gt;&lt;span&gt;Promote a recent immutable pair or scene from LRU&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/div&gt;
-      &lt;div class=&quot;memory-step&quot;&gt;&lt;strong&gt;4 · Eviction&lt;/strong&gt;&lt;span&gt;Release least-recent inactive allocation globally&lt;/span&gt;&lt;/div&gt;
-    &lt;/div&gt;
-    &lt;div class=&quot;two-column&quot;&gt;
-      &lt;div&gt;
-        &lt;div class=&quot;manifest-line&quot;&gt;&lt;strong&gt;Overview pair&lt;/strong&gt;&lt;span class=&quot;text-muted&quot;&gt;82.6 KiB resident&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;budget-bar&quot; aria-label=&quot;Overview memory is a small fraction of an exact file pair&quot;&gt;&lt;span style=&quot;--fill:3.4%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-      &lt;div&gt;
-        &lt;div class=&quot;manifest-line&quot;&gt;&lt;strong&gt;Exact &lt;code&gt;Tools.ts&lt;/code&gt; pair&lt;/strong&gt;&lt;span class=&quot;text-muted&quot;&gt;2.294 MiB resident&lt;/span&gt;&lt;/div&gt;
-        &lt;div class=&quot;budget-bar&quot; aria-label=&quot;Exact file pair memory&quot;&gt;&lt;span style=&quot;--fill:100%&quot;&gt;&lt;/span&gt;&lt;/div&gt;
-      &lt;/div&gt;
-    &lt;/div&gt;
-    &lt;p class=&quot;note&quot;&gt;The complete 55k-node graphs remain addressable on disk. In steady state, decoded graph/layout memory is one active allocation plus a browser-wide inactive LRU capped at three allocations and 48 MiB; staged candidates use separate bounded admission. Inactive review progress keeps manifest order, compact per-file state, the test-filter coordinate, and only node IDs that own user ticks. Exact unit rows are recomputed when a file becomes active, so the progress catalog never grows into a second graph.&lt;/p&gt;
-  &lt;/section&gt;
-
-  &lt;section aria-labelledby=&quot;mpr7-reasoning&quot;&gt;
-    &lt;h2 id=&quot;mpr7-reasoning&quot;&gt;Why this architecture&lt;/h2&gt;
-    &lt;div class=&quot;proposal-grid&quot;&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;One mirror per repository security domain&lt;/strong&gt;
-        &lt;span&gt;Eliminates duplicate clones without crossing credential boundaries. A short mirror lock protects fetch/ref mutation; each job analyzes an isolated detached worktree or immutable snapshot.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Stateless workers with bounded admission&lt;/strong&gt;
-        &lt;span&gt;Any worker can serve any preparation request. Per-request state has an owner and cancellation signal; capacity is explicit rather than hidden in a singleton service.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Merge-base-addressed immutable cache&lt;/strong&gt;
-        &lt;span&gt;The comparison graph keys on the exact merge-base. A moving base SHA is provenance, not cache identity, so unrelated base movement does not invalidate valid work.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Projection transport, never full hydration&lt;/strong&gt;
-        &lt;span&gt;The server owns complete artifacts and emits validated overview or complete-or-fail-closed exact-file slices. Renderer parse, index, layout, and graph memory costs stay bounded.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Strict versioned contract&lt;/strong&gt;
-        &lt;span&gt;&lt;code&gt;POST /api/pr/prepare&lt;/code&gt; streams NDJSON v1 &lt;code&gt;progress | done | error&lt;/code&gt;; done carries complete HEAD and merge-base descriptors plus the canonical file manifest. Projection transport is v9 and review projection content identity is v5.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Atomic latest-only transitions&lt;/strong&gt;
-        &lt;span&gt;Projection pairs stage off-screen, validate, then publish with derived review state in one store update. Superseded requests abort and never expose mixed coordinates.&lt;/span&gt;
-      &lt;/div&gt;
-      &lt;div class=&quot;proposal&quot;&gt;
-        &lt;strong&gt;Bounded navigation metadata&lt;/strong&gt;
-        &lt;span&gt;Review progress stores compact per-file state and only explicit user-tick node IDs; exact rows are recomputed after eviction. Test truth is fetched once per immutable comparison and shared by reference across coordinates. Empty states distinguish hidden tests, budget deferral, mapped-but-cardless content, and genuine no-match results.&lt;/span&gt;
-      &lt;/div&gt;
+  &lt;section aria-labelledby=&quot;mpr6-choice-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-choice-heading&quot;&gt;Why a bare mirror plus worktrees&lt;/h2&gt;
+    &lt;table aria-label=&quot;Git repository reuse architecture alternatives&quot;&gt;
+      &lt;caption&gt;Isolation and object reuse decision&lt;/caption&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Option&lt;/th&gt;&lt;th&gt;Isolation&lt;/th&gt;&lt;th&gt;Git object reuse&lt;/th&gt;&lt;th&gt;Result&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Option&quot;&gt;Single mutable clone&lt;/td&gt;&lt;td data-label=&quot;Isolation&quot;&gt;No&lt;/td&gt;&lt;td data-label=&quot;Object reuse&quot;&gt;Yes&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;Checkout collision · PRs serialize&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Option&quot;&gt;Fresh clone per inspection&lt;/td&gt;&lt;td data-label=&quot;Isolation&quot;&gt;Yes&lt;/td&gt;&lt;td data-label=&quot;Object reuse&quot;&gt;No&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;Repeated network, object, and disk cost&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr class=&quot;selected-row&quot;&gt;&lt;td data-label=&quot;Option&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;Selected&lt;/span&gt; Bare mirror + isolated worktree&lt;/td&gt;&lt;td data-label=&quot;Isolation&quot;&gt;Yes · request-local mutation&lt;/td&gt;&lt;td data-label=&quot;Object reuse&quot;&gt;Yes · repository-scoped mirror&lt;/td&gt;&lt;td data-label=&quot;Result&quot;&gt;Parallel inspection with amortized fetch&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;div class=&quot;ownership-grid&quot; aria-label=&quot;Concurrency control responsibilities&quot;&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Admission&lt;/strong&gt;&lt;span&gt;Worker count and memory reservations bound physical extraction.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Keyed singleflight&lt;/strong&gt;&lt;span&gt;One generation per immutable comparison key; many subscribers.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Cancellation&lt;/strong&gt;&lt;span&gt;Detach one subscriber; abort process trees only after the last owner leaves.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;ownership-item&quot;&gt;&lt;strong&gt;Publication&lt;/strong&gt;&lt;span&gt;Atomic immutable handoff addressed by merge-base comparison identity.&lt;/span&gt;&lt;/div&gt;
     &lt;/div&gt;
   &lt;/section&gt;
 
-  &lt;section aria-labelledby=&quot;mpr7-timing&quot;&gt;
-    &lt;h2 id=&quot;mpr7-timing&quot;&gt;Measured path&lt;/h2&gt;
-    &lt;div class=&quot;table-responsive&quot;&gt;
-      &lt;table class=&quot;table table-sm&quot;&gt;
-        &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Scenario&lt;/th&gt;&lt;th&gt;Git + extraction&lt;/th&gt;&lt;th&gt;Projection / transport&lt;/th&gt;&lt;th&gt;Renderer&lt;/th&gt;&lt;th&gt;Outcome&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
-        &lt;tbody&gt;
-          &lt;tr&gt;&lt;td&gt;Cold #4358&lt;/td&gt;&lt;td&gt;318.011 s wall clock; HEAD/base workers overlap&lt;/td&gt;&lt;td&gt;28,231 B overview bodies + 927 B shared metadata&lt;/td&gt;&lt;td&gt;Validated separately in the browser&lt;/td&gt;&lt;td&gt;55,274 HEAD / 55,144 base nodes persisted&lt;/td&gt;&lt;/tr&gt;
-          &lt;tr&gt;&lt;td&gt;Warm #4358 overview&lt;/td&gt;&lt;td&gt;Cache hit · prepare 1.715 s&lt;/td&gt;&lt;td&gt;16,404 B HEAD + 11,827 B base&lt;/td&gt;&lt;td&gt;Seven graph-backed files rendered&lt;/td&gt;&lt;td&gt;No empty state; zero browser errors&lt;/td&gt;&lt;/tr&gt;
-          &lt;tr&gt;&lt;td&gt;Warm exact &lt;code&gt;Tools.ts&lt;/code&gt;&lt;/td&gt;&lt;td&gt;No re-extraction&lt;/td&gt;&lt;td&gt;404,083 B HEAD + 397,955 B base&lt;/td&gt;&lt;td&gt;332 + 330 nodes decoded&lt;/td&gt;&lt;td&gt;12 visible cards, including nested declarations&lt;/td&gt;&lt;/tr&gt;
-        &lt;/tbody&gt;
-      &lt;/table&gt;
-    &lt;/div&gt;
-    &lt;figure aria-label=&quot;Cold protocol-v9 preparation phase measurements&quot;&gt;
-      &lt;figcaption&gt;&lt;strong&gt;Cold protocol-v9 preparation phases · real #4358 run&lt;/strong&gt;&lt;/figcaption&gt;
-      &lt;div class=&quot;phase-row&quot;&gt;&lt;span&gt;Resolve&lt;/span&gt;&lt;span class=&quot;phase-track&quot;&gt;&lt;span class=&quot;phase-mark&quot; style=&quot;--fill:.3%&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;phase-value&quot;&gt;0.983 s&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;phase-row&quot;&gt;&lt;span&gt;Git&lt;/span&gt;&lt;span class=&quot;phase-track&quot;&gt;&lt;span class=&quot;phase-mark&quot; style=&quot;--fill:.7%&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;phase-value&quot;&gt;2.235 s&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;phase-row&quot;&gt;&lt;span&gt;Extract HEAD&lt;/span&gt;&lt;span class=&quot;phase-track&quot;&gt;&lt;span class=&quot;phase-mark&quot; style=&quot;--fill:50%&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;phase-value&quot;&gt;155.474 s&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;phase-row&quot;&gt;&lt;span&gt;Extract base&lt;/span&gt;&lt;span class=&quot;phase-track&quot;&gt;&lt;span class=&quot;phase-mark&quot; style=&quot;--fill:100%&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;phase-value&quot;&gt;310.643 s&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;phase-row&quot;&gt;&lt;span&gt;Publish&lt;/span&gt;&lt;span class=&quot;phase-track&quot;&gt;&lt;span class=&quot;phase-mark&quot; style=&quot;--fill:.4%&quot;&gt;&lt;/span&gt;&lt;/span&gt;&lt;span class=&quot;phase-value&quot;&gt;1.178 s&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;manifest-line&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;318.011 s wall clock&lt;/span&gt;&lt;span class=&quot;note&quot;&gt;HEAD and merge-base extraction run concurrently; phase durations are not summed.&lt;/span&gt;&lt;/div&gt;
-    &lt;/figure&gt;
-  &lt;/section&gt;
-
-  &lt;section aria-labelledby=&quot;mpr7-plan&quot;&gt;
-    &lt;h2 id=&quot;mpr7-plan&quot;&gt;Implemented cutover and rollout status&lt;/h2&gt;
-    &lt;ol class=&quot;plan&quot;&gt;
-      &lt;li&gt;&lt;strong&gt;1 · Contract · done&lt;/strong&gt;&lt;span&gt;Versioned two-sided descriptors, status-rich manifest, strict projection coverage.&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;strong&gt;2 · Git ownership · done&lt;/strong&gt;&lt;span&gt;Shared mirror, immutable snapshots, merge-base identity, singleflight.&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;strong&gt;3 · Scheduler · done&lt;/strong&gt;&lt;span&gt;Bounded admission, cancellation, progress, phase timing.&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;strong&gt;4 · Renderer · done&lt;/strong&gt;&lt;span&gt;Early shell, bounded pair hydration, global LRU, atomic latest-only navigation.&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;strong&gt;5 · Cutover · validated&lt;/strong&gt;&lt;span&gt;Legacy full-artifact/analyze paths removed; regression and real-PR checks green.&lt;/span&gt;&lt;/li&gt;
+  &lt;section aria-labelledby=&quot;mpr6-contract-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-contract-heading&quot;&gt;Strict two-sided preparation contract&lt;/h2&gt;
+    &lt;div class=&quot;decision-line&quot;&gt;&lt;code&gt;POST /api/pr/prepare&lt;/code&gt;&lt;span class=&quot;viz-badge&quot;&gt;NDJSON · version 1&lt;/span&gt;&lt;span class=&quot;text-muted&quot;&gt;lazy shared decoder · terminal record + clean EOF&lt;/span&gt;&lt;/div&gt;
+    &lt;ol class=&quot;stage-line&quot; aria-label=&quot;Valid preparation progress stages&quot;&gt;
+      &lt;li&gt;&lt;span class=&quot;stage-number&quot;&gt;01&lt;/span&gt;&lt;code&gt;resolve&lt;/code&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;span class=&quot;stage-number&quot;&gt;02&lt;/span&gt;&lt;code&gt;git&lt;/code&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;span class=&quot;stage-number&quot;&gt;03&lt;/span&gt;&lt;code&gt;extract-head&lt;/code&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;span class=&quot;stage-number&quot;&gt;04&lt;/span&gt;&lt;code&gt;extract-merge-base&lt;/code&gt;&lt;/li&gt;
+      &lt;li&gt;&lt;span class=&quot;stage-number&quot;&gt;05&lt;/span&gt;&lt;code&gt;publish&lt;/code&gt;&lt;/li&gt;
     &lt;/ol&gt;
-    &lt;div class=&quot;manifest-line&quot;&gt;
-      &lt;span class=&quot;viz-badge&quot;&gt;Clean cutover&lt;/span&gt;
-      &lt;span&gt;No graph-id-only legacy handoff, no nullable comparison descriptor, no &lt;code&gt;/api/pr/analyze&lt;/code&gt; fallback, and no second whole graph in renderer state.&lt;/span&gt;
+    &lt;div class=&quot;contract-result&quot; role=&quot;img&quot; aria-label=&quot;The terminal result contains complete HEAD and merge-base projection descriptors&quot;&gt;
+      &lt;div class=&quot;flow-node tone-disk&quot;&gt;
+        &lt;strong&gt;HEAD descriptor&lt;/strong&gt;
+        &lt;ul class=&quot;descriptor-list text-small&quot;&gt;
+          &lt;li&gt;manifest + projection&lt;/li&gt;&lt;li&gt;search + source&lt;/li&gt;&lt;li&gt;meta + summary&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;span class=&quot;pair-symbol&quot; aria-hidden=&quot;true&quot;&gt;+&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-disk&quot;&gt;
+        &lt;strong&gt;Merge-base descriptor&lt;/strong&gt;
+        &lt;ul class=&quot;descriptor-list text-small&quot;&gt;
+          &lt;li&gt;manifest + projection&lt;/li&gt;&lt;li&gt;search + source&lt;/li&gt;&lt;li&gt;meta + summary&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
     &lt;/div&gt;
-    &lt;div class=&quot;manifest-line&quot;&gt;
-      &lt;span class=&quot;viz-badge&quot;&gt;Implementation validated · full regression matrix green&lt;/span&gt;
-      &lt;span&gt;Fresh renderer, core, CLI, typecheck, production-build, and 48-test browser E2E matrix passed on 19 July 2026.&lt;/span&gt;
+    &lt;div class=&quot;phase-rail text-small&quot; aria-label=&quot;Required terminal done fields&quot;&gt;
+      &lt;span&gt;&lt;code&gt;headSha&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;baseSha&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;mergeBaseSha&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;changedFiles&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;both descriptors&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;cache&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;timings&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;warnings&lt;/code&gt;&lt;/span&gt;&lt;span&gt;·&lt;/span&gt;&lt;span&gt;&lt;code&gt;handoff&lt;/code&gt;&lt;/span&gt;
+    &lt;/div&gt;
+    &lt;table aria-label=&quot;Preparation identity and changed file semantics&quot;&gt;
+      &lt;caption&gt;Identity and comparison invariants&lt;/caption&gt;
+      &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Field&lt;/th&gt;&lt;th&gt;Meaning&lt;/th&gt;&lt;th&gt;Required invariant&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+      &lt;tbody&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Field&quot;&gt;&lt;code&gt;baseSha&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Meaning&quot;&gt;Moving base-tip provenance&lt;/td&gt;&lt;td data-label=&quot;Invariant&quot;&gt;Never used as comparison cache identity&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Field&quot;&gt;&lt;code&gt;mergeBaseSha&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Meaning&quot;&gt;Actual comparison identity&lt;/td&gt;&lt;td data-label=&quot;Invariant&quot;&gt;Addresses the two-sided immutable pair&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Field&quot;&gt;&lt;code&gt;changedFiles&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Meaning&quot;&gt;&lt;span class=&quot;manifest-line&quot;&gt;&lt;span class=&quot;viz-badge&quot;&gt;added&lt;/span&gt;&lt;span class=&quot;viz-badge&quot;&gt;modified&lt;/span&gt;&lt;span class=&quot;viz-badge&quot;&gt;deleted&lt;/span&gt;&lt;span class=&quot;viz-badge&quot;&gt;renamed&lt;/span&gt;&lt;/span&gt;&lt;/td&gt;&lt;td data-label=&quot;Invariant&quot;&gt;&lt;code&gt;previousPath&lt;/code&gt; required for renamed files&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Field&quot;&gt;&lt;code&gt;handoff&lt;/code&gt;&lt;/td&gt;&lt;td data-label=&quot;Meaning&quot;&gt;Restart-safe prepared-review identity + URLs&lt;/td&gt;&lt;td data-label=&quot;Invariant&quot;&gt;Graph, PR, revision, and prepared IDs agree&lt;/td&gt;&lt;/tr&gt;
+        &lt;tr&gt;&lt;td data-label=&quot;Field&quot;&gt;Navigation gate&lt;/td&gt;&lt;td data-label=&quot;Meaning&quot;&gt;&lt;code&gt;type: done&lt;/code&gt; followed by clean EOF&lt;/td&gt;&lt;td data-label=&quot;Invariant&quot;&gt;No blank, trailing, duplicate-terminal, malformed, or oversized records&lt;/td&gt;&lt;/tr&gt;
+      &lt;/tbody&gt;
+    &lt;/table&gt;
+    &lt;p class=&quot;text-small text-muted&quot;&gt;Landing and renderer consume the same dependency-free decoder implementation; the landing page lazy-loads its standalone build. It checks exact fields, media type, SHA/ID/path canonicality, bounded record sizes, ordered status-rich files, both complete descriptors, valid handoff URLs, and a single terminal record before navigation. There is no permissive fallback.&lt;/p&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr6-landing-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-landing-heading&quot;&gt;Progressive landing and visible hydration&lt;/h2&gt;
+    &lt;div class=&quot;state-grid&quot; aria-label=&quot;Delivered pull request landing and renderer outcomes&quot;&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Page one is immediately usable&lt;/strong&gt;&lt;span&gt;Later GitHub pages append without rebuilding the visible list or blocking selection.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Selection remains stable&lt;/strong&gt;&lt;span&gt;Keyboard focus and the selected summary survive pagination; a later-page failure preserves already loaded PRs.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Preparation starts from the frozen summary&lt;/strong&gt;&lt;span&gt;Later PR-list pages may continue hydrating while resolve, Git, both extraction sides, and publish run; HEAD extraction produces the canonical manifest.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Cancellation is ownership&lt;/strong&gt;&lt;span&gt;Repository or selection changes abort stale subscribers and suppress stale navigation without killing work still owned elsewhere.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;The shell mounts before data&lt;/strong&gt;&lt;span&gt;Users see the real renderer and preparation stages instead of a static loading splash during PR hydration.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Navigation is transactional&lt;/strong&gt;&lt;span&gt;Only a validated done record plus clean EOF can activate the prepared handoff; malformed streams remain retryable.&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;phase-rail text-small&quot; aria-label=&quot;Progressive pull request review lifecycle&quot;&gt;
+      &lt;span&gt;first PR page&lt;/span&gt;&lt;span class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;&lt;span&gt;stable selection&lt;/span&gt;&lt;span class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;&lt;span&gt;direct prepare + later pages&lt;/span&gt;&lt;span class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;&lt;span&gt;validated done + EOF&lt;/span&gt;&lt;span class=&quot;arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;&lt;span&gt;bounded prepared view&lt;/span&gt;
     &lt;/div&gt;
   &lt;/section&gt;
 
-  &lt;section aria-labelledby=&quot;mpr7-guards&quot;&gt;
-    &lt;h2 id=&quot;mpr7-guards&quot;&gt;Correctness and regression gates&lt;/h2&gt;
-    &lt;div class=&quot;guard-grid&quot;&gt;
-      &lt;div class=&quot;guard&quot;&gt;&lt;strong&gt;Fail closed&lt;/strong&gt;&lt;span&gt;Missing/corrupt overview or metadata sidecars, reciprocal peer/content mismatches, malformed classification catalogs, and incomplete exact slices are errors. Protocol v9 participates in PR and ordinary web-cache identity; review content identity v5 prevents older comparison semantics from hitting.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;guard&quot;&gt;&lt;strong&gt;Two-sided parity&lt;/strong&gt;&lt;span&gt;Added, modified, deleted, and renamed files retain exact HEAD + merge-base behavior, including previous-path aliases and base ghosts.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;guard&quot;&gt;&lt;strong&gt;Memory invariant&lt;/strong&gt;&lt;span&gt;Only the active allocation and global three-entry/48 MiB inactive LRU own decoded graphs or scenes. Progress, sparse classifications, and one-page coverage remain graph-free.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;guard&quot;&gt;&lt;strong&gt;Usability invariant&lt;/strong&gt;&lt;span&gt;An overview with extracted changed nodes must render representatives; strict &lt;code&gt;isTest&lt;/code&gt; facts survive filtering, and empty states use visible member count rather than invisible seed sentinels.&lt;/span&gt;&lt;/div&gt;
-      &lt;div class=&quot;guard&quot;&gt;&lt;strong&gt;Atomic ownership&lt;/strong&gt;&lt;span&gt;Entry, refresh, URL restore, resume, close, and end publish atomically. URL restore releases private scene ownership; stale writes or restores cannot mutate newer sessions; transport-native eviction removes inactive review projections.&lt;/span&gt;&lt;/div&gt;
+  &lt;section aria-labelledby=&quot;mpr6-memory-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-memory-heading&quot;&gt;Current-view projection and eviction&lt;/h2&gt;
+    &lt;div class=&quot;memory-flow&quot; role=&quot;img&quot; aria-label=&quot;A lightweight descriptor fetches and decodes one active projection allocation, which can be a single projection or atomic review pair, alongside its current rendered scene; inactive data is demoted into a bounded recent-view cache on navigation&quot;&gt;
+      &lt;div class=&quot;flow-node tone-neutral&quot;&gt;&lt;strong&gt;Descriptor&lt;/strong&gt;&lt;span&gt;no decoded graph&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-browser&quot;&gt;&lt;strong&gt;Selected view&lt;/strong&gt;&lt;span&gt;fetch · parse · index&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;Active projection + scene&lt;/strong&gt;&lt;span&gt;one single/pair allocation · current rendered scene&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;flow-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-browser&quot;&gt;&lt;strong&gt;Bounded LRU&lt;/strong&gt;&lt;span&gt;promote on back · evict on budget&lt;/span&gt;&lt;/div&gt;
     &lt;/div&gt;
-    &lt;ul class=&quot;check-list&quot;&gt;
-      &lt;li&gt;&lt;span class=&quot;check&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Core: 26 files / 207 tests; CLI: 73 files / 828 passed + 1 skipped&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;span class=&quot;check&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Renderer: 249 files / 2,331 tests; all six package typechecks and production build&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;span class=&quot;check&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Browser E2E: 10 files / 48 tests, including direct prepare and review navigation&lt;/span&gt;&lt;/li&gt;
-      &lt;li&gt;&lt;span class=&quot;check&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Live Autopilot #4358 cold extraction, warm cache, overview/exact transport, browser rendering, and no-full-artifact proof&lt;/span&gt;&lt;/li&gt;
-    &lt;/ul&gt;
+    &lt;div class=&quot;cache-budgets&quot; aria-label=&quot;Renderer memory and history ceilings&quot;&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Active decoded current view&lt;/strong&gt;&lt;div class=&quot;slots&quot; aria-label=&quot;One active projection allocation plus its current rendered scene&quot;&gt;&lt;span class=&quot;slot active&quot;&gt;&lt;/span&gt;&lt;span&gt;1 projection allocation + current scene&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Inactive projection + scene&lt;/strong&gt;&lt;div class=&quot;slots&quot; aria-label=&quot;Three recent slots&quot;&gt;&lt;span class=&quot;slot recent&quot;&gt;&lt;/span&gt;&lt;span class=&quot;slot recent&quot;&gt;&lt;/span&gt;&lt;span class=&quot;slot recent&quot;&gt;&lt;/span&gt;&lt;span&gt;3 entries or 48 MiB&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Source text cache&lt;/strong&gt;&lt;div class=&quot;slots&quot;&gt;&lt;span&gt;32 entries or 8 MiB · 8 flights · 2 active&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Pending decode admission&lt;/strong&gt;&lt;div class=&quot;slots&quot;&gt;&lt;span&gt;192 MiB ceiling · subscriber-owned&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Navigation coordinates&lt;/strong&gt;&lt;div class=&quot;slots&quot;&gt;&lt;span&gt;64 entries or 4 MiB&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+      &lt;div class=&quot;cache-budget&quot;&gt;&lt;strong&gt;Whole graph artifacts&lt;/strong&gt;&lt;div class=&quot;slots&quot; aria-label=&quot;Zero whole graph artifacts retained&quot;&gt;&lt;span class=&quot;slot none&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;0 retained in browser memory&lt;/span&gt;&lt;/div&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;state-grid&quot; aria-label=&quot;State placement boundaries&quot;&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Shared concurrency-safe&lt;/strong&gt;&lt;span&gt;Repository mirror refs and metadata mutate only under locks; content-addressed Git objects are reused.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Request-local&lt;/strong&gt;&lt;span&gt;Worktree · refs · cancellation · extraction process tree.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Published immutable&lt;/strong&gt;&lt;span&gt;Completed snapshots and projection facts are content-addressed correctness sources.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;state-item&quot;&gt;&lt;strong&gt;Browser bounded&lt;/strong&gt;&lt;span&gt;One active projection allocation plus its scene; disposable byte-charged LRU entries never own correctness.&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr6-gc-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-gc-heading&quot;&gt;Durable cleanup and garbage collection&lt;/h2&gt;
+    &lt;div class=&quot;gc-lanes&quot; role=&quot;img&quot; aria-label=&quot;Cleanup validates exact identity, atomically quarantines under a short administration lock, then performs recursive deletion asynchronously outside the lock with restart-safe retries&quot;&gt;
+      &lt;div class=&quot;gc-lane&quot;&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;Admin lock&lt;/span&gt;
+        &lt;div class=&quot;gc-steps gc-lock&quot;&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Revalidate&lt;/strong&gt;&lt;span&gt;token + exact inode identity&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Quarantine&lt;/strong&gt;&lt;span&gt;atomic same-filesystem rename&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Prune metadata&lt;/strong&gt;&lt;span&gt;worktree administration only&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Release&lt;/strong&gt;&lt;span&gt;admission resumes immediately&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+      &lt;div class=&quot;gc-lane&quot;&gt;
+        &lt;span class=&quot;viz-badge&quot;&gt;Outside lock&lt;/span&gt;
+        &lt;div class=&quot;gc-steps gc-outside&quot;&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Delete async&lt;/strong&gt;&lt;span&gt;no-follow claimed path walk&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Bound retries&lt;/strong&gt;&lt;span&gt;durable tombstone ownership&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Restart scan&lt;/strong&gt;&lt;span&gt;recover release/stale/rollback claims&lt;/span&gt;&lt;/div&gt;
+          &lt;div class=&quot;gc-step&quot;&gt;&lt;strong&gt;Final verify&lt;/strong&gt;&lt;span&gt;replacement paths remain untouched&lt;/span&gt;&lt;/div&gt;
+        &lt;/div&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;gate-row text-small&quot; aria-label=&quot;Cleanup invariants&quot;&gt;
+      &lt;span&gt;No recursive deletion under admission lock&lt;/span&gt;
+      &lt;span&gt;No symlink traversal&lt;/span&gt;
+      &lt;span&gt;Crash-safe claim recovery&lt;/span&gt;
+      &lt;span&gt;Retryable release ownership&lt;/span&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr6-cutover-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-cutover-heading&quot;&gt;One PR-review architecture · no compatibility fallback&lt;/h2&gt;
+    &lt;div class=&quot;cutover-grid&quot;&gt;
+      &lt;div&gt;
+        &lt;h3&gt;Only supported PR-review path&lt;/h3&gt;
+        &lt;ul class=&quot;cutover-list supported&quot;&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Strict version-1 direct preparation&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Complete HEAD + merge-base descriptors&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Projection protocol v6 with opaque cursors and bounded queries&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Projection-only renderer hydration&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;✓&lt;/span&gt;&lt;span&gt;Immutable cache miss → regenerate&lt;/span&gt;&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+      &lt;div&gt;
+        &lt;h3&gt;Removed from PR review&lt;/h3&gt;
+        &lt;ul class=&quot;cutover-list removed&quot;&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;Mutable shared checkout state&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;PR review fallback through &lt;code&gt;/api/generate&lt;/code&gt; or &lt;code&gt;/api/pr/analyze&lt;/code&gt;&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;Full-artifact browser hydration&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;Unversioned, nullable, or graph-ID-only handoffs&lt;/span&gt;&lt;/li&gt;
+          &lt;li&gt;&lt;span class=&quot;cutover-mark&quot; aria-hidden=&quot;true&quot;&gt;×&lt;/span&gt;&lt;span&gt;Pre-v6 or dual-read cache compatibility code&lt;/span&gt;&lt;/li&gt;
+        &lt;/ul&gt;
+      &lt;/div&gt;
+    &lt;/div&gt;
+  &lt;/section&gt;
+
+  &lt;section aria-labelledby=&quot;mpr6-plan-heading&quot;&gt;
+    &lt;h2 id=&quot;mpr6-plan-heading&quot;&gt;Implementation plan and delivered order&lt;/h2&gt;
+    &lt;div class=&quot;implementation-grid&quot; aria-label=&quot;Completed implementation phases&quot;&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;PR #245 · foundation&lt;/span&gt;&lt;strong&gt;Server + lifecycle delivered&lt;/strong&gt;&lt;span&gt;Shared mirror, isolated worktrees, memory-aware admission, singleflight, cancellation, immutable snapshots, and durable cleanup.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;PR #245 · contract&lt;/span&gt;&lt;strong&gt;Two-sided projections delivered&lt;/strong&gt;&lt;span&gt;Strict prepare v1, projection protocol v6, canonical statuses, capabilities, bounded current-view caches, and phase timings.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;PR #245 · reconciliation&lt;/span&gt;&lt;strong&gt;Latest-main behavior preserved&lt;/strong&gt;&lt;span&gt;Synthetic-execution boot fields plus added, modified, deleted, and renamed two-sided comparison behavior were treated as merge blockers and passed focused tests.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;PR #247 · landing&lt;/span&gt;&lt;strong&gt;Progressive picker delivered&lt;/strong&gt;&lt;span&gt;Page one renders immediately, later pages append, selection and keyboard activity remain stable, and partial failure preserves loaded PRs.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;PR #247 · client&lt;/span&gt;&lt;strong&gt;Strict shared decoder delivered&lt;/strong&gt;&lt;span&gt;Lazy dependency-free client, bounded NDJSON validation, cancellation, parallel stage display, retryable loading, and navigation after done + clean EOF.&lt;/span&gt;&lt;/div&gt;
+      &lt;div class=&quot;plan-item&quot;&gt;&lt;span class=&quot;plan-label text-small&quot;&gt;Report PR · evidence&lt;/span&gt;&lt;strong&gt;Measured final main&lt;/strong&gt;&lt;span&gt;Rebuilt and regression-tested the merged tree; captured cold, warm, parallel, payload, phase, and first-usable-paint evidence with no runtime compatibility path.&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;merge-chain&quot; role=&quot;img&quot; aria-label=&quot;Pull request 245 merged first at commit 47e9b8a, then pull request 247 rebased on main and merged at commit f2f6552&quot;&gt;
+      &lt;div class=&quot;flow-node tone-shared&quot;&gt;&lt;strong&gt;PR #245 merged&lt;/strong&gt;&lt;span&gt;stateless architecture · &lt;code&gt;47e9b8a&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;merge-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-disk&quot;&gt;&lt;strong&gt;main&lt;/strong&gt;&lt;span&gt;canonical server contract&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;merge-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-job&quot;&gt;&lt;strong&gt;PR #247 rebased&lt;/strong&gt;&lt;span&gt;strict client · no fallback&lt;/span&gt;&lt;/div&gt;
+      &lt;span class=&quot;merge-arrow&quot; aria-hidden=&quot;true&quot;&gt;→&lt;/span&gt;
+      &lt;div class=&quot;flow-node tone-browser&quot;&gt;&lt;strong&gt;PR #247 merged&lt;/strong&gt;&lt;span&gt;final runtime · &lt;code&gt;f2f6552&lt;/code&gt;&lt;/span&gt;&lt;/div&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;gate-row text-small&quot; aria-label=&quot;Satisfied merge gates&quot;&gt;
+      &lt;span&gt;PRs only&lt;/span&gt;
+      &lt;span&gt;PR #245 merged first&lt;/span&gt;
+      &lt;span&gt;PR #247 rebased after #245&lt;/span&gt;
+      &lt;span&gt;Green CI before both merges&lt;/span&gt;
+      &lt;span&gt;No legacy production fallback&lt;/span&gt;
+      &lt;span&gt;Final-main evidence captured&lt;/span&gt;
+    &lt;/div&gt;
+    &lt;div class=&quot;gate-row text-small&quot; aria-label=&quot;Final merged main validation results&quot;&gt;
+      &lt;span&gt;Production build passed&lt;/span&gt;
+      &lt;span&gt;Full typecheck passed&lt;/span&gt;
+      &lt;span&gt;3,564 unit tests passed · 1 skipped&lt;/span&gt;
+      &lt;span&gt;48 browser E2E journeys passed&lt;/span&gt;
+      &lt;span&gt;HTML parse + diff checks passed&lt;/span&gt;
+    &lt;/div&gt;
   &lt;/section&gt;
 &lt;/div&gt;
 

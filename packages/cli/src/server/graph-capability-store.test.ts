@@ -436,32 +436,31 @@ describe("GraphCapabilityStore", () => {
   });
 
   it("pins primary and sealed comparison-context generations for descriptors and readers", async () => {
-    const base = await capabilityFixture("comparison-base", BASE_SHA);
     const head = await capabilityFixture("comparison-head", HEAD_SHA, {
       reviewContext: {
         mergeBaseSha: BASE_SHA,
-        mergeBaseContentId: base.generation.projectionContentId,
         analysisKey: "comparison-analysis",
         changedFiles: [{ path: "src/review.ts", status: "modified" }],
       },
     });
+    const base = await capabilityFixture("comparison-base", BASE_SHA);
     if (!head.reviewContext) throw new Error("comparison fixture omitted its sealed context");
     const store = new GraphCapabilityStore({
       cacheRoot,
       repositoryMirrors: mirrorAuthority().authority,
     });
-    const headInput = {
+    await store.publish({
       id: "comparison-head",
       generation: head.generation,
       sourceRoot: head.sourceRoot,
-      source: { kind: "other" as const },
+      source: { kind: "other" },
       reviewContext: {
         reference: head.reviewContext,
-        side: "head" as const,
+        side: "head",
         peerGraphId: "comparison-base",
         generation: head.generation,
       },
-    };
+    });
     const baseInput = {
       id: "comparison-base",
       generation: base.generation,
@@ -474,7 +473,7 @@ describe("GraphCapabilityStore", () => {
         generation: head.generation,
       },
     };
-    const [, baseDescriptor] = await store.publishMany([headInput, baseInput]);
+    const baseDescriptor = await store.publish(baseInput);
     await expect(store.publish(baseInput)).resolves.toEqual(baseDescriptor);
     if (!baseDescriptor.reviewContext) throw new Error("comparison descriptor omitted its context");
     const expectedRoots = new Set([
@@ -508,68 +507,6 @@ describe("GraphCapabilityStore", () => {
     expect((await store.snapshotGenerationRoots()).descriptorGenerationPaths)
       .toEqual(new Set([baseDescriptor.reviewContext.generationRoot]));
   });
-
-  it.each(["peer", "context", "content"] as const)(
-    "fails closed when a persisted review %s binding disagrees with its reciprocal capability",
-    async (mismatch) => {
-      const base = await capabilityFixture(`reciprocal-${mismatch}-base`, BASE_SHA);
-      const head = await capabilityFixture(`reciprocal-${mismatch}-head`, HEAD_SHA, {
-        reviewContext: {
-          mergeBaseSha: BASE_SHA,
-          mergeBaseContentId: base.generation.projectionContentId,
-          analysisKey: `reciprocal-${mismatch}`,
-          changedFiles: [{ path: "src/review.ts", status: "modified" }],
-        },
-      });
-      if (!head.reviewContext) throw new Error("reciprocal fixture omitted its review context");
-      const store = new GraphCapabilityStore({
-        cacheRoot,
-        repositoryMirrors: mirrorAuthority().authority,
-      });
-      await store.publishMany([
-        {
-          id: "reciprocal-head",
-          generation: head.generation,
-          sourceRoot: head.sourceRoot,
-          source: { kind: "other" },
-          reviewContext: {
-            reference: head.reviewContext,
-            side: "head",
-            peerGraphId: "reciprocal-base",
-            generation: head.generation,
-          },
-        },
-        {
-          id: "reciprocal-base",
-          generation: base.generation,
-          sourceRoot: base.sourceRoot,
-          source: { kind: "other" },
-          reviewContext: {
-            reference: head.reviewContext,
-            side: "mergeBase",
-            peerGraphId: "reciprocal-head",
-            generation: head.generation,
-          },
-        },
-      ]);
-      rewriteDescriptor("reciprocal-base", (descriptor) => mismatch === "content"
-        ? {
-            ...descriptor,
-            artifact: { ...descriptor.artifact, projectionContentId: "d".repeat(64) },
-          }
-        : {
-            ...descriptor,
-            reviewContext: {
-              ...descriptor.reviewContext!,
-              ...(mismatch === "peer"
-                ? { peerGraphId: "different-head" }
-                : { sha256: "e".repeat(64) }),
-            },
-          });
-
-      await expect(store.acquire("reciprocal-head")).resolves.toBeNull();
-    },
-  );
 
   it("physically deletes a hostile quarantine tree only after releasing lifecycle admission", async () => {
     const entered = deferred<void>();
@@ -1639,7 +1576,6 @@ async function capabilityFixture(
     artifactName?: string;
     reviewContext?: {
       mergeBaseSha: string;
-      mergeBaseContentId?: string;
       analysisKey: string;
       changedFiles: ChangedFileManifestEntry[];
     };
@@ -1685,16 +1621,13 @@ async function capabilityFixture(
     }));
     writeSyntheticCapabilitySidecar(artifactPath, sourceDir, artifact);
   }
-  const manifest = writeGraphProjectionBundle(projectionDirectory, artifact);
   const stagedReviewContext = options.reviewContext
     ? writeReviewComparisonContext(join(stage, REVIEW_COMPARISON_CONTEXT_FILE), {
         headSha: commit,
-        headContentId: manifest.contentId,
-        mergeBaseContentId: options.reviewContext.mergeBaseContentId ?? manifest.contentId,
-        testClassifications: [],
         ...options.reviewContext,
       })
     : undefined;
+  const manifest = writeGraphProjectionBundle(projectionDirectory, artifact);
   const projectionIntegrity = await measureGraphProjectionBundle(projectionDirectory, cacheRoot);
   const sealed = await sealGraphGeneration({
     cacheRoot,
@@ -1959,31 +1892,6 @@ function descriptorDirectory(id: string): string {
 
 function descriptorPath(id: string): string {
   return join(descriptorDirectory(id), "descriptor.json");
-}
-
-function descriptorIntegrityPath(id: string): string {
-  return join(descriptorDirectory(id), "descriptor.sha256");
-}
-
-function rewriteDescriptor(
-  id: string,
-  update: (descriptor: GraphCapabilityDescriptor) => GraphCapabilityDescriptor,
-): void {
-  const descriptor = JSON.parse(readFileSync(descriptorPath(id), "utf8")) as GraphCapabilityDescriptor;
-  const serialized = `${JSON.stringify(update(descriptor), null, 2)}\n`;
-  const digest = createHash("sha256")
-    .update(id)
-    .update("\0")
-    .update(serialized)
-    .digest("hex");
-  chmodSync(descriptorDirectory(id), 0o700);
-  chmodSync(descriptorPath(id), 0o600);
-  chmodSync(descriptorIntegrityPath(id), 0o600);
-  writeFileSync(descriptorPath(id), serialized);
-  writeFileSync(descriptorIntegrityPath(id), `${digest}\n`);
-  chmodSync(descriptorPath(id), 0o400);
-  chmodSync(descriptorIntegrityPath(id), 0o400);
-  chmodSync(descriptorDirectory(id), 0o500);
 }
 
 function makeDescriptorWritable(id: string): void {

@@ -52,10 +52,7 @@ import type {
 } from "./extraction-worker";
 import type { GraphGenerationSummary } from "./graph-generation-contract";
 import {
-  BoundedGraphProjectionPageCache,
   GRAPH_PROJECTION_DIRECTORY,
-  GRAPH_PROJECTION_FORMAT_VERSION,
-  GraphProjectionBundle,
   readGraphProjectionChangedSinceMeta,
   readGraphProjectionManifest,
 } from "./graph-projection-bundle";
@@ -85,7 +82,7 @@ export interface PrPrepareProgress {
   elapsedMs: number;
 }
 
-const FORMAT_VERSION = 12;
+const FORMAT_VERSION = 11;
 const ANALYSIS_VERSION = 5;
 const CURRENT_FORMAT_VERSION = 1;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
@@ -565,41 +562,13 @@ export async function cachedPrPreparation(inputs: PrPreparationInputs): Promise<
       }
       const changedFiles = canonicalChangedFiles(head.changedFiles);
       const warnings = [...new Set([...head.warnings, ...mergeBase.warnings])];
-      // Classification is immutable comparison metadata, not coordinate payload. Compute both
-      // graph sides once against a shared bounded page cache, then persist the HEAD-precedence
-      // catalog inside the digest-bound comparison sidecar.
-      const classificationCache = new BoundedGraphProjectionPageCache({
-        maxBytes: 32 * 1024 * 1024,
-        maxEntries: 128,
-      });
-      const headBundle = new GraphProjectionBundle(head.projectionDirectory, {
-        pageCache: classificationCache,
-      });
-      const mergeBaseBundle = new GraphProjectionBundle(mergeBase.side.projectionDirectory, {
-        pageCache: classificationCache,
-      });
-      const [headClassifications, mergeBaseClassifications] = await Promise.all([
-        headBundle.reviewTestClassifications(changedFiles, "head", inputs.signal),
-        mergeBaseBundle.reviewTestClassifications(changedFiles, "mergeBase", inputs.signal),
-      ]);
-      classificationCache.clear();
-      const classificationsByIndex = new Map(
-        mergeBaseClassifications.map((entry) => [entry.index, entry.isTest] as const),
-      );
-      for (const entry of headClassifications) classificationsByIndex.set(entry.index, entry.isTest);
-      const testClassifications = [...classificationsByIndex]
-        .sort(([left], [right]) => left - right)
-        .map(([index, isTest]) => ({ index, isTest }));
       const reviewContext = writeReviewComparisonContext(
         join(dirname(headOutput), REVIEW_COMPARISON_CONTEXT_FILE),
         {
           headSha: revisions.headSha,
           mergeBaseSha: prepared.mergeBaseSha,
-          headContentId: head.projectionContentId,
-          mergeBaseContentId: mergeBase.side.verifiedGeneration.projectionContentId,
           analysisKey,
           changedFiles,
-          testClassifications,
         },
       );
       const metadata: PrMetadata = {
@@ -1666,13 +1635,8 @@ async function readSide(
     if (signal?.aborted) throw signal.reason ?? error;
     return null;
   }
-  const manifest = readGraphProjectionManifest(projectionDirectory);
   const changedSince = readGraphProjectionChangedSinceMeta(projectionDirectory);
-  if (!manifest
-    || manifest.contentId !== metadata.projectionContentId
-    || !sameGraphSummary(manifest.graphSummary, metadata.graphSummary)
-    || manifest.header.target.vcs?.commit !== expectedCommit
-    || changedSince?.baseRef !== expectedChangedSinceBaseRef) return null;
+  if (changedSince?.baseRef !== expectedChangedSinceBaseRef) return null;
   touchMetadata(sourceRoot);
   touchMetadata(leaseMetadata);
   return {
@@ -1911,7 +1875,6 @@ function prPreparationKey(request: PrPrepareRequest): string {
     formatVersion: FORMAT_VERSION,
     analysisVersion: ANALYSIS_VERSION,
     repositoryAnalysisVersion: REPOSITORY_ANALYSIS_VERSION,
-    projectionProtocolVersion: GRAPH_PROJECTION_FORMAT_VERSION,
     schemaVersion: SCHEMA_VERSION,
     generatorVersion: generatorVersion(),
     subdir: request.subdir ?? "",

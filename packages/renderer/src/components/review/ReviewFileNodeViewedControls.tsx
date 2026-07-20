@@ -9,6 +9,8 @@ import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
 import {
   checkStateOf,
+  filesViewState,
+  fileViewState,
   unitsViewState,
   type CheckState,
   type ReviewFileRow,
@@ -16,14 +18,6 @@ import {
 } from "../../derive/reviewFiles";
 import type { GraphIndex } from "../../graph/graphIndex";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import {
-  progressFilesForPaths,
-  progressUnit,
-  reviewFileProgressState,
-  reviewFilesProgressState,
-  type ReviewProgressCatalog,
-} from "../../state/reviewFileProgress";
-import type { ReviewTick } from "../../state/reviewTicksPref";
 import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionContext";
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
 
@@ -112,13 +106,7 @@ function EnabledReviewNodeViewedChrome({
     state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
     state.index,
   ));
-  const state = useBlueprint((blueprint) => viewStateFor(
-    target,
-    blueprint.reviewProgressCatalog,
-    blueprint.reviewUnitTicks,
-    blueprint.reviewFileTicks,
-    blueprint.showTests,
-  ));
+  const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
   const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick, toggleReviewUnitsViewed } = useBlueprintActions();
   if (target === null || state === null) {
     return children;
@@ -296,26 +284,21 @@ function reviewTargetIndex(files: readonly ReviewFileRow[], graphIndex: GraphInd
 
 function viewStateFor(
   target: ReviewViewedTarget | null,
-  catalog: ReviewProgressCatalog | null,
-  unitTicks: Record<string, ReviewTick>,
-  fileTicks: Record<string, ReviewTick>,
-  includeTests: boolean,
+  unitTicks: Parameters<typeof fileViewState>[1],
+  fileTicks: Parameters<typeof fileViewState>[2],
 ): CheckState | null {
   if (target === null) {
     return null;
   }
   if (target.kind === "folder") {
-    const files = progressFilesForPaths(catalog, target.files.map((file) => file.path));
-    return files.length === 0 ? null : reviewFilesProgressState(files, unitTicks, fileTicks, includeTests);
+    return filesViewState(target.files, unitTicks, fileTicks);
   }
   if (target.kind === "unit-group") {
-    return unitsViewState(target.units.map(progressUnit), unitTicks);
+    return unitsViewState(target.units, unitTicks);
   }
-  if (target.kind === "file") {
-    const file = catalog?.byPath.get(target.file.path);
-    return file === undefined ? null : reviewFileProgressState(file, unitTicks, fileTicks, includeTests);
-  }
-  return checkStateOf(target.unit.fingerprint, unitTicks[target.unit.nodeId]);
+  return target.kind === "file"
+    ? fileViewState(target.file, unitTicks, fileTicks)
+    : checkStateOf(target.unit.fingerprint, unitTicks[target.unit.nodeId]);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {

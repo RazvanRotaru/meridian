@@ -37,7 +37,6 @@ import {
   resolveSyntheticCapability,
   sendMeta,
   sendProjectionManifest,
-  sendReviewMetadata,
   sendView,
 } from "./web-graph";
 import {
@@ -107,7 +106,6 @@ const API_METHODS = new Map<string, readonly ("GET" | "POST")[]>([
   ["/api/prs/review", ["POST"]],
   ["/api/prs/related", ["POST"]],
   ["/api/graph/manifest", ["GET"]],
-  ["/api/graph/review-metadata", ["GET"]],
   ["/api/pr/prepared", ["GET"]],
   ["/api/meta", ["GET"]],
   ["/api/overlay", ["GET"]],
@@ -132,7 +130,6 @@ const GRAPH_CAPABILITY_API_PATHS = new Set([
   "/api/graph/projection",
   "/api/graph/search",
   "/api/graph/manifest",
-  "/api/graph/review-metadata",
   "/api/pr/prepare",
   "/api/pr/prepared",
   "/api/synthetic-executions",
@@ -750,10 +747,6 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   const pathname = url.pathname;
   if (pathname === "/api/graph/manifest") {
     await sendProjectionManifest(ctx, request, response, url.searchParams.get("id"));
-    return;
-  }
-  if (pathname === "/api/graph/review-metadata") {
-    await sendReviewMetadata(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/pr/prepared") {

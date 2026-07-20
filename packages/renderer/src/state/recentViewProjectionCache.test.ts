@@ -191,34 +191,6 @@ describe("RecentViewProjectionCache", () => {
     expect(cache.recentResidentByteLength).toBe(0);
   });
 
-  it("discards selected inactive projections without touching the active view or other allocations", () => {
-    const budget = new RecentAllocationBudget({ maxRecentEntries: 4, maxRecentBytes: 1_000 });
-    const cache = new RecentViewProjectionCache<string, Projection>(
-      { maxRecentEntries: 4, maxRecentBytes: 1_000 },
-      budget,
-    );
-    const retained = projection("retained single");
-    const discardedFirst = projection("discarded review one");
-    const discardedSecond = projection("discarded review two");
-    const active = projection("active review");
-    cache.setActive("single", retained, 100);
-    cache.setActive("review:one", discardedFirst, 200);
-    cache.setActive("review:two", discardedSecond, 300);
-    cache.setActive("review:active", active, 400);
-
-    cache.discardRecentWhere((key) => key.startsWith("review:"));
-
-    expect(cache.activeKey).toBe("review:active");
-    expect(cache.active).toBe(active);
-    expect(cache.has("single")).toBe(true);
-    expect(cache.has("review:one")).toBe(false);
-    expect(cache.has("review:two")).toBe(false);
-    expect(cache.recentEntryCount).toBe(1);
-    expect(cache.recentResidentByteLength).toBe(100);
-    expect(budget.inactiveEntryCount).toBe(1);
-    expect(budget.inactiveResidentByteLength).toBe(100);
-  });
-
   it("rejects invalid limits and resident byte weights before corrupting accounting", () => {
     expect(() => new RecentViewProjectionCache({ maxRecentEntries: -1, maxRecentBytes: 1 })).toThrow(RangeError);
     expect(() => new RecentViewProjectionCache({ maxRecentEntries: 1, maxRecentBytes: Number.POSITIVE_INFINITY })).toThrow(RangeError);

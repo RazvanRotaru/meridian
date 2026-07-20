@@ -86,7 +86,7 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
  * extracted/review scene deliberately parks that scene and renders through ModuleMapView itself;
  * its own minimalLayoutStatus owns readiness and failure presentation. */
 export function moduleSceneNeedsTransition(
-  state: Pick<BlueprintState, "viewMode" | "moduleRfNodes" | "moduleLayoutStatus" | "minimalSeedIds" | "minimalMemberIds" | "review" | "prReviewed">,
+  state: Pick<BlueprintState, "viewMode" | "moduleRfNodes" | "moduleLayoutStatus" | "minimalSeedIds" | "review" | "prReviewed">,
 ): boolean {
   const moduleLens = state.viewMode === "modules" || state.viewMode === "call" || state.viewMode === "ui";
   const overlaySceneOwnsSurface = moduleGraphOverlayIsOpen(state);

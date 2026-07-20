@@ -36,8 +36,6 @@ import {
   type GraphHierarchyFact,
   type GraphModuleOverview,
   type GraphNode,
-  type GraphProjectionReviewOverviewEntryState,
-  type GraphProjectionReviewTestClassification,
   type GraphRepositorySummary,
   type JsonValue,
   type LogicFlows,
@@ -58,7 +56,6 @@ import {
 import {
   effectiveReviewProjectionContentId,
   resolveReviewContextCursor,
-  reviewGraphPathForSide,
   type ReviewComparisonContext,
   type ReviewComparisonSide,
   type ReviewContextFacts,
@@ -386,7 +383,7 @@ interface ChangedPathLookup {
   unavailable: boolean;
 }
 
-type AdjacencyCategory = "children" | "out-edges" | "in-edges" | "file-nodes" | "file-overview";
+type AdjacencyCategory = "children" | "out-edges" | "in-edges" | "file-nodes";
 
 export interface GraphProjectionCompleteness {
   complete: boolean;
@@ -425,8 +422,6 @@ export interface GraphProjectionReviewContext {
   readonly context: ReviewComparisonContext;
   /** Digest verified while reading the immutable context sidecar. */
   readonly contextId: string;
-  /** Digest binding this context to both immutable graph capabilities. */
-  readonly metadataId: string;
   readonly side: ReviewComparisonSide;
 }
 
@@ -481,7 +476,6 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     "out-edges",
     "in-edges",
     "file-nodes",
-    "file-overview",
     "flows",
     "entry-modules",
     "changed-paths",
@@ -515,7 +509,6 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
   const nodesByShard = buckets<GraphNode[]>(() => []);
   const childrenByShard = buckets<Map<string, string[]>>(() => new Map());
   const fileNodesByShard = buckets<Map<string, string[]>>(() => new Map());
-  const fileOverviewByShard = buckets<Map<string, string[]>>(() => new Map());
   const indexedFilePaths = new Set<string>();
   const roots: string[] = [];
   const changed: string[] = [];
@@ -536,15 +529,10 @@ export function writeGraphProjectionBundle(bundleRoot: string, artifact: GraphAr
     if (node.tags?.includes("changed")) changed.push(node.id);
   }
 
-  for (const [filePath, nodeId] of reviewOverviewRepresentatives(artifact.nodes)) {
-    fileOverviewByShard[shardOf(filePath)]!.set(filePath, [nodeId]);
-  }
-
   for (let shard = 0; shard < SHARD_COUNT; shard += 1) {
     writeNodeShard(root, shard, nodesByShard[shard]!);
     writeAdjacencyShard(root, "children", shard, childrenByShard[shard]!, ID_PAGE_ENTRIES);
     writeAdjacencyShard(root, "file-nodes", shard, fileNodesByShard[shard]!, ID_PAGE_ENTRIES);
-    writeAdjacencyShard(root, "file-overview", shard, fileOverviewByShard[shard]!, ID_PAGE_ENTRIES);
   }
   writeHierarchyShards(
     root,
@@ -739,28 +727,6 @@ export class GraphProjectionBundle {
     else this.cache.deleteNamespace(this.root);
   }
 
-  /**
-   * Compute whole-manifest graph truth once while publishing the immutable comparison sidecar.
-   * Projection requests themselves classify only their bounded page/file coordinate.
-   */
-  async reviewTestClassifications(
-    changedFiles: readonly ChangedFileManifestEntry[],
-    side: ReviewComparisonSide,
-    signal?: AbortSignal,
-  ): Promise<readonly GraphProjectionReviewTestClassification[]> {
-    const cancellation = new ProjectionQueryCancellation(signal);
-    const classifications: GraphProjectionReviewTestClassification[] = [];
-    for (let index = 0; index < changedFiles.length; index += 1) {
-      const pendingYield = cancellation.checkpoint();
-      if (pendingYield !== null) await pendingYield;
-      const graphPath = reviewGraphPathForSide(changedFiles[index]!, side);
-      if (graphPath === null) continue;
-      const classification = this.reviewFileClassification(graphPath);
-      if (classification !== null) classifications.push({ index, isTest: classification.isTest });
-    }
-    return classifications;
-  }
-
   /** Public identity for this physical bundle under an optional logical review capability. */
   contentIdFor(options: GraphProjectionQueryOptions = {}): string {
     const review = options.review;
@@ -781,62 +747,22 @@ export class GraphProjectionBundle {
     const request = canonicalizeGraphProjectionRequest(input);
     const review = resolveReviewQuery(request, options.review);
     const contentId = this.contentIdFor(options);
-    const reviewOverviewRoutes = review?.overviewRoutes ?? null;
-    const reviewOverview = reviewOverviewRoutes !== null;
-    if (reviewOverview && (
-      request.focusIds.length > 0
-      || request.expandedIds.length > 0
-      || request.extraIds.length > 0
-      || request.causalIds.length > 0
-      || request.serviceExpandedLeadIds.length > 0
-    )) {
-      throw new GraphProjectionRequestError(400, "review overview coordinates do not accept graph selectors");
-    }
-    const graphRoutingPaths = review === null
-      ? request.filePaths
-      : reviewOverview
-        ? []
-        : review.graphPaths;
+    const reviewGraphPaths = review?.graphPath === null || review?.graphPath === undefined
+      ? []
+      : [review.graphPath];
+    const graphRoutingPaths = review === null ? request.filePaths : reviewGraphPaths;
     // Graph-side presence and canonical diff ownership are separate coordinates. A deleted file has
     // no HEAD graph path, while its exact diffLines/stats remain authored by the HEAD bundle under
     // the current manifest path. Likewise, a renamed base graph routes through previousPath without
     // changing which canonical row owns its review metadata.
     const changedRoutingPaths = review === null
       ? request.filePaths
-      : reviewOverview
+      : review.changedPath === null
         ? []
-        : review.changedPaths;
+        : [review.changedPath];
     const cancellation = new ProjectionQueryCancellation(signal);
     let pendingYield = cancellation.checkpoint(true);
     if (pendingYield !== null) await pendingYield;
-    const reviewClassificationByIndex = new Map<number, {
-      readonly representativeId?: string;
-      readonly isTest: boolean;
-    }>();
-    if (review !== null && options.review !== undefined) {
-      const routes = review.overviewRoutes ?? (review.facts.selection === null
-        ? []
-        : [{ index: review.facts.selection.index, graphPath: review.graphPath }]);
-      for (const route of routes) {
-        pendingYield = cancellation.checkpoint();
-        if (pendingYield !== null) await pendingYield;
-        if (route.graphPath === null) continue;
-        const classification = this.reviewFileClassification(route.graphPath);
-        if (classification !== null) reviewClassificationByIndex.set(route.index, classification);
-      }
-    }
-    const resolvedReviewFacts = review === null
-      ? null
-      : {
-          ...review.facts,
-          metadataId: options.review!.metadataId,
-          selection: review.facts.selection === null
-            ? null
-            : {
-                ...review.facts.selection,
-                isTest: reviewClassificationByIndex.get(review.facts.selection.index)?.isTest ?? null,
-              },
-        };
     const projectionId = createHash("sha256")
       .update(graphProjectionIdentityPreimage(contentId, request))
       .digest("hex");
@@ -848,7 +774,7 @@ export class GraphProjectionBundle {
       projectionId,
       request,
       this.manifest.header,
-      resolvedReviewFacts,
+      review?.facts ?? null,
     );
     if (retainedBytes > request.maxResponseBytes) {
       throw new GraphProjectionRequestError(413, "graph projection response budget cannot hold its request envelope");
@@ -897,8 +823,6 @@ export class GraphProjectionBundle {
     const hierarchyNodes = Object.create(null) as Record<string, GraphHierarchyFact>;
     const reachabilityLeaves: Record<string, ReachabilityPaintFacts["leaves"][string]> = {};
     const reachabilityContainers: Record<string, ReachabilityPaintFacts["containers"][string]> = {};
-    const edges: GraphEdge[] = [];
-    const edgeIds = new Set<string>();
 
     const addNode = (id: string): boolean => {
       cancellation.throwIfAborted();
@@ -944,111 +868,6 @@ export class GraphProjectionBundle {
       }
       retainedBytes += bytes;
       return true;
-    };
-
-    /**
-     * Admit one overview representative and its ancestor closure atomically. Budget pressure is an
-     * explicit deferred page member, not an incomplete projection: no partial chain is published and
-     * the strict client can safely render every node it receives.
-     */
-    const addOverviewRepresentative = async (
-      id: string,
-    ): Promise<{
-      state: "included" | "filtered" | "deferred";
-      isTest: boolean;
-    }> => {
-      // Classification belongs to the complete immutable graph, not the filtered response. Read it
-      // before admission so Tests-hidden and byte-deferred files retain the same canonical verdict.
-      const representativeNode = this.node(id);
-      const representativeFact = this.hierarchyFact(id);
-      if (!representativeNode || !representativeFact) {
-        throw new GraphProjectionDataError(`overview representative ${id} has unavailable node data`);
-      }
-      const isTest = representativeFact.all.isTest;
-      const staged: Array<{
-        id: string;
-        node: GraphNode;
-        hierarchyFact: GraphHierarchyFact;
-        reachabilityFact: StoredHierarchyFact["reachability"] | null;
-        bytes: number;
-      }> = [];
-      const stagedIds = new Set<string>();
-      let stagedNodeBytes = 0;
-      let currentId: string | null = id;
-      while (currentId !== null && !nodes.has(currentId)) {
-        pendingYield = cancellation.checkpoint();
-        if (pendingYield !== null) await pendingYield;
-        if (stagedIds.has(currentId)) {
-          throw new GraphProjectionDataError(`overview representative ${id} has a cyclic parent chain`);
-        }
-        stagedIds.add(currentId);
-        const node = this.node(currentId);
-        const storedFact = this.hierarchyFact(currentId);
-        if (!node || !storedFact) {
-          throw new GraphProjectionDataError(`overview representative ${id} has unavailable node data`);
-        }
-        const hierarchyFact = request.includeTests ? storedFact.all : storedFact.withoutTests;
-        if (hierarchyFact === null) return { state: "filtered", isTest };
-        const reachabilityFact = request.includeReachability ? storedFact.reachability : null;
-        const reachabilityBytes = reachabilityFact === null
-          ? 0
-          : jsonBytes(currentId) * 2
-            + (reachabilityFact.leaf === null ? 0 : jsonBytes(reachabilityFact.leaf))
-            + (reachabilityFact.container === null ? 0 : jsonBytes(reachabilityFact.container))
-            + 16;
-        const bytes = jsonBytes(node) + jsonBytes(currentId) + jsonBytes(hierarchyFact) + reachabilityBytes + 48;
-        if (nodes.size + staged.length + 1 > request.maxNodes
-          || retainedBytes + stagedNodeBytes + bytes > request.maxResponseBytes) {
-          return { state: "deferred", isTest };
-        }
-        staged.push({
-          id: currentId,
-          node,
-          hierarchyFact,
-          reachabilityFact,
-          bytes,
-        });
-        stagedNodeBytes += bytes;
-        currentId = node.parentId ?? null;
-      }
-      const stagedNodeIds = new Set(staged.map((entry) => entry.id));
-      const represented = (candidateId: string): boolean => nodes.has(candidateId) || stagedNodeIds.has(candidateId);
-      const stagedEdges = new Map<string, GraphEdge>();
-      let stagedEdgeBytes = 0;
-      for (const entry of staged) {
-        for (const category of ["out-edges", "in-edges"] as const) {
-          for (const edge of this.adjacency<GraphEdge>(category, entry.id)) {
-            pendingYield = cancellation.checkpoint();
-            if (pendingYield !== null) await pendingYield;
-            if (edgeIds.has(edge.id) || stagedEdges.has(edge.id)) continue;
-            if (!represented(edge.source) || !represented(edge.target)) continue;
-            const bytes = jsonBytes(edge) + 1;
-            if (edges.length + stagedEdges.size + 1 > request.maxEdges
-              || retainedBytes + stagedNodeBytes + stagedEdgeBytes + bytes > request.maxResponseBytes) {
-              return { state: "deferred", isTest };
-            }
-            stagedEdges.set(edge.id, edge);
-            stagedEdgeBytes += bytes;
-          }
-        }
-      }
-      for (const entry of staged.reverse()) {
-        nodes.set(entry.id, entry.node);
-        hierarchyNodes[entry.id] = entry.hierarchyFact;
-        if (entry.reachabilityFact?.leaf !== null && entry.reachabilityFact?.leaf !== undefined) {
-          reachabilityLeaves[entry.id] = entry.reachabilityFact.leaf;
-        }
-        if (entry.reachabilityFact?.container !== null && entry.reachabilityFact?.container !== undefined) {
-          reachabilityContainers[entry.id] = entry.reachabilityFact.container;
-        }
-        retainedBytes += entry.bytes;
-      }
-      for (const edge of stagedEdges.values()) {
-        edgeIds.add(edge.id);
-        edges.push(edge);
-        retainedBytes += jsonBytes(edge) + 1;
-      }
-      return { state: "included", isTest };
     };
 
     const seeds = new Set<string>([
@@ -1136,71 +955,28 @@ export class GraphProjectionBundle {
         throw new GraphProjectionDataError(`${path} does not match its manifest count`);
       }
     }
-    const reviewOverviewCoverage = new Map<number, {
-      state: GraphProjectionReviewOverviewEntryState;
-      isTest: boolean | null;
-    }>();
     if (request.view === "review") {
-      if (reviewOverviewRoutes !== null) {
-        for (const route of reviewOverviewRoutes) {
+      for (const filePath of graphRoutingPaths) {
+        pendingYield = cancellation.checkpoint();
+        if (pendingYield !== null) await pendingYield;
+        const entry = this.adjacencyEntry("file-nodes", filePath);
+        if (!entry) continue;
+        let visited = 0;
+        for (const id of this.readAdjacencyPages<string>("file-nodes", filePath, entry.refs)) {
           pendingYield = cancellation.checkpoint();
           if (pendingYield !== null) await pendingYield;
-          if (route.graphPath === null) {
-            reviewOverviewCoverage.set(route.index, { state: "absent", isTest: null });
+          visited += 1;
+          if (seeds.has(id)) continue;
+          if (seeds.size >= request.maxNodes) {
+            omittedNodes += 1;
+            reasons.add("node-limit");
             continue;
           }
-          let classification = reviewClassificationByIndex.get(route.index);
-          if (classification === undefined) {
-            reviewOverviewCoverage.set(route.index, { state: "unmapped", isTest: null });
-            continue;
-          }
-          if (classification.representativeId === undefined) {
-            const hydrated = this.reviewFileClassification(route.graphPath);
-            if (hydrated === null || hydrated.isTest !== classification.isTest) {
-              throw new GraphProjectionDataError(
-                `cached test classification for ${route.graphPath} is inconsistent`,
-              );
-            }
-            classification = hydrated;
-            reviewClassificationByIndex.set(route.index, classification);
-          }
-          const representativeId = classification.representativeId;
-          if (representativeId === undefined) {
-            throw new GraphProjectionDataError(
-              `overview representative for ${route.graphPath} is unavailable`,
-            );
-          }
-          const coverage = await addOverviewRepresentative(representativeId);
-          if (coverage.isTest !== classification.isTest) {
-            throw new GraphProjectionDataError(
-              `overview representative ${representativeId} has inconsistent test classification`,
-            );
-          }
-          reviewOverviewCoverage.set(route.index, coverage);
+          seeds.add(id);
+          boundarySeedCandidates.add(id);
         }
-      } else {
-        for (const filePath of graphRoutingPaths) {
-          pendingYield = cancellation.checkpoint();
-          if (pendingYield !== null) await pendingYield;
-          const entry = this.adjacencyEntry("file-nodes", filePath);
-          if (!entry) continue;
-          let visited = 0;
-          for (const id of this.readAdjacencyPages<string>("file-nodes", filePath, entry.refs)) {
-            pendingYield = cancellation.checkpoint();
-            if (pendingYield !== null) await pendingYield;
-            visited += 1;
-            if (seeds.has(id)) continue;
-            if (seeds.size >= request.maxNodes) {
-              omittedNodes += 1;
-              reasons.add("node-limit");
-              continue;
-            }
-            seeds.add(id);
-            boundarySeedCandidates.add(id);
-          }
-          if (visited !== entry.count) {
-            throw new GraphProjectionDataError(`file-nodes for ${filePath} does not match its index count`);
-          }
+        if (visited !== entry.count) {
+          throw new GraphProjectionDataError(`file-nodes for ${filePath} does not match its index count`);
         }
       }
     }
@@ -1364,33 +1140,33 @@ export class GraphProjectionBundle {
       }
     }
 
-    if (!reviewOverview) {
-      for (const source of nodes.keys()) {
+    const edges: GraphEdge[] = [];
+    const edgeIds = new Set<string>();
+    for (const source of nodes.keys()) {
+      pendingYield = cancellation.checkpoint();
+      if (pendingYield !== null) await pendingYield;
+      for (const edge of this.adjacency<GraphEdge>("out-edges", source)) {
         pendingYield = cancellation.checkpoint();
         if (pendingYield !== null) await pendingYield;
-        for (const edge of this.adjacency<GraphEdge>("out-edges", source)) {
-          pendingYield = cancellation.checkpoint();
-          if (pendingYield !== null) await pendingYield;
-          const representedTarget = nodes.has(edge.target)
-            || (boundaryEdgeIds.has(edge.id)
-              && (edge.resolution === "external" || edge.resolution === "unresolved"));
-          if (!representedTarget || edgeIds.has(edge.id)) continue;
-          const bytes = jsonBytes(edge) + 1;
-          if (edges.length >= request.maxEdges || retainedBytes + bytes > request.maxResponseBytes) {
-            omittedEdges += 1;
-            reasons.add(edges.length >= request.maxEdges ? "edge-limit" : "byte-limit");
-            continue;
-          }
-          edgeIds.add(edge.id);
-          edges.push(edge);
-          retainedBytes += bytes;
+        const representedTarget = nodes.has(edge.target)
+          || (boundaryEdgeIds.has(edge.id)
+            && (edge.resolution === "external" || edge.resolution === "unresolved"));
+        if (!representedTarget || edgeIds.has(edge.id)) continue;
+        const bytes = jsonBytes(edge) + 1;
+        if (edges.length >= request.maxEdges || retainedBytes + bytes > request.maxResponseBytes) {
+          omittedEdges += 1;
+          reasons.add(edges.length >= request.maxEdges ? "edge-limit" : "byte-limit");
+          continue;
         }
+        edgeIds.add(edge.id);
+        edges.push(edge);
+        retainedBytes += bytes;
       }
     }
 
     let extensions: Record<string, JsonValue> | undefined;
     const entryModules = this.selectedEntryModules(nodes.keys());
-    if (!reviewOverview && entryModules.length > 0) {
+    if (entryModules.length > 0) {
       const entryModuleBytes = jsonBytes(entryModules) + 32;
       if (retainedBytes + entryModuleBytes <= request.maxResponseBytes) {
         (extensions ??= {}).entryModules = entryModules;
@@ -1399,7 +1175,7 @@ export class GraphProjectionBundle {
         reasons.add("extension-byte-limit");
       }
     }
-    if (request.view === "review" && !reviewOverview) {
+    if (request.view === "review") {
       const projected: ProjectedChangedSince = {};
       let estimatedBytes = 128;
       if (this.manifest.extensions.changedMetaBytes > 0
@@ -1486,31 +1262,19 @@ export class GraphProjectionBundle {
       moduleOverviewRootIds: moduleOverviewRootCandidates.filter((id) => nodes.has(id)),
       nodes: hierarchyNodes,
     };
-    const reviewOverviewEntries = (reviewOverviewRoutes ?? []).map((route) => {
-      const coverage = reviewOverviewCoverage.get(route.index);
-      if (coverage === undefined) {
-        throw new GraphProjectionDataError(`review overview coverage for index ${route.index} is unavailable`);
-      }
-      return { index: route.index, ...coverage };
-    });
-    const publishedReviewFacts = review === null || resolvedReviewFacts === null
+    const reviewFacts = review === null
       ? null
-      : resolvedReviewFacts.selection === null
-        ? {
-            ...resolvedReviewFacts,
-            overview: {
-              entries: reviewOverviewEntries,
-            },
-          }
+      : review.facts.selection === null
+        ? review.facts
         : {
-            ...resolvedReviewFacts,
+            ...review.facts,
             selection: {
-              ...resolvedReviewFacts.selection,
+              ...review.facts.selection,
               graphMatched: review.graphPath !== null
                 && [...nodes.values()].some((node) => storedFilePath(node.location?.file) === review.graphPath),
             },
           };
-    const viewFacts = { moduleOverview, service, review: publishedReviewFacts };
+    const viewFacts = { moduleOverview, service, review: reviewFacts };
     const analysis = {
       reachability: reachabilitySummary === null
         ? null
@@ -1754,41 +1518,6 @@ export class GraphProjectionBundle {
     const shard = shardName(id);
     const index = this.readJson<AdjacencyShardIndex>(join(category, `${shard}.index.json`));
     return index?.[id] ?? null;
-  }
-
-  /** Resolve one immutable, unfiltered file verdict without hydrating its complete node slice. */
-  private reviewFileClassification(
-    graphPath: string,
-  ): { readonly representativeId: string; readonly isTest: boolean } | null {
-    const entry = this.adjacencyEntry("file-overview", graphPath);
-    if (!entry) {
-      // file-overview and file-nodes are authored from the same indexed source paths. A missing
-      // overview for an exact file-nodes path is corrupt bundle data, not an unmapped review file.
-      if (this.adjacencyEntry("file-nodes", graphPath)) {
-        throw new GraphProjectionDataError(
-          `file-overview for indexed source path ${graphPath} is unavailable`,
-        );
-      }
-      return null;
-    }
-    let representativeId: string | undefined;
-    let visited = 0;
-    for (const id of this.readAdjacencyPages<string>("file-overview", graphPath, entry.refs)) {
-      representativeId = id;
-      visited += 1;
-    }
-    if (visited !== 1 || entry.count !== 1 || representativeId === undefined) {
-      throw new GraphProjectionDataError(
-        `file-overview for ${graphPath} does not contain exactly one representative`,
-      );
-    }
-    const hierarchyFact = this.hierarchyFact(representativeId);
-    if (hierarchyFact === null) {
-      throw new GraphProjectionDataError(
-        `overview representative ${representativeId} has unavailable hierarchy data`,
-      );
-    }
-    return { representativeId, isTest: hierarchyFact.all.isTest };
   }
 
   private *adjacency<Value>(category: "out-edges" | "in-edges", id: string): Generator<Value> {
@@ -2345,41 +2074,6 @@ function hex(value: number): string {
   return value.toString(16).padStart(2, "0");
 }
 
-/**
- * Pick one stable extracted node for each indexed source path. Exact file projections still use the
- * complete file-nodes index; this compact index exists only for a bounded review overview.
- */
-function reviewOverviewRepresentatives(nodes: readonly GraphNode[]): Array<[string, string]> {
-  const byId = new Map(nodes.map((node) => [node.id, node]));
-  const selected = new Map<string, GraphNode>();
-  for (const node of nodes) {
-    const filePath = storedFilePath(node.location?.file);
-    if (filePath === null) continue;
-    const current = selected.get(filePath);
-    if (current === undefined || compareOverviewRepresentative(node, current, filePath, byId) < 0) {
-      selected.set(filePath, node);
-    }
-  }
-  return [...selected]
-    .sort(([left], [right]) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")))
-    .map(([path, node]) => [path, node.id]);
-}
-
-function compareOverviewRepresentative(
-  left: GraphNode,
-  right: GraphNode,
-  filePath: string,
-  byId: ReadonlyMap<string, GraphNode>,
-): number {
-  const rank = (node: GraphNode): number => {
-    if (node.kind === "module") return 0;
-    const parentPath = storedFilePath(byId.get(node.parentId ?? "")?.location?.file);
-    return parentPath === filePath ? 2 : 1;
-  };
-  return rank(left) - rank(right)
-    || Buffer.compare(Buffer.from(left.id, "utf8"), Buffer.from(right.id, "utf8"));
-}
-
 function normalizedIds(
   values: readonly string[],
   limit: number,
@@ -2691,7 +2385,7 @@ function projectionEnvelopeReserveBytes(
   header: GraphHeader,
   review: ReviewContextFacts | null,
 ): number {
-  const encoded = jsonBytes({
+  return jsonBytes({
     version: GRAPH_PROJECTION_FORMAT_VERSION,
     contentId,
     projectionId,
@@ -2714,9 +2408,6 @@ function projectionEnvelopeReserveBytes(
     },
     residentBytes: Number.MAX_SAFE_INTEGER,
   });
-  // Comparison-context placeholders use `isTest: null`; a graph-backed production verdict is
-  // `false`, one encoded byte longer. Reserve that worst case for every bounded page entry.
-  return encoded + (review?.overview?.entries.length ?? 0);
 }
 
 function flowTargets(value: unknown): string[] {

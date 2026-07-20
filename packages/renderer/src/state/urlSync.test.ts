@@ -9,7 +9,6 @@ import {
 } from "../graph/graphProjectionClient";
 import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintState } from "./store";
-import { RecentViewProjectionCache } from "./recentViewProjectionCache";
 import { restoreFromUrl, startUrlSync } from "./urlSync";
 import { DEFAULT_NAV, mergeNavIntoSearch } from "./urlState";
 
@@ -37,13 +36,10 @@ const BOOT_REQUEST: GraphProjectionRequest = {
   ...OVERVIEW_PROJECTION_REQUEST,
 };
 
-function freshStore(
-  telemetry?: {
-    provider: TelemetryProvider;
-    sources: TelemetrySourceRegistration[];
-  },
-  projectionSource?: (initial: LoadedGraphProjection) => GraphProjectionDataSource,
-) {
+function freshStore(telemetry?: {
+  provider: TelemetryProvider;
+  sources: TelemetrySourceRegistration[];
+}) {
   const bootIndex = buildGraphIndex(BOOT_ARTIFACT);
   const initialProjection: LoadedGraphProjection = {
     key: "boot-projection-key",
@@ -57,10 +53,10 @@ function freshStore(
     serializedBytes: 100,
     residentBytes: 300,
   };
-  const defaultProjectionDataSource: GraphProjectionDataSource = {
+  const projectionDataSource: GraphProjectionDataSource = {
     activeKey: initialProjection.key,
     loadManifest: async () => ({
-      version: 9,
+      version: 6,
       graphId: "artifact-1",
       contentId: "0".repeat(64),
       graphSummary: {
@@ -86,10 +82,8 @@ function freshStore(
       : undefined,
     stageReviewPair: async () => { throw new Error("review pair is not loaded during URL exit"); },
     stageCachedReview: () => undefined,
-    discardInactiveReviewProjections: () => {},
     searchSymbols: async () => { throw new Error("symbol search is not loaded during URL exit"); },
   };
-  const projectionDataSource = projectionSource?.(initialProjection) ?? defaultProjectionDataSource;
   return createBlueprintStore({
     artifact: BOOT_ARTIFACT,
     index: bootIndex,
@@ -202,60 +196,6 @@ describe("restoreFromUrl review exit", () => {
     expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
     expect(store.getState().flowPaneLayoutStatus).toBe("idle");
     expect(store.getState().reviewFocusedSubgraph).toBeNull();
-  });
-
-  it("releases every outgoing scene owner before publishing a restored coordinate", async () => {
-    const store = freshStore();
-    const clearSceneCache = vi.spyOn(RecentViewProjectionCache.prototype, "clear");
-    store.setState({
-      moduleRfNodes: [{ id: "stale-module" } as BlueprintState["moduleRfNodes"][number]],
-      logicRfNodes: [{ id: "stale-logic" } as BlueprintState["logicRfNodes"][number]],
-      minimalRfNodes: [{ id: "stale-minimal" } as BlueprintState["minimalRfNodes"][number]],
-      flowPaneRfNodes: [{ id: "stale-flow" } as BlueprintState["flowPaneRfNodes"][number]],
-      moduleSelected: new Set([FILE_ID]),
-      mapExtra: new Set([FILE_ID]),
-      mapGhostPins: new Map([[FILE_ID, new Set([FILE_ID])]]),
-      logicFocus: [{ id: FILE_ID, label: "stale", bodies: [] }],
-      expandedLogic: new Set([FILE_ID]),
-      collapsedLogicEdges: new Set(["stale-edge"]),
-      minimalProjectionExtraIds: new Set([FILE_ID]),
-      minimalBasePositions: {
-        [FILE_ID]: { x: 1, y: 2, width: 3, height: 4 },
-      },
-      minimalCodebaseTargetIds: [FILE_ID],
-      minimalCodebaseRetainedExpandedIds: new Set([FILE_ID]),
-      minimalCodebaseProjectionPending: true,
-    });
-    stubWindow();
-    let firstTarget: BlueprintState | null = null;
-    const unsubscribe = store.subscribe((state) => {
-      if (firstTarget === null && state.viewMode === "logic") firstTarget = state;
-    });
-
-    await restoreFromUrl(store, `view=logic&lroot=${encodeURIComponent(FILE_ID)}`);
-    unsubscribe();
-
-    expect(clearSceneCache).toHaveBeenCalled();
-    expect(firstTarget).not.toBeNull();
-    expect(firstTarget!).toMatchObject({
-      viewMode: "logic",
-      logicRoot: FILE_ID,
-      moduleRfNodes: [],
-      logicRfNodes: [],
-      minimalRfNodes: [],
-      flowPaneRfNodes: [],
-      minimalBasePositions: {},
-      minimalCodebaseTargetIds: [],
-      minimalCodebaseProjectionPending: false,
-    });
-    expect(firstTarget!.moduleSelected).toEqual(new Set());
-    expect(firstTarget!.mapExtra).toEqual(new Set());
-    expect(firstTarget!.mapGhostPins).toEqual(new Map());
-    expect(firstTarget!.logicFocus).toEqual([]);
-    expect(firstTarget!.expandedLogic).toEqual(new Set());
-    expect(firstTarget!.collapsedLogicEdges).toEqual(new Set());
-    expect(firstTarget!.minimalProjectionExtraIds).toEqual(new Set());
-    expect(firstTarget!.minimalCodebaseRetainedExpandedIds).toEqual(new Set());
   });
 
   it("discards a confirmed session-only line composer before history changes its host", async () => {
@@ -411,51 +351,6 @@ describe("restoreFromUrl review exit", () => {
     expect(restored).toBe(true);
   });
 
-  it.each([
-    { label: "a different active review", current: 3, prepared: true },
-    { label: "the same active review", current: 7, prepared: true },
-    { label: "the same parked review", current: 7, prepared: false },
-  ])("retires $label before publishing and preparing a review URL", async ({ current, prepared }) => {
-    const store = freshStore();
-    stubWindow();
-    const order: string[] = [];
-    const retirePrReviewForReplacement: BlueprintState["retirePrReviewForReplacement"] = vi.fn(async () => {
-      order.push("retire");
-      expect(store.getState().prReviewed).toBe(current);
-      store.setState({ prReviewed: null, prPreparedArtifactCurrent: false });
-      return true;
-    });
-    const restorePreparedPrReview: BlueprintState["restorePreparedPrReview"] = vi.fn(async (number) => {
-      order.push("prepare");
-      expect(number).toBe(7);
-      expect(store.getState()).toMatchObject({
-        prReviewed: null,
-        prPreparedArtifactCurrent: false,
-        viewMode: "prs",
-      });
-      return true;
-    });
-    store.setState({
-      prReviewed: current,
-      prSelected: current,
-      prPreparedArtifactCurrent: prepared,
-      viewMode: prepared ? "modules" : "prs",
-      retirePrReviewForReplacement,
-      restorePreparedPrReview,
-    });
-    const search = mergeNavIntoSearch("", {
-      ...DEFAULT_NAV,
-      reviewPr: 7,
-      reviewActive: true,
-    });
-
-    await restoreFromUrl(store, search);
-
-    expect(order).toEqual(["retire", "prepare"]);
-    expect(retirePrReviewForReplacement).toHaveBeenCalledOnce();
-    expect(restorePreparedPrReview).toHaveBeenCalledOnce();
-  });
-
 });
 
 describe("startUrlSync extraction history", () => {
@@ -543,132 +438,6 @@ describe("startUrlSync extraction history", () => {
     expect(setTelemetrySource).not.toHaveBeenCalled();
     expect(setEnvironment).not.toHaveBeenCalled();
 
-    stop();
-  });
-
-  it("prevents an abort-ignorant review retirement from overwriting a newer PR-selection URL", async () => {
-    let releaseBaseline!: () => void;
-    let retirementSignal: AbortSignal | undefined;
-    let delayBaseline = false;
-    let retirementStarted = false;
-    const store = freshStore(undefined, (initial) => ({
-      activeKey: initial.key,
-      loadManifest: async () => ({
-        version: 9,
-        graphId: initial.graphId,
-        contentId: "0".repeat(64),
-        graphSummary: {
-          schemaVersion: initial.artifact.schemaVersion,
-          generatedAt: initial.artifact.generatedAt,
-          nodeCount: initial.artifact.nodes.length,
-          edgeCount: initial.artifact.edges.length,
-        },
-        repositorySummary: initial.index.structure.repositorySummary,
-        defaultView: initial.request,
-      }),
-      stage: async (_request, options) => {
-        if (!delayBaseline || retirementStarted) {
-          return {
-            projection: initial,
-            commit: () => initial,
-            release: () => {},
-          };
-        }
-        retirementStarted = true;
-        retirementSignal = options.signal;
-        await new Promise<void>((resolve) => { releaseBaseline = resolve; });
-        return {
-          projection: initial,
-          commit: () => initial,
-          release: () => {},
-        };
-      },
-      stageCached: () => undefined,
-      stageReviewPair: async () => { throw new Error("replacement pair must not load before retirement"); },
-      stageCachedReview: () => undefined,
-      discardInactiveReviewProjections: () => {},
-      searchSymbols: async () => { throw new Error("symbol search is not loaded during URL restore"); },
-    }));
-    const browser = stubUrlSyncBrowser();
-    await restoreFromUrl(store, "");
-    delayBaseline = true;
-    const ensurePrSummary = vi.fn(async (number: number) => {
-      store.setState({
-        prExtraSummaries: {
-          ...store.getState().prExtraSummaries,
-          [number]: {
-            number,
-            title: `PR ${number}`,
-            body: null,
-            author: "octo",
-            headRef: "feature",
-            headSha: null,
-            baseRef: "main",
-            updatedAt: "2026-07-19T00:00:00.000Z",
-            draft: false,
-            state: "open",
-            url: `https://github.com/o/r/pull/${number}`,
-          },
-        },
-      });
-    });
-    const selectPr: BlueprintState["selectPr"] = vi.fn(async (number) => {
-      store.setState({ prSelected: number });
-    });
-    store.setState({
-      ensurePrSummary,
-      selectPr,
-      relayout: vi.fn(async () => {}),
-      prSelected: 7,
-      prReviewed: 7,
-      prPreparedArtifactCurrent: true,
-      prReviewBaseline: {
-        graphId: "artifact-1",
-        projectionKey: "boot-projection-key",
-        projectionId: "boot-projection-id",
-        request: BOOT_REQUEST,
-        endpoints: {
-          graphId: "artifact-1",
-          manifestUrl: "/api/graph/manifest?id=artifact-1",
-          projectionUrl: "/api/graph/projection?id=artifact-1",
-          searchUrl: "/api/graph/search?id=artifact-1",
-        },
-        syntheticExecutionUrl: null,
-        syntheticScenarios: [],
-        syntheticExecutionTrust: null,
-      },
-    });
-    const stop = startUrlSync(store);
-    const retiringReview = mergeNavIntoSearch("", {
-      ...DEFAULT_NAV,
-      reviewPr: 7,
-      reviewActive: true,
-    });
-    const newerSelection = mergeNavIntoSearch("", {
-      ...DEFAULT_NAV,
-      viewMode: "prs",
-      prSelected: 9,
-    });
-
-    browser.popTo(retiringReview);
-    await vi.waitFor(() => expect(retirementSignal).toBeInstanceOf(AbortSignal));
-    browser.popTo(newerSelection);
-    await vi.waitFor(() => expect(retirementSignal?.aborted).toBe(true));
-    await vi.waitFor(() => expect(ensurePrSummary).toHaveBeenCalledWith(9));
-    await vi.waitFor(() => expect(store.getState().prExtraSummaries[9]).toBeDefined());
-    await vi.waitFor(() => expect(selectPr).toHaveBeenCalledWith(9));
-    expect(store.getState()).toMatchObject({ prSelected: 9, prReviewed: 7 });
-
-    releaseBaseline();
-    await Promise.resolve();
-    await Promise.resolve();
-
-    expect(store.getState()).toMatchObject({
-      prSelected: 9,
-      prReviewed: 7,
-      prPreparedArtifactCurrent: true,
-    });
-    expect(store.getState().activeProjectionGraphId).toBe("artifact-1");
     stop();
   });
 

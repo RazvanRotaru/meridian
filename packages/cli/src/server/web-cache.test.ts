@@ -14,30 +14,19 @@ import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { REPOSITORY_ANALYSIS_POLICY } from "../repository-analysis";
-import { generatorVersion } from "../version";
 import { runGit } from "./git-exec";
 import type { ExtractionWorkerRunner } from "./extraction-worker";
 import type {
   PrepareRepositoryWorktree,
   RepositoryWorktreeLease,
 } from "./repository-mirror";
-import {
-  ANALYSIS_VERSION,
-  CACHE_FORMAT_VERSION,
-  cachedRemoteGraph,
-  webAnalysisKey,
-} from "./web-cache";
+import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { checkoutFor, repositoryCacheKey } from "./web-cache-checkout";
 import type { RepositoryMirrorPreparer } from "./web-cache-checkout";
 import { probeRemoteGraph } from "./web-cache-probe";
 import type { GenerateRequest } from "./web-request";
 import { remoteArtifactId } from "./web-request";
-import {
-  GRAPH_PROJECTION_DIRECTORY,
-  GRAPH_PROJECTION_FORMAT_VERSION,
-  writeGraphProjectionBundle,
-} from "./graph-projection-bundle";
+import { GRAPH_PROJECTION_DIRECTORY, writeGraphProjectionBundle } from "./graph-projection-bundle";
 import { measureGraphProjectionBundle } from "./graph-generation-verifier";
 import { GraphGenerationLifecycle } from "./graph-generation-lifecycle";
 import {
@@ -82,29 +71,6 @@ afterEach(() => {
 });
 
 describe("persistent web graph cache", () => {
-  it("does not reuse an analysis identity created before the current projection protocol", () => {
-    const legacyProtocolKey = createHash("sha256").update(JSON.stringify({
-      formatVersion: CACHE_FORMAT_VERSION,
-      analysisVersion: ANALYSIS_VERSION,
-      schemaVersion: SCHEMA_VERSION,
-      generatorVersion: generatorVersion(),
-      subdir: "",
-      policy: REPOSITORY_ANALYSIS_POLICY,
-    })).digest("hex").slice(0, 24);
-    const currentProtocolKey = createHash("sha256").update(JSON.stringify({
-      formatVersion: CACHE_FORMAT_VERSION,
-      analysisVersion: ANALYSIS_VERSION,
-      projectionProtocolVersion: GRAPH_PROJECTION_FORMAT_VERSION,
-      schemaVersion: SCHEMA_VERSION,
-      generatorVersion: generatorVersion(),
-      subdir: "",
-      policy: REPOSITORY_ANALYSIS_POLICY,
-    })).digest("hex").slice(0, 24);
-
-    expect(webAnalysisKey(REQUEST)).toBe(currentProtocolKey);
-    expect(webAnalysisKey(REQUEST)).not.toBe(legacyProtocolKey);
-  });
-
   it("keeps analysis identity and worker policy independent of retired environment switches", async () => {
     vi.stubEnv("MERIDIAN_VALUE_REFS", "0");
     const disabled = webAnalysisKey(REQUEST);

@@ -17,10 +17,7 @@ import type {
   SerializablePipelineRequest,
 } from "./extraction-worker";
 import type { GraphGenerationSummary } from "./graph-generation-contract";
-import {
-  GRAPH_PROJECTION_DIRECTORY,
-  GRAPH_PROJECTION_FORMAT_VERSION,
-} from "./graph-projection-bundle";
+import { GRAPH_PROJECTION_DIRECTORY } from "./graph-projection-bundle";
 import {
   createPrivateDirectory,
   readJson,
@@ -252,7 +249,6 @@ export function webAnalysisKey(request: GenerateRequest): string {
   const settings = {
     formatVersion: CACHE_FORMAT_VERSION,
     analysisVersion: ANALYSIS_VERSION,
-    projectionProtocolVersion: GRAPH_PROJECTION_FORMAT_VERSION,
     schemaVersion: SCHEMA_VERSION,
     generatorVersion: generatorVersion(),
     subdir: request.subdir ?? "",

@@ -215,6 +215,7 @@ describe("CanvasActionBar nested extraction", () => {
         moduleId: ACTION_FILE,
         isTest: false,
         units: [],
+        fingerprint: "modified",
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -294,21 +295,6 @@ describe("CanvasActionBar empty review sentinel", () => {
     before.toggleHighways();
     expect(store.getState().recenterSeq).toBe(before.recenterSeq);
     expect(store.getState().showHighways).toBe(before.showHighways);
-  });
-
-  it("keeps repository widening disabled on a nonempty prepared overview", () => {
-    const store = actionBarStore();
-    store.setState({
-      prPreparedArtifactCurrent: true,
-      prPreparedReviewCursor: null,
-      prReviewed: 7,
-      minimalSeedIds: ["ts:src/action.ts"],
-      minimalMemberIds: ["ts:src/action.ts"],
-    });
-
-    const markup = renderActionBar(store, { onShowCodebase: () => undefined });
-    expect(actionButtonMarkup(markup, "Highlight code in codebase")).toContain('aria-disabled="true"');
-    expect(actionButtonMarkup(markup, "Recenter view")).not.toContain("aria-disabled");
   });
 });
 

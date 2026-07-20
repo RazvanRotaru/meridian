@@ -176,7 +176,7 @@ export function preparedReviewFileForCursor(
 
 /** Carry the currently inspected semantic file into a refreshed canonical manifest. Exact current
  * paths win. A rename is followed only through one unique current/previous-path match; ambiguity or
- * disappearance deliberately falls back to the bounded review overview. */
+ * disappearance deliberately falls back to the source-only overview. */
 export function remapPreparedReviewFilePath(
   previousFiles: readonly PreparedChangedFile[],
   previousCursor: string | null,

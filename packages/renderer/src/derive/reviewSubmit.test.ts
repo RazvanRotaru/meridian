@@ -32,6 +32,7 @@ const FILES: ReviewFileRow[] = [
     status: "modified",
     moduleId: "ts:src/a.ts",
     isTest: false,
+    fingerprint: "25-30,80-85",
     blastRadius: 0,
     deletedImpact: null,
     units: [
@@ -40,8 +41,8 @@ const FILES: ReviewFileRow[] = [
       { nodeId: "ts:src/a.ts#drifted", displayName: "drifted", kind: "function", startLine: 100, endLine: 110, depth: 0, isTest: false, fingerprint: "f3" },
     ],
   },
-  { path: "docs/readme.md", status: "deleted", moduleId: null, isTest: false, blastRadius: 0, deletedImpact: null, units: [] },
-  { path: "src/gone.ts", status: "deleted", moduleId: null, isTest: false, blastRadius: 0, deletedImpact: null, units: [] },
+  { path: "docs/readme.md", status: "deleted", moduleId: null, isTest: false, fingerprint: "whole-file", blastRadius: 0, deletedImpact: null, units: [] },
+  { path: "src/gone.ts", status: "deleted", moduleId: null, isTest: false, fingerprint: "0-1", blastRadius: 0, deletedImpact: null, units: [] },
 ];
 
 function draft(path: string, nodeId: string | null, body: string, anchorLabel: string | null = null, line: number | null = null): ReviewComment {

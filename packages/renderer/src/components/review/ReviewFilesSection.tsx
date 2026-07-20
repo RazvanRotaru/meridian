@@ -11,11 +11,7 @@
 
 import { memo, useEffect, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { checkStateOf, type ReviewFileRow } from "../../derive/reviewFiles";
-import {
-  countViewedReviewFiles,
-  reviewFileProgressState,
-} from "../../state/reviewFileProgress";
+import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
@@ -84,8 +80,6 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const sort = useBlueprint((state) => state.reviewFilesSort);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const progressCatalog = useBlueprint((state) => state.reviewProgressCatalog);
-  const showTests = useBlueprint((state) => state.showTests);
   const comments = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
@@ -96,13 +90,9 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
     && state.prPreparedMergeBase !== null);
   const committedPath = useBlueprint((state) =>
     preparedReviewFileForCursor(state.prPreparedChangedFiles, state.prPreparedReviewCursor)?.path ?? null);
-  const pending = useBlueprint((state) => state.prPreparedProjectionPending);
-  const projectionError = useBlueprint((state) => state.prPreparedProjectionError);
-  const pendingPath = pending?.kind === "file" ? pending.path : null;
-  const errorPath = projectionError?.kind === "file" ? projectionError.path : null;
-  const overviewPending = pending?.kind === "overview";
-  const overviewError = projectionError?.kind === "overview" ? projectionError.message : null;
-  const { focusReviewOverview, setReviewFilesSort } = useBlueprintActions();
+  const pendingPath = useBlueprint((state) => state.prPreparedFileProjectionPending?.path ?? null);
+  const errorPath = useBlueprint((state) => state.prPreparedFileProjectionError?.path ?? null);
+  const { setReviewFilesSort } = useBlueprintActions();
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
   const [composer, setComposer] = useState<CommentTarget | null>(null);
@@ -152,9 +142,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   if (files.length === 0) {
     return null;
   }
-  const viewed = countViewedReviewFiles(progressCatalog, unitTicks, fileTicks, showTests);
-  const total = progressCatalog?.order.length ?? 0;
-  const scopeSuffix = files.length === total ? "" : ` · ${files.length} in view`;
+  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
   const rowStates = files.map((file) => reviewFileProjectionState({
     prepared,
     path: file.path,
@@ -165,15 +153,13 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   }));
   const unmatchedCount = rowStates.filter((state) =>
     state === "artifact-unmatched" || state === "committed-unmatched").length;
-  const preparedSummary = overviewPending
-    ? "restoring overview…"
-    : pendingPath !== null
+  const preparedSummary = pendingPath !== null
     ? "loading file graph…"
     : committedPath === null
-      ? `${viewed}/${total} viewed · overview${scopeSuffix}`
+      ? "select a file to load"
       : unmatchedCount > 0
         ? "current file not extracted"
-        : `${viewed}/${total} viewed${scopeSuffix}`;
+        : `${viewed}/${files.length} viewed`;
   const listOpen = expanded || open;
   const toggleList = () => {
     if (expanded) {
@@ -196,7 +182,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
           <span style={CARET}>{listOpen ? "▾" : "▸"}</span>
           <span style={SECTION_TITLE}>Files changed</span>
           <span style={SECTION_COUNT} title={unmatchedCount > 0 ? "The extractor produced no graph node for the loaded file; its changed source remains available." : undefined}>
-            {prepared ? `${total} files · ${preparedSummary}` : unmatchedCount > 0 ? `${total} files · ${unmatchedCount} not extracted` : `${viewed}/${total} viewed${scopeSuffix}`}
+            {prepared ? `${files.length} files · ${preparedSummary}` : unmatchedCount > 0 ? `${files.length} files · ${unmatchedCount} not extracted` : `${viewed}/${files.length} viewed`}
           </span>
         </button>
         <div style={SORT_TOGGLE} role="group" aria-label="Sort changed files">
@@ -208,26 +194,11 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
             Risk
           </button>
         </div>
-        {prepared && (committedPath !== null || overviewPending || overviewError !== null) ? (
-          <button
-            type="button"
-            style={EXPAND_TOGGLE}
-            aria-label="Restore review graph overview"
-            aria-busy={overviewPending || undefined}
-            disabled={overviewPending}
-            title={overviewError === null
-              ? "Restore the bounded changed-file graph"
-              : `Overview load failed: ${overviewError}. Click to retry.`}
-            onClick={() => { void focusReviewOverview(); }}
-          >
-            <span aria-hidden="true">↩</span>
-          </button>
-        ) : null}
         {onExpandedChange ? (
           <button
             type="button"
             style={EXPAND_TOGGLE}
-            aria-label={expanded ? "Restore review sections" : "Expand files list"}
+            aria-label={expanded ? "Restore review overview" : "Expand files list"}
             aria-pressed={expanded}
             title={expanded
               ? "Restore review scope and affected flows"
@@ -282,24 +253,17 @@ function FileRow(props: {
       state.prPreparedChangedFiles,
       state.prPreparedReviewCursor,
     )?.path ?? null,
-    pendingPath: state.prPreparedProjectionPending?.kind === "file"
-      ? state.prPreparedProjectionPending.path
-      : null,
-    errorPath: state.prPreparedProjectionError?.kind === "file"
-      ? state.prPreparedProjectionError.path
-      : null,
+    pendingPath: state.prPreparedFileProjectionPending?.path ?? null,
+    errorPath: state.prPreparedFileProjectionError?.path ?? null,
   }));
   const projectionError = useBlueprint((state) =>
-    state.prPreparedProjectionError?.kind === "file"
-      && state.prPreparedProjectionError.path === file.path
-      ? state.prPreparedProjectionError.message
+    state.prPreparedFileProjectionError?.path === file.path
+      ? state.prPreparedFileProjectionError.message
       : null);
-  const progressFile = useBlueprint((state) => state.reviewProgressCatalog?.byPath.get(file.path) ?? null);
-  const showTests = useBlueprint((state) => state.showTests);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
-  const view = progressFile === null ? "todo" : reviewFileProgressState(progressFile, unitTicks, fileTicks, showTests);
+  const view = fileViewState(file, unitTicks, fileTicks);
   // A viewed file folds shut (GitHub's gesture). A manual chevron override holds only until the
   // viewed state next CHANGES — then the derived fold wins again, so completing the last unit
   // always folds the file even after a manual expand.

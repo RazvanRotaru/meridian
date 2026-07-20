@@ -1,56 +1,40 @@
 import {
-  collectTestIds,
   compareCanonicalPrPreparePaths,
   normalizePrPrepareChangedFiles,
   type ChangedFileManifestEntry,
   type GraphArtifact,
   type GraphProjectionReviewFacts,
   type GraphProjectionReviewFile,
-  type GraphProjectionReviewMetadata,
   type GraphProjectionReviewSide,
   type GraphProjectionReviewStatusCounts,
 } from "@meridian/core";
 import type { GraphProjectionRequest } from "../graph/graphProjectionClient";
 
-export const TEST_REVIEW_CONTEXT_ID = "c".repeat(64);
-export const TEST_REVIEW_METADATA_ID = "d".repeat(64);
+const TEST_CONTEXT_ID = "c".repeat(64);
 const PAGE_MAX_FILES = 64;
 const PAGE_MAX_PATH_BYTES = 24 * 1024;
 
 /**
  * Strict comparison facts for renderer data-source fixtures.
  *
- * These fixtures deliberately follow the real v9 page/file contract: canonical manifest order,
- * byte-bounded pages, side-specific rename/deletion routing, exact overview coverage, and
- * graphMatched derived from the actual projected artifact. Tests cannot accidentally keep
- * exercising a removed transport shape while pretending to represent a prepared comparison.
+ * These fixtures deliberately follow the real v6 page/file contract: canonical manifest order,
+ * byte-bounded pages, side-specific rename/deletion routing, and graphMatched derived from the
+ * actual projected artifact. Tests cannot accidentally keep exercising the removed path-replay
+ * shape while pretending to represent a prepared comparison capability.
  */
 export function reviewProjectionFactsForTest(
   value: unknown,
   request: GraphProjectionRequest,
   side: GraphProjectionReviewSide,
   artifact: GraphArtifact,
-  /** Complete immutable graph used for full-manifest classification when `artifact` is a slice. */
-  classificationArtifact: GraphArtifact = artifact,
 ): GraphProjectionReviewFacts {
   const normalized = normalizePrPrepareChangedFiles(value);
   if (normalized === null) throw new Error("invalid changed-file fixture");
   const files = normalized.sort((left, right) => compareCanonicalPrPreparePaths(left.path, right.path));
   const pages = reviewPages(files);
   const statusCounts = countStatuses(files);
-  const testIds = collectTestIds([...classificationArtifact.nodes]);
-  const testClassifications = files.flatMap((entry, index) => {
-    const representative = reviewRepresentative(entry, side, classificationArtifact);
-    return representative === undefined
-      ? []
-      : [{ index, isTest: testIds.has(representative.id) }];
-  });
-  const testClassificationByIndex = new Map(
-    testClassifications.map((classification) => [classification.index, classification.isTest] as const),
-  );
   const common = {
-    contextId: TEST_REVIEW_CONTEXT_ID,
-    metadataId: TEST_REVIEW_METADATA_ID,
+    contextId: TEST_CONTEXT_ID,
     side,
     totalFiles: files.length,
     statusCounts,
@@ -60,41 +44,20 @@ export function reviewProjectionFactsForTest(
   if (cursor === null || cursor.startsWith("page:")) {
     const pageIndex = cursor === null ? 0 : Number(cursor.slice("page:".length));
     if (pages.length === 0 && pageIndex === 0) {
-      return { ...common, page: null, selection: null, overview: { entries: [] } };
+      return { ...common, page: null, selection: null };
     }
     const page = pages[pageIndex];
     if (page === undefined) throw new Error("review page fixture cursor is outside its manifest");
-    const entries = files.slice(page.start, page.end).map((entry, offset) => indexed(entry, page.start + offset));
     return {
       ...common,
       page: {
         index: pageIndex,
-        entries,
+        entries: files.slice(page.start, page.end).map((entry, offset) => indexed(entry, page.start + offset)),
         statusCounts: page.statusCounts,
         previousCursor: pageIndex === 0 ? null : `page:${pageIndex - 1}`,
         nextCursor: pageIndex + 1 === pages.length ? null : `page:${pageIndex + 1}`,
       },
       selection: null,
-      overview: {
-        entries: entries.map((entry) => {
-          const graphPath = graphPathForSide(entry, side);
-          const isTest = testClassificationByIndex.get(entry.index);
-          const included = reviewRepresentative(entry, side, artifact) !== undefined;
-          return {
-            index: entry.index,
-            state: graphPath === null
-              ? "absent" as const
-              : isTest === undefined
-                ? "unmapped" as const
-                : included
-                  ? "included" as const
-                  : isTest && !request.includeTests
-                    ? "filtered" as const
-                    : "deferred" as const,
-            isTest: isTest ?? null,
-          };
-        }),
-      },
     };
   }
   if (!cursor.startsWith("file:")) throw new Error("invalid review fixture cursor");
@@ -108,67 +71,8 @@ export function reviewProjectionFactsForTest(
   return {
     ...common,
     page: null,
-    selection: {
-      index,
-      entry: indexed(entry, index),
-      graphPath,
-      graphMatched,
-      isTest: testClassificationByIndex.get(index) ?? null,
-    },
-    overview: null,
+    selection: { index, entry: indexed(entry, index), graphPath, graphMatched },
   };
-}
-
-/** Whole-manifest comparison metadata for strict renderer fixtures. */
-export function reviewProjectionMetadataForTest(
-  value: unknown,
-  headGraphId: string,
-  mergeBaseGraphId: string,
-  headArtifact: GraphArtifact,
-  mergeBaseArtifact: GraphArtifact = headArtifact,
-): GraphProjectionReviewMetadata {
-  const normalized = normalizePrPrepareChangedFiles(value);
-  if (normalized === null) throw new Error("invalid changed-file fixture");
-  const files = normalized.sort((left, right) => compareCanonicalPrPreparePaths(left.path, right.path));
-  const byIndex = new Map<number, boolean>();
-  for (const [side, artifact] of [
-    ["mergeBase", mergeBaseArtifact],
-    ["head", headArtifact],
-  ] as const) {
-    const testIds = collectTestIds([...artifact.nodes]);
-    for (let index = 0; index < files.length; index += 1) {
-      const representative = reviewRepresentative(files[index]!, side, artifact);
-      if (representative !== undefined) byIndex.set(index, testIds.has(representative.id));
-    }
-  }
-  return {
-    version: 1,
-    metadataId: TEST_REVIEW_METADATA_ID,
-    contextId: TEST_REVIEW_CONTEXT_ID,
-    headGraphId,
-    mergeBaseGraphId,
-    headContentId: "a".repeat(64),
-    mergeBaseContentId: "b".repeat(64),
-    totalFiles: files.length,
-    testClassifications: [...byIndex]
-      .sort(([left], [right]) => left - right)
-      .map(([index, isTest]) => ({ index, isTest })),
-  };
-}
-
-function reviewRepresentative(
-  entry: ChangedFileManifestEntry,
-  side: GraphProjectionReviewSide,
-  artifact: GraphArtifact,
-): GraphArtifact["nodes"][number] | undefined {
-  const graphPath = graphPathForSide(entry, side);
-  if (graphPath === null) return undefined;
-  return artifact.nodes
-    .filter((node) => node.location?.file.replace(/\\/g, "/") === graphPath)
-    .sort((left, right) => (
-      Number(right.kind === "module") - Number(left.kind === "module")
-      || left.id.localeCompare(right.id)
-    ))[0];
 }
 
 /** Extract the canonical changed-since manifest carried by a prepared fixture artifact. */

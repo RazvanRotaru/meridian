@@ -73,23 +73,6 @@ async function restoreFromUrlRun(
       return "superseded";
     }
   }
-  // A prepared-review restore has one clean entry invariant: no prior review session may still own
-  // the store. This applies to a different PR, the same active PR, and a parked same-PR session.
-  // Promote the outgoing review's exact baseline before publishing the target URL coordinate. The
-  // old decoded pair remains eligible only for the bounded transport LRU and is either reused by a
-  // same-review restore or discarded when the replacement pair commits.
-  if (rebuildingReview && store.getState().prReviewed !== null) {
-    const retired = await currentResult(
-      store.getState().retirePrReviewForReplacement(),
-      run,
-    );
-    if (!retired.current) {
-      return "superseded";
-    }
-    if (!retired.value) {
-      throw new Error("could not retire the outgoing pull-request review before URL restoration");
-    }
-  }
   if (!restoreIsCurrent(run)) {
     return "superseded";
   }
@@ -97,7 +80,7 @@ async function restoreFromUrlRun(
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // Telemetry coordinates are deliberately excluded: nulling loaded data on every sparse history
   // restore is undesirable, so explicit source/env values are apply-only below.
-  store.getState().installNavigationRestore(nav);
+  store.setState(structuralState(nav));
   // Start this span at the first layout that contributes to the scene the reader will actually
   // see. A direct PR restore prepares its immutable projections first, then starts here at review
   // ELK; it must never time (or wait on) a hidden boot/base layout.
@@ -131,8 +114,8 @@ async function restoreFromUrlRun(
         }
       }
       // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
-      // a reload / back-forward into an open overlay reproduces it (the store transaction already
-      // released the outgoing scene when the URL carried none).
+      // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
+      // when the URL carried none).
       if (store.getState().minimalSeedIds.length > 0) {
         const result = await currentResult(store.getState().minimalRelayout(), run);
         if (!result.current) {
@@ -378,4 +361,79 @@ function applyTelemetryCoordinates(
   }
   state.setEnvironment(normalizedEnvironment);
   void state.refreshTelemetry().catch(() => {});
+}
+
+// The structural fields of a full NavState as a store partial, the Set-valued ones (`moduleExpanded`,
+// `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
+// keys reset to their default. Excludes telemetry source/environment, which are apply-only.
+// Exported for the serviceScope tests, which assert a restore always resets the scope.
+export function structuralState(nav: NavState): Record<string, unknown> {
+  const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
+  return {
+    // A rev=1 restore must not expose the URL's base-graph Map while HEAD preparation is pending.
+    // reviewPrInGraph is the only successful transition from this waiting surface into modules.
+    viewMode: rebuildingReview ? "prs" : nav.viewMode,
+    // The scoped Service sub-view is session-only (never URL-encoded), so NO history entry carries
+    // it: restoring any entry — popstate back/forward included — must render the lens unscoped.
+    serviceScope: null,
+    compRoot: nav.compRoot,
+    compSelectedId: nav.compSelectedId,
+    logicSelected: nav.logicSelected,
+    flowExplorerOpen: nav.flowExplorerOpen,
+    flowSelection: null,
+    flowPaneOrigin: null,
+    requestFlowTraceId: null,
+    requestFlowExpansionOverrides: new Set<string>(),
+    flowPaneExpansionOverrides: new Set<string>(),
+    flowPaneRfNodes: [],
+    flowPaneRfEdges: [],
+    flowPaneLayoutStatus: "idle",
+    reviewFlowBaseline: null,
+    logicRoot: nav.logicRoot,
+    logicView: nav.logicView,
+    // Request trace is itself a telemetry-backed destination. Old/shared links do not carry a
+    // separate presentation-mode bit, so landing directly on that surface opts in explicitly.
+    ...(nav.logicView === "request" ? { telemetryMode: true } : {}),
+    logicStack: nav.logicStack,
+    moduleFocus: nav.moduleFocus,
+    serviceGroupingMode: nav.serviceGroupingMode,
+    serviceGroupingTargetSize: nav.serviceGroupingTargetSize,
+    serviceGroupingLabelMode: nav.serviceGroupingLabelMode,
+    // Reset the overlay to the URL's state. A review rebuild starts empty because its current
+    // artifact/files re-derive both seeds and expansion; replaying mgraph/mexp first would run a
+    // redundant ELK pass with ids that may belong to the prior artifact. An ordinary restore that
+    // carries no seeds closes the overlay; one with seeds reopens it at the seed base (curated
+    // promoted/demoted state is ephemeral — a restore never reproduces it).
+    minimalSeedIds: rebuildingReview ? [] : nav.minimalSeedIds,
+    minimalMemberIds: rebuildingReview ? [] : [...nav.minimalSeedIds],
+    // Rollup expansion is session-only. A review rebuild derives the mapping again from its files.
+    minimalRollups: {},
+    minimalArrange: false,
+    minimalGraphHistory: [],
+    minimalView: "graph",
+    minimalShowGhostNodes: true,
+    minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    reviewFocusedSubgraph: null,
+    minimalRfNodes: [],
+    minimalRfEdges: [],
+    minimalLayoutStatus: "idle",
+    moduleExpanded: new Set(rebuildingReview ? [] : nav.moduleExpanded),
+    // Ghost-path exploration is deliberately session/projection-local. History restores rebuild
+    // only committed navigation and must never resurrect temporary preview roots.
+    moduleGhostInspection: null,
+    moduleRadius: nav.moduleRadius,
+    highlightMode: nav.highlightMode,
+    hiddenCategories: new Set(nav.hiddenCategories),
+    prsTab: nav.prsTab,
+    prSelected: null,
+    prFiles: null,
+    prDiscussion: null,
+    prChecks: null,
+    prFilesTruncated: false,
+    prFilesTotal: 0,
+    prFilesOutside: 0,
+    prFilesSuggestedSubdir: "",
+    prsLoading: false,
+    prsError: null,
+  };
 }

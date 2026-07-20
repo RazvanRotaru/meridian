@@ -50,7 +50,7 @@ describe("GraphProjectionBundle", () => {
     expect(result.artifact.nodes.some((node) => node.summary?.includes("WHOLE_GRAPH_SENTINEL"))).toBe(false);
     expect("childCounts" in result).toBe(false);
     expect(result).toMatchObject({
-      version: 9,
+      version: 6,
       contentId: bundle.manifest.contentId,
       hierarchy: {
         moduleOverviewRootIds: ["root"],
@@ -64,7 +64,7 @@ describe("GraphProjectionBundle", () => {
     expect(result.completeness.complete).toBe(true);
     expect(readGraphProjectionManifest(root)?.graphSummary.nodeCount).toBe(7);
     expect(readGraphProjectionManifest(root)).toMatchObject({
-      formatVersion: 9,
+      formatVersion: 6,
       repositorySummary: { overviewPackageCount: 1, sourceFileCount: 2, testSourceFileCount: 0 },
       filePathCount: 3,
       symbols: {
@@ -565,339 +565,8 @@ describe("GraphProjectionBundle", () => {
     expect(JSON.stringify(changed)).not.toContain("src/b.ts");
   });
 
-  it("returns a complete representative overview while disclosing unmapped paths", async () => {
-    const { bundle } = createBundle();
-    const review = comparisonContext([
-      { path: "src/a.ts", status: "modified" },
-      { path: "src/unmapped.ts", status: "modified" },
-    ], "head");
-
-    const overview = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      depth: 4,
-    }), undefined, { review });
-
-    expect(overview.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-a"]);
-    expect(overview.artifact.edges).toEqual([]);
-    expect(overview.artifact.extensions).toBeUndefined();
-    expect(overview.completeness).toEqual({
-      complete: true,
-      reasons: [],
-      omittedNodes: 0,
-      omittedEdges: 0,
-    });
-    expect(overview.viewFacts.review).toMatchObject({
-      selection: null,
-      metadataId: "d".repeat(64),
-      overview: {
-        entries: [
-          { index: 0, state: "included", isTest: false },
-          { index: 1, state: "unmapped", isTest: null },
-        ],
-      },
-    });
-  });
-
-  it("retains graph-backed test truth when an ordinary-looking file is filtered or deferred", async () => {
-    const input = artifact();
-    input.nodes.push({
-      ...fixtureNode("tagged-test-file", "module", "root", "src/ordinary.ts"),
-      tags: ["test"],
-    });
-    const { bundle } = createBundle(input);
-    const review = comparisonContext([{ path: "src/ordinary.ts", status: "modified" }], "head");
-
-    const filtered = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      includeTests: false,
-    }), undefined, { review });
-    expect(filtered.artifact.nodes).toEqual([]);
-    expect(filtered.viewFacts.review?.overview?.entries)
-      .toEqual([{ index: 0, state: "filtered", isTest: true }]);
-
-    const deferred = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      includeTests: true,
-      maxNodes: 1,
-      maxEdges: 0,
-    }), undefined, { review });
-    expect(deferred.artifact.nodes).toEqual([]);
-    expect(deferred.viewFacts.review?.overview?.entries)
-      .toEqual([{ index: 0, state: "deferred", isTest: true }]);
-  });
-
-  it("classifies an ordinary-named tagged test beyond page zero for overview and exact hidden-Test coordinates", async () => {
-    const input = artifact();
-    input.nodes.push({
-      ...fixtureNode("late-tagged-test-file", "module", "root", "src/zzz-ordinary.ts"),
-      tags: ["test"],
-    });
-    const { bundle } = createBundle(input);
-    const changedFiles = [
-      ...Array.from({ length: 64 }, (_value, index) => ({
-        path: `src/${String(index).padStart(3, "0")}-unmapped.ts`,
-        status: "modified" as const,
-      })),
-      { path: "src/zzz-ordinary.ts", status: "modified" as const },
-    ];
-    const review = comparisonContext(changedFiles, "head");
-    expect(await bundle.reviewTestClassifications(changedFiles, "head"))
-      .toEqual([{ index: 64, isTest: true }]);
-
-    const pageZero = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      includeTests: false,
-    }), undefined, { review });
-    expect(pageZero.viewFacts.review?.page?.index).toBe(0);
-    expect(pageZero.viewFacts.review?.overview?.entries)
-      .toHaveLength(64);
-    expect(pageZero.viewFacts.review?.overview?.entries
-      .every((entry) => entry.state === "unmapped" && entry.isTest === null)).toBe(true);
-
-    const pageOne = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: "page:1",
-      includeTests: false,
-    }), undefined, { review });
-    expect(pageOne.artifact.nodes).toEqual([]);
-    expect(pageOne.viewFacts.review?.overview?.entries)
-      .toEqual([{ index: 64, state: "filtered", isTest: true }]);
-
-    const exact = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: "file:64",
-      includeTests: false,
-    }), undefined, { review });
-    expect(exact.artifact.nodes).toEqual([]);
-    expect(exact.viewFacts.review?.selection).toMatchObject({
-      index: 64,
-      graphMatched: false,
-      isTest: true,
-    });
-  });
-
-  it("fails closed when an indexed source path loses its overview representative", async () => {
-    const { root } = createBundle();
-    const graphPath = "src/a.ts";
-    const shard = projectionShard(graphPath).toString(16).padStart(2, "0");
-    const indexPath = join(root, "file-overview", `${shard}.index.json`);
-    const index = JSON.parse(readFileSync(indexPath, "utf8")) as Record<string, unknown>;
-    expect(index[graphPath]).toBeDefined();
-    delete index[graphPath];
-    writeFileSync(indexPath, JSON.stringify(index));
-    const bundle = new GraphProjectionBundle(root);
-    const review = comparisonContext([{ path: graphPath, status: "modified" }], "head");
-
-    await expect(bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      depth: 4,
-    }), undefined, { review })).rejects.toThrow(
-      `file-overview for indexed source path ${graphPath} is unavailable`,
-    );
-  });
-
-  it("admits the complete induced overview edge set or defers its candidate atomically", async () => {
-    const input = artifact();
-    input.edges.push({ id: "module-import", source: "file-a", target: "file-b", kind: "imports" });
-    const { bundle } = createBundle(input);
-    const review = comparisonContext([
-      { path: "src/a.ts", status: "modified" },
-      { path: "src/b.ts", status: "modified" },
-    ], "head");
-
-    const complete = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      depth: 4,
-    }), undefined, { review });
-    expect(complete.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-a", "file-b"]);
-    expect(complete.artifact.edges.map((edge) => edge.id)).toEqual(["module-import"]);
-    expect(complete.viewFacts.review?.overview?.entries)
-      .toEqual([
-        { index: 0, state: "included", isTest: false },
-        { index: 1, state: "included", isTest: false },
-      ]);
-    expect(complete.completeness.complete).toBe(true);
-
-    const edgeLimited = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      depth: 4,
-      maxEdges: 0,
-    }), undefined, { review });
-    expect(edgeLimited.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-a"]);
-    expect(edgeLimited.artifact.edges).toEqual([]);
-    expect(edgeLimited.viewFacts.review?.overview?.entries)
-      .toEqual([
-        { index: 0, state: "included", isTest: false },
-        { index: 1, state: "deferred", isTest: false },
-      ]);
-    expect(edgeLimited.completeness).toEqual({
-      complete: true,
-      reasons: [],
-      omittedNodes: 0,
-      omittedEdges: 0,
-    });
-  });
-
-  it("stops ancestor staging at maxNodes before touching the rest of a pathological chain", async () => {
-    const input = artifact();
-    input.nodes.push(
-      fixtureNode("deep-parent", "package", "missing-grandparent", "src"),
-      fixtureNode("deep-file", "module", "deep-parent", "src/deep.ts"),
-    );
-    const { bundle } = createBundle(input);
-    const review = comparisonContext([{ path: "src/deep.ts", status: "modified" }], "head");
-
-    const overview = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      maxNodes: 1,
-    }), undefined, { review });
-
-    expect(overview.artifact.nodes).toEqual([]);
-    expect(overview.viewFacts.review?.overview?.entries)
-      .toEqual([{ index: 0, state: "deferred", isTest: false }]);
-    expect(overview.completeness).toEqual({
-      complete: true,
-      reasons: [],
-      omittedNodes: 0,
-      omittedEdges: 0,
-    });
-  });
-
-  it("stops a high-degree induced-edge scan on the first edge that exceeds maxEdges", async () => {
-    const input = artifact();
-    const peerCount = 1_024;
-    input.nodes.push(...Array.from({ length: peerCount }, (_, index) => (
-      fixtureNode(`peer-${index}`, "module", "root", `src/peer-${index}.ts`)
-    )));
-    input.edges.push(
-      { id: "first-represented", source: "file-b", target: "file-a", kind: "imports" },
-      ...Array.from({ length: peerCount }, (_, index) => ({
-        id: `high-degree-${index}`,
-        source: "file-b",
-        target: `peer-${index}`,
-        kind: "imports" as const,
-      })),
-    );
-    const root = temporaryRoot();
-    writeGraphProjectionBundle(root, input);
-    const shard = projectionShard("file-b").toString(16).padStart(2, "0");
-    const outIndex = JSON.parse(readFileSync(join(root, "out-edges", `${shard}.index.json`), "utf8")) as Record<
-      string,
-      { refs: unknown[] }
-    >;
-    expect(outIndex["file-b"]?.refs.length).toBeGreaterThan(1);
-    const retained = new BoundedGraphProjectionPageCache({ maxBytes: 64 * 1024, maxEntries: 8 });
-    const pageReads: string[] = [];
-    const cache: GraphProjectionPageCache = {
-      get: (namespace, key) => retained.get(namespace, key),
-      set: (namespace, key, value, bytes) => {
-        pageReads.push(key);
-        retained.set(namespace, key, value, bytes);
-      },
-      stats: (namespace) => retained.stats(namespace),
-      deleteNamespace: (namespace) => retained.deleteNamespace(namespace),
-    };
-    const bundle = new GraphProjectionBundle(root, { pageCache: cache });
-    const review = comparisonContext([
-      { path: "src/a.ts", status: "modified" },
-      { path: "src/b.ts", status: "modified" },
-    ], "head");
-
-    const overview = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      maxEdges: 0,
-    }), undefined, { review });
-
-    expect(overview.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-a"]);
-    expect(overview.viewFacts.review?.overview?.entries)
-      .toEqual([
-        { index: 0, state: "included", isTest: false },
-        { index: 1, state: "deferred", isTest: false },
-      ]);
-    expect(pageReads.filter((key) => key.startsWith(`page:out-edges/${shard}.ndjson`))).toHaveLength(1);
-    expect(retained.stats().entries).toBeLessThanOrEqual(8);
-    expect(retained.stats().residentBytes).toBeLessThanOrEqual(64 * 1024);
-  });
-
-  it("cancels cooperatively while scanning a high-degree overview adjacency", async () => {
-    const input = artifact();
-    const peerCount = 512;
-    input.nodes.push(...Array.from({ length: peerCount }, (_, index) => (
-      fixtureNode(`cancel-peer-${index}`, "module", "root", `src/cancel-peer-${index}.ts`)
-    )));
-    input.edges.push(...Array.from({ length: peerCount }, (_, index) => ({
-      id: `cancel-edge-${index}`,
-      source: "file-b",
-      target: `cancel-peer-${index}`,
-      kind: "imports" as const,
-    })));
-    const root = temporaryRoot();
-    writeGraphProjectionBundle(root, input);
-    const controller = new AbortController();
-    const retained = new BoundedGraphProjectionPageCache({ maxBytes: 64 * 1024, maxEntries: 8 });
-    const cache: GraphProjectionPageCache = {
-      get: (namespace, key) => retained.get(namespace, key),
-      set: (namespace, key, value, bytes) => {
-        retained.set(namespace, key, value, bytes);
-        if (key.startsWith("page:out-edges/")) controller.abort(new Error("cancel overview adjacency"));
-      },
-      stats: (namespace) => retained.stats(namespace),
-      deleteNamespace: (namespace) => retained.deleteNamespace(namespace),
-    };
-    const bundle = new GraphProjectionBundle(root, { pageCache: cache });
-    const review = comparisonContext([{ path: "src/b.ts", status: "modified" }], "head");
-
-    await expect(bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-    }), controller.signal, { review })).rejects.toThrow("cancel overview adjacency");
-    expect(retained.stats().entries).toBeLessThanOrEqual(8);
-    expect(retained.stats().residentBytes).toBeLessThanOrEqual(64 * 1024);
-  });
-
-  it("defers an overview representative atomically when node or byte admission cannot hold it", async () => {
-    const input = artifact();
-    const file = input.nodes.find((node) => node.id === "file-a")!;
-    file.summary = `OVERVIEW_BUDGET_SENTINEL:${"x".repeat(128_000)}`;
-    const { bundle } = createBundle(input);
-    const review = comparisonContext([{ path: "src/a.ts", status: "modified" }], "head");
-
-    const overview = await bundle.query(projectionRequest({
-      view: "review",
-      reviewCursor: null,
-      depth: 4,
-      maxNodes: 1,
-      maxEdges: 0,
-      maxResponseBytes: 64 * 1024,
-    }), undefined, { review });
-
-    expect(overview.artifact.nodes).toEqual([]);
-    expect(overview.artifact.edges).toEqual([]);
-    expect(overview.viewFacts.review?.overview?.entries)
-      .toEqual([{ index: 0, state: "deferred", isTest: false }]);
-    expect(overview.completeness).toEqual({
-      complete: true,
-      reasons: [],
-      omittedNodes: 0,
-      omittedEdges: 0,
-    });
-    expect(Buffer.byteLength(JSON.stringify(overview))).toBeLessThanOrEqual(64 * 1024);
-    expect(JSON.stringify(overview)).not.toContain("OVERVIEW_BUDGET_SENTINEL");
-  });
-
   it("serves a bounded comparison page before lazily projecting one file beyond page one", async () => {
-    const input = artifact();
-    input.nodes.push(fixtureNode("first-page", "module", "root", "src/0000.ts"));
-    const { bundle } = createBundle(input);
+    const { bundle } = createBundle();
     const handoffFiles: ChangedFileManifestEntry[] = [
       ...Array.from({ length: 130 }, (_, index) => ({
         path: `src/${index.toString().padStart(4, "0")}.ts`,
@@ -914,9 +583,7 @@ describe("GraphProjectionBundle", () => {
       depth: 0,
     }), undefined, { review });
 
-    expect(overview.artifact.nodes.map((node) => node.id)).toEqual(["root", "first-page"]);
-    expect(overview.artifact.edges).toEqual([]);
-    expect(overview.artifact.extensions).toBeUndefined();
+    expect(overview.artifact.nodes).toEqual([]);
     expect(overview.completeness).toEqual({
       complete: true,
       reasons: [],
@@ -930,11 +597,6 @@ describe("GraphProjectionBundle", () => {
       selection: null,
     });
     expect(overview.viewFacts.review?.page?.entries).toHaveLength(64);
-    expect(overview.viewFacts.review?.overview?.entries).toHaveLength(64);
-    expect(overview.viewFacts.review?.overview?.entries[0])
-      .toEqual({ index: 0, state: "included", isTest: false });
-    expect(overview.viewFacts.review?.overview?.entries.slice(1)
-      .every((entry) => entry.state === "unmapped" && entry.isTest === null)).toBe(true);
     expect(JSON.stringify(overview)).not.toContain("src/a.ts");
 
     const selectedIndex = handoffFiles.findIndex((file) => file.path === "src/a.ts");
@@ -980,26 +642,6 @@ describe("GraphProjectionBundle", () => {
       undefined,
       { review: side },
     );
-
-    const [headOverview, baseOverview] = await Promise.all([
-      bundle.query(projectionRequest({ view: "review", reviewCursor: null, depth: 4 }), undefined, { review: head }),
-      bundle.query(projectionRequest({ view: "review", reviewCursor: null, depth: 4 }), undefined, { review: mergeBase }),
-    ]);
-    expect(headOverview.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-a"]);
-    expect(baseOverview.artifact.nodes.map((node) => node.id)).toEqual(["root", "file-old", "file-b"]);
-    expect(headOverview.completeness.complete).toBe(true);
-    expect(baseOverview.completeness.complete).toBe(true);
-    const overviewState = (result: typeof headOverview, path: string) => {
-      const page = result.viewFacts.review?.page?.entries ?? [];
-      const index = page.find((entry) => entry.path === path)?.index;
-      return result.viewFacts.review?.overview?.entries.find((entry) => entry.index === index)?.state;
-    };
-    expect(overviewState(headOverview, "src/added.ts")).toBe("unmapped");
-    expect(overviewState(baseOverview, "src/added.ts")).toBe("absent");
-    expect(overviewState(headOverview, "src/b.ts")).toBe("absent");
-    expect(overviewState(baseOverview, "src/b.ts")).toBe("included");
-    expect(overviewState(headOverview, "src/a.ts")).toBe("included");
-    expect(overviewState(baseOverview, "src/a.ts")).toBe("included");
 
     const [addedBase, deletedHead, deletedBase, renamedHead, renamedBase] = await Promise.all([
       query(cursorFor("src/added.ts"), mergeBase),
@@ -1334,7 +976,7 @@ describe("GraphProjectionBundle", () => {
     expect(() => canonicalizeGraphProjectionRequest({
       ...projectionRequest(),
       unexpected: true,
-    } as never)).toThrow(/fields do not match the v9 contract/);
+    } as never)).toThrow(/fields do not match the v6 contract/);
   });
 });
 
@@ -1346,15 +988,12 @@ function comparisonContext(
   const reference = writeReviewComparisonContext(join(root, "review-context.json"), {
     headSha: "1".repeat(40),
     mergeBaseSha: "2".repeat(40),
-    headContentId: "a".repeat(64),
-    mergeBaseContentId: "b".repeat(64),
     analysisKey: "test-analysis-v1",
     changedFiles,
-    testClassifications: [],
   });
   const context = readReviewComparisonContext(reference);
   if (context === null) throw new Error("test review comparison context did not verify");
-  return { context, contextId: reference.sha256, metadataId: "d".repeat(64), side };
+  return { context, contextId: reference.sha256, side };
 }
 
 function createBundle(input: GraphArtifact = artifact()): { bundle: GraphProjectionBundle; root: string } {

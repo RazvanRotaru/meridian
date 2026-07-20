@@ -3,24 +3,17 @@ import { isReviewTestPath } from "../../derive/reviewFiles";
 import type { PrReviewSubmissionEvent } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
-import { preparedReviewTestVerdicts } from "../../state/preparedReviewProjection";
 
 const SUMMARY_LIMIT = 10_000;
 
 export function ReviewSubmissionFooter() {
-  const count = useBlueprint((state) => {
-    if (state.showTests) return state.reviewComments.length;
-    const testVerdicts = preparedReviewTestVerdicts(
-      state.prPreparedTestClassifications,
-      state.prPreparedChangedFiles,
-    );
-    return state.reviewComments.filter((comment) => !isReviewTestPath(
+  const count = useBlueprint((state) => state.showTests
+    ? state.reviewComments.length
+    : state.reviewComments.filter((comment) => !isReviewTestPath(
         comment.path,
         state.index,
         state.prReviewComparison?.index ?? null,
-        testVerdicts,
-      )).length;
-  });
+      )).length);
   const live = useBlueprint((state) => state.prReviewed !== null);
   const status = useBlueprint((state) => state.reviewSubmitStatus);
   const stale = useBlueprint((state) => state.prReviewStale);

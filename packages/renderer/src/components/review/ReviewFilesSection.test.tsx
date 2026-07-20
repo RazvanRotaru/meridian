@@ -9,6 +9,7 @@ const FILE: ReviewFileRow = {
   moduleId: "ts:src/bootstrap-host.ts",
   isTest: false,
   units: [],
+  fingerprint: "bootstrap-host",
   blastRadius: 0,
   deletedImpact: null,
 };
@@ -19,25 +20,13 @@ const UNMATCHED_ADDED_FILE: ReviewFileRow = {
   moduleId: null,
   isTest: false,
   units: [],
+  fingerprint: "new-unmatched",
   blastRadius: 0,
   deletedImpact: null,
 };
 
 const STATE = {
   reviewFiles: [FILE, UNMATCHED_ADDED_FILE],
-  reviewProgressCatalog: {
-    reviewKey: "fixture",
-    revisionKey: "revision",
-    order: [FILE.path, UNMATCHED_ADDED_FILE.path],
-    byPath: new Map([
-      [FILE.path, { path: FILE.path, fingerprint: "whole-file", units: [] }],
-      [UNMATCHED_ADDED_FILE.path, {
-        path: UNMATCHED_ADDED_FILE.path,
-        fingerprint: "whole-file",
-        units: [],
-      }],
-    ]),
-  },
   reviewFilesSort: "path" as const,
   reviewUnitTicks: {},
   reviewFileTicks: {},
@@ -48,8 +37,8 @@ const STATE = {
   prPreparedMergeBase: null,
   prPreparedReviewCursor: null,
   prPreparedChangedFiles: [],
-  prPreparedProjectionPending: null,
-  prPreparedProjectionError: null,
+  prPreparedFileProjectionPending: null,
+  prPreparedFileProjectionError: null,
   reviewCommentRangesByFile: {},
   prDiscussion: null,
   reviewCommentsVisible: false,
@@ -64,7 +53,6 @@ vi.mock("../../state/StoreContext", () => ({
   useBlueprint: (selector: (state: typeof STATE) => unknown) => selector(STATE),
   useBlueprintActions: () => ({
     setReviewFilesSort: () => undefined,
-    focusReviewOverview: () => Promise.resolve(),
     toggleReviewFileViewed: () => undefined,
     addReviewComment: () => undefined,
     setReviewLit: () => undefined,
@@ -105,7 +93,7 @@ describe("ReviewFilesSection", () => {
     expect(overview).toContain('aria-label="Expand files list"');
     expect(overview).toContain('aria-pressed="false"');
     expect(overview).toContain('aria-expanded="true"');
-    expect(focused).toContain('aria-label="Restore review sections"');
+    expect(focused).toContain('aria-label="Restore review overview"');
     expect(focused).toContain('aria-pressed="true"');
     expect(focused).toContain('title="Restore review scope and affected flows"');
     expect(focused).toContain("bootstrap-host.ts");
