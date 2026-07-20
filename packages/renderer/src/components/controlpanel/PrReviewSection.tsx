@@ -7,10 +7,10 @@
 
 import { useEffect, useMemo } from "react";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary } from "../../state/prTypes";
-import { reviewSurfaceIsOpen, selectedPrSummary } from "../../state/store";
+import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { filesInScope } from "../../derive/filesInScope";
-import { countViewedReviewFiles } from "../../state/reviewFileProgress";
+import { countViewedFiles } from "../../derive/reviewFiles";
 import { CountBadge, hexAlpha, TOKENS } from "./panelKit";
 import { PullRequestIcon } from "./icons";
 import { PrReviewCard } from "./PrReviewCard";
@@ -28,15 +28,12 @@ export function PrReviewSection() {
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
   const prPrepareError = useBlueprint((state) => state.prPrepareError);
-  const reviewOpen = useBlueprint(reviewSurfaceIsOpen);
-  const hasReviewPayload = useBlueprint((state) => state.prReviewSource?.number === state.prReviewed
-    && state.prPreparedHead !== null
-    && state.prPreparedMergeBase !== null
-    && state.prReviewBaseline !== null);
-  const reviewProgress = useBlueprint((state) => state.reviewProgressCatalog);
+  const reviewOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
+  const hasReviewPayload = useBlueprint((state) => state.review !== null
+    && state.prReviewSource?.number === state.prReviewed);
+  const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const showTests = useBlueprint((state) => state.showTests);
   const viewMode = useBlueprint((state) => state.viewMode);
   const sessionSource = useBlueprint((state) => state.prSessionSource);
   const index = useBlueprint((state) => state.index);
@@ -51,18 +48,19 @@ export function PrReviewSection() {
     [index, minimalSeedIds, minimalRfNodes, moduleRfNodes, moduleSelected],
   );
 
-  // Expanded only while a PR review owns the on-screen surface. Graph seeds are deliberately not
-  // part of this decision: the overview remains a live review before any file graph is selected.
-  // Otherwise — the Map after closing the review, or the PRs page itself — the card stays collapsed.
+  // Expanded only while a PR review is the active on-screen surface: a PR is under review
+  // (prReviewed), its minimal-graph overlay is open (minimalSeedIds), and we're not on the full
+  // Pull-requests page. Otherwise — the Map after closing the overlay, or the PRs page itself — it
+  // stays collapsed so a stale reviewed PR never lingers in the card.
   const expanded = prReviewed !== null && reviewOpen && viewMode !== "prs";
-  // A parked review retains only immutable descriptors, its return coordinate, and lightweight PR
-  // membership. The decoded pair and ReviewData remain exclusively in the bounded projection cache
-  // and are reloaded/rederived by Resume.
+  // A live review whose overlay was closed (explicit Close/lens switch) is still fully in the store —
+  // show a one-click Resume chip beneath the queue toggle. Mutually exclusive with `expanded`
+  // (that needs the overlay open; this needs it closed). The immutable source snapshot is the
+  // resume authority because queue navigation may replace the currently selected PR and its files.
   const resumable = prReviewed !== null && !reviewOpen && hasReviewPayload;
   const resuming = resumable && prReviewStatus === "preparing";
   const resumeFailed = resumable && prReviewStatus === "error";
-  const viewed = countViewedReviewFiles(reviewProgress, unitTicks, fileTicks, showTests);
-  const reviewFileCount = reviewProgress?.order.length ?? 0;
+  const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
   const disconnected = !githubSource;
@@ -132,9 +130,7 @@ export function PrReviewSection() {
               {resuming ? `Resuming review #${prReviewed}…` : resumeFailed ? `Retry review #${prReviewed}` : `Resume review #${prReviewed}`}
             </span>
             <span style={{ flex: 1 }} />
-            {reviewFileCount > 0
-              ? <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFileCount} viewed</CountBadge>
-              : null}
+            <CountBadge style={badgeToneStyle(true)}>{viewed}/{reviewFiles.length} viewed</CountBadge>
           </button>
         ) : null}
         {sessionSource !== null ? (

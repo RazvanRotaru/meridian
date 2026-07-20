@@ -42,7 +42,7 @@ describe("parseRepoSlug", () => {
 });
 
 describe("parseBranchList", () => {
-  it("keeps only branch names accepted by the repository fetch path", () => {
+  it("keeps only branch names accepted by the clone path", () => {
     expect(parseBranchList([
       { name: "main" },
       { name: "feature/dropdown" },

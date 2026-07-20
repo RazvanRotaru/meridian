@@ -25,20 +25,10 @@ export function deriveReviewProjection(
   context: ReviewContext,
   artifact: GraphArtifact,
   index: GraphIndex,
-  options: {
-    baseIndex: GraphIndex | null;
-    baseArtifact?: GraphArtifact | null;
-    showTests: boolean;
-    /** Canonical current-page verdicts retained outside the bounded graph projection. */
-    reviewFileTestVerdicts?: ReadonlyMap<string, boolean>;
-  },
+  options: { baseIndex: GraphIndex | null; baseArtifact?: GraphArtifact | null; showTests: boolean },
 ): ReviewProjection {
   const coveredContext = withFlowCoverageWarnings(context, artifact);
-  const reviewFileOptions = {
-    baseIndex: options.baseIndex,
-    testVerdicts: options.reviewFileTestVerdicts,
-  };
-  const allFiles = deriveReviewFiles(coveredContext, artifact, index, reviewFileOptions);
+  const allFiles = deriveReviewFiles(coveredContext, artifact, index, { baseIndex: options.baseIndex });
   const excludedTestFileCount = options.showTests ? 0 : allFiles.filter((file) => file.isTest).length;
   const includedPaths = options.showTests
     ? null
@@ -48,7 +38,7 @@ export function deriveReviewProjection(
     : { ...coveredContext, changedFiles: coveredContext.changedFiles.filter((file) => includedPaths.has(file.path)) };
   const files = includedPaths === null
     ? allFiles
-    : deriveReviewFiles(visibleContext, artifact, index, reviewFileOptions);
+    : deriveReviewFiles(visibleContext, artifact, index, { baseIndex: options.baseIndex });
   const visibleReview = deriveReviewDataFromContext(
     visibleContext,
     artifact,

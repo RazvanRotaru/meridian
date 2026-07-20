@@ -13,7 +13,6 @@ import { declarationSemantics, type NodeSemanticModel } from "../nodeSemantics";
 
 const MODULE_KIND = "module";
 const PACKAGE_KIND = "package";
-const STRUCTURAL_CHILD_KINDS: ReadonlySet<string> = new Set([PACKAGE_KIND, MODULE_KIND]);
 
 // `type` (not interface) so it carries @xyflow/react's implicit index signature on Node<T>.
 export type ModuleCardData = {
@@ -115,14 +114,6 @@ export function collapseChain(index: GraphIndex, focus: string): string {
     const dirs = kids.filter((node) => node.kind === PACKAGE_KIND);
     const files = kids.filter((node) => node.kind === MODULE_KIND);
     if (dirs.length === 1 && files.length === 0) {
-      const next = dirs[0];
-      const loadedNextChildren = index.childrenOf(next.id)
-        .filter((node) => STRUCTURAL_CHILD_KINDS.has(node.kind))
-        .length;
-      // A projection can disclose the sole directory without disclosing that directory's own
-      // children. Stopping at the loaded frontier keeps the directory navigable; collapsing into
-      // an unloaded level would produce an incorrectly empty canvas.
-      if (loadedNextChildren < index.childCount(next.id, STRUCTURAL_CHILD_KINDS)) return current;
       current = dirs[0].id;
       continue;
     }

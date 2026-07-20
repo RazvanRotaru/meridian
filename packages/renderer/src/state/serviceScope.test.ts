@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { frameIdOf } from "../derive/serviceClusterEdges";
-import { createBlueprintStore, type BlueprintStore } from "./store";
+import { createBlueprintStore, type BlueprintState, type BlueprintStore } from "./store";
 import { decodeNavState } from "./urlState";
+import { structuralState } from "./urlSync";
 
 function node(id: string, kind: string, parentId?: string, displayName?: string): GraphNode {
   return {
@@ -194,12 +195,14 @@ describe("clearServiceScope / setViewMode", () => {
   });
 });
 
-describe("history navigation restore", () => {
+describe("history restores (urlSync structuralState)", () => {
   it("always resets the scope — it is session-only, so no history entry may carry one", () => {
+    const restored = structuralState(decodeNavState(new URLSearchParams("")));
+    expect(restored).toHaveProperty("serviceScope", null);
     const store = freshStore();
     store.setState({ moduleSelected: new Set([`${ALPHA}.run`]) });
     store.getState().openServiceScope();
-    store.getState().installNavigationRestore(decodeNavState(new URLSearchParams("view=call")));
+    store.setState(structuralState(decodeNavState(new URLSearchParams("view=call"))) as Partial<BlueprintState>);
     expect(store.getState().serviceScope).toBeNull();
   });
 });

@@ -5,22 +5,13 @@
  */
 
 import { buildGraphIndex } from "../graph/graphIndex";
-import {
-  GraphProjectionClient,
-  type GraphProjectionDataSource,
-  type GraphProjectionEndpoints,
-  type LoadedGraphProjection,
-} from "../graph/graphProjectionClient";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
-import type { TelemetrySourceRegistration } from "../telemetry/provider";
+import type { TelemetrySourceDescriptor, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
-import {
-  DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
-  RecentAllocationBudget,
-} from "../state/recentViewProjectionCache";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
-import { prApiUrlsForGraph, readBootConfig, type BootConfig } from "./bootConfig";
-import { loadDevSampleArtifact } from "./loadDevSampleArtifact";
+import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootConfig";
+import { loadArtifact } from "./loadArtifact";
+import { loadEnvironments } from "./loadEnvironments";
 import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
 
 export interface BootResult {
@@ -28,33 +19,19 @@ export interface BootResult {
   boot: BootConfig;
 }
 
-export interface PreparedBootstrap extends BootResult {
-  /** Restore URL state, run the first scene layout/PR preparation, then start history sync. */
-  hydrate(): Promise<void>;
-}
-
-/**
- * Load only the first bounded graph view and construct the store. React mounts this store before
- * `hydrate` starts, which makes real streamed PR preparation stages visible during URL restore.
- */
-export async function prepareBootstrap(): Promise<PreparedBootstrap> {
+export async function bootstrap(): Promise<BootResult> {
   // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
   // from its first splash frame, including the time before a store exists to say `preparing`.
   const navigationGuard = startPrReviewNavigationGuard();
   try {
     const boot = readBootConfig();
-    const recentAllocationBudget = new RecentAllocationBudget(
-      DEFAULT_RECENT_ALLOCATION_BUDGET_LIMITS,
-    );
-    const loadedGraph = await loadBootGraph(boot, recentAllocationBudget);
-    const { artifact, index } = loadedGraph;
+    const artifact = await loadArtifact(boot.graphUrl);
+    const index = buildGraphIndex(artifact);
     const telemetrySources = await buildTelemetrySources(boot);
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
       : telemetrySources.find((source) => source.id === boot.preselectedTelemetrySourceId) ?? null;
-    const prApi = prApiUrlsForGraph(
-      boot.graphSource.kind === "projections" ? boot.graphSource.graphId : null,
-    );
+    const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
     const store = createBlueprintStore({
       artifact,
       index,
@@ -74,87 +51,32 @@ export async function prepareBootstrap(): Promise<PreparedBootstrap> {
       prCommentsUrl: prApi.prCommentsUrl,
       prChecksUrl: prApi.prChecksUrl,
       prFileUrl: prApi.prFileUrl,
+      graphUrl: boot.graphUrl,
+      metaUrl: boot.metaUrl,
       prReviewUrl: prApi.prReviewUrl,
-      prepareUrl: boot.githubSource ? prApi.prepareUrl : null,
-      preparedReviewUrl: boot.preparedReviewUrl,
-      projectionDataSource: loadedGraph.dataSource,
-      initialProjection: loadedGraph.projection,
-      recentAllocationBudget,
-      projectionEndpoints: boot.graphSource.kind === "projections"
-        ? {
-            graphId: boot.graphSource.graphId,
-            manifestUrl: boot.graphSource.manifestUrl,
-            projectionUrl: boot.graphSource.projectionUrl,
-            searchUrl: boot.graphSource.searchUrl,
-          }
-        : null,
+      analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
+      graphId: boot.githubSource ? prApi.graphId : null,
     });
     navigationGuard.bindStore(store);
-    let hydration: Promise<void> | null = null;
-    const hydrate = (): Promise<void> => {
-      hydration ??= (async () => {
-        try {
-          // Restore the navigation state carried in the URL (or fall through to defaults) and run
-          // the first layout, then reflect subsequent navigation back into history.
-          await restoreFromUrl(store);
-          navigationGuard.completeInitialRestore();
-          startUrlSync(store);
-        } catch (error) {
-          navigationGuard.dispose();
-          throw error;
-        }
-      })();
-      return hydration;
-    };
-    return { store, boot, hydrate };
+    // Restore the navigation state carried in the URL (or fall through to defaults) and run the
+    // first layout, then start reflecting the store back into the URL for reload/back/forward.
+    await restoreFromUrl(store);
+    navigationGuard.completeInitialRestore();
+    startUrlSync(store);
+    return { store, boot };
   } catch (error) {
     navigationGuard.dispose();
     throw error;
   }
 }
 
-interface LoadedBootGraph {
-  artifact: Awaited<ReturnType<typeof loadDevSampleArtifact>>;
-  index: ReturnType<typeof buildGraphIndex>;
-  dataSource: GraphProjectionDataSource | null;
-  projection: LoadedGraphProjection | null;
-}
-
-/** Injected sessions have one graph transport: bounded projections. The complete-artifact loader
- * exists only for Vite's non-injected sample and is unreachable from server-provided config. */
-export async function loadBootGraph(
-  boot: BootConfig,
-  recentBudget?: RecentAllocationBudget,
-): Promise<LoadedBootGraph> {
-  if (boot.graphSource.kind === "dev-sample") {
-    const artifact = await loadDevSampleArtifact(boot.graphSource.artifactUrl);
-    return { artifact, index: buildGraphIndex(artifact), dataSource: null, projection: null };
-  }
-  const endpoints: GraphProjectionEndpoints = {
-    graphId: boot.graphSource.graphId,
-    manifestUrl: boot.graphSource.manifestUrl,
-    projectionUrl: boot.graphSource.projectionUrl,
-    searchUrl: boot.graphSource.searchUrl,
-  };
-  const client = new GraphProjectionClient({ recentBudget });
-  const manifest = await client.loadManifest({ endpoints });
-  const staged = await client.stage(manifest.defaultView, { endpoints });
-  let projection: LoadedGraphProjection;
-  try {
-    projection = staged.commit();
-  } finally {
-    staged.release();
-  }
-  return {
-    artifact: projection.artifact,
-    index: projection.index,
-    dataSource: client,
-    projection,
-  };
-}
-
 async function buildTelemetrySources(boot: BootConfig): Promise<TelemetrySourceRegistration[]> {
-  return boot.telemetrySources.map((descriptor) => ({
+  const descriptors = boot.telemetrySources.length > 0
+    ? boot.telemetrySources
+    : boot.preselectedTelemetrySourceId !== null
+      ? await legacyTelemetrySources(boot)
+      : [];
+  return descriptors.map((descriptor) => ({
     ...descriptor,
     provider: createHttpTelemetryProvider(
       boot.overlayUrl,
@@ -162,4 +84,42 @@ async function buildTelemetrySources(boot: BootConfig): Promise<TelemetrySourceR
       descriptor,
     ),
   }));
+}
+
+/** Older servers advertise one overlay rather than a catalog. Boot normalization turns that
+ * explicit legacy capability into the matching preselected id; a present empty catalog stays off. */
+async function legacyTelemetrySources(boot: BootConfig): Promise<TelemetrySourceDescriptor[]> {
+  if (!boot.hasOverlay || boot.overlayKind === null) return [];
+  const environments = await loadEnvironments(boot.metaUrl);
+  if (boot.overlayKind === "tempo") {
+    return [{
+      id: "tempo",
+      kind: "tempo",
+      label: "Tempo",
+      provenance: "observed",
+      environments,
+      supportsMetrics: true,
+      supportsTraces: boot.traceAvailable,
+    }];
+  }
+  if (boot.overlayKind === "file") {
+    return [{
+      id: "file",
+      kind: "file",
+      label: "Saved telemetry snapshot",
+      provenance: "saved",
+      environments,
+      supportsMetrics: true,
+      supportsTraces: false,
+    }];
+  }
+  return [{
+    id: "mock",
+    kind: "mock",
+    label: "Synthetic demo",
+    provenance: "synthetic",
+    environments,
+    supportsMetrics: true,
+    supportsTraces: boot.traceAvailable,
+  }];
 }

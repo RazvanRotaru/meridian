@@ -28,7 +28,7 @@ export interface ExtractOptions {
   supplementalFiles?: string[];
   exclude?: string[];
   depth?: ExtractionDepth;
-  /** Keep library/builtin/package dependency edges as `ext:` boundary targets. */
+  /** Keep library/builtin/package dependency edges as `ext:<ecosystem>/...` boundary targets. */
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   emitImportEdges?: boolean;
@@ -109,10 +109,6 @@ export class ExtractorRegistry {
     return this;
   }
 
-  byLanguage(language: string): LanguageExtractor | undefined {
-    return this.byLang.get(language);
-  }
-
   all(): LanguageExtractor[] {
     return [...this.byLang.values()];
   }
@@ -126,8 +122,11 @@ export class ExtractorRegistry {
 
 /** Merge independently extracted languages into one canonical repository graph. */
 export function mergeExtractionResults(results: readonly ExtractionResult[]): ExtractionResult {
-  if (results.length === 0) throw new Error("cannot merge an empty extraction set");
-  const mixed = new Set(results.map((result) => result.language)).size > 1;
+  if (results.length === 0) {
+    throw new Error("cannot merge an empty extraction set");
+  }
+  const languages = new Set(results.map((result) => result.language));
+  const mixed = languages.size > 1;
   const flows = Object.assign({}, ...results.map((result) => result.flows ?? {}));
   const ports = results.flatMap((result) => result.ports ?? []);
   const merged: ExtractionResult = {

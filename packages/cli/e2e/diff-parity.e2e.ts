@@ -1,20 +1,18 @@
 /**
- * Browser contract for a trustworthy code diff. Four real local PR refs travel through the strict
- * direct-prepare contract, shared smart-HTTP mirror, merge-base extraction, immutable two-sided
- * handoff, hover preview, and </> modal as production. Every assertion is scoped to one exact file
- * path. The rendered rows must independently equal both that file's GitHub-style U3 patch and a raw
- * `git diff -U0` merge-base oracle.
+ * Browser contract for a trustworthy code diff. Four real local PR refs travel through the same
+ * GitHub proxy, smart-HTTP clone, merge-base extraction, hover preview, and </> modal as production.
+ * Every assertion is scoped to one exact file path. The rendered rows must independently equal
+ * both that file's GitHub-style U3 patch and a raw `git diff -U0` merge-base oracle.
  */
 
+import { rmSync } from "node:fs";
 import type { Server } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
-import { createWebServer, type WebServerHandle } from "../src/server/web-server";
-import { removeEntry } from "../src/server/web-cache-storage";
-import { streamPrPreparation } from "../../renderer/src/state/prPreparation";
+import { createWebServer } from "../src/server/web-server";
 import {
   DIFF_PARITY_CASES,
   buildDiffParityFixture,
@@ -31,7 +29,7 @@ import {
   ensureBuilt,
   listenServer,
   startSmartGitServer,
-  verifySmartHttpMirrorTransport,
+  verifySmartHttpClone,
 } from "./harness";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -45,9 +43,9 @@ if (process.env.CI && !HAS_CHROMIUM) {
 
 let fixture: DiffParityFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: WebServerHandle | undefined;
+let webServer: Server | undefined;
 let browser: Browser | undefined;
-let baseUrl = "";
+let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const unexpectedGitHubRequests: string[] = [];
 
@@ -75,7 +73,7 @@ async function setup(): Promise<void> {
   fixture = buildDiffParityFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
-  await verifySmartHttpMirrorTransport(smartGit.repoUrl);
+  await verifySmartHttpClone(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
   vi.stubGlobal("fetch", fakeGitHub(fixture));
   webServer = createWebServer({
@@ -87,7 +85,9 @@ async function setup(): Promise<void> {
     fallbackToken: "meridian-diff-e2e-token",
     fallbackUser: { login: "diff-e2e-reviewer", avatarUrl: null },
   });
-  baseUrl = await listenServer(webServer.server);
+  const baseUrl = await listenServer(webServer);
+  const generated = await generateSession(baseUrl);
+  viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 }
 
@@ -95,7 +95,7 @@ async function teardown(): Promise<void> {
   const errors: unknown[] = [];
   for (const close of [
     () => browser?.close(),
-    () => webServer?.close(),
+    () => closeServer(webServer),
     () => closeServer(smartGitServer),
   ]) {
     try {
@@ -107,7 +107,7 @@ async function teardown(): Promise<void> {
   try {
     restoreGitRedirect?.();
     vi.unstubAllGlobals();
-    if (fixture) removeEntry(fixture.dir);
+    if (fixture) rmSync(fixture.dir, { recursive: true, force: true });
   } catch (error) {
     errors.push(error);
   }
@@ -123,15 +123,30 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   const page = await context.newPage();
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
-  const viewUrl = await preparePrView(baseUrl, pr);
-  await page.goto(new URL(viewUrl, baseUrl).href, { waitUntil: "domcontentloaded" });
+  await page.goto(viewUrl, { waitUntil: "networkidle" });
+  await page.getByText(`${DIFF_PARITY_CASES.length} open`, { exact: true }).waitFor();
+  await page.getByTitle("Open the full Pull requests page").click();
+  await page.getByRole("heading", { name: "Pull requests" }).waitFor();
+  const prCard = page.getByText(`#${pr.number}`, { exact: true }).locator("xpath=ancestor::button[1]");
+  await prCard.waitFor();
+  await prCard.click();
+
+  const detail = page.locator("aside.mrd-scroll");
+  if (spec.targetOmittedFromGitHub) {
+    expect(await detail.getByTitle(pr.targetPath).count(), "target must be absent from the bounded GitHub response").toBe(0);
+    const reported = pr.files.find((file) => file.reportedByGitHub !== false);
+    if (!reported) throw new Error(`PR #${pr.number} needs one GitHub-reported seed file`);
+    await detail.getByTitle(reported.api.filename).waitFor();
+  } else {
+    await detail.getByTitle(pr.targetPath).waitFor();
+  }
+  await detail.getByRole("button", { name: "Review in graph" }).click();
   await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 120_000 });
-  const provenance = `${pr.headRef} → ${pr.baseRef} · HEAD @${pr.headSha.slice(0, 7)}`;
-  await page.getByText(provenance, { exact: true }).waitFor({ timeout: 180_000 });
+  const provenance = new RegExp(`^${escapeRegExp(pr.headRef)} → main · head graph @[0-9a-f]{7}$`);
+  await page.getByText(provenance).waitFor({ timeout: 180_000 });
 
   const reviewSurface = page.getByRole("region", { name: "Extracted graph" });
   await reviewSurface.waitFor();
-  await focusReviewFile(page, pr.targetPath);
   const targetNode = fileNodeFor(reviewSurface, pr.targetPath);
   await targetNode.waitFor({ state: "visible", timeout: 60_000 });
   await waitForGraphViewportToSettle(reviewSurface);
@@ -143,11 +158,9 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
     await assertTextualFileDiff(page, reviewSurface, pr, spec, file);
   }
   if (spec.deletedNode) {
-    await focusReviewFile(page, pr.targetPath);
     await assertDeletedNodeDiff(page, reviewSurface, pr, spec.deletedNode);
   }
   if (spec.metadataOnlyRename) {
-    await focusReviewFile(page, spec.metadataOnlyRename.path);
     await assertMetadataOnlyRename(page, reviewSurface, pr, spec.metadataOnlyRename);
   }
   expect(pageErrors).toEqual([]);
@@ -162,7 +175,6 @@ async function assertTextualFileDiff(
   file: DiffParityFile,
 ): Promise<void> {
   const path = file.api.filename;
-  await focusReviewFile(page, path);
   const fileNode = fileNodeFor(reviewSurface, path);
   await fileNode.waitFor({ state: "visible", timeout: 60_000 });
 
@@ -215,31 +227,6 @@ async function assertTextualFileDiff(
 
   await modal.getByRole("button", { name: "Close source" }).click();
   await modal.waitFor({ state: "detached" });
-}
-
-/** The review overview carries one bounded representative per matched changed file. A file-row
- * selection remains the public action that hydrates its exact two-sided projection; the E2E must
- * exercise that narrower coordinate explicitly. */
-async function focusReviewFile(page: Page, path: string): Promise<void> {
-  const sourceOnly = page.getByTitle(`${path} — click to view the changed source`, { exact: true });
-  if (await sourceOnly.count() > 0) {
-    await sourceOnly.first().click();
-    return;
-  }
-  const projected = page.getByTitle(`${path} — click to reveal on the graph`, { exact: true });
-  const unloaded = page.getByTitle(`${path} — click to load its graph`, { exact: true });
-  if (await unloaded.count() > 0) {
-    await unloaded.first().click();
-    // A prepared review starts with a bounded representative overview. The click is the public
-    // transition which fetches and atomically commits this file's HEAD + merge-base projections;
-    // require the row to reach one honest committed state before any graph/source assertion runs.
-    const committed = sourceOnly.or(projected);
-    await committed.first().waitFor({ state: "visible", timeout: 120_000 });
-    expect(await committed.count(), `${path} must commit exactly one prepared-file projection state`).toBe(1);
-    return;
-  }
-  await projected.first().waitFor();
-  await projected.first().click();
 }
 
 function fileNodeFor(reviewSurface: Locator, path: string): Locator {
@@ -472,15 +459,16 @@ function expectSameFileParity(
   ).toEqual(file.oracleRows);
 }
 
-async function preparePrView(baseUrl: string, pr: DiffParityPr): Promise<string> {
-  const result = await streamPrPreparation(`${baseUrl}/api/pr/prepare`, {
-    owner: "e2e",
-    repo: "shop",
-    prNumber: pr.number,
-    baseRef: pr.baseRef,
-    headRef: pr.headRef,
-  }, () => {});
-  return result.handoff.viewUrl;
+async function generateSession(baseUrl: string): Promise<{ id: string }> {
+  const response = await nativeFetch(`${baseUrl}/api/generate`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind: "github", value: "e2e/shop", subdir: "", ref: "" }),
+  });
+  if (!response.ok) {
+    throw new Error(`diff parity session generation failed (${response.status}): ${await response.text()}`);
+  }
+  return (await response.json()) as { id: string };
 }
 
 function fakeGitHub(source: DiffParityFixture): typeof fetch {
@@ -535,7 +523,7 @@ function fakeGitHub(source: DiffParityFixture): typeof fetch {
   }) as typeof fetch;
 }
 
-// git-exec inherits these variables, redirecting mirror initialization and all PR-head
+// git-exec inherits these variables, redirecting both the initial shallow clone and all PR-head
 // analysis fetches without changing production argv or reaching github.com.
 function installGitRedirect(repoUrl: string): () => void {
   const oldCount = process.env.GIT_CONFIG_COUNT;
@@ -554,6 +542,10 @@ function installGitRedirect(repoUrl: string): () => void {
 function restoreEnv(name: string, value: string | undefined): void {
   if (value === undefined) delete process.env[name];
   else process.env[name] = value;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function json(body: unknown, status = 200): Response {

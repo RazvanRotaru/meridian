@@ -47,10 +47,10 @@ const ARTIFACT = {
 
 describe("collectSymbols", () => {
   it.each([
-    { mode: "map" as const },
-    { mode: "logic" as const },
-  ])("classifies only leading-double-underscore methods as private in $mode mode", ({ mode }) => {
-    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), mode);
+    { mode: "map", isMap: true },
+    { mode: "logic", isMap: false },
+  ])("classifies only leading-double-underscore methods as private in $mode mode", ({ isMap }) => {
+    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), isMap);
     const privateNames = symbols.filter((symbol) => symbol.isPrivateMethod).map((symbol) => symbol.displayName);
 
     expect(privateNames).toEqual(expect.arrayContaining(["__iter__", "__private"]));
@@ -58,21 +58,21 @@ describe("collectSymbols", () => {
     expect(symbols.find((symbol) => symbol.displayName === "_helper")?.isPrivateMethod).toBe(false);
     expect(symbols.find((symbol) => symbol.displayName === "run__internal")?.isPrivateMethod).toBe(false);
     expect(symbols.find((symbol) => symbol.displayName === "__bootstrap__")?.isPrivateMethod).toBe(false);
-    if (mode === "map") {
+    if (isMap) {
       expect(symbols.find((symbol) => symbol.displayName === "__Private")?.isPrivateMethod).toBe(false);
     }
   });
 
   it.each([
-    { mode: "map" as const },
-    { mode: "logic" as const },
-  ])("supports public, all-symbol, and private-only search scopes in $mode mode", ({ mode }) => {
-    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), mode);
+    { mode: "map", isMap: true },
+    { mode: "logic", isMap: false },
+  ])("supports public, all-symbol, and private-only search scopes in $mode mode", ({ isMap }) => {
+    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), isMap);
 
-    expect(selectResults(symbols, "__iter__", mode, "public")).toEqual([]);
-    expect(selectResults(symbols, "__iter__", mode, "all").map((symbol) => symbol.displayName)).toEqual(["__iter__"]);
-    expect(selectResults(symbols, "__iter__", mode, "private").map((symbol) => symbol.displayName)).toEqual(["__iter__"]);
-    expect(selectResults(symbols, "run", mode, "private")).toEqual([]);
+    expect(selectResults(symbols, "__iter__", isMap)).toEqual([]);
+    expect(selectResults(symbols, "__iter__", isMap, "all").map((symbol) => symbol.displayName)).toEqual(["__iter__"]);
+    expect(selectResults(symbols, "__iter__", isMap, "private").map((symbol) => symbol.displayName)).toEqual(["__iter__"]);
+    expect(selectResults(symbols, "run", isMap, "private")).toEqual([]);
   });
 
   it("filters private methods before applying the 40-row cap", () => {
@@ -84,17 +84,17 @@ describe("collectSymbols", () => {
     const symbols = collectSymbols(
       crowdedArtifact,
       new Map(crowdedNodes.map((candidate) => [candidate.id, candidate])),
-      "map",
+      true,
     );
 
-    expect(selectResults(symbols, "", "map", "public").map((symbol) => symbol.displayName)).toEqual(["run"]);
-    expect(selectResults(symbols, "", "map", "all")).toHaveLength(40);
-    expect(selectResults(symbols, "", "map", "private")).toHaveLength(40);
-    expect(selectResults(symbols, "", "map", "private").every((symbol) => symbol.isPrivateMethod)).toBe(true);
+    expect(selectResults(symbols, "", true).map((symbol) => symbol.displayName)).toEqual(["run"]);
+    expect(selectResults(symbols, "", true, "all")).toHaveLength(40);
+    expect(selectResults(symbols, "", true, "private")).toHaveLength(40);
+    expect(selectResults(symbols, "", true, "private").every((symbol) => symbol.isPrivateMethod)).toBe(true);
   });
 
   it("counts every searchable symbol in exactly one base scope", () => {
-    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), "map");
+    const symbols = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), true);
 
     expect(countSearchScopes(symbols)).toEqual({ public: 5, all: 7, private: 2 });
   });

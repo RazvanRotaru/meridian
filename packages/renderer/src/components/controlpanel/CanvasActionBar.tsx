@@ -6,12 +6,7 @@
 
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import {
-  moduleGraphSurfaceOwner,
-  moduleGraphOverlayIsOpen,
-  removableModuleSelectionCount,
-  reviewSurfaceIsOpen,
-} from "../../state/store";
+import { removableModuleSelectionCount } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import {
   CanvasActionBarFrame,
@@ -61,26 +56,19 @@ export function CanvasActionBar({
 }: CanvasActionBarProps = {}) {
   const selectedCount = useBlueprint((state) => state.moduleSelected.size);
   const removableCount = useBlueprint(removableModuleSelectionCount);
-  const minimalOpen = useBlueprint(moduleGraphOverlayIsOpen);
-  const surfaceOwner = useBlueprint(moduleGraphSurfaceOwner);
-  const emptyReview = surfaceOwner === "prepared-review-empty";
-  const preparedOverview = useBlueprint((state) => (
-    state.prPreparedArtifactCurrent && state.prPreparedReviewCursor === null
-  ));
+  const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
   const minimalLayoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
-  const minimalCodebaseProjectionPending = useBlueprint((state) => state.minimalCodebaseProjectionPending);
   const flowPaneLayoutStatus = useBlueprint((state) => state.flowPaneLayoutStatus);
   const syntheticExecutionStatus = useBlueprint((state) => state.syntheticExecutionStatus);
   const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
   const showHighways = useBlueprint((state) => state.showHighways);
-  const reviewActive = useBlueprint(reviewSurfaceIsOpen);
+  const reviewActive = useBlueprint((state) => state.review !== null);
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
       state.review === null
-      || state.minimalCodebaseProjectionPending
-      || (state.minimalView === "graph" && state.minimalLayoutStatus !== "ready")
+      || state.minimalLayoutStatus !== "ready"
       || state.moduleSelected.size !== 1
       || state.flowSelection !== null
       || state.syntheticExecutionStatus === "running"
@@ -129,18 +117,16 @@ export function CanvasActionBar({
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
 
-  const showExtract = !emptyReview && selectedCount > 0
+  const canExtract = selectedCount > 0
+    && (!minimalOpen || minimalLayoutStatus === "ready")
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";
-  const canExtract = showExtract
-    && !minimalCodebaseProjectionPending
-    && (!minimalOpen || minimalView === "codebase" || minimalLayoutStatus === "ready");
-  const showSourceSelectionActions = showExtract && !minimalOpen;
+  const showSourceSelectionActions = canExtract && !minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
   // Back is present at every extraction depth. A root graph also needs the wider nested-action
   // footprint whenever Extract (or the review-container equivalent) sits beside it.
   const wideMinimalActions = minimalHistory.length > 0
-    || showExtract
+    || canExtract
     || (reviewActive && selectedReviewContainerId !== null);
   const mode: CanvasActionMode = codebaseView
     ? "codebase"
@@ -158,7 +144,6 @@ export function CanvasActionBar({
             title="Recenter on the current selection, or the whole graph if nothing is selected"
             icon={<RecenterIcon size={18} />}
             onClick={recenter}
-            disabled={emptyReview}
           />
           {codebaseView ? null : (
             <>
@@ -167,14 +152,12 @@ export function CanvasActionBar({
                 title="Expand the selection one level, or the whole view when nothing is selected"
                 icon={<ExpandIcon size={18} />}
                 onClick={expandAll}
-                disabled={emptyReview}
               />
               <CanvasActionButton
                 ariaLabel="Collapse all"
                 title="Collapse all open containers in the selection, or the whole view when nothing is selected"
                 icon={<CollapseIcon size={18} />}
                 onClick={collapseAll}
-                disabled={emptyReview}
               />
               {minimalOpen ? (
                 <CanvasActionButton
@@ -186,7 +169,7 @@ export function CanvasActionBar({
                   }
                   icon={<RemoveSelectionIcon size={18} />}
                   onClick={removeSelectionFromView}
-                  disabled={emptyReview || removableCount === 0}
+                  disabled={removableCount === 0}
                 />
               ) : null}
             </>
@@ -202,8 +185,7 @@ export function CanvasActionBar({
                 ariaLabel={`Extract selection (${selectedCount})`}
                 title="Extract the current selection into a focused graph"
                 icon={<ExtractSelectionIcon size={18} />}
-                onClick={() => { void buildMinimalGraph(); }}
-                disabled={!canExtract}
+                onClick={buildMinimalGraph}
               />
               <CanvasActionButton
                 ariaLabel="Remove added nodes in selection"
@@ -230,7 +212,7 @@ export function CanvasActionBar({
                   ? "Return to the source graph"
                   : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
                 icon={<BackToGraphIcon size={18} />}
-                onClick={() => { void backMinimalGraph(); }}
+                onClick={backMinimalGraph}
               />
               {!reviewActive || selectedReviewContainerId === null ? null : (
                 <CanvasActionButton
@@ -238,18 +220,17 @@ export function CanvasActionBar({
                   ariaLabel="Open selected container as review subgraph"
                   title="Open the selected container's changed files in a separate review graph"
                   icon={<ExtractSelectionIcon size={18} />}
-                  onClick={() => { void openReviewSubgraph(selectedReviewContainerId); }}
+                  onClick={() => openReviewSubgraph(selectedReviewContainerId)}
                 />
               )}
-              {!showExtract || selectedReviewContainerId !== null ? null : (
+              {!canExtract || selectedReviewContainerId !== null ? null : (
                 <CanvasActionButton
                   primary
                   badge={selectedCount}
                   ariaLabel={`Extract selection (${selectedCount})`}
                   title="Extract the current selection into another focused graph"
                   icon={<ExtractSelectionIcon size={18} />}
-                  onClick={() => { void buildMinimalGraph(); }}
-                  disabled={!canExtract}
+                  onClick={buildMinimalGraph}
                 />
               )}
               {onToggleGhostNodes === undefined ? null : (
@@ -264,7 +245,7 @@ export function CanvasActionBar({
                   }
                   icon={<GhostVisibilityIcon size={18} visible={ghostNodesVisible} />}
                   onClick={onToggleGhostNodes}
-                  disabled={emptyReview || !hasGhostNodes}
+                  disabled={!hasGhostNodes}
                   pressed={ghostNodesVisible}
                 />
               )}
@@ -276,9 +257,8 @@ export function CanvasActionBar({
                 icon={<HighwaysIcon size={18} />}
                 onClick={toggleHighways}
                 pressed={showHighways}
-                disabled={emptyReview}
               />
-              {emptyReview || relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
+              {relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
               <CanvasActionButton
                 ariaLabel="Rearrange extracted graph"
                 title={
@@ -290,7 +270,7 @@ export function CanvasActionBar({
                 }
                 icon={<RearrangeIcon size={18} />}
                 onClick={rearrangeMinimalGraph}
-                disabled={emptyReview || !minimalHasMembers}
+                disabled={!minimalHasMembers}
               />
               <CanvasActionButton
                 ariaLabel="Reset extracted graph"
@@ -301,18 +281,15 @@ export function CanvasActionBar({
                 }
                 icon={<ResetIcon size={18} />}
                 onClick={resetMinimalGraph}
-                disabled={emptyReview || !minimalChanged}
+                disabled={!minimalChanged}
               />
               {onShowCodebase === undefined ? null : (
                 <CanvasActionButton
                   ariaLabel="Highlight code in codebase"
-                  title={preparedOverview
-                    ? "Select a changed file before opening its codebase context"
-                    : "Show this extracted graph highlighted in its whole-codebase context"}
+                  title="Show this extracted graph highlighted in its whole-codebase context"
                   icon={<CodebaseHighlightIcon size={18} />}
                   onClick={onShowCodebase}
                   buttonRef={codebaseButtonRef}
-                  disabled={emptyReview || preparedOverview}
                 />
               )}
               <CanvasActionSeparator orientation="vertical" />
@@ -336,7 +313,7 @@ export function CanvasActionBar({
                   ? "Return to the source graph"
                   : `Return to ${minimalHistory.at(-1)?.label ?? "the previous graph"}`}
                 icon={<BackToGraphIcon size={18} />}
-                onClick={() => { void backMinimalGraph(); }}
+                onClick={backMinimalGraph}
               />
               {!reviewActive || selectedReviewContainerId === null ? null : (
                 <CanvasActionButton
@@ -345,11 +322,12 @@ export function CanvasActionBar({
                   title="Open the selected container's changed files in a separate review graph"
                   icon={<ExtractSelectionIcon size={18} />}
                   onClick={() => {
-                    void openReviewSubgraph(selectedReviewContainerId);
+                    openReviewSubgraph(selectedReviewContainerId);
+                    onBackToGraph?.();
                   }}
                 />
               )}
-              {!showExtract || selectedReviewContainerId !== null ? null : (
+              {!canExtract || selectedReviewContainerId !== null ? null : (
                 <CanvasActionButton
                   primary
                   badge={selectedCount}
@@ -357,9 +335,9 @@ export function CanvasActionBar({
                   title="Extract the current selection into another focused graph"
                   icon={<ExtractSelectionIcon size={18} />}
                   onClick={() => {
-                    void buildMinimalGraph();
+                    buildMinimalGraph();
+                    onBackToGraph?.();
                   }}
-                  disabled={!canExtract}
                 />
               )}
               <CanvasActionButton

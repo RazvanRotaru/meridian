@@ -4,10 +4,11 @@
  * labelled reachability estimate and navigator.
  */
 
+import { useMemo } from "react";
 import { Panel } from "@xyflow/react";
+import type { CoverageReport } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
-import { coverageRows, type CoverageRow } from "../derive/coverageRows";
-import type { RendererReachabilityReport } from "../derive/reachabilityFacts";
+import { buildCoverageRows, type CoverageRow } from "../derive/coverageRows";
 import {
   runtimeCoverageSummary,
   type RuntimeCoverageMetric,
@@ -16,13 +17,17 @@ import {
 import { COVERAGE_COLORS } from "../theme/coverageColors";
 import { COVERAGE_PANEL_WIDTH } from "./canvas/panelLayout";
 
+const MAX_ROWS = 10;
+
 export function CoveragePanel() {
   const coverageMode = useBlueprint((state) => state.coverageMode);
   const report = useBlueprint((state) => (state.coverageMode ? state.coverage : null));
   const runtimeCoverage = useBlueprint((state) => runtimeCoverageSummary(state.artifact));
-  const rows = report && runtimeCoverage === null
-    ? coverageRows(report)
-    : [];
+  const index = useBlueprint((state) => state.index);
+  const rows = useMemo(
+    () => (report && runtimeCoverage === null ? buildCoverageRows(report, index) : []),
+    [report, runtimeCoverage, index],
+  );
   if (!coverageMode || (runtimeCoverage === null && report === null)) {
     return null;
   }
@@ -71,7 +76,7 @@ function RuntimeMetric(props: { label: string; metric: RuntimeCoverageMetric }) 
   );
 }
 
-function ReachabilitySummary(props: { report: Pick<RendererReachabilityReport, "summary"> }) {
+function ReachabilitySummary(props: { report: CoverageReport }) {
   const { summary } = props.report;
   return (
     <div>
@@ -120,12 +125,15 @@ function NoTests() {
   );
 }
 
-function Rows(props: { rows: readonly CoverageRow[] }) {
+function Rows(props: { rows: CoverageRow[] }) {
+  const shown = props.rows.slice(0, MAX_ROWS);
+  const hiddenCount = props.rows.length - shown.length;
   return (
     <div style={ROWS_STYLE}>
-      {props.rows.map((row) => (
+      {shown.map((row) => (
         <ContainerRow key={row.id} row={row} />
       ))}
+      {hiddenCount > 0 ? <div style={MUTED_STYLE}>…and {hiddenCount} more (best-covered last)</div> : null}
     </div>
   );
 }

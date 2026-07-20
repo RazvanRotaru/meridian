@@ -5,26 +5,10 @@
  * index keys everything by that id verbatim and never mints a parallel identifier.
  */
 
-import { collectChangedIds, collectTestIds, deriveGraphStructure } from "@meridian/core";
-import type {
-  ChangeStatus,
-  GraphArtifact,
-  GraphEdge,
-  GraphNode,
-  GraphStructureFacts,
-} from "@meridian/core";
-import type { SerializedServiceTopologyV1 } from "@meridian/design-metrics";
+import { collectChangedIds, collectTestIds } from "@meridian/core";
+import type { ChangeStatus, GraphArtifact, GraphEdge, GraphNode } from "@meridian/core";
 
 export interface GraphIndex {
-  /** Immutable full-revision identity/size, never inferred from a bounded slice. */
-  graphSummary: GraphRevisionSummary;
-  /** Authoritative repository/containment facts. In a projection these describe only bounded
-   * identities plus O(1) repository totals; they never imply that omitted nodes are loaded. */
-  structure: GraphStructureFacts;
-  /** Complete-revision service abstraction supplied only by Service projections. */
-  serviceTopology: SerializedServiceTopologyV1 | null;
-  /** True only when this index was built from a complete local GraphArtifact. */
-  artifactComplete: boolean;
   nodesById: Map<string, GraphNode>;
   childrenByParent: Map<string, GraphNode[]>;
   roots: GraphNode[];
@@ -44,10 +28,8 @@ export interface GraphIndex {
   changedStatus: Map<string, ChangeStatus>;
   /** Changed nodes strictly inside each container, so a COLLAPSED ancestor can hint at them. */
   changedDescendants: Map<string, number>;
-  /** Exact direct-child count, optionally restricted to renderer-relevant node kinds. */
-  childCount(nodeId: string, kinds?: ReadonlySet<string>): number;
   isContainer(nodeId: string): boolean;
-  /** Ordered children actually loaded in this graph slice (source order). */
+  /** Ordered children of a node (source order); the roots of a dive-in focus scope. */
   childrenOf(nodeId: string): GraphNode[];
   /** The containment path root..id INCLUSIVE, for the dive-in breadcrumb. */
   ancestorsOf(nodeId: string): GraphNode[];
@@ -55,153 +37,12 @@ export interface GraphIndex {
   isWithinFocus(focusId: string | null, nodeId: string): boolean;
 }
 
-export interface GraphRevisionSummary {
-  schemaVersion: string;
-  generatedAt: string;
-  nodeCount: number;
-  edgeCount: number;
-}
-
-export interface GraphIndexMetadata {
-  structure?: GraphStructureFacts;
-  graphSummary?: GraphRevisionSummary;
-  serviceTopology?: SerializedServiceTopologyV1 | null;
-  artifactComplete?: boolean;
-}
-
-/**
- * Conservative ownership charge for one presentation-only index over shared HEAD/base objects.
- *
- * The composite reuses node/edge objects already owned by the decoded pair, but allocates fresh
- * arrays, maps, sets, hierarchy slots, and (in the worst case) shallow tombstone node wrappers.
- * Charge those containers structurally so pending and Back/Forward budgets never treat a third
- * GraphIndex as free.
- */
-export function estimateGraphPresentationResidentBytes(
-  maxNodeCount: number,
-  maxEdgeCount: number,
-): number {
-  const nodes = boundedCount(maxNodeCount, "maxNodeCount");
-  const edges = boundedCount(maxEdgeCount, "maxEdgeCount");
-  const map = (entries: number) => saturatedResidentAdd(56, entries * 40);
-  const set = (entries: number) => saturatedResidentAdd(56, entries * 24);
-  const array = (entries: number) => saturatedResidentAdd(40, entries * 8);
-  let bytes = 2_048; // GraphIndex/artifact/structure objects and callable closures.
-  bytes = saturatedResidentAdd(bytes, map(nodes)); // nodesById
-  bytes = saturatedResidentAdd(bytes, map(nodes)); // childrenByParent
-  bytes = saturatedResidentAdd(bytes, array(nodes)); // all grouped child slots
-  bytes = saturatedResidentAdd(bytes, array(nodes)); // roots upper bound
-  bytes = saturatedResidentAdd(bytes, map(nodes)); // parentOf
-  bytes = saturatedResidentAdd(bytes, map(Math.min(nodes, edges))); // outEdges buckets
-  bytes = saturatedResidentAdd(bytes, array(edges)); // all grouped outbound-edge slots
-  bytes = saturatedResidentAdd(bytes, array(edges)); // edges
-  bytes = saturatedResidentAdd(bytes, map(edges)); // edgesById
-  bytes = saturatedResidentAdd(bytes, set(nodes) * 3); // test/private/changed ids
-  bytes = saturatedResidentAdd(bytes, map(nodes) * 2); // changedStatus/changedDescendants
-  bytes = saturatedResidentAdd(bytes, map(nodes)); // presentation hierarchyById
-  bytes = saturatedResidentAdd(bytes, array(nodes)); // moduleOverviewRootIds upper bound
-  bytes = saturatedResidentAdd(bytes, array(nodes)); // presentation artifact nodes array
-  bytes = saturatedResidentAdd(bytes, nodes * 128); // shallow remapped tombstone wrappers
-  return bytes;
-}
-
-type AuthoritativeGraphIndexMetadata = Pick<
-  GraphIndex,
-  "graphSummary" | "structure" | "serviceTopology" | "artifactComplete"
->;
-
-/**
- * Extend a revision index with presentation-only nodes without redefining the revision itself.
- *
- * Review tombstones are not part of HEAD, so repository totals, overview roots, and hierarchy
- * facts for HEAD identities remain authoritative. Only hierarchy facts wholly local to the newly
- * appended nodes are derived and added. In particular, a tombstone attached to a surviving HEAD
- * parent must not change that parent's exact revision child counts.
- */
-export function graphIndexMetadataWithPresentationNodes(
-  authoritative: AuthoritativeGraphIndexMetadata,
-  appendedNodes: readonly GraphNode[],
-): GraphIndexMetadata {
-  if (appendedNodes.length === 0) {
-    return {
-      graphSummary: authoritative.graphSummary,
-      structure: authoritative.structure,
-      serviceTopology: authoritative.serviceTopology,
-      artifactComplete: authoritative.artifactComplete,
-    };
-  }
-
-  const appendedStructure = deriveGraphStructure(appendedNodes, []);
-  const hierarchyById = new Map(authoritative.structure.hierarchyById);
-  for (const [id, fact] of appendedStructure.hierarchyById) {
-    if (!hierarchyById.has(id)) hierarchyById.set(id, fact);
-  }
-  return {
-    graphSummary: authoritative.graphSummary,
-    serviceTopology: authoritative.serviceTopology,
-    artifactComplete: authoritative.artifactComplete,
-    structure: {
-      hierarchyById,
-      moduleOverviewRootIds: authoritative.structure.moduleOverviewRootIds,
-      moduleOverview: authoritative.structure.moduleOverview,
-      repositorySummary: authoritative.structure.repositorySummary,
-    },
-  };
-}
-
-/**
- * Remove presentation-only identities while preserving the underlying revision's exact metadata.
- * This is the inverse boundary used before a review composite is rebuilt; it deliberately filters
- * known overlay facts instead of inferring new revision facts from the currently loaded slice.
- */
-export function graphIndexMetadataWithoutPresentationNodes(
-  source: AuthoritativeGraphIndexMetadata,
-  removedIds: ReadonlySet<string>,
-): GraphIndexMetadata {
-  if (removedIds.size === 0) {
-    return {
-      graphSummary: source.graphSummary,
-      structure: source.structure,
-      serviceTopology: source.serviceTopology,
-      artifactComplete: source.artifactComplete,
-    };
-  }
-
-  const hierarchyById = new Map(source.structure.hierarchyById);
-  for (const id of removedIds) hierarchyById.delete(id);
-  return {
-    graphSummary: source.graphSummary,
-    serviceTopology: source.serviceTopology,
-    artifactComplete: source.artifactComplete,
-    structure: {
-      hierarchyById,
-      moduleOverviewRootIds: source.structure.moduleOverviewRootIds.filter((id) => !removedIds.has(id)),
-      moduleOverview: source.structure.moduleOverview,
-      repositorySummary: source.structure.repositorySummary,
-    },
-  };
-}
-
-export function buildGraphIndex(
-  artifact: GraphArtifact,
-  metadata: GraphIndexMetadata = {},
-): GraphIndex {
-  const structure = metadata.structure ?? deriveGraphStructure(artifact.nodes, artifact.edges);
+export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
   const nodesById = indexById(artifact.nodes);
   const childrenByParent = groupByParent(artifact.nodes);
   const parentOf = mapParents(artifact.nodes);
   const changedIds = collectChangedIds(artifact.nodes);
   return {
-    graphSummary: metadata.graphSummary ?? {
-      schemaVersion: artifact.schemaVersion,
-      generatedAt: artifact.generatedAt,
-      nodeCount: artifact.nodes.length,
-      edgeCount: artifact.edges.length,
-    },
-    structure,
-    serviceTopology: metadata.serviceTopology ?? null,
-    artifactComplete: metadata.artifactComplete
-      ?? (metadata.structure === undefined && metadata.graphSummary === undefined),
     nodesById,
     childrenByParent,
     roots: artifact.nodes.filter(isRoot),
@@ -216,40 +57,11 @@ export function buildGraphIndex(
     // to "modified" (gold) — a PR review overwrites this via applyChangedStatus with real add/mod kinds.
     changedStatus: new Map<string, ChangeStatus>([...changedIds].map((id) => [id, "modified"] as [string, ChangeStatus])),
     changedDescendants: countChangedDescendants(changedIds, parentOf),
-    childCount: (nodeId, kinds) => childCount(structure, nodeId, kinds),
-    isContainer: (nodeId) => childCount(structure, nodeId) > 0,
+    isContainer: (nodeId) => (childrenByParent.get(nodeId)?.length ?? 0) > 0,
     childrenOf: (nodeId) => childrenByParent.get(nodeId) ?? [],
     ancestorsOf: (nodeId) => ancestorsOf(nodeId, nodesById, parentOf),
     isWithinFocus: (focusId, nodeId) => isWithinFocus(focusId, nodeId, parentOf),
   };
-}
-
-function boundedCount(value: number, label: string): number {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new RangeError(`${label} must be a non-negative safe integer`);
-  }
-  return value;
-}
-
-function saturatedResidentAdd(left: number, right: number): number {
-  if (!Number.isSafeInteger(right) || right < 0 || left >= Number.MAX_SAFE_INTEGER - right) {
-    return Number.MAX_SAFE_INTEGER;
-  }
-  return left + right;
-}
-
-function childCount(
-  structure: GraphStructureFacts,
-  nodeId: string,
-  kinds?: ReadonlySet<string>,
-): number {
-  const counts = structure.hierarchyById.get(nodeId)?.childKindCounts;
-  if (counts === undefined) return 0;
-  let total = 0;
-  for (const [kind, count] of Object.entries(counts)) {
-    if (kinds === undefined || kinds.has(kind)) total += count;
-  }
-  return total;
 }
 
 /**

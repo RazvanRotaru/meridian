@@ -27,20 +27,13 @@ import { folderGhostEmission, mergeGhostEmissions } from "./folderGhosts";
 import { liftEdges } from "./liftEdges";
 import { createCodeWalk, depWireEdges, flowChainEdges, stepCallEdges, visitCode, type CodeWalk, type Skeleton } from "./codeWalk";
 import { demoteCommons } from "./commonsDemotion";
-import {
-  finalizeModuleNode,
-  foldById,
-  importEdges,
-  importTreeEdges,
-  withModuleOverviewEdges,
-} from "./moduleTreeData";
+import { finalizeModuleNode, foldById, importEdges, importTreeEdges } from "./moduleTreeData";
 import { ipcTreeEdges } from "./moduleIpc";
 import type { ModuleTree, ModuleTreeEdge } from "./moduleTreeTypes";
 import { underlyingEdgesCrossPackage } from "./packageBoundary";
 export type { ModuleGroupData, ModuleTree, ModuleTreeEdge, VisibleModuleNode } from "./moduleTreeTypes";
 
 const MODULE_KIND = "module";
-const PACKAGE_KIND = "package";
 /** A shared empty set so the default `extraIds` argument never allocates per call. */
 const EMPTY_IDS: ReadonlySet<string> = new Set<string>();
 
@@ -72,67 +65,10 @@ export function deriveModuleTree(
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
   demoteHubs = true,
 ): ModuleTree {
-  return deriveModuleTreeFromFrontier(
-    index,
-    focus,
-    undefined,
-    expanded,
-    graph,
-    blockDeps,
-    flows,
-    extraIds,
-    hiddenIds,
-    demoteHubs,
-  );
-}
-
-/** Derive a null-focus Map tree from an explicit, already-resident ownership-root forest. This is
- * not a repository-overview fallback: target-scoped views use it to span multiple roots while
- * retaining only roots relevant to their semantic coordinate. */
-export function deriveModuleTreeFromRootForest(
-  index: GraphIndex,
-  rootForestIds: readonly string[],
-  expanded: ReadonlySet<string>,
-  graph: ModuleGraph,
-  blockDeps: BlockDeps,
-  flows: LogicFlows,
-  extraIds: ReadonlySet<string> = EMPTY_IDS,
-  hiddenIds: ReadonlySet<string> = EMPTY_IDS,
-  demoteHubs = true,
-): ModuleTree {
-  return deriveModuleTreeFromFrontier(
-    index,
-    null,
-    rootForestIds,
-    expanded,
-    graph,
-    blockDeps,
-    flows,
-    extraIds,
-    hiddenIds,
-    demoteHubs,
-  );
-}
-
-function deriveModuleTreeFromFrontier(
-  index: GraphIndex,
-  focus: string | null,
-  rootForestIds: readonly string[] | undefined,
-  expanded: ReadonlySet<string>,
-  graph: ModuleGraph,
-  blockDeps: BlockDeps,
-  flows: LogicFlows,
-  extraIds: ReadonlySet<string>,
-  hiddenIds: ReadonlySet<string>,
-  demoteHubs: boolean,
-): ModuleTree {
   const effectiveFocus = focus === null ? null : collapseChain(index, focus);
   // Palette-pinned nodes (⌘P "+") ride in as EXTRA top-level roots so an out-of-focus card joins the
   // current level; `walk`'s `seen` guard drops any that the focus subtree already draws.
-  const roots = [
-    ...frontierRoots(index, effectiveFocus, rootForestIds),
-    ...extraRoots(index, extraIds),
-  ];
+  const roots = [...frontierRoots(index, effectiveFocus, graph), ...extraRoots(index, extraIds)];
   const walked = walkContainment(index, roots, expanded, flows, hiddenIds);
   const skeleton = walked.skeleton;
   const visibleIds = new Set(skeleton.map((entry) => entry.id));
@@ -140,7 +76,7 @@ function deriveModuleTreeFromFrontier(
   // At the repo overview, root package cards wear the OWNERSHIP-fold numbers (each file counts once,
   // toward its nearest npm package) so nested packages never double-count — main's dedicated
   // package-overview fold, kept through the expandable walk.
-  const overviewFold = effectiveFocus === null ? foldById(index, hiddenIds) : new Map<string, ModulePackageData>();
+  const overviewFold = effectiveFocus === null ? foldById(index) : new Map<string, ModulePackageData>();
   const nodes = skeleton.map((entry) => finalizeModuleNode(entry, index, graph, lifted, walked.stepData, overviewFold, hiddenIds));
   const kinds = kindsOf(skeleton);
   // External imports deliberately stay out of `ModuleGraph`: they are boundary relationships, not
@@ -169,7 +105,7 @@ function deriveModuleTreeFromFrontier(
     hiddenIds,
   );
   const isDepAnchor = (id: string) => isDepAnchorKind(kinds.get(id));
-  const locallyDerivedEdges: ModuleTreeEdge[] = [
+  const edges = [
     ...importTreeEdges(lifted, kinds, graph, index),
     // Code-level dep wires: anchored to file/unit/block cards (the detailed intra-package view).
     ...depWireEdges(blockDeps, visibleIds, index, isDepAnchor, walked.expandedBlocks),
@@ -180,11 +116,7 @@ function deriveModuleTreeFromFrontier(
     ...stepCallEdges(walked, visibleIds, index),
     ...ipcTreeEdges(index, visibleIds),
     ...ghosts.edges,
-  ];
-  const edges = (effectiveFocus === null
-    ? withModuleOverviewEdges(index, visibleIds, locallyDerivedEdges)
-    : locallyDerivedEdges
-  ).sort((a, b) => a.id.localeCompare(b.id));
+  ].sort((a, b) => a.id.localeCompare(b.id));
   // Hub treatment: utility files with logger-grade in-degree demote to the commons dock — their
   // wires mark for paint-hiding and their dependents gain chips (commonsDemotion.ts). The Commons
   // toggle turns the whole treatment off (hubs rejoin ELK with ordinary wires).
@@ -265,10 +197,9 @@ export function walkContainment(index: GraphIndex, roots: string[], expanded: Re
       return; // a directory owning no in-project files anywhere below is a useless "0 files" card.
     }
     const children = containmentChildren(index, id);
-    const childCount = index.childCount(id, STRUCTURAL_CHILD_KINDS);
-    const isContainer = childCount > 0;
+    const isContainer = children.length > 0;
     const isExpanded = isContainer && expanded.has(id);
-    walked.skeleton.push({ id, parentId, kind: "package", isContainer, isExpanded, depth, childCount });
+    walked.skeleton.push({ id, parentId, kind: "package", isContainer, isExpanded, depth, childCount: children.length });
     if (isExpanded) {
       children.forEach((child) => visit(child, id, depth + 1));
     }
@@ -276,8 +207,6 @@ export function walkContainment(index: GraphIndex, roots: string[], expanded: Re
   roots.forEach((id) => visit(id, null, 0));
   return walked;
 }
-
-const STRUCTURAL_CHILD_KINDS: ReadonlySet<string> = new Set([PACKAGE_KIND, MODULE_KIND]);
 
 function kindsOf(skeleton: Skeleton[]): Map<string, Skeleton["kind"]> {
   return new Map(skeleton.map((entry) => [entry.id, entry.kind]));

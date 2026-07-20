@@ -131,6 +131,7 @@ function sourceModal(options: {
         moduleId: NODE.id,
         isTest: false,
         units: [],
+        fingerprint: "test-file",
         blastRadius: 0,
         deletedImpact: null,
       }],

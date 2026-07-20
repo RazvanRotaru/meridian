@@ -4,10 +4,9 @@
  * model projected onto the graph. Units are exactly `computeAffectedNodes`' blocks (hunks ∩ node
  * ranges), so a checked unit corresponds 1:1 with an amber-ringed card on the review graph.
  *
- * Each unit carries a FINGERPRINT (its source span + the hunks that hit it); a persisted tick whose
- * fingerprint no longer matches renders "stale", so a new push after a tick never leaves a
- * silently-green row (same contract as flow ticks in reviewData.ts). File-level progress lives in
- * the graph-free review progress catalog, not in these projection-shaped rows.
+ * Each unit and each unit-less file carries a FINGERPRINT (its source span + the hunks that hit it);
+ * a persisted tick whose fingerprint no longer matches renders "stale", so a new push after a tick
+ * never leaves a silently-green row (same contract as flow ticks in reviewData.ts).
  */
 
 import { computeAffectedNodes, isTestPath, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/core";
@@ -62,6 +61,8 @@ export interface ReviewFileRow {
   isTest: boolean;
   /** Touched code units, ordered by start line. Empty ⇒ the change mapped to no extracted block. */
   units: ReviewUnitRow[];
+  /** File-level fingerprint (hunks digest) — staleness for the unit-less viewed tick. */
+  fingerprint: string;
   /** Distinct unchanged files with a direct, resolved execution edge into a changed unit. */
   blastRadius: number;
   /** Surviving direct callers into deleted code, resolved from the deletion-source graph. */
@@ -70,18 +71,9 @@ export interface ReviewFileRow {
 
 /** Classify a review path even when its file row is currently projected out. Path heuristics cover
  * added/deleted files; the graph join covers explicitly tagged test modules with ordinary names. */
-export function isReviewTestPath(
-  path: string,
-  index: GraphIndex,
-  fallbackIndex: GraphIndex | null = null,
-  testVerdicts: ReadonlyMap<string, boolean> | null = null,
-): boolean {
+export function isReviewTestPath(path: string, index: GraphIndex, fallbackIndex: GraphIndex | null = null): boolean {
   if (isTestPath(path)) {
     return true;
-  }
-  const explicitVerdict = testVerdicts?.get(path);
-  if (explicitVerdict !== undefined) {
-    return explicitVerdict;
   }
   const activeMatch = matchAffectedFiles(index, [path]).matched[0];
   if (activeMatch !== undefined) {
@@ -102,11 +94,7 @@ export function deriveReviewFiles(
   context: ReviewContext,
   artifact: GraphArtifact,
   index: GraphIndex,
-  options: {
-    baseIndex: GraphIndex | null;
-    /** Canonical current-page verdicts retained outside the bounded graph projection. */
-    testVerdicts?: ReadonlyMap<string, boolean>;
-  },
+  options: { baseIndex: GraphIndex | null },
 ): ReviewFileRow[] {
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
   const unitsByFile = new Map<string, ReviewUnitRow[]>();
@@ -149,8 +137,9 @@ export function deriveReviewFiles(
         path: file.path,
         status: file.status,
         moduleId,
-        isTest: isReviewTestPath(file.path, index, options.baseIndex, options.testVerdicts),
+        isTest: isReviewTestPath(file.path, index, options.baseIndex),
         units,
+        fingerprint: hunksFingerprint(file.hunks),
         blastRadius: blastRadiusOf(units, changedPaths, index, activeInbound),
         deletedImpact: file.status === "deleted"
           ? deletionImpactOf(deletionTargetsByPath.get(file.path), changedPaths, deletionIndex, deletionInbound)
@@ -240,9 +229,25 @@ export function checkStateOf(fingerprint: string, tick: ReviewTick | undefined):
   return tick.fingerprint === fingerprint ? "done" : "stale";
 }
 
+/**
+ * A file's aggregate viewed state. With units it DERIVES from them (all done ⇒ done; any stale ⇒
+ * stale — a moved block must never hide under a green file). Without units the explicit file tick
+ * decides. `fileTick` is ignored when units exist: the units are the single source of truth.
+ */
+export function fileViewState(
+  file: ReviewFileRow,
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): CheckState {
+  if (file.units.length === 0) {
+    return checkStateOf(file.fingerprint, fileTicks[file.path]);
+  }
+  return unitsViewState(file.units, unitTicks);
+}
+
 /** Aggregate changed leaves beneath a structural unit (for example, methods inside a class). */
 export function unitsViewState(
-  units: readonly Pick<ReviewUnitRow, "nodeId" | "fingerprint">[],
+  units: readonly ReviewUnitRow[],
   unitTicks: Record<string, ReviewTick>,
 ): CheckState {
   const states = units.map((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]));
@@ -252,10 +257,34 @@ export function unitsViewState(
   return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
 }
 
+/** Aggregate a set of changed files for folder-level progress. A stale descendant wins so a folder
+ * can never retain a completed marker after one of its reviewed files changes. */
+export function filesViewState(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): CheckState {
+  const states = files.map((file) => fileViewState(file, unitTicks, fileTicks));
+  if (states.some((state) => state === "stale")) {
+    return "stale";
+  }
+  return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
+}
+
+/** How many rows read as fully "viewed" (all their units done). ONE definition so the panel header,
+ * the collapsed rail, and the control-panel resume chip all report the same progress fraction. */
+export function countViewedFiles(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): number {
+  return files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+}
+
 /** The single unit-tick transition: done un-ticks; todo/stale ticks fresh. Returns a new record. */
 export function applyUnitTick(
   ticks: Record<string, ReviewTick>,
-  unit: Pick<ReviewUnitRow, "nodeId" | "fingerprint">,
+  unit: ReviewUnitRow,
   at: string,
 ): Record<string, ReviewTick> {
   const next = { ...ticks };
@@ -269,7 +298,7 @@ export function applyUnitTick(
 
 /** Toggle all directly changed leaves represented by one structural ancestor. */
 export function applyUnitsToggle(
-  units: readonly Pick<ReviewUnitRow, "nodeId" | "fingerprint">[],
+  units: readonly ReviewUnitRow[],
   ticks: Record<string, ReviewTick>,
   at: string,
 ): Record<string, ReviewTick> {
@@ -283,6 +312,62 @@ export function applyUnitsToggle(
     }
   }
   return next;
+}
+
+/**
+ * The file-viewed toggle, cascading over its units: a not-fully-viewed file ticks EVERYTHING fresh
+ * (the "I've read this file" bulk gesture); a done file un-ticks everything. Unit-less files flip
+ * their own explicit tick. Returns new records; callers persist them whole.
+ */
+export function applyFileToggle(
+  file: ReviewFileRow,
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+  at: string,
+): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
+  const state = fileViewState(file, unitTicks, fileTicks);
+  if (file.units.length === 0) {
+    const nextFiles = { ...fileTicks };
+    if (state === "done") {
+      delete nextFiles[file.path];
+    } else {
+      nextFiles[file.path] = { at, fingerprint: file.fingerprint };
+    }
+    return { unitTicks, fileTicks: nextFiles };
+  }
+  const nextUnits = { ...unitTicks };
+  for (const unit of file.units) {
+    if (state === "done") {
+      delete nextUnits[unit.nodeId];
+    } else {
+      nextUnits[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+    }
+  }
+  return { unitTicks: nextUnits, fileTicks };
+}
+
+/** Folder-level bulk toggle. A partially viewed folder completes only its unfinished/stale files;
+ * a fully viewed folder clears every descendant tick. This preserves already-completed work while
+ * making the folder control an unambiguous all-on/all-off gesture. */
+export function applyFilesToggle(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+  at: string,
+): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
+  const markViewed = filesViewState(files, unitTicks, fileTicks) !== "done";
+  let nextUnitTicks = unitTicks;
+  let nextFileTicks = fileTicks;
+  for (const file of files) {
+    const state = fileViewState(file, nextUnitTicks, nextFileTicks);
+    if ((markViewed && state === "done") || (!markViewed && state !== "done")) {
+      continue;
+    }
+    const next = applyFileToggle(file, nextUnitTicks, nextFileTicks, at);
+    nextUnitTicks = next.unitTicks;
+    nextFileTicks = next.fileTicks;
+  }
+  return { unitTicks: nextUnitTicks, fileTicks: nextFileTicks };
 }
 
 /** Join an affected node to its display shape; null when the node vanished from the index. */

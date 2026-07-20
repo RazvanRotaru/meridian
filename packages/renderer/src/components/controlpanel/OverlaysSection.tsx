@@ -12,7 +12,6 @@ import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { accentForKind } from "../../theme/kindColors";
 import { matchAffectedFiles } from "../../derive/matchAffectedFiles";
 import { isReviewTestPath } from "../../derive/reviewFiles";
-import { preparedReviewTestVerdicts } from "../../state/preparedReviewProjection";
 import { runtimeCoverageSummary, type RuntimeCoverageMetric } from "../../derive/runtimeCoverageSummary";
 import { Pill } from "./panelKit";
 
@@ -195,10 +194,6 @@ function metricDescription(metric: RuntimeCoverageMetric): string {
 
 export function countTestFiles(state: BlueprintState): number {
   const paths = new Set<string>();
-  const preparedTestVerdicts = preparedReviewTestVerdicts(
-    state.prPreparedTestClassifications,
-    state.prPreparedChangedFiles,
-  );
   const addIndexTests = (index: BlueprintState["index"]) => {
     for (const id of index.testIds) {
       const node = index.nodesById.get(id);
@@ -209,19 +204,19 @@ export function countTestFiles(state: BlueprintState): number {
   };
   addIndexTests(state.index);
   const addReviewTestPath = (path: string) => {
-    if (!isReviewTestPath(
-      path,
-      state.index,
-      state.prReviewComparison?.index ?? null,
-      preparedTestVerdicts,
-    )) {
+    const baselineIndex = state.prReviewBaseline?.index ?? null;
+    if (!isReviewTestPath(path, state.index, baselineIndex)) {
       return;
     }
     const activeMatch = matchAffectedFiles(state.index, [path]).matched[0];
-    const moduleId = activeMatch?.moduleId;
-    const graphPath = moduleId === undefined
+    const baselineMatch = activeMatch === undefined && baselineIndex !== null
+      ? matchAffectedFiles(baselineIndex, [path]).matched[0]
+      : undefined;
+    const matchedIndex = activeMatch === undefined ? baselineIndex : state.index;
+    const moduleId = activeMatch?.moduleId ?? baselineMatch?.moduleId;
+    const graphPath = moduleId === undefined || matchedIndex === null
       ? null
-      : state.index.nodesById.get(moduleId)?.location.file ?? null;
+      : matchedIndex.nodesById.get(moduleId)?.location.file ?? null;
     paths.add(graphPath ?? path);
   };
   // A PR can add its first test file, so it has no module in the base graph yet. Keep the toggle
@@ -236,10 +231,7 @@ export function countTestFiles(state: BlueprintState): number {
   for (const file of state.review?.context.changedFiles ?? []) {
     addReviewTestPath(file.path);
   }
-  // A bounded projection intentionally omits hidden test modules. The manifest-level total keeps
-  // the toggle available without retaining those nodes; review paths can only raise that total for
-  // an unmatched newly-added test carried by an artifact-authored review.
-  return Math.max(state.index.structure.repositorySummary.testSourceFileCount, paths.size);
+  return paths.size;
 }
 
 function hasExternalDependencies(state: BlueprintState): boolean {

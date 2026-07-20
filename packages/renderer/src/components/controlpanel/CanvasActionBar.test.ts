@@ -119,23 +119,6 @@ describe("CanvasActionBar Remove action", () => {
 });
 
 describe("CanvasActionBar nested extraction", () => {
-  it("keeps the selected action stable but disabled while its projected graph is hydrating", () => {
-    const store = actionBarStore();
-    store.setState({
-      minimalSeedIds: [ACTION_FILE],
-      minimalMemberIds: [ACTION_FILE],
-      minimalLayoutStatus: "laying-out",
-      moduleSelected: new Set([ACTION_METHOD]),
-    });
-
-    const markup = renderActionBar(store);
-    expect(extractButtonMarkup(markup)).toContain('aria-disabled="true"');
-
-    store.setState({ minimalLayoutStatus: "ready" });
-    expect(extractButtonMarkup(renderActionBar(store)))
-      .not.toContain("aria-disabled");
-  });
-
   it("withholds extraction while a synthetic run is in flight", () => {
     const store = actionBarStore();
     store.setState({
@@ -215,6 +198,7 @@ describe("CanvasActionBar nested extraction", () => {
         moduleId: ACTION_FILE,
         isTest: false,
         units: [],
+        fingerprint: "modified",
         blastRadius: 0,
         deletedImpact: null,
       }],
@@ -250,65 +234,6 @@ describe("CanvasActionBar empty review sentinel", () => {
     const markup = renderActionBar(store);
     expect(actionButtonMarkup(markup, "Rearrange extracted graph")).toContain('aria-disabled="true"');
     expect(actionButtonMarkup(markup, "Reset extracted graph")).toContain('aria-disabled="true"');
-  });
-
-  it("keeps only navigation active on the prepared overview until a file graph is loaded", () => {
-    const store = actionBarStore();
-    store.setState({
-      prReviewed: 7,
-      review: {
-        context: {
-          changedFiles: [{ path: "src/action.ts", status: "modified" }],
-          baseRef: "main",
-          baseSha: "base",
-          headRef: "feature",
-          reviewKey: "prepared-overview",
-          warnings: [],
-        },
-        rows: [],
-        flows: {},
-      },
-      minimalSeedIds: [],
-      minimalMemberIds: [],
-    });
-
-    const markup = renderActionBar(store, {
-      onShowCodebase: () => undefined,
-      relationKinds: ["calls"],
-    });
-    for (const label of [
-      "Recenter view",
-      "Expand one level",
-      "Collapse all",
-      "Highways",
-      "Highlight code in codebase",
-    ]) {
-      expect(actionButtonMarkup(markup, label)).toContain('aria-disabled="true"');
-    }
-    expect(actionButtonMarkup(markup, "Back to previous graph")).not.toContain("aria-disabled");
-    expect(actionButtonMarkup(markup, "Close extracted graph")).not.toContain("aria-disabled");
-    expect(markup).not.toContain('aria-label="Filter edge types"');
-
-    const before = store.getState();
-    before.recenter();
-    before.toggleHighways();
-    expect(store.getState().recenterSeq).toBe(before.recenterSeq);
-    expect(store.getState().showHighways).toBe(before.showHighways);
-  });
-
-  it("keeps repository widening disabled on a nonempty prepared overview", () => {
-    const store = actionBarStore();
-    store.setState({
-      prPreparedArtifactCurrent: true,
-      prPreparedReviewCursor: null,
-      prReviewed: 7,
-      minimalSeedIds: ["ts:src/action.ts"],
-      minimalMemberIds: ["ts:src/action.ts"],
-    });
-
-    const markup = renderActionBar(store, { onShowCodebase: () => undefined });
-    expect(actionButtonMarkup(markup, "Highlight code in codebase")).toContain('aria-disabled="true"');
-    expect(actionButtonMarkup(markup, "Recenter view")).not.toContain("aria-disabled");
   });
 });
 
@@ -470,12 +395,6 @@ function renderActionBar(
 
 function removeButtonMarkup(markup: string): string {
   return actionButtonMarkup(markup, "Remove added nodes in selection");
-}
-
-function extractButtonMarkup(markup: string): string {
-  const button = markup.match(/<button[^>]*aria-label="Extract selection \(1\)"[^>]*>/)?.[0];
-  expect(button).toBeDefined();
-  return button!;
 }
 
 function actionButtonMarkup(markup: string, label: string): string {

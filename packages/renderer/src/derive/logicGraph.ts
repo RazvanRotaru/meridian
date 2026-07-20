@@ -51,7 +51,6 @@ import {
   logicStepPath,
   logicTopLevelBodyPrefix,
 } from "./logicFlowAddress";
-import { canChartFinallyAsSharedPhase } from "./logicFlowShape";
 
 /** No owner/signature enrichment — the default when a caller (e.g. a unit test) supplies no lookup. */
 const NO_OWNER: OwnerLookup = () => null;
@@ -1175,6 +1174,32 @@ class LogicGraphBuilder {
     spec.height = height;
     this.nodes.push(spec);
   }
+}
+
+/** A shared FINALLY phase is exact while TRY/CATCH complete normally. An explicit return/throw in
+ * either protected arm carries a pending completion that must resume only after cleanup; because
+ * FlowStep does not yet encode that pending value, keep those shapes on the honest fallback. */
+function canChartFinallyAsSharedPhase(step: Extract<FlowStep, { kind: "branch" }>): boolean {
+  const { tryPath, catchPath, finallyPath } = tryArms(step);
+  return Boolean(
+    tryPath
+    && catchPath
+    && finallyPath
+    && !containsExit(tryPath.body)
+    && !containsExit(catchPath.body)
+    && !containsExit(finallyPath.body),
+  );
+}
+
+/** Conservative recursive scan. False positives merely retain the fallback; false negatives could
+ * place a terminal before mandatory cleanup, so every nested synchronous body is included. */
+function containsExit(steps: FlowStep[]): boolean {
+  return steps.some((step) => {
+    if (step.kind === "exit") return true;
+    if (step.kind === "branch") return step.paths.some((path) => containsExit(path.body));
+    if (step.kind === "loop" || step.kind === "callback") return containsExit(step.body);
+    return false;
+  });
 }
 
 /** Package + module the building block comes from, so a block is never a bare name. */

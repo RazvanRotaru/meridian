@@ -5,13 +5,7 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-  createGitHubClient,
-  DEFAULT_GITHUB_CLIENT_ID,
-  FILE_AT_REF_MAX_RESPONSE_BYTES,
-  fetchFileAtRef,
-  resolveGitHubClientId,
-} from "./github";
+import { createGitHubClient, DEFAULT_GITHUB_CLIENT_ID, fetchFileAtRef, resolveGitHubClientId } from "./github";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -46,28 +40,10 @@ describe("fetchFileAtRef", () => {
     await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: false, lineCount: 1 });
   });
 
-  it("counts many returned rows without retaining a split line array", async () => {
-    const lineCount = 250_000;
-    stubContents("x\n".repeat(lineCount));
-    await expect(fileAtRef()).resolves.toMatchObject({ lineCount, truncated: false });
-  });
-
   it("reports zero visible rows when GitHub omits inline content", async () => {
     vi.stubGlobal("fetch", (async () => new Response(JSON.stringify({ encoding: "none" }), { status: 200 })) as typeof fetch);
 
     await expect(fileAtRef()).resolves.toEqual({ code: "", truncated: true, lineCount: 0 });
-  });
-
-  it("cancels an advertised GitHub source envelope before unbounded JSON parsing", async () => {
-    const cancel = vi.fn();
-    const response = new Response(new ReadableStream<Uint8Array>({ cancel }), {
-      status: 200,
-      headers: { "content-length": String(FILE_AT_REF_MAX_RESPONSE_BYTES + 1) },
-    });
-    vi.stubGlobal("fetch", (async () => response) as typeof fetch);
-
-    await expect(fileAtRef()).rejects.toThrow("exceeded the safe size limit");
-    expect(cancel).toHaveBeenCalledOnce();
   });
 
   it("does not strip a newline that lands exactly at the byte cap", async () => {

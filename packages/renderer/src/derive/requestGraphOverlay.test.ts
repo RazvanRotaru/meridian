@@ -229,37 +229,6 @@ describe("deriveRequestGraphOverlay", () => {
 });
 
 describe("projectRequestGraphOverlay", () => {
-  it("projects ordinary containment on a bounded non-Service view without inferring service facts", () => {
-    const packageId = "ts:src";
-    const moduleId = "ts:src/work.ts";
-    const callable = `${moduleId}#run`;
-    const projectedArtifact = graph([
-      node(packageId, "package"),
-      node(moduleId, "module", packageId),
-      node(callable, "function", moduleId),
-    ]);
-    const index = buildGraphIndex(projectedArtifact, {
-      graphSummary: {
-        schemaVersion: projectedArtifact.schemaVersion,
-        generatedAt: projectedArtifact.generatedAt,
-        nodeCount: 10_000,
-        edgeCount: 20_000,
-      },
-      artifactComplete: false,
-    });
-    const overlay = deriveRequestGraphOverlay(trace([
-      span({
-        spanId: "run",
-        nodeId: callable,
-        startedAtUnixNano: "1000000000",
-        endedAtUnixNano: "1010000000",
-      }),
-    ]), index);
-
-    expect(projectRequestGraphOverlay(overlay, [visible(packageId)], index).get(packageId))
-      .toMatchObject({ rollupSourceIds: [callable] });
-  });
-
   it("rolls exact evidence to real visible ancestors and unions overlapping wall-clock intervals", () => {
     const packageId = "ts:src";
     const moduleId = "ts:src/work.ts";

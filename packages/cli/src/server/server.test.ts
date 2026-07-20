@@ -1,30 +1,20 @@
-/** Route and retention boundary for the immutable standalone-view server. */
+/**
+ * Route behaviour of the pure `createBlueprintServer` factory — exercised over a real socket
+ * on an ephemeral port, but never a browser. A throwaway renderer dir keeps the test
+ * independent of `copy-renderer` ever having run.
+ */
 
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
-import type { IncomingMessage, Server } from "node:http";
-import { createConnection } from "node:net";
-import type { AddressInfo, Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { GraphArtifact, TraceBundle } from "@meridian/core";
+import { tmpdir } from "node:os";
+import type { AddressInfo } from "node:net";
+import type { Server } from "node:http";
 import { traceBundleSchema } from "@meridian/core";
 import { buildMockOverlay } from "@meridian/core/mock";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { SyntheticExecutionError } from "./synthetic-execution";
-import {
-  defaultGraphProjectionRequest,
-  GRAPH_PROJECTION_FORMAT_VERSION,
-} from "./graph-projection-bundle";
+import type { GraphArtifact, TraceBundle } from "@meridian/core";
 import { createBlueprintServer } from "./server";
-import type { StandaloneViewSession } from "./standalone-view-session";
-import { createStandaloneViewSession } from "./standalone-view-session";
 
 const artifact: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -57,271 +47,167 @@ const syntheticArtifact: GraphArtifact = {
   ],
 };
 
-const inputRoots: string[] = [];
-const sessions: StandaloneViewSession[] = [];
 let rendererRoot: string;
-let session: StandaloneViewSession;
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
   rendererRoot = writeFakeRenderer();
-  session = sessionFor(artifact);
-  server = createBlueprintServer({
-    session,
-    overlay: { kind: "mock" },
-    preselectedEnv: "staging",
-    rendererRoot,
-  });
+  server = createBlueprintServer({ artifact, overlay: { kind: "mock" }, preselectedEnv: "staging", rendererRoot });
   base = await listenEphemeral(server);
 });
 
-afterAll(async () => {
-  await closeServer(server);
-  for (const candidate of sessions) candidate.cleanup();
-  for (const root of inputRoots.splice(0)) rmSync(root, { recursive: true, force: true });
+afterAll(() => {
+  server.close();
   rmSync(rendererRoot, { recursive: true, force: true });
 });
 
 describe("createBlueprintServer", () => {
-  it.each([
-    ["graph projection", "/api/graph/projection", false],
-    ["graph search", "/api/graph/search", false],
-    ["synthetic execution", "/api/synthetic-executions", true],
-  ])("closes with a partial %s JSON body", { timeout: 15_000 }, async (_label, path, synthetic) => {
-    const target = createBlueprintServer({
-      session: sessionFor(artifact, synthetic ? ORDERS_SOURCE : undefined),
-      overlay: { kind: "none" },
-      preselectedEnv: null,
-      rendererRoot,
-      allowSyntheticExecution: synthetic,
-    });
-    const targetBase = await listenEphemeral(target);
-    const socket = await openPartialJsonPost(target, targetBase, path);
-    const socketClosed = new Promise<void>((resolveClose) => socket.once("close", () => resolveClose()));
+  it("serves graph and meta as JSON", async () => {
+    const graphResponse = await fetch(`${base}/api/graph`);
+    const graph = (await graphResponse.json()) as { nodes: unknown[] };
+    expect(graphResponse.headers.get("cache-control")).toBe("no-store");
+    expect(graph.nodes).toHaveLength(1);
 
-    const close = closeServerWithoutForcingConnections(target);
-    const closedPromptly = await settlesWithin(close, 5_000, () => socket.destroy());
-    await socketClosed;
-
-    expect(closedPromptly).toBe(true);
-    expect(socket.destroyed).toBe(true);
-  });
-
-  it("serves only strict projection transport and bounded metadata", async () => {
-    const manifestResponse = await fetch(`${base}/api/graph/manifest`);
-    expect(manifestResponse.headers.get("cache-control")).toBe("no-store");
-    expect(await manifestResponse.json()).toMatchObject({
-      version: GRAPH_PROJECTION_FORMAT_VERSION,
-      graphId: expect.stringMatching(/^standalone-[0-9a-f]{64}$/),
-      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
-      graphSummary: { nodeCount: 1, edgeCount: 0 },
-      repositorySummary: { overviewPackageCount: 0, sourceFileCount: 0, testSourceFileCount: 0 },
-      defaultView: defaultGraphProjectionRequest(),
-    });
-
-    const projectionResponse = await fetch(`${base}/api/graph/projection`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        ...defaultGraphProjectionRequest(),
-        focusIds: [artifact.nodes[0]!.id],
-        depth: 0,
-      }),
-    });
-    expect(projectionResponse.headers.get("server-timing")).toMatch(/^projection_query;dur=/);
-    expect(projectionResponse.headers.has("content-length")).toBe(false);
-    const projectionText = await projectionResponse.text();
-    const projection = JSON.parse(projectionText) as Record<string, unknown> & {
-      projectionId: string;
-      residentBytes: number;
-    };
-    expect(projectionResponse.headers.get("x-meridian-projection-id")).toBe(projection.projectionId);
-    expect(projectionResponse.headers.get("x-meridian-resident-bytes")).toBe(String(projection.residentBytes));
-    expect(projection).toMatchObject({
-      version: GRAPH_PROJECTION_FORMAT_VERSION,
-      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
-      request: { view: "modules", depth: 0 },
-      completeness: { complete: true },
-      artifact: { nodes: [{ id: artifact.nodes[0]!.id }], edges: [] },
-      hierarchy: {
-        moduleOverviewRootIds: [],
-        nodes: {
-          [artifact.nodes[0]!.id]: {
-            isTest: false,
-            childKindCounts: {},
-            descendantSourceFileCount: 0,
-            ownedSourceFileCount: 0,
-          },
-        },
-      },
-    });
-
-    const searchResponse = await fetch(`${base}/api/graph/search`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, query: "CREATE", mode: "map", scope: "public" }),
-    });
-    expect(searchResponse.headers.get("server-timing")).toMatch(/symbol_search.*symbol_serialize/);
-    expect(await searchResponse.json()).toMatchObject({
-      version: 1,
-      graphId: expect.stringMatching(/^standalone-[0-9a-f]{64}$/),
-      contentId: expect.stringMatching(/^[0-9a-f]{64}$/),
-      mode: "map",
-      scope: "public",
-      scopeCounts: { public: 1, all: 1, private: 0 },
-      results: [{
-        id: artifact.nodes[0]!.id,
-        displayName: "handleCreateOrder",
-        qualifiedName: "OrderRoutes.handleCreateOrder",
-        file: "src/api/orderRoutes.ts",
-        kind: "method",
-        isPrivateMethod: false,
-        stepCount: null,
+    const metaResponse = await fetch(`${base}/api/meta`);
+    expect(metaResponse.headers.get("cache-control")).toBe("no-store");
+    expect(await metaResponse.json()).toMatchObject({
+      nodeCount: 1,
+      hasOverlay: true,
+      envs: "*",
+      environments: ["demo", "dev", "staging", "prod"],
+      telemetrySources: [{
+        id: "demo",
+        kind: "mock",
+        label: "Synthetic demo",
+        provenance: "synthetic",
+        environments: ["demo", "dev", "staging", "prod"],
+        supportsMetrics: true,
+        supportsTraces: true,
       }],
     });
-
-    expect((await fetch(`${base}/api/graph`)).status).toBe(404);
-    expect((await fetch(`${base}/api/graph/projection`)).status).toBe(405);
-    expect((await fetch(`${base}/api/graph/search`)).status).toBe(405);
-    expect((await fetch(`${base}/api/graph/manifest`, { method: "POST" })).status).toBe(405);
-    expect((await fetch(`${base}/api/graph/manifest?legacy=1`)).status).toBe(400);
-    expect((await fetch(`${base}/api/graph/search?legacy=1`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 1, query: "", mode: "map", scope: "public" }),
-    })).status).toBe(400);
   });
 
-  it("rejects malformed, cross-origin, and non-JSON projection requests", async () => {
-    const nonJson = await fetch(`${base}/api/graph/projection`, {
-      method: "POST",
-      headers: { "content-type": "text/plain" },
-      body: "{}",
-    });
-    expect(nonJson.status).toBe(415);
-
-    const crossOrigin = await fetch(`${base}/api/graph/projection`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: "https://evil.example" },
-      body: "{}",
-    });
-    expect(crossOrigin.status).toBe(403);
-
-    const unknownField = await fetch(`${base}/api/graph/projection`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ view: "modules", legacyGraph: true }),
-    });
-    expect(unknownField.status).toBe(400);
-    expect(await unknownField.json()).toMatchObject({
-      error: expect.stringContaining(`v${GRAPH_PROJECTION_FORMAT_VERSION} contract`),
-    });
-
-    const malformedSearch = await fetch(`${base}/api/graph/search`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ version: 0, query: "", mode: "map", scope: "public", legacyGraph: true }),
-    });
-    expect(malformedSearch.status).toBe(400);
-    expect(await malformedSearch.json()).toMatchObject({ error: expect.stringContaining("unknown") });
-  });
-
-  it("serves explicit-source mock overlays without a source-less compatibility path", { timeout: 15_000 }, async () => {
+  it("serves source-aware and legacy mock overlays for arbitrary explicit environments", async () => {
     expect(await getJson(`${base}/api/overlay?source=demo&env=demo`)).toMatchObject({ kind: "mock", env: "demo" });
-    expect(await getJson(`${base}/api/overlay?source=demo&env=staging`)).toMatchObject({ kind: "mock", env: "staging" });
+    expect(await getJson(`${base}/api/overlay?env=staging`)).toMatchObject({ kind: "mock", env: "staging" });
     expect(await getJson(`${base}/api/overlay?source=demo&env=qa`)).toMatchObject({ kind: "mock", env: "qa" });
-    expect((await fetch(`${base}/api/overlay?env=staging`)).status).toBe(400);
+    expect(await getJson(`${base}/api/overlay?env=qa`)).toMatchObject({ kind: "mock", env: "qa" });
     expect((await fetch(`${base}/api/overlay`)).status).toBe(400);
     expect((await fetch(`${base}/api/overlay?source=missing&env=demo`)).status).toBe(404);
 
     const normalized = await getJson(`${base}/api/overlay?source=demo&env=${encodeURIComponent("  qa-west  ")}`);
     expect(normalized).toMatchObject({ kind: "mock", env: "qa-west" });
-    expect((await fetch(`${base}/api/overlay?source=demo&env=${"x".repeat(257)}`)).status).toBe(400);
+    const oversized = "x".repeat(257);
+    expect((await fetch(`${base}/api/overlay?source=demo&env=${oversized}`)).status).toBe(400);
   });
 
-  it("derives mock traces in the short-lived file worker", { timeout: 15_000 }, async () => {
+  it("synthesizes mock request traces for the explicit demo env but 400s a missing env", async () => {
     const response = await fetch(`${base}/api/traces?source=demo&env=demo`);
     const bundle = (await response.json()) as TraceBundle;
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(bundle).toMatchObject({ traceVersion: "1.0.0", source: "mock", env: "demo", traces: expect.any(Array) });
+    expect(bundle).toMatchObject({
+      traceVersion: "1.0.0",
+      source: "mock",
+      env: "demo",
+      traces: expect.any(Array),
+    });
     expect(traceBundleSchema.safeParse(bundle).success).toBe(true);
     expect(bundle.traces.length).toBeGreaterThanOrEqual(12);
-    expect((await fetch(`${base}/api/traces?env=demo`)).status).toBe(400);
-    expect((await fetch(`${base}/api/traces`)).status).toBe(400);
+    expect(await getJson(`${base}/api/traces?source=demo&env=${encodeURIComponent("  qa-west  ")}`))
+      .toMatchObject({ source: "mock", env: "qa-west" });
+    expect((await fetch(`${base}/api/traces?source=demo&env=${"x".repeat(257)}`)).status).toBe(400);
+    const missing = await fetch(`${base}/api/traces`);
+    expect(missing.status).toBe(400);
+    expect(missing.headers.get("cache-control")).toBe("no-store");
   });
 
-  it("keeps a no-overlay session unselected while exposing only the narrow demo source", async () => {
-    const target = createBlueprintServer({
-      session: sessionFor(artifact),
+  it("keeps source-less no-overlay requests disabled while advertising the explicit built-in demo", async () => {
+    const emptyServer = createBlueprintServer({
+      artifact,
       overlay: { kind: "none" },
       preselectedEnv: null,
       rendererRoot,
     });
-    const targetBase = await listenEphemeral(target);
+    const emptyBase = await listenEphemeral(emptyServer);
     try {
-      expect((await fetch(`${targetBase}/api/traces?source=demo&env=qa`)).status).toBe(404);
-      expect(await getJson(`${targetBase}/api/meta`)).toMatchObject({
+      const response = await fetch(`${emptyBase}/api/traces?env=qa`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining("qa") });
+
+      const meta = await getJson<{ hasOverlay: boolean; environments: string[]; telemetrySources: Array<{ id: string; environments: string[] }> }>(`${emptyBase}/api/meta`);
+      expect(meta).toMatchObject({
         hasOverlay: false,
         environments: [],
         telemetrySources: [{ id: "demo", environments: ["demo"] }],
       });
-      expect((await fetch(`${targetBase}/api/traces?source=demo&env=demo`)).status).toBe(200);
+      const demo = await fetch(`${emptyBase}/api/traces?source=demo&env=demo`);
+      expect(demo.status).toBe(200);
+      expect(await demo.json()).toMatchObject({ source: "mock", env: "demo", traces: expect.any(Array) });
     } finally {
-      await closeServer(target);
+      await closeServer(emptyServer);
     }
   });
 
-  it("capability-gates traces for a metrics-only saved source", { timeout: 15_000 }, async () => {
-    const target = createBlueprintServer({
-      session: sessionFor(artifact),
+  it("capability-gates request traces for a metrics-only file source", async () => {
+    const fileServer = createBlueprintServer({
+      artifact,
       overlay: { kind: "file", overlay: buildMockOverlay(artifact, "staging") },
       preselectedEnv: "staging",
       rendererRoot,
     });
-    const targetBase = await listenEphemeral(target);
+    const fileBase = await listenEphemeral(fileServer);
     try {
-      expect((await fetch(`${targetBase}/api/traces?source=configured&env=prod`)).status).toBe(404);
-      expect(await getJson(`${targetBase}/api/meta`)).toMatchObject({
-        telemetrySources: [
-          { id: "demo", kind: "mock", environments: ["demo"] },
-          { id: "configured", kind: "file", environments: ["staging"] },
-        ],
-      });
-      expect((await fetch(`${targetBase}/api/traces?source=configured&env=staging`)).status).toBe(404);
-      expect((await fetch(`${targetBase}/api/traces?env=staging`)).status).toBe(400);
-      expect((await fetch(`${targetBase}/api/traces?source=demo&env=demo`)).status).toBe(200);
-      const html = await (await fetch(`${targetBase}/`)).text();
+      const wrongEnv = await fetch(`${fileBase}/api/traces?env=prod`);
+      expect(wrongEnv.status).toBe(404);
+      expect(wrongEnv.headers.get("cache-control")).toBe("no-store");
+
+      const meta = await getJson<{ telemetrySources: Array<{ id: string; kind: string; environments: string[] }> }>(`${fileBase}/api/meta`);
+      expect(meta.telemetrySources).toMatchObject([
+        { id: "demo", kind: "mock", environments: ["demo"] },
+        { id: "configured", kind: "file", environments: ["staging"] },
+      ]);
+
+      const response = await fetch(`${fileBase}/api/traces?source=configured&env=staging`);
+      expect(response.status).toBe(404);
+      expect(response.headers.get("cache-control")).toBe("no-store");
+      expect(await response.json()).toMatchObject({ error: expect.stringContaining("no request traces") });
+      expect((await fetch(`${fileBase}/api/traces?env=staging`)).status).toBe(404);
+      const demo = await fetch(`${fileBase}/api/traces?source=demo&env=demo`);
+      expect(demo.status).toBe(200);
+      expect(await demo.json()).toMatchObject({ source: "mock", env: "demo", traces: expect.any(Array) });
+      expect((await fetch(`${fileBase}/api/traces?source=demo&env=staging`)).status).toBe(404);
+      const html = await (await fetch(`${fileBase}/`)).text();
       expect(html).toContain('"preselectedTelemetrySourceId":"configured"');
+      expect(html).toContain('"id":"configured","kind":"file"');
     } finally {
-      await closeServer(target);
+      await closeServer(fileServer);
     }
   });
 
-  it("injects projection-only boot fields and never defaults an environment", async () => {
+  it("injects the boot contract into index.html and never defaults env", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain("window.__MERIDIAN__=");
-    expect(html).toContain('"projectionGraphId":"standalone-');
-    expect(html).toContain('"projectionManifestUrl":"/api/graph/manifest"');
-    expect(html).toContain('"projectionUrl":"/api/graph/projection"');
-    expect(html).toContain('"graphSearchUrl":"/api/graph/search"');
-    expect(html).not.toContain('"graphUrl"');
+    expect(html).toContain('window.__MERIDIAN__=');
     expect(html).toContain('"traceUrl":"/api/traces"');
     expect(html).toContain('"syntheticExecutionUrl":null');
-    expect(html).toContain('"syntheticExecutionTrust":null');
+    expect(html).toContain('"syntheticScenarios":[]');
+    expect(html).toContain('"telemetrySources":[{"id":"demo"');
     expect(html).toContain('"preselectedTelemetrySourceId":"demo"');
     expect(html).toContain('"preselectedEnv":"staging"');
     expect(html).toContain('"defaultEnv":null');
-    expect(html).toContain('"githubSource":null');
+    expect(html).toContain('"githubSource":false');
   });
 
-  it("keeps synthetic execution unavailable without the exact local capability", async () => {
+  it("keeps synthetic execution unavailable without the explicit local-source capability", async () => {
     const response = await fetch(`${base}/api/synthetic-executions`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ scenarioId: "place-order", rootNodeId: artifact.nodes[0]!.id, input: {} }),
     });
+
     expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "synthetic execution is not enabled for this local view" });
 
     const wrongType = await fetch(`${base}/api/synthetic-executions`, {
       method: "POST",
@@ -338,118 +224,91 @@ describe("createBlueprintServer", () => {
     expect(crossOrigin.status).toBe(403);
   });
 
-  it("advertises only the opted-in sidecar catalog and rejects invalid scenario identity", async () => {
-    const target = createBlueprintServer({
-      session: sessionFor(artifact, ORDERS_SOURCE),
+  it("advertises an opted-in local manifest and rejects stale or malformed flow requests before execution", async () => {
+    const enabledServer = createBlueprintServer({
+      artifact,
       overlay: { kind: "none" },
       preselectedEnv: null,
       rendererRoot,
+      sourceRoot: ORDERS_SOURCE,
       allowSyntheticExecution: true,
     });
-    const targetBase = await listenEphemeral(target);
+    const enabledBase = await listenEphemeral(enabledServer);
     try {
-      const html = await (await fetch(`${targetBase}/`)).text();
+      const html = await (await fetch(`${enabledBase}/`)).text();
       expect(html).toContain('"syntheticExecutionUrl":"/api/synthetic-executions"');
-      expect(html).toContain('"syntheticExecutionTrust":{"mode":"local"}');
       expect(html).toContain('"id":"place-order-happy"');
 
-      const stale = await fetch(`${targetBase}/api/synthetic-executions`, {
+      const stale = await fetch(`${enabledBase}/api/synthetic-executions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioId: "place-order-happy", rootNodeId: artifact.nodes[0]!.id, input: {} }),
       });
       expect(stale.status).toBe(409);
+      expect(await stale.json()).toEqual({ error: "selected flow no longer matches the synthetic scenario" });
 
-      const missingRoot = await fetch(`${targetBase}/api/synthetic-executions`, {
+      const missingRoot = await fetch(`${enabledBase}/api/synthetic-executions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioId: "place-order-happy", input: {} }),
       });
       expect(missingRoot.status).toBe(400);
+      expect(await missingRoot.json()).toMatchObject({ error: expect.stringContaining("rootNodeId") });
 
-      const unknown = await fetch(`${targetBase}/api/synthetic-executions`, {
+      const unknown = await fetch(`${enabledBase}/api/synthetic-executions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioId: "missing", rootNodeId: PLACE_ORDER_ROOT, input: {} }),
       });
       expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toMatchObject({ error: expect.stringMatching(/scenario/i) });
     } finally {
-      await closeServer(target);
+      await closeServer(enabledServer);
     }
   });
 
-  it("delegates execution by artifact path and exact sidecar fingerprint", async () => {
-    const exactSession = sessionFor(syntheticArtifact, ORDERS_SOURCE);
-    const runner = vi.fn(async (request: Parameters<NonNullable<
-      Parameters<typeof createBlueprintServer>[0]["runSyntheticScenarioFromArtifactFile"]
-    >>[0]) => {
-      expect(request.artifactPath).toBe(exactSession.artifactPath);
-      expect(request.sourceRoot).toBe(ORDERS_SOURCE);
-      expect(request.expectedSourceFingerprint).toMatch(/^[0-9a-f]{64}$/);
-      expect(request.signal?.aborted).toBe(false);
-      throw new SyntheticExecutionError("invalid-request", 409, "source changed after advertisement; reload the graph");
-    });
-    const target = createBlueprintServer({
-      session: exactSession,
+  it("rejects execution when advertised local source changes before the request", async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "meridian-synthetic-route-"));
+    cpSync(ORDERS_SOURCE, sourceRoot, { recursive: true });
+    const enabledServer = createBlueprintServer({
+      artifact: syntheticArtifact,
       overlay: { kind: "none" },
       preselectedEnv: null,
       rendererRoot,
+      sourceRoot,
       allowSyntheticExecution: true,
-      runSyntheticScenarioFromArtifactFile: runner,
     });
-    const targetBase = await listenEphemeral(target);
+    const enabledBase = await listenEphemeral(enabledServer);
     try {
-      const response = await fetch(`${targetBase}/api/synthetic-executions`, {
+      const sourceFile = join(sourceRoot, "src", "services", "orderService.ts");
+      writeFileSync(sourceFile, `${readFileSync(sourceFile, "utf8")}\n// changed after advertisement\n`);
+
+      const response = await fetch(`${enabledBase}/api/synthetic-executions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ scenarioId: "place-order-happy", rootNodeId: PLACE_ORDER_ROOT, input: {} }),
       });
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({ error: expect.stringMatching(/source changed.*reload/i) });
-      expect(runner).toHaveBeenCalledOnce();
-      expect(runner.mock.calls[0]![0]).not.toHaveProperty("artifact");
     } finally {
-      await closeServer(target);
+      await closeServer(enabledServer);
+      rmSync(sourceRoot, { recursive: true, force: true });
     }
   });
 
-  it("clears the projection reader and private session when the server closes", async () => {
-    const disposable = sessionFor(artifact);
-    const target = createBlueprintServer({
-      session: disposable,
-      overlay: { kind: "none" },
-      preselectedEnv: null,
-      rendererRoot,
-    });
-    await listenEphemeral(target);
-    expect(existsSync(disposable.root)).toBe(true);
-    await closeServer(target);
-    expect(existsSync(disposable.root)).toBe(false);
+  it("serves real assets and falls back to index for unknown routes", async () => {
+    const asset = await fetch(`${base}/assets/app.js`);
+    expect(asset.headers.get("content-type")).toContain("javascript");
+    const fallback = await fetch(`${base}/some/spa/route`);
+    expect(fallback.headers.get("content-type")).toContain("html");
   });
 
-  it("serves assets, falls back for SPA routes, and never turns unknown API paths into HTML", async () => {
-    expect((await fetch(`${base}/assets/app.js`)).headers.get("content-type")).toContain("javascript");
-    expect((await fetch(`${base}/some/spa/route`)).headers.get("content-type")).toContain("html");
-    const unknownApi = await fetch(`${base}/api/removed-legacy-route`);
-    expect(unknownApi.status).toBe(404);
-    expect(unknownApi.headers.get("content-type")).toContain("json");
-  });
-
-  it("survives malformed percent-encoding", async () => {
-    expect((await fetch(`${base}/%E0%A4`)).status).toBe(200);
-    expect((await fetch(`${base}/api/meta`)).status).toBe(200);
+  it("survives malformed percent-encoding instead of crashing the process", async () => {
+    const malformed = await fetch(`${base}/%E0%A4`);
+    expect(malformed.status).toBe(200); // falls back to index, not an unhandled URIError
+    expect((await fetch(`${base}/api/meta`)).status).toBe(200); // server is still alive
   });
 });
-
-function sessionFor(input: GraphArtifact, sourceRoot: string | null = null): StandaloneViewSession {
-  const cwd = mkdtempSync(join(tmpdir(), "meridian-view-input-"));
-  inputRoots.push(cwd);
-  const graphPath = join(cwd, "graph.json");
-  writeFileSync(graphPath, JSON.stringify(input));
-  const created = createStandaloneViewSession({ graphPath, cwd, sourceRoot });
-  sessions.push(created);
-  return created;
-}
 
 async function getJson<T = Record<string, unknown>>(url: string): Promise<T> {
   return (await (await fetch(url)).json()) as T;
@@ -473,64 +332,7 @@ function listenEphemeral(target: Server): Promise<string> {
 }
 
 function closeServer(target: Server): Promise<void> {
-  return new Promise((resolveClose, rejectClose) => {
-    target.closeAllConnections();
-    target.close((error) => error ? rejectClose(error) : resolveClose());
+  return new Promise((resolve, reject) => {
+    target.close((error) => error ? reject(error) : resolve());
   });
-}
-
-function closeServerWithoutForcingConnections(target: Server): Promise<void> {
-  return new Promise((resolveClose, rejectClose) => {
-    target.close((error) => error ? rejectClose(error) : resolveClose());
-  });
-}
-
-async function openPartialJsonPost(target: Server, baseUrl: string, path: string): Promise<Socket> {
-  let resolveRequest!: (request: IncomingMessage) => void;
-  const seen = new Promise<IncomingMessage>((resolveSeen) => { resolveRequest = resolveSeen; });
-  const onRequest = (request: IncomingMessage) => {
-    if (request.url === path) resolveRequest(request);
-  };
-  target.on("request", onRequest);
-  const baseUrlValue = new URL(baseUrl);
-  const socket = createConnection({ host: baseUrlValue.hostname, port: Number(baseUrlValue.port) });
-  socket.on("error", () => undefined);
-  await new Promise<void>((resolveConnect) => socket.once("connect", resolveConnect));
-  socket.write([
-    `POST ${path} HTTP/1.1`,
-    `Host: ${baseUrlValue.host}`,
-    "Content-Type: application/json",
-    "Content-Length: 1024",
-    "Connection: keep-alive",
-    "",
-    "{",
-  ].join("\r\n"));
-  const incoming = await seen;
-  target.off("request", onRequest);
-  const deadline = Date.now() + 5_000;
-  while (incoming.listenerCount("data") === 0) {
-    if (Date.now() >= deadline) throw new Error("request body reader did not start");
-    await new Promise<void>((resolveTurn) => setImmediate(resolveTurn));
-  }
-  return socket;
-}
-
-async function settlesWithin(
-  promise: Promise<void>,
-  milliseconds: number,
-  onTimeout: () => void,
-): Promise<boolean> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const settled = await Promise.race([
-    promise.then(() => true),
-    new Promise<false>((resolveTimeout) => {
-      timer = setTimeout(() => resolveTimeout(false), milliseconds);
-    }),
-  ]);
-  if (timer !== undefined) clearTimeout(timer);
-  if (!settled) {
-    onTimeout();
-    await promise;
-  }
-  return settled;
 }

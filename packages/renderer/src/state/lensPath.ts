@@ -98,13 +98,6 @@ export function resolveServiceAnchors(
   groupingMode?: ServiceGroupingMode,
   groupingTargetSize?: number,
 ): ServiceAnchorResolution | null {
-  // An empty selection has no service-placeability question to answer. In projection-backed
-  // sessions the current Map/UI slice intentionally carries no Service topology, so resolving the
-  // empty selection must terminate before consulting that view-specific fact. This also keeps the
-  // selection panel inert at boot instead of forcing a hidden cross-view projection dependency.
-  if (anchors.length === 0) {
-    return null;
-  }
   const clustering = clusteringFor(index);
   const { leadOf } = clustering;
   const domainModel = deriveServiceDomains(clustering, groupingMode, groupingTargetSize);

@@ -7,6 +7,7 @@
  */
 
 import type { GraphIndex } from "../graph/graphIndex";
+import type { ModuleGraph } from "./moduleGraph";
 import { frontierRoots, subtreeFileCount } from "./moduleFrontier";
 
 const NAVIGABLE_KINDS: ReadonlySet<string> = new Set(["package", "module"]);
@@ -20,11 +21,12 @@ export interface NavChild {
 
 export function levelChildren(
   index: GraphIndex,
+  graph: ModuleGraph,
   focus: string | null,
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
 ): NavChild[] {
   const children: NavChild[] = [];
-  for (const id of frontierRoots(index, focus)) {
+  for (const id of frontierRoots(index, focus, graph)) {
     if (hiddenIds.has(id)) {
       continue; // the Tests toggle excludes these from the graph — keep the menu in step
     }

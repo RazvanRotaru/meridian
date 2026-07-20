@@ -1,16 +1,16 @@
 /**
  * The PR-review side panel. Files first: every changed file with its touched code units and a
  * per-file "viewed" check (ReviewFilesSection — the panel's primary content). Change groups and
- * affected causal flows stay pinned above that file scroller, and a footer submits review decisions
- * together with any draft comments. The header tracks viewed-files progress, states the exact
- * prepared revision, and offers Reset (ticks only — never drafts) and Hide; a hidden panel folds
- * into a narrow reopen rail. Self-hides when there is no review.
+ * affected logic flows stay pinned above that file scroller, and a footer submits review decisions
+ * together with any draft comments. The header tracks viewed-files progress, states the review's provenance (which graph,
+ * which code), offers the fallback review's opt-in "Extract head graph", and Reset (ticks only —
+ * never drafts) and Hide; a hidden panel folds into a narrow reopen rail. Self-hides when there
+ * is no review.
  */
 
 import { memo, useEffect, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { isReviewTestPath } from "../../derive/reviewFiles";
-import { countViewedReviewFiles } from "../../state/reviewFileProgress";
+import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
 import type { PrSummary } from "../../state/prTypes";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
@@ -23,7 +23,6 @@ import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
 import { selectedPrSummary } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
-import { preparedReviewTestVerdicts } from "../../state/preparedReviewProjection";
 
 function ReviewPanelImpl() {
   const review = useBlueprint((state) => state.review);
@@ -37,19 +36,13 @@ function ReviewPanelImpl() {
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const prSelected = useBlueprint((state) => state.prSelected);
   const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
-  const footerVisible = useBlueprint((state) => {
-    if (state.prReviewed !== null || state.showTests) return state.prReviewed !== null || state.reviewComments.length > 0;
-    const testVerdicts = preparedReviewTestVerdicts(
-      state.prPreparedTestClassifications,
-      state.prPreparedChangedFiles,
-    );
-    return state.reviewComments.some((comment) => !isReviewTestPath(
+  const footerVisible = useBlueprint((state) => state.prReviewed !== null || (state.showTests
+    ? state.reviewComments.length > 0
+    : state.reviewComments.some((comment) => !isReviewTestPath(
       comment.path,
       state.index,
-      state.prReviewComparison?.index ?? null,
-      testVerdicts,
-    ));
-  });
+      state.prReviewBaseline?.index ?? null,
+    ))));
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
@@ -334,14 +327,12 @@ function usePrReviewFreshnessWatcher() {
 /** The hidden panel folds to a slim rail in place — the reopen affordance stays exactly where the
  * panel was instead of popping up somewhere else. The whole rail is the button. */
 function CollapsedRail() {
-  const progress = useBlueprint((state) => state.reviewProgressCatalog);
+  const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const showTests = useBlueprint((state) => state.showTests);
   const stale = useBlueprint((state) => state.prReviewStale || state.prReviewRefreshing);
   const { toggleReviewPanel } = useBlueprintActions();
-  const viewed = countViewedReviewFiles(progress, unitTicks, fileTicks, showTests);
-  const total = progress?.order.length ?? 0;
+  const viewed = countViewedFiles(files, unitTicks, fileTicks);
   return (
     <button
       type="button"
@@ -353,7 +344,7 @@ function CollapsedRail() {
       <span style={RAIL_GLYPH}>«</span>
       <span style={RAIL_LABEL}>PR review</span>
       {stale && <span style={RAIL_STALE_DOT} aria-hidden="true" />}
-      {total > 0 && <span style={RAIL_COUNT}>{viewed}/{total}</span>}
+      {files.length > 0 && <span style={RAIL_COUNT}>{viewed}/{files.length}</span>}
     </button>
   );
 }
@@ -366,32 +357,29 @@ function Header(props: {
 }) {
   const { review, preferencesOpen, preferencesButtonRef, onTogglePreferences } = props;
   const [preferencesFocusVisible, setPreferencesFocusVisible] = useState(false);
-  const progress = useBlueprint((state) => state.reviewProgressCatalog);
+  const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
-  const showTests = useBlueprint((state) => state.showTests);
   const existingCommentCount = useBlueprint((state) => {
-    if (state.showTests) return state.prDiscussion?.comments.length ?? 0;
-    const testVerdicts = preparedReviewTestVerdicts(
-      state.prPreparedTestClassifications,
-      state.prPreparedChangedFiles,
-    );
-    return state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(
-          comment.path,
-          state.index,
-          state.prReviewComparison?.index ?? null,
-          testVerdicts,
-        )).length ?? 0;
+    return state.showTests
+      ? state.prDiscussion?.comments.length ?? 0
+      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length ?? 0;
   });
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
+  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const stale = useBlueprint((state) => state.prReviewStale);
   const refreshing = useBlueprint((state) => state.prReviewRefreshing);
-  const { resetReviewTicks, toggleReviewPanel, toggleReviewCommentsVisible, refreshPrReview } = useBlueprintActions();
-  const viewed = countViewedReviewFiles(progress, unitTicks, fileTicks, showTests);
-  const total = progress?.order.length ?? 0;
+  const canExtract = useBlueprint((state) => state.prReviewed !== null
+    && !state.prPreparedArtifactCurrent
+    && state.prPreparedGraphId === null
+    && state.analyzeUrl !== null);
+  const { resetReviewTicks, toggleReviewPanel, toggleReviewCommentsVisible, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
+  const viewed = countViewedFiles(files, unitTicks, fileTicks);
+  const total = files.length;
+  const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
   const ctx = review.context;
   return (
     <div style={HEADER}>
@@ -415,7 +403,16 @@ function Header(props: {
             {refreshing ? "Refreshing…" : "New changes · Refresh"}
           </button>
         )}
-        {!refreshing && preparing ? <PrPrepareInline /> : null}
+        {!refreshing && (preparing ? <PrPrepareInline /> : canExtract && (
+          <button
+            type="button"
+            style={EXTRACT_BTN}
+            title="Clone the PR head and rebuild the graph from it — added files join the graph, deleted files leave it"
+            onClick={() => void prepareHeadGraph()}
+          >
+            Extract head graph
+          </button>
+        ))}
         {total > 0 && (
           <button type="button" style={RESET_BTN} title="Clear every reviewed tick (drafts are kept)" onClick={resetReviewTicks}>
             Reset
@@ -474,6 +471,13 @@ function Header(props: {
           </button>
         </div>
       ) : null}
+      {prReviewed !== null && !preparedArtifactCurrent && addedUnmatched > 0 && (
+        <div style={ADDED_FILES_NOTE}>
+          {addedUnmatched === 1
+            ? "1 added file isn't in the base graph — Extract head graph to review it"
+            : `${addedUnmatched} added files aren't in the base graph — Extract head graph to review them`}
+        </div>
+      )}
       {prReviewed !== null && <ExtractFailedWarning />}
       {total > 0 && (
         <div style={PROGRESS_ROW}>
@@ -550,9 +554,12 @@ function prDescriptionPreview(description: string): { text: string; truncated: b
   return { text: truncated ? `${text}…` : text, truncated };
 }
 
-/** The GitHub-PR provenance line names the immutable HEAD revision used by the active pair. */
+/** The GitHub-PR provenance line: which graph the review computes on, and which code it shows —
+ * sync mode reviews the boot (base-branch) graph with head-fetched code; after head extraction
+ * the graph itself IS the PR head, pinned to the analyzed commit. */
 function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
   const headSha = useBlueprint((state) => state.prPreparedHeadSha);
+  const swapped = useBlueprint((state) => state.prPreparedArtifactCurrent);
   // Real spaces live in the text nodes (not flex gaps) so the line's DOM text reads exactly
   // "<head> → <base> · <mode>" — greppable, copyable, e2e-assertable.
   return (
@@ -560,14 +567,17 @@ function PrProvenance({ ctx }: { ctx: ReviewData["context"] }) {
       <span style={REF_BRANCH}>{ctx.headRef ?? "head"}</span>
       <span style={REF_ARROW}>{" → "}</span>
       <span style={REF_BASE}>{ctx.baseRef ?? "base"}</span>
-      <span style={REF_BASE}>{` · HEAD @${(headSha ?? "").slice(0, 7)}`}</span>
+      <span style={REF_BASE}>{swapped ? ` · head graph @${(headSha ?? "").slice(0, 7)}` : " · base graph + head code"}</span>
     </div>
   );
 }
 
-/** A failed refresh leaves the prior immutable pair untouched. */
+/** A failed head extraction leaves the sync review untouched; this amber line says so, carries the
+ * server's short reason, and dismisses via the prepare-error lane. */
 function ExtractFailedWarning() {
   const error = useBlueprint((state) => state.prPrepareError);
+  const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const stale = useBlueprint((state) => state.prReviewStale);
   const { dismissPrepareError } = useBlueprintActions();
   if (error === null) {
     return null;
@@ -575,7 +585,9 @@ function ExtractFailedWarning() {
   return (
     <div style={EXTRACT_WARNING}>
       <span style={{ flex: 1 }}>
-        Refresh failed — prior review contents remain in view.{" "}
+        {preparedArtifactCurrent || stale
+          ? "Head refresh failed — prior review contents remain in view. "
+          : "Head extraction failed — still reviewing on the base graph. "}
         <span style={EXTRACT_WARNING_DETAIL}>{error}</span>
       </span>
       <button type="button" style={WARNING_DISMISS} title="Dismiss" onClick={dismissPrepareError}>
@@ -626,6 +638,7 @@ const PR_DESCRIPTION_TOGGLE: React.CSSProperties = { border: "none", background:
 const HEADER_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", ...NO_FOCUS_RING };
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
 const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
+const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
 const GITHUB_PR_LINK: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, textDecoration: "none", whiteSpace: "nowrap" };
 const STALE_BTN: React.CSSProperties = { ...HEADER_BTN, borderColor: "#9A7B2D", background: "rgba(210,153,34,0.12)", color: "#D29922" };
 const STALE_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.75 };
@@ -669,6 +682,7 @@ const PROVENANCE: React.CSSProperties = { minWidth: 0, fontFamily: MONO, fontSiz
 const REF_BRANCH: React.CSSProperties = { color: "#6BE38A" };
 const REF_ARROW: React.CSSProperties = { color: "#5A6472" };
 const REF_BASE: React.CSSProperties = { color: "#9AA4B2" };
+const ADDED_FILES_NOTE: React.CSSProperties = { fontSize: 11, color: "#7D8695" };
 const PROGRESS_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const PROGRESS_TRACK: React.CSSProperties = { flex: 1, height: 5, background: "#1B212A", borderRadius: 3, overflow: "hidden" };
 const PROGRESS_FILL: React.CSSProperties = { height: "100%", background: REVIEW_VIEWED_ACCENT, transition: "width 160ms ease" };

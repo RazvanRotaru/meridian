@@ -17,7 +17,6 @@ import {
   displayJson,
   requestEventKey,
   requestTraceCandidates,
-  traceGraphRevisionIdentity,
   traceGraphRefMismatches,
   type RequestTimelineEvent,
   type RequestTimelineRow,
@@ -45,13 +44,7 @@ export function RequestTraceView(props: Pick<FlowViewProps, "rootId" | "index" |
   const activeTrace = candidates.traces.find((trace) => trace.traceId === selectedTraceId) ?? candidates.traces[0] ?? null;
   const model = useMemo(() => activeTrace ? buildRequestTimeline(activeTrace) : null, [activeTrace]);
   const selectedEvent = model?.events.find((entry) => requestEventKey(entry.spanId, entry.event.eventId) === selectedEventKey) ?? null;
-  const graphMismatches = useMemo(
-    () => traceGraphRefMismatches(
-      traceGraphRef,
-      traceGraphRevisionIdentity(props.index.graphSummary, artifact.target),
-    ),
-    [traceGraphRef, props.index.graphSummary, artifact.target],
-  );
+  const graphMismatches = useMemo(() => traceGraphRefMismatches(traceGraphRef, artifact), [traceGraphRef, artifact]);
   const graphMappingEnabled = graphMismatches.length === 0;
   const rootName = props.index.nodesById.get(props.rootId)?.displayName ?? props.rootId;
   const provenance = telemetryProvenance(telemetrySources, telemetrySourceId, traceSource);
@@ -249,9 +242,9 @@ function SpanRow(props: {
     <div
       role="treeitem"
       aria-level={props.row.depth + 1}
-      aria-selected={clickable ? selected : undefined}
+      aria-selected={selected}
+      aria-disabled={!clickable}
       aria-label={`${span.name}${props.row.linkedFrom ? `, ${props.row.linkedFrom.relation} link` : ""}${mappingLabel ? `, ${mappingLabel.toLowerCase()}` : ""}`}
-      data-graph-navigation={clickable ? "available" : "unavailable"}
       tabIndex={clickable ? 0 : undefined}
       style={{ ...ROW, background: selected ? "rgba(107,227,138,0.055)" : undefined }}
       onClick={(event) => {
