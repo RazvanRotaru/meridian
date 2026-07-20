@@ -3,6 +3,7 @@ import type { LineRange } from "@meridian/core";
 import { useBlueprint } from "../../state/StoreContext";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment } from "../../state/reviewTicksPref";
+import { filterReviewComments } from "../../derive/reviewCommentFilter";
 
 const NO_COMMENTS: readonly PrGitHubComment[] = [];
 const NO_DRAFTS: readonly ReviewComment[] = [];
@@ -139,11 +140,12 @@ export function useCodeReviewComments(
 ): readonly PrGitHubComment[] {
   const discussion = useBlueprint((state) => state.prDiscussion);
   const visible = useBlueprint((state) => state.reviewCommentsVisible);
+  const filter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
   const livePrReview = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
   const paths = useReviewCommentPaths(path);
   return useMemo(
-    () => codeReviewComments(discussion?.comments ?? NO_COMMENTS, paths, baseLine, code, visible && livePrReview, lineCount),
-    [baseLine, code, discussion, lineCount, livePrReview, paths, visible],
+    () => codeReviewComments(filterReviewComments(discussion?.comments ?? NO_COMMENTS, filter), paths, baseLine, code, visible && livePrReview, lineCount),
+    [baseLine, code, discussion, filter, lineCount, livePrReview, paths, visible],
   );
 }
 

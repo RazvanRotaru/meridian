@@ -122,6 +122,10 @@ export interface PrGitHubComment {
   url: string;
 }
 
+/** Which existing GitHub review comments the PR-review workspace projects. Local pending
+ * comments are authored by the viewer and remain visible in every mode. */
+export type ReviewCommentFilter = "all" | "mine" | "participated";
+
 export interface PrReviewRollup {
   approved: string[];
   changesRequested: string[];

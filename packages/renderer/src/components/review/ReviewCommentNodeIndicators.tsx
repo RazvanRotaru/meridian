@@ -10,6 +10,7 @@ import {
 } from "../../derive/reviewCommentNodes";
 import { useBlueprint } from "../../state/StoreContext";
 import { ReviewCommentIndicator } from "./ReviewCommentHoverCard";
+import { filterReviewComments } from "../../derive/reviewCommentFilter";
 
 const NO_EXISTING_COMMENTS = [] as const;
 
@@ -19,6 +20,7 @@ export function ReviewCommentNodeIndicators({ visibleNodes }: { visibleNodes: re
   const drafts = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const existingCommentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
+  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
   const files = useBlueprint((state) => state.reviewFiles);
   const index = useBlueprint((state) => state.index);
   const preparedHeadGraph = useBlueprint((state) => state.prPreparedArtifactCurrent);
@@ -26,14 +28,16 @@ export function ReviewCommentNodeIndicators({ visibleNodes }: { visibleNodes: re
     () => reviewActive
       ? deriveReviewCommentNodeEvidence({
           drafts,
-          existingComments: livePrReview ? discussion?.comments ?? NO_EXISTING_COMMENTS : NO_EXISTING_COMMENTS,
+          existingComments: livePrReview
+            ? filterReviewComments(discussion?.comments ?? NO_EXISTING_COMMENTS, commentFilter)
+            : NO_EXISTING_COMMENTS,
           existingCommentsVisible,
           files,
           index,
           lineCoordinatesMatchGraph: !livePrReview || preparedHeadGraph,
         })
       : new Map<string, ReviewCommentNodeEvidence>(),
-    [discussion, drafts, existingCommentsVisible, files, index, livePrReview, preparedHeadGraph, reviewActive],
+    [commentFilter, discussion, drafts, existingCommentsVisible, files, index, livePrReview, preparedHeadGraph, reviewActive],
   );
   const visibleEvidence = useMemo(
     () => projectReviewCommentNodeEvidence(exactEvidence, visibleNodes, index),

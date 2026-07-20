@@ -143,6 +143,7 @@ import {
   type PrReviewSubmissionEvent,
   type PrSessionSource,
   type PrSummary,
+  type ReviewCommentFilter,
   type PrsTab,
   type RelatedPrsResponse,
   type RelatedPrsState,
@@ -589,6 +590,8 @@ export interface BlueprintState {
   /** Shows existing GitHub review comments in canvas source widgets. Session-only; draft comment
    * composers and the submit queue stay available independently of this reader-facing layer. */
   reviewCommentsVisible: boolean;
+  /** Focus existing review discussion without hiding the viewer's local pending comments. */
+  reviewCommentFilter: ReviewCommentFilter;
   reviewSubmitStatus: "idle" | "submitting";
   reviewSubmitError: string | null;
   /** Non-error placement detail for the last successful review submission. */
@@ -910,6 +913,7 @@ export interface BlueprintState {
   toggleReviewDiffOnly(): void;
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
+  setReviewCommentFilter(filter: ReviewCommentFilter): void;
   submitReviewComments(): Promise<void>;
   submitReview(event: PrReviewSubmissionEvent, body?: string): Promise<boolean>;
   editPrReviewComment(id: number, body: string): Promise<boolean>;
@@ -2539,6 +2543,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
+    reviewCommentFilter: "all",
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
     reviewSubmitNotice: null,
@@ -5642,6 +5647,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     toggleReviewCommentsVisible() {
       set({ reviewCommentsVisible: !get().reviewCommentsVisible });
+    },
+
+    setReviewCommentFilter(filter) {
+      set({ reviewCommentFilter: filter, reviewCommentsVisible: true });
     },
 
     async submitReviewComments() {
