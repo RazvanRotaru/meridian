@@ -12,8 +12,11 @@ import { extractToArtifact } from "./extract-pipeline";
 import type { PipelineResult } from "./extract-pipeline";
 import type { GitDiffExecutor } from "./git-diff";
 
-/** Bump when the fixed product profile or its interpretation changes, invalidating graph caches. */
-export const REPOSITORY_ANALYSIS_VERSION = 5;
+/**
+ * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
+ * Version 6 includes Python Protocol implementation inference in repository artifacts.
+ */
+export const REPOSITORY_ANALYSIS_VERSION = 6;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",

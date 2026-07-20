@@ -5,14 +5,24 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, symlinkSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
-import { analyzeRepository } from "../repository-analysis";
+import { analyzeRepository, REPOSITORY_ANALYSIS_VERSION } from "../repository-analysis";
 import { base64Auth, runGit, runGitClone } from "./git-exec";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import type { Context } from "./web-server";
@@ -48,6 +58,7 @@ const HEAD_SHA = "abc1234def5678900000aaaabbbbccccddddeeee";
 const BASE_SHA = "def1234def5678900000aaaabbbbccccddddeeee";
 const MERGE_BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
 const REVERSED_MERGE_BASE_SHA = "76543210fedcba9876543210fedcba9876543210";
+const LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES = 5;
 
 const ARTIFACT = {
   schemaVersion: SCHEMA_VERSION,
@@ -282,6 +293,40 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.graphId as string)!)).toBe(true);
     expect(existsSync(restarted.sourceRoots.get(second.at(-1)?.comparisonGraphId as string)!)).toBe(true);
     expect(restarted.graphs.get(second.at(-1)?.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+  });
+
+  it("re-analyzes both revisions when cache metadata predates Python Protocol inference", async () => {
+    const firstCtx = githubCtx();
+    const first = (await invoke(firstCtx, BODY)).lines();
+    const firstDone = first.at(-1)!;
+    expect(firstDone.cache).toBe("miss");
+
+    const metadataPath = join(firstCtx.sourceRoots.get(firstDone.graphId as string)!, "..", "metadata.json");
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(metadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
+    expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
+    writeFileSync(metadataPath, JSON.stringify({
+      ...metadata,
+      analysisVersion: LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES,
+    }));
+
+    const restarted = githubCtx();
+    const second = (await invoke(restarted, BODY)).lines();
+    const secondDone = second.at(-1)!;
+
+    expect(second.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(secondDone.cache).toBe("miss");
+    expect(secondDone.graphId).toBe(firstDone.graphId);
+    expect(secondDone.comparisonGraphId).toBe(firstDone.comparisonGraphId);
+    expect(secondDone.headSha).toBe(HEAD_SHA);
+    expect(secondDone.mergeBaseSha).toBe(MERGE_BASE_SHA);
+    expect(restarted.graphs.get(secondDone.graphId as string)).toStrictEqual(ARTIFACT);
+    expect(restarted.graphs.get(secondDone.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+
+    const restoredMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
+    expect(restoredMetadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
   });
 
   it("analyzes a configured subdirectory added wholesale with an empty comparison root, including cache hits", async () => {

@@ -6,7 +6,7 @@ import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository } from "../repository-analysis";
 import { runGit, runGitClone } from "./git-exec";
-import { cachedRemoteGraph, webAnalysisKey } from "./web-cache";
+import { ANALYSIS_VERSION, cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { probeRemoteGraph } from "./web-cache-probe";
 import type { GenerateRequest } from "./web-request";
 
@@ -22,6 +22,7 @@ vi.mock("./git-exec", () => ({
 
 const FIRST_COMMIT = "a".repeat(40);
 const SECOND_COMMIT = "b".repeat(40);
+const LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES = 5;
 const REQUEST: GenerateRequest = { kind: "github", value: "owner/repo" };
 
 let cacheRoot: string;
@@ -135,6 +136,36 @@ describe("persistent web graph cache", () => {
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(generated.checkout.commit).toBe(FIRST_COMMIT);
+  });
+
+  it("rejects legacy v5 metadata and regenerates after Python Protocol inference", async () => {
+    expect(ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
+    const first = await generate(REQUEST);
+    const metadataPath = join(
+      cacheRoot,
+      "artifacts",
+      first.checkout.repositoryKey,
+      first.checkout.commit,
+      first.analysisKey,
+      "metadata.json",
+    );
+    const previousMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
+      analysisVersion: number;
+    };
+    previousMetadata.analysisVersion = LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES;
+    writeFileSync(metadataPath, `${JSON.stringify(previousMetadata)}\n`, "utf8");
+
+    const probe = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const regenerated = await generate(REQUEST);
+    const restoredMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
+      analysisVersion: number;
+    };
+
+    expect(probe).toEqual({ status: "miss", commit: FIRST_COMMIT });
+    expect(regenerated.cache).toBe("miss");
+    expect(restoredMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
+    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("shares one checkout across different subdirectory analyses", async () => {
