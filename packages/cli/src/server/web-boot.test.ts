@@ -3,8 +3,18 @@ import type { GraphArtifact } from "@meridian/core";
 import { describe, expect, it, vi } from "vitest";
 import { injectViewBoot } from "./web-boot";
 import { sendMeta, sendView } from "./web-graph";
+import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import type { Context } from "./web-server";
 import { artifactSourceFor, type ArtifactSource } from "./web-source";
+
+const TEST_ARTIFACT: GraphArtifact = {
+  schemaVersion: "1.1.0",
+  generatedAt: "2026-01-01T00:00:00.000Z",
+  generator: { name: "meridian-test", version: "1" },
+  target: { name: "fixture", root: ".", language: "typescript" },
+  nodes: [],
+  edges: [],
+};
 
 describe("injectViewBoot", () => {
   it("exposes the exact PR-session source only for a GitHub-sourced graph", () => {
@@ -142,12 +152,9 @@ describe("sendMeta synthetic capability", () => {
 
 function capturedView(source: ArtifactSource): string {
   const id = "graph-1";
+  const graphStore = registeredGraphStore(id, source, null, []);
   const ctx = {
-    graphs: new Map([[id, {} as GraphArtifact]]),
-    sources: new Map([[id, source]]),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
-    syntheticExecutionTrust: new Map(),
+    graphStore,
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: false,
     rendererIndex: "<head></head>",
@@ -160,8 +167,12 @@ function capturedView(source: ArtifactSource): string {
     }),
   } as unknown as ServerResponse;
 
-  sendView(ctx, response, id);
-  return html;
+  try {
+    sendView(ctx, response, id);
+    return html;
+  } finally {
+    graphStore.dispose();
+  }
 }
 
 function capturedMeta(
@@ -170,15 +181,9 @@ function capturedMeta(
   scenarios: import("@meridian/core").SyntheticScenarioDescriptor[],
 ): Record<string, unknown> {
   const id = "graph-1";
+  const graphStore = registeredGraphStore(id, source, trust, scenarios);
   const ctx = {
-    graphs: new Map([[id, {
-      schemaVersion: "1.0.0",
-      generatedAt: "2026-01-01T00:00:00.000Z",
-      nodes: [],
-    } as unknown as GraphArtifact]]),
-    sources: new Map([[id, source]]),
-    syntheticScenarios: new Map([[id, scenarios]]),
-    syntheticExecutionTrust: trust === null ? new Map() : new Map([[id, trust]]),
+    graphStore,
   } as unknown as Context;
   let body = "";
   const response = {
@@ -188,6 +193,38 @@ function capturedMeta(
     }),
   } as unknown as ServerResponse;
 
-  sendMeta(ctx, response, id);
-  return JSON.parse(body) as Record<string, unknown>;
+  try {
+    sendMeta(ctx, response, id);
+    return JSON.parse(body) as Record<string, unknown>;
+  } finally {
+    graphStore.dispose();
+  }
+}
+
+function registeredGraphStore(
+  id: string,
+  source: ArtifactSource,
+  trust: import("./web-boot").SyntheticExecutionTrust | null,
+  scenarios: import("@meridian/core").SyntheticScenarioDescriptor[],
+): WebGraphStore {
+  const graphStore = new WebGraphStore();
+  try {
+    graphStore.publish({
+      id,
+      material: materializeValidatedArtifact(TEST_ARTIFACT),
+      metadata: {
+        sourceRoot: "/workspace/fixture",
+        source,
+        synthetic: {
+          scenarios,
+          sourceFingerprint: scenarios.length === 0 ? null : "fixture-fingerprint",
+          trust,
+        },
+      },
+    });
+    return graphStore;
+  } catch (error) {
+    graphStore.dispose();
+    throw error;
+  }
 }

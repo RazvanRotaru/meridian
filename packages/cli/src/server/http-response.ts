@@ -4,7 +4,9 @@
  * modules can import it without a cycle back through `web-server`.
  */
 
+import { createReadStream } from "node:fs";
 import type { OutgoingHttpHeaders, ServerResponse } from "node:http";
+import { pipeline } from "node:stream/promises";
 
 export function sendJson(
   response: ServerResponse,
@@ -23,4 +25,14 @@ export function sendJson(
 export function sendHtml(response: ServerResponse, html: string, status = 200): void {
   response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
   response.end(html);
+}
+
+/** Stream an already-serialized JSON document. `pipeline` observes writable backpressure and does
+ * not construct a second whole-artifact string or Buffer in the server process. */
+export async function sendJsonFile(response: ServerResponse, path: string): Promise<void> {
+  response.writeHead(200, {
+    "content-type": "application/json; charset=utf-8",
+    "cache-control": "no-store",
+  });
+  await pipeline(createReadStream(path), response);
 }

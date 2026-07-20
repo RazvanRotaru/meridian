@@ -2,14 +2,12 @@ import { createServer } from "node:http";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GraphArtifact, SyntheticScenarioDescriptor } from "@meridian/core";
 import { CliError, EXIT } from "../errors";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces } from "./api";
 import { WebError } from "./web-error";
 import { injectPrefill } from "./web-boot";
-import type { SyntheticExecutionTrust } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
 import type { GitHubClient } from "./github";
@@ -40,11 +38,11 @@ import {
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
-import type { ArtifactSource } from "./web-source";
 import { sendSource } from "./source-serve";
 import type { CachedGraph } from "./web-cache";
 import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
+import { WebGraphStore } from "./web-graph-store";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
 import {
   runSyntheticScenario,
@@ -80,21 +78,10 @@ export interface WebServerConfig {
 }
 
 export interface Context {
-  graphs: Map<string, GraphArtifact>;
-  /** Per-id source directory retained after a successful generate so `/api/source` can read it. */
-  sourceRoots: Map<string, string>;
-  /** Per-id original source metadata retained for GitHub PR listing. */
-  sources: Map<string, ArtifactSource>;
-  /** Prevalidated scenario manifests for per-id execution capabilities. */
-  syntheticScenarios: Map<string, SyntheticScenarioDescriptor[]>;
-  /** Private source/config snapshots paired with the scenarios advertised for each graph. */
-  syntheticSourceFingerprints: Map<string, string>;
-  /** Explicit per-id trust and provenance; absence prevents boot endpoint advertisement. */
-  syntheticExecutionTrust: Map<string, SyntheticExecutionTrust>;
+  /** Disk-backed immutable graph registrations; request handlers load at most one artifact. */
+  graphStore: WebGraphStore;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
-  /** Temp-clone removers, held until process exit so retained sources are cleaned on shutdown. */
-  tempCleanups: Set<() => void>;
   /** Duplicate remote generations share one clone/extract job within this server process. */
   cacheJobs: Map<string, Promise<CachedGraph>>;
   cacheRoot: string;
@@ -118,13 +105,22 @@ export interface Context {
 }
 
 export function createWebServer(config: WebServerConfig): Server {
-  const ctx = buildContext(config);
-  return createServer((request, response) => {
+  const graphStore = new WebGraphStore();
+  let ctx: Context;
+  try {
+    ctx = buildContext(config, graphStore);
+  } catch (error) {
+    graphStore.dispose();
+    throw error;
+  }
+  const server = createServer((request, response) => {
     handle(ctx, request, response).catch((error) => sendError(response, error));
   });
+  attachGraphStoreLifecycle(server, graphStore);
+  return server;
 }
 
-function buildContext(config: WebServerConfig): Context {
+function buildContext(config: WebServerConfig, graphStore: WebGraphStore): Context {
   const indexPath = join(config.rendererRoot, "index.html");
   if (!existsSync(indexPath)) {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
@@ -133,14 +129,8 @@ function buildContext(config: WebServerConfig): Context {
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
   const ctx: Context = {
-    graphs: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map(),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
-    syntheticExecutionTrust: new Map(),
+    graphStore,
     prFilesCache: new Map(),
-    tempCleanups: new Set(),
     cacheJobs: new Map(),
     cacheRoot,
     refreshCache: config.refreshCache === true,
@@ -158,17 +148,22 @@ function buildContext(config: WebServerConfig): Context {
     syntheticPrSandboxRuntimeSupported,
     runSyntheticScenarioInOci,
   };
-  cleanRetainedSourcesOnExit(ctx);
   return ctx;
 }
 
-// A successful generate keeps its temp clone alive so `/api/source` can serve file slices; this
-// exit hook still removes every retained clone on shutdown so `web` never leaks temp directories.
-function cleanRetainedSourcesOnExit(ctx: Context): void {
-  process.once("exit", () => {
-    for (const cleanup of ctx.tempCleanups) {
-      cleanup();
-    }
+/** Dispose after Node's close event, when accepted connections have drained. The process hook
+ * captures only the store cleanup and is removed on ordinary server close. */
+function attachGraphStoreLifecycle(server: Server, graphStore: WebGraphStore): void {
+  let disposed = false;
+  const dispose = () => {
+    if (disposed) return;
+    disposed = true;
+    graphStore.dispose();
+  };
+  process.once("exit", dispose);
+  server.once("close", () => {
+    process.removeListener("exit", dispose);
+    dispose();
   });
 }
 
@@ -249,12 +244,12 @@ export async function handleSyntheticExecution(
   id: string | null,
 ): Promise<void> {
   assertLoopbackHost(request);
-  const artifact = id === null ? undefined : ctx.graphs.get(id);
-  const sourceRoot = id === null ? undefined : ctx.sourceRoots.get(id);
-  const source = id === null ? undefined : ctx.sources.get(id);
-  const scenarios = id === null ? undefined : ctx.syntheticScenarios.get(id);
-  const sourceFingerprint = id === null ? undefined : ctx.syntheticSourceFingerprints.get(id);
-  const trust = id === null ? undefined : ctx.syntheticExecutionTrust.get(id);
+  const descriptor = id ? ctx.graphStore.descriptor(id) : undefined;
+  const sourceRoot = descriptor?.sourceRoot;
+  const source = descriptor?.source;
+  const scenarios = descriptor?.synthetic.scenarios;
+  const sourceFingerprint = descriptor?.synthetic.sourceFingerprint ?? undefined;
+  const trust = descriptor?.synthetic.trust ?? undefined;
   const localAdmission = source?.kind === "path"
     && ctx.allowSyntheticExecution
     && trust?.mode === "local";
@@ -266,12 +261,16 @@ export async function handleSyntheticExecution(
     && ctx.syntheticPrSandboxRuntimeSupported();
   if (
     (!localAdmission && !sandboxedPrAdmission)
-    || artifact === undefined
     || sourceRoot === undefined
     || scenarios === undefined
     || scenarios.length === 0
     || sourceFingerprint === undefined
   ) {
+    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+    return;
+  }
+  const artifact = id ? ctx.graphStore.loadArtifact(id) : undefined;
+  if (artifact === undefined) {
     sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
     return;
   }
@@ -303,7 +302,7 @@ export async function handleSyntheticExecution(
 async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
   if (pathname === "/api/graph") {
-    sendGraph(ctx, response, url.searchParams.get("id"));
+    await sendGraph(ctx, response, url.searchParams.get("id"));
     return;
   }
   if (pathname === "/api/meta") {
@@ -311,7 +310,7 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/overlay") {
-    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
+    const artifact = loadTelemetryGraph(ctx, response, url.searchParams.get("id"));
     if (artifact === null) return;
     sendTelemetryOverlay(
       response,
@@ -323,7 +322,7 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/traces") {
-    const artifact = telemetryGraph(ctx, response, url.searchParams.get("id"));
+    const artifact = loadTelemetryGraph(ctx, response, url.searchParams.get("id"));
     if (artifact === null) return;
     sendTelemetryTraces(
       response,
@@ -335,7 +334,9 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/source") {
-    sendSource(response, ctx.sourceRoots.get(url.searchParams.get("id") ?? "") ?? null, url.searchParams);
+    const id = url.searchParams.get("id");
+    const descriptor = id ? ctx.graphStore.descriptor(id) : undefined;
+    sendSource(response, descriptor?.sourceRoot ?? null, url.searchParams);
     return;
   }
   if (pathname === "/api/prs") {
@@ -393,8 +394,8 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
-function telemetryGraph(ctx: Context, response: ServerResponse, id: string | null): GraphArtifact | null {
-  const artifact = id === null ? undefined : ctx.graphs.get(id);
+function loadTelemetryGraph(ctx: Context, response: ServerResponse, id: string | null) {
+  const artifact = id ? ctx.graphStore.loadArtifact(id) : undefined;
   if (artifact === undefined) {
     sendJson(response, 404, { error: "unknown graph id" });
     return null;

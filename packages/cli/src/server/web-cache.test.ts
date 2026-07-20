@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
@@ -8,7 +8,7 @@ import { analyzeRepository } from "../repository-analysis";
 import { runGit, runGitClone } from "./git-exec";
 import { ANALYSIS_VERSION, cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { probeRemoteGraph } from "./web-cache-probe";
-import type { GenerateRequest } from "./web-request";
+import { remoteArtifactId, type GenerateRequest } from "./web-request";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -20,8 +20,8 @@ vi.mock("./git-exec", () => ({
   runGitClone: vi.fn(),
 }));
 
-const FIRST_COMMIT = "a".repeat(40);
-const SECOND_COMMIT = "b".repeat(40);
+const FIRST_COMMIT = "a".repeat(64);
+const SECOND_COMMIT = "b".repeat(64);
 const LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES = 5;
 const REQUEST: GenerateRequest = { kind: "github", value: "owner/repo" };
 
@@ -45,7 +45,11 @@ beforeEach(() => {
     writeFileSync(join(repoDir, "apps", "two", "index.ts"), "export const two = 2;\n");
   });
   vi.mocked(analyzeRepository).mockImplementation(async (request) => ({
-    artifact: artifactFor(request.targetName ?? "repo", request.vcs?.commit ?? FIRST_COMMIT),
+    artifact: artifactFor(
+      request.targetName ?? "repo",
+      request.vcs?.commit ?? FIRST_COMMIT,
+      request.vcs?.branch,
+    ),
     warnings: [],
   }) as never);
 });
@@ -84,6 +88,24 @@ describe("persistent web graph cache", () => {
     expect(secondStages).toEqual([]);
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
+    expect(first.material.kind).toBe("verified-file");
+    expect(second.material.kind).toBe("verified-file");
+    if (first.material.kind !== "verified-file" || second.material.kind !== "verified-file") {
+      throw new Error("expected cache-backed materials");
+    }
+    expect(first.material.path).toContain(join(first.analysisKey, "snapshots"));
+    expect(basename(first.material.path)).toBe("artifact.json");
+    expect(FIRST_COMMIT).toHaveLength(64);
+    expect(basename(dirname(first.material.path))).toMatch(/^[a-f0-9]{16}$/);
+    expect(basename(dirname(first.material.path))).not.toContain(first.snapshotDigest);
+    // 64-char object ids are Git's maximum supported width here. Keep enough of MAX_PATH free for
+    // a realistic cache root instead of consuming it with the independent 64-char content digest.
+    expect(relative(cacheRoot, first.material.path).length).toBeLessThanOrEqual(165);
+    expect(second.material.path).toBe(first.material.path);
+    expect(JSON.parse(readFileSync(second.material.path, "utf8"))).toEqual(second.artifact);
+    expect(second.material.byteDigest).toBe(first.material.byteDigest);
+    expect(first.snapshotDigest).toBe(first.material.byteDigest);
+    expect(second.snapshotDigest).toBe(first.snapshotDigest);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
   });
 
@@ -96,14 +118,10 @@ describe("persistent web graph cache", () => {
 
     const first = await generate(REQUEST);
     const second = await generate(REQUEST);
-    const metadata = JSON.parse(readFileSync(join(
-      cacheRoot,
-      "artifacts",
-      first.checkout.repositoryKey,
-      first.checkout.commit,
-      first.analysisKey,
-      "metadata.json",
-    ), "utf8")) as { warnings?: string[] };
+    const metadata = JSON.parse(readFileSync(
+      join(dirname(verifiedPath(first)), "metadata.json"),
+      "utf8",
+    )) as { warnings?: string[] };
 
     expect(first.warnings).toEqual(warnings);
     expect(metadata.warnings).toEqual(warnings);
@@ -141,14 +159,7 @@ describe("persistent web graph cache", () => {
   it("rejects legacy v5 metadata and regenerates after Python Protocol inference", async () => {
     expect(ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
     const first = await generate(REQUEST);
-    const metadataPath = join(
-      cacheRoot,
-      "artifacts",
-      first.checkout.repositoryKey,
-      first.checkout.commit,
-      first.analysisKey,
-      "metadata.json",
-    );
+    const metadataPath = join(dirname(verifiedPath(first)), "metadata.json");
     const previousMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
       analysisVersion: number;
     };
@@ -157,13 +168,20 @@ describe("persistent web graph cache", () => {
 
     const probe = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
     const regenerated = await generate(REQUEST);
-    const restoredMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
+    const retainedLegacyMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
       analysisVersion: number;
     };
+    const currentMetadata = JSON.parse(readFileSync(
+      join(dirname(verifiedPath(regenerated)), "metadata.json"),
+      "utf8",
+    )) as { analysisVersion: number };
 
     expect(probe).toEqual({ status: "miss", commit: FIRST_COMMIT });
     expect(regenerated.cache).toBe("miss");
-    expect(restoredMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
+    expect(verifiedPath(regenerated)).not.toBe(verifiedPath(first));
+    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_PYTHON_PROTOCOL_EDGES);
+    expect(currentMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
+    expect(JSON.parse(readFileSync(verifiedPath(first), "utf8"))).toEqual(first.artifact);
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
@@ -180,28 +198,120 @@ describe("persistent web graph cache", () => {
   it("shares one commit checkout and graph across refs without losing branch provenance", async () => {
     const fromHead = await generate(REQUEST);
     const fromMain = await generate({ ...REQUEST, ref: "main" });
+    const fromRelease = await generate({ ...REQUEST, ref: "release" });
+    const fromHeadAgain = await generate(REQUEST);
+    const headProbe = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const mainProbe = await probeRemoteGraph({ cacheRoot, request: { ...REQUEST, ref: "main" }, cwd: cacheRoot });
+    const releaseProbe = await probeRemoteGraph({
+      cacheRoot,
+      request: { ...REQUEST, ref: "release" },
+      cwd: cacheRoot,
+    });
 
     expect(fromHead.checkout.repositoryKey).toBe(fromMain.checkout.repositoryKey);
     expect(fromHead.artifact.target.vcs?.branch).toBeUndefined();
     expect(fromMain.artifact.target.vcs?.branch).toBe("main");
+    expect(fromRelease.artifact.target.vcs?.branch).toBe("release");
+    expect(fromHead.material.kind).toBe("verified-file");
+    expect(fromMain.material.kind).toBe("serialized");
+    expect(fromRelease.material.kind).toBe("serialized");
+    expect(fromHeadAgain.material.kind).toBe("verified-file");
+    expect(fromMain.material.byteDigest).not.toBe(fromHead.material.byteDigest);
+    expect(fromRelease.material.byteDigest).not.toBe(fromMain.material.byteDigest);
+    expect(fromHead.snapshotDigest).toBe(fromMain.snapshotDigest);
+    expect(fromMain.snapshotDigest).toBe(fromRelease.snapshotDigest);
+    expect(headProbe.status).toBe("hit");
+    expect(mainProbe.status).toBe("hit");
+    expect(releaseProbe.status).toBe("hit");
+    expect(new Set([headProbe.id, mainProbe.id, releaseProbe.id]).size).toBe(3);
+    expect(headProbe.id).toBe(idFor(fromHead, REQUEST));
+    expect(mainProbe.id).toBe(idFor(fromMain, { ...REQUEST, ref: "main" }));
+    expect(releaseProbe.id).toBe(idFor(fromRelease, { ...REQUEST, ref: "release" }));
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps HEAD, main, and release identities and served provenance stable for every warm-up order", async () => {
+    const refs = [undefined, "main", "release"] as const;
+    const orders = [
+      [refs[0], refs[1], refs[2]],
+      [refs[0], refs[2], refs[1]],
+      [refs[1], refs[0], refs[2]],
+      [refs[1], refs[2], refs[0]],
+      [refs[2], refs[0], refs[1]],
+      [refs[2], refs[1], refs[0]],
+    ] as const;
+    const expectedIds = new Map<string, string>();
+    const originalRoot = cacheRoot;
+    const roots: string[] = [];
+    try {
+      for (const order of orders) {
+        cacheRoot = mkdtempSync(join(tmpdir(), "meridian-cache-warm-order-"));
+        roots.push(cacheRoot);
+        const generated = new Map<string, Awaited<ReturnType<typeof generate>>>();
+        for (const ref of order) {
+          const request = requestFor(ref);
+          generated.set(refKey(ref), await generate(request));
+        }
+
+        for (const ref of refs) {
+          const request = requestFor(ref);
+          const graph = generated.get(refKey(ref))!;
+          const probe = await probeRemoteGraph({ cacheRoot, request, cwd: cacheRoot });
+          const served = artifactFromMaterial(graph.material);
+          const id = idFor(graph, request);
+
+          expect(probe).toEqual({ status: "hit", commit: FIRST_COMMIT, id });
+          expect(graph.artifact.target.vcs?.branch).toBe(ref);
+          expect(served.target.vcs?.branch).toBe(ref);
+          expect(graph.snapshotDigest).toBe(generated.get("HEAD")?.snapshotDigest);
+          const previous = expectedIds.get(refKey(ref));
+          if (previous === undefined) expectedIds.set(refKey(ref), id);
+          else expect(id).toBe(previous);
+        }
+      }
+    } finally {
+      for (const root of roots) rmSync(root, { recursive: true, force: true });
+      cacheRoot = originalRoot;
+    }
+  });
+
+  it("changes remote identity when refresh publishes changed branch-neutral content", async () => {
+    const first = await generate({ ...REQUEST, ref: "main" });
+    vi.mocked(analyzeRepository).mockResolvedValueOnce({
+      artifact: {
+        ...artifactFor("owner/repo", FIRST_COMMIT, "main"),
+        generatedAt: "2026-07-20T00:00:01.000Z",
+      },
+      warnings: [],
+    } as never);
+
+    const refreshed = await generate({ ...REQUEST, ref: "main", refresh: true });
+    const probe = await probeRemoteGraph({
+      cacheRoot,
+      request: { ...REQUEST, ref: "main" },
+      cwd: cacheRoot,
+    });
+
+    expect(refreshed.snapshotDigest).not.toBe(first.snapshotDigest);
+    expect(idFor(refreshed, { ...REQUEST, ref: "main" }))
+      .not.toBe(idFor(first, { ...REQUEST, ref: "main" }));
+    expect(probe.id).toBe(idFor(refreshed, { ...REQUEST, ref: "main" }));
+  });
+
   it("treats a corrupt cached artifact as a miss", async () => {
     const first = await generate(REQUEST);
-    const artifactPath = join(
-      cacheRoot,
-      "artifacts",
-      first.checkout.repositoryKey,
-      first.checkout.commit,
-      first.analysisKey,
-      "artifact.json",
-    );
+    const artifactPath = verifiedPath(first);
     writeFileSync(artifactPath, "{broken", "utf8");
 
     const second = await generate(REQUEST);
     expect(second.cache).toBe("miss");
+    expect(verifiedPath(second)).not.toBe(artifactPath);
+    expect(readFileSync(artifactPath, "utf8")).toBe("{broken");
+    expect(JSON.parse(readFileSync(verifiedPath(second), "utf8"))).toEqual(second.artifact);
+    const current = await generate(REQUEST);
+    expect(current.cache).toBe("hit");
+    expect(verifiedPath(current)).toBe(verifiedPath(second));
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
@@ -212,6 +322,54 @@ describe("persistent web graph cache", () => {
     expect(refreshed.cache).toBe("miss");
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps every generation readable across interleaved refresh publication", async () => {
+    const original = await generate(REQUEST);
+    const originalPath = verifiedPath(original);
+    const originalBytes = readFileSync(originalPath);
+    const enteredA = deferred<void>();
+    const enteredB = deferred<void>();
+    const releaseA = deferred<void>();
+    const releaseB = deferred<void>();
+    let refreshGeneration = 0;
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const generation = ++refreshGeneration;
+      (generation === 1 ? enteredA : enteredB).resolve();
+      await (generation === 1 ? releaseA : releaseB).promise;
+      return {
+        artifact: {
+          ...artifactFor(
+            request.targetName ?? "repo",
+            request.vcs?.commit ?? FIRST_COMMIT,
+            request.vcs?.branch,
+          ),
+          generatedAt: `2026-07-20T00:00:0${generation}.000Z`,
+        },
+        warnings: [],
+      } as never;
+    });
+
+    const pendingA = generate({ ...REQUEST, refresh: true });
+    await enteredA.promise;
+    const pendingB = generate({ ...REQUEST, refresh: true });
+    await enteredB.promise;
+
+    releaseB.resolve();
+    const refreshedB = await pendingB;
+    expect(readFileSync(originalPath)).toEqual(originalBytes);
+    expect(JSON.parse(readFileSync(verifiedPath(refreshedB), "utf8"))).toEqual(refreshedB.artifact);
+
+    releaseA.resolve();
+    const refreshedA = await pendingA;
+    expect(new Set([originalPath, verifiedPath(refreshedA), verifiedPath(refreshedB)]).size).toBe(3);
+    expect(readFileSync(originalPath)).toEqual(originalBytes);
+    expect(JSON.parse(readFileSync(verifiedPath(refreshedA), "utf8"))).toEqual(refreshedA.artifact);
+    expect(JSON.parse(readFileSync(verifiedPath(refreshedB), "utf8"))).toEqual(refreshedB.artifact);
+
+    const current = await generate(REQUEST);
+    expect(current.cache).toBe("hit");
+    expect(verifiedPath(current)).toBe(verifiedPath(refreshedA));
   });
 
   it("never persists the clone token", async () => {
@@ -237,7 +395,7 @@ function generate(request: GenerateRequest, token?: string, stages: string[] = [
   });
 }
 
-function artifactFor(name: string, commit: string): GraphArtifact {
+function artifactFor(name: string, commit: string, branch?: string): GraphArtifact {
   return {
     schemaVersion: SCHEMA_VERSION,
     generatedAt: "2026-07-13T00:00:00.000Z",
@@ -246,9 +404,51 @@ function artifactFor(name: string, commit: string): GraphArtifact {
       name,
       root: ".",
       language: "typescript",
-      vcs: { repository: "https://github.com/owner/repo.git", commit },
+      vcs: {
+        repository: "https://github.com/owner/repo.git",
+        commit,
+        ...(branch ? { branch } : {}),
+      },
     },
     nodes: [],
     edges: [],
   };
+}
+
+function idFor(graph: Awaited<ReturnType<typeof generate>>, request: GenerateRequest): string {
+  return remoteArtifactId(
+    graph.checkout.repositoryKey,
+    graph.checkout.commit,
+    graph.analysisKey,
+    request.ref,
+    graph.snapshotDigest,
+  );
+}
+
+function requestFor(ref: undefined | "main" | "release"): GenerateRequest {
+  return ref === undefined ? REQUEST : { ...REQUEST, ref };
+}
+
+function refKey(ref: string | undefined): string {
+  return ref ?? "HEAD";
+}
+
+function artifactFromMaterial(material: Awaited<ReturnType<typeof generate>>["material"]): GraphArtifact {
+  const bytes = material.kind === "serialized" ? material.bytes : readFileSync(material.path);
+  return JSON.parse(bytes.toString("utf8")) as GraphArtifact;
+}
+
+function verifiedPath(graph: Awaited<ReturnType<typeof generate>>): string {
+  if (graph.material.kind !== "verified-file") {
+    throw new Error("expected an immutable cache generation");
+  }
+  return graph.material.path;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }

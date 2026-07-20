@@ -17,9 +17,23 @@ import { SessionStore, markAuthorized } from "./session";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
+import { SCHEMA_VERSION } from "@meridian/core";
+import type { GraphArtifact } from "@meridian/core";
+import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
+
+const TEST_ARTIFACT: GraphArtifact = {
+  schemaVersion: SCHEMA_VERSION,
+  generatedAt: "2026-07-20T00:00:00.000Z",
+  generator: { name: "meridian", version: "test" },
+  target: { name: "test", root: ".", language: "typescript" },
+  nodes: [],
+  edges: [],
+};
+const activeGraphStores: WebGraphStore[] = [];
 
 describe("PR routes", () => {
   afterEach(() => {
+    for (const store of activeGraphStores.splice(0)) store.dispose();
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
   });
@@ -240,7 +254,12 @@ describe("PR routes", () => {
     expect(second.status()).toBe(200);
     expect(fetchMock.mock.calls.filter(([url]) => String(url).includes("/pulls/12/files?")).length).toBe(1);
 
-    ctx.sources.set("core-artifact", { kind: "github", owner: "org", repo: "repo", subdir: "packages/core" });
+    publishSource(ctx.graphStore, "core-artifact", {
+      kind: "github",
+      owner: "org",
+      repo: "repo",
+      subdir: "packages/core",
+    });
     const otherSubdir = await invoke(
       handleRelatedPullRequests,
       ctx,
@@ -1125,14 +1144,12 @@ async function invoke(handler: PrHandler, ctx: Context, request: IncomingMessage
 }
 
 function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): Context {
+  const graphStore = new WebGraphStore();
+  activeGraphStores.push(graphStore);
+  publishSource(graphStore, "artifact", source);
   return {
-    graphs: new Map(),
-    sourceRoots: new Map(),
-    sources: new Map([["artifact", source]]),
-    syntheticScenarios: new Map(),
-    syntheticSourceFingerprints: new Map(),
+    graphStore,
     prFilesCache: new Map(),
-    tempCleanups: new Set(),
     rendererIndex: "",
     landingHtml: "",
     staticAssets: { rendererRoot: "", indexHtml: "" },
@@ -1141,6 +1158,18 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
     github: createGitHubClient({ clientId: "Iv1.test" }),
     allowSyntheticExecution: false,
   } as Context;
+}
+
+function publishSource(graphStore: WebGraphStore, id: string, source: ArtifactSource): void {
+  graphStore.publish({
+    id,
+    material: materializeValidatedArtifact(TEST_ARTIFACT),
+    metadata: {
+      sourceRoot: "/workspace/test",
+      source,
+      synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+    },
+  });
 }
 
 function signedInSession(): { cookie: string; sessions: SessionStore } {

@@ -6,7 +6,7 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -17,6 +17,7 @@ import { Readable } from "node:stream";
 import type { GraphArtifact } from "@meridian/core";
 import { createWebServer, handleSyntheticExecution } from "./web-server";
 import type { Context } from "./web-server";
+import { WebGraphStore } from "./web-graph-store";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -46,8 +47,8 @@ beforeAll(async () => {
   base = await listenEphemeral(server);
 });
 
-afterAll(() => {
-  server.close();
+afterAll(async () => {
+  await closeListeningServer(server);
   rmSync(rendererRoot, { recursive: true, force: true });
 });
 
@@ -122,6 +123,37 @@ describe("createWebServer landing + errors", () => {
     expect((await fetch(`${base}/view?id=nope`)).status).toBe(404);
   });
 
+  it("preserves the source-unavailable response when the graph id is missing", async () => {
+    const descriptor = vi.spyOn(WebGraphStore.prototype, "descriptor");
+    try {
+      const response = await fetch(`${base}/api/source?file=src%2Fmissing.ts`);
+
+      expect(response.status).toBe(404);
+      expect(await response.json()).toEqual({ error: "source not available" });
+      expect(descriptor, "a missing route id must not reach the strict graph store").not.toHaveBeenCalled();
+    } finally {
+      descriptor.mockRestore();
+    }
+  });
+
+  it("disposes its private graph store and removes its exit hook after connections drain", async () => {
+    const exitListeners = process.listenerCount("exit");
+    const dispose = vi.spyOn(WebGraphStore.prototype, "dispose");
+    const isolated = createWebServer({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
+    try {
+      await listenEphemeral(isolated);
+      expect(process.listenerCount("exit")).toBe(exitListeners + 1);
+      await closeListeningServer(isolated);
+      expect(dispose).toHaveBeenCalledTimes(1);
+      const store = dispose.mock.instances[0] as WebGraphStore;
+      expect(existsSync(store.rootPath)).toBe(false);
+      expect(process.listenerCount("exit")).toBe(exitListeners);
+    } finally {
+      if (isolated.listening) await closeListeningServer(isolated);
+      dispose.mockRestore();
+    }
+  });
+
   it("wires POST /api/pr/analyze: validates refs, then 404s an unknown session id, before any git", async () => {
     const badRef = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "--evil", headRef: "x" });
     expect(badRef.status).toBe(400);
@@ -136,7 +168,11 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
     expect(result.target).toBe(TS_EXAMPLE);
 
-    const graph = await getJson<{ schemaVersion: string; nodes: unknown[] }>(`${base}/api/graph?id=${result.id}`);
+    const descriptorOnlyRoutes = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
+    const graphResponse = await fetch(`${base}/api/graph?id=${result.id}`);
+    expect(graphResponse.headers.get("content-type")).toBe("application/json; charset=utf-8");
+    expect(graphResponse.headers.get("cache-control")).toBe("no-store");
+    const graph = (await graphResponse.json()) as { schemaVersion: string; nodes: unknown[] };
     expect(graph.schemaVersion).toBeTruthy();
     expect(graph.nodes.length).toBe(result.counts.nodes);
 
@@ -172,6 +208,15 @@ describe("createWebServer generate -> view (offline path source)", () => {
     // session carries the {repository, subdir} source object instead of the old boolean).
     expect(view).toContain('"githubSource":null');
 
+    const source = await getJson<{ file: string; code: string }>(
+      `${base}/api/source?id=${result.id}&file=${encodeURIComponent("src/services/orderService.ts")}&start=1&end=3`,
+    );
+    expect(source.file).toBe("src/services/orderService.ts");
+    expect(source.code.length).toBeGreaterThan(0);
+    expect(descriptorOnlyRoutes, "graph streaming plus meta/view/source must not parse the artifact").not.toHaveBeenCalled();
+    descriptorOnlyRoutes.mockRestore();
+
+    const telemetryLoads = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
     const missingSource = await fetch(`${base}/api/overlay?id=${result.id}&env=demo`);
     expect(missingSource.status).toBe(404);
     expect(await missingSource.json()).toEqual({ error: "no overlay for env 'demo'" });
@@ -190,7 +235,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     );
     expect(traces).toMatchObject({ source: "mock", env: "demo" });
     expect(traces.traces.length).toBeGreaterThanOrEqual(10);
+    expect(telemetryLoads, "each telemetry request must load one validated artifact transiently").toHaveBeenCalledTimes(4);
+    telemetryLoads.mockRestore();
 
+    const syntheticLoad = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
     const executionResponse = await post(`/api/synthetic-executions?id=${result.id}`, {
       scenarioId: "place-order-happy",
       rootNodeId: "ts:src/services/orderService.ts#OrderService.placeOrder",
@@ -209,6 +257,8 @@ describe("createWebServer generate -> view (offline path source)", () => {
       trace: { spans: expect.any(Array) },
       snapshots: expect.any(Array),
     });
+    expect(syntheticLoad, "synthetic execution must load one validated artifact for the request").toHaveBeenCalledTimes(1);
+    syntheticLoad.mockRestore();
   }, 60_000);
 
   it("auto-detects Python for a pyproject tree", async () => {
@@ -408,20 +458,26 @@ function githubExecutionCtx(options: { allow: boolean; runtime: boolean; withSce
   const runInOci = vi.fn().mockResolvedValue({ executionVersion: "fixture-oci" });
   const withScenario = options.withScenario !== false;
   const ctx = {
-    graphs: new Map([[id, {} as GraphArtifact]]),
-    sourceRoots: new Map([[id, "/tmp/pr-source"]]),
-    sources: new Map([[id, { kind: "github", owner: "octo", repo: "repo" }]]),
-    syntheticScenarios: new Map(withScenario ? [[id, [{
-      id: "add-item",
-      label: "Add item",
-      rootId,
-      defaultInput: {},
-    }]]] : []),
-    syntheticSourceFingerprints: new Map(withScenario ? [[id, "fingerprint"]] : []),
-    syntheticExecutionTrust: new Map([[id, {
-      mode: "sandboxed-pr",
-      provenance: { repository: "octo/repo", headSha: "abc123" },
-    }]]),
+    graphStore: {
+      descriptor: (candidate: string) => candidate === id ? {
+        sourceRoot: "/tmp/pr-source",
+        source: { kind: "github", owner: "octo", repo: "repo" },
+        synthetic: {
+          scenarios: withScenario ? [{
+            id: "add-item",
+            label: "Add item",
+            rootId,
+            defaultInput: {},
+          }] : [],
+          sourceFingerprint: withScenario ? "fingerprint" : null,
+          trust: {
+            mode: "sandboxed-pr",
+            provenance: { repository: "octo/repo", headSha: "abc123" },
+          },
+        },
+      } : undefined,
+      loadArtifact: (candidate: string) => candidate === id ? {} as GraphArtifact : undefined,
+    },
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: options.allow,
     syntheticPrSandboxRuntimeSupported: () => options.runtime,
@@ -460,5 +516,11 @@ function listenEphemeral(target: Server): Promise<string> {
       const port = (target.address() as AddressInfo).port;
       resolveBase(`http://127.0.0.1:${port}`);
     });
+  });
+}
+
+function closeListeningServer(target: Server): Promise<void> {
+  return new Promise((resolveClose, reject) => {
+    target.close((error) => error ? reject(error) : resolveClose());
   });
 }

@@ -11,6 +11,7 @@ import type { GraphArtifact } from "@meridian/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildProgram } from "../program";
 import { generateGraph } from "../server/web-generation";
+import { WebGraphStore } from "../server/web-graph-store";
 import type { Context } from "../server/web-server";
 import { runGenerate, type GenerateOptions } from "./generate";
 
@@ -55,16 +56,19 @@ describe("generate canonical repository analysis", () => {
       "ts:workspace/packages/alpha/src/index.ts->ts:workspace/packages/beta/src/index.ts",
     );
 
-    const graphs = new Map<string, GraphArtifact>();
+    const graphStore = new WebGraphStore();
     const context = {
       cwd: root,
-      graphs,
-      sourceRoots: new Map(),
-      sources: new Map(),
-      tempCleanups: new Set(),
+      graphStore,
+      allowSyntheticExecution: false,
     } as unknown as Context;
-    const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
-    const webArtifact = graphs.get(generated.id);
+    let webArtifact: GraphArtifact | undefined;
+    try {
+      const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
+      webArtifact = graphStore.loadArtifact(generated.id);
+    } finally {
+      graphStore.dispose();
+    }
     const cliArtifact = readArtifact(discoveredOut);
     expect(cliArtifact.target.language).toBe("mixed");
     expect(cliArtifact.nodes.some((node) => node.id.startsWith("ts:"))).toBe(true);

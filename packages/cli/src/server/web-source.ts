@@ -12,9 +12,12 @@ export function artifactSourceFor(request: GenerateRequest): ArtifactSource {
     return { kind: "path" };
   }
   const repo = parseGitHubRepo(request.value);
-  return repo
-    ? { kind: "github", ...repo, subdir: request.subdir }
-    : { kind: "other" };
+  if (!repo) {
+    return { kind: "other" };
+  }
+  return request.subdir === undefined
+    ? { kind: "github", ...repo }
+    : { kind: "github", ...repo, subdir: request.subdir };
 }
 
 export function stripExtractionSubdir<T extends { path: string }>(files: T[], subdir: string | undefined): T[] {

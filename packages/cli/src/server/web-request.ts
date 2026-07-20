@@ -12,8 +12,14 @@ import {
   syntheticFieldWatchersSchema,
   syntheticInputOverridesSchema,
 } from "@meridian/core";
-import type { JsonValue, SyntheticFieldWatcher, SyntheticInputOverride } from "@meridian/core";
+import type {
+  JsonValue,
+  SyntheticFieldWatcher,
+  SyntheticInputOverride,
+  SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import type { SourceRequest } from "./clone";
+import type { SyntheticExecutionTrust } from "./web-boot";
 import { WebError } from "./web-error";
 
 const MAX_BODY_BYTES = 64_000;
@@ -115,20 +121,51 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value.trim() : undefined;
 }
 
-/** Deterministic short id from the source identity — token deliberately excluded. */
-export function artifactId(request: GenerateRequest, commit = "", analysisKey = ""): string {
-  const key = [
-    request.kind,
-    request.value,
-    request.ref ?? "",
-    request.subdir ?? "",
-    commit,
-    analysisKey,
-  ].join(" ");
-  return createHash("sha1").update(key).digest("hex").slice(0, 12);
+export interface LocalSyntheticCoordinates {
+  readonly scenarios: readonly SyntheticScenarioDescriptor[];
+  readonly sourceFingerprint: string | null;
+  readonly trust: SyntheticExecutionTrust | null;
 }
 
-/** Remote graph ids use canonical cache identity so equivalent repository spellings converge. */
-export function remoteArtifactId(repositoryKey: string, commit: string, analysisKey: string): string {
-  return createHash("sha1").update([repositoryKey, commit, analysisKey].join(" ")).digest("hex").slice(0, 12);
+/** A local id names one exact published graph and capability at one source identity. */
+export function localArtifactId(
+  sourceIdentity: string,
+  artifactByteDigest: string,
+  synthetic: LocalSyntheticCoordinates,
+): string {
+  return shortHash(JSON.stringify([
+    sourceIdentity,
+    artifactByteDigest,
+    synthetic.scenarios,
+    synthetic.sourceFingerprint,
+    synthetic.trust,
+  ]));
+}
+
+/**
+ * Remote ids combine branch-neutral extraction identity with the exact selected-ref provenance.
+ * `snapshotDigest` is deliberately not the byte digest of whichever ref first warmed the cache.
+ */
+export function remoteArtifactId(
+  repositoryKey: string,
+  commit: string,
+  analysisKey: string,
+  ref: string | undefined,
+  snapshotDigest: string,
+): string {
+  return shortHash(JSON.stringify([
+    repositoryKey,
+    commit,
+    analysisKey,
+    remoteRefProvenance(ref),
+    snapshotDigest,
+  ]));
+}
+
+export function remoteRefProvenance(ref: string | undefined): string {
+  return ref === undefined ? "HEAD" : `ref:${ref.trim()}`;
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 12);
 }

@@ -1,14 +1,11 @@
-import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { resolveExtractionSubdir } from "./clone";
 import {
   prepareWebCache,
-  validArtifactMetadata,
+  readCachedArtifactPointer,
   webAnalysisKey,
 } from "./web-cache";
-import type { ArtifactMetadata } from "./web-cache";
 import { probeCheckout } from "./web-cache-checkout";
-import { readJson, touchMetadata } from "./web-cache-storage";
 import type { GenerateRequest } from "./web-request";
 import { remoteArtifactId } from "./web-request";
 
@@ -36,19 +33,19 @@ export async function probeRemoteGraph(inputs: {
   resolveExtractionSubdir(checkout.repoDir, inputs.request.subdir);
   const analysisKey = webAnalysisKey(inputs.request);
   const entry = join(inputs.cacheRoot, "artifacts", checkout.repositoryKey, checkout.commit, analysisKey);
-  const metadataPath = join(entry, "metadata.json");
-  try {
-    const metadata = readJson(metadataPath) as Partial<ArtifactMetadata>;
-    if (!validArtifactMetadata(metadata, checkout, analysisKey) || !existsSync(join(entry, "artifact.json"))) {
-      return { status: "miss", commit: checkout.commit };
-    }
-    touchMetadata(metadataPath);
-    return {
-      status: "hit",
-      commit: checkout.commit,
-      id: remoteArtifactId(checkout.repositoryKey, checkout.commit, analysisKey),
-    };
-  } catch {
+  const pointer = readCachedArtifactPointer(entry, checkout, analysisKey);
+  if (!pointer) {
     return { status: "miss", commit: checkout.commit };
   }
+  return {
+    status: "hit",
+    commit: checkout.commit,
+    id: remoteArtifactId(
+      checkout.repositoryKey,
+      checkout.commit,
+      analysisKey,
+      inputs.request.ref,
+      pointer.snapshotDigest,
+    ),
+  };
 }

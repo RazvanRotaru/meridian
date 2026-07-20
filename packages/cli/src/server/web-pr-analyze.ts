@@ -2,13 +2,12 @@
  * POST /api/pr/analyze — resolve a PR's immutable head/base pair, reuse or create its persistent
  * checkout and changed-node graph, then stream real miss stages to the browser as NDJSON.
  *
- * This is the PR-review sibling of `/api/generate` (web-graph.ts): it stores the artifact under a
- * deterministic commit-pinned ids in `ctx.graphs`/`ctx.sourceRoots`/`ctx.sources` so the browser
- * can load both HEAD and its exact merge-base comparison with `GET /api/graph?id=` and slice either
- * side with `GET /api/source?id=`. Unlike generate it needs FULL commit/tree history (a shallow
- * clone can't resolve `merge-base` against the base branch), while a blobless partial clone keeps
- * the persistent miss smaller. Cache identity includes both revisions, so a head force-push or
- * base update cannot reuse a stale diff.
+ * This is the PR-review sibling of `/api/generate` (web-generation.ts): it publishes immutable,
+ * disk-backed descriptors for HEAD and its exact merge-base comparison so the browser can load
+ * either side with `GET /api/graph?id=` and slice source with `GET /api/source?id=`. Unlike generate
+ * it needs FULL commit/tree history (a shallow clone can't resolve `merge-base` against the base
+ * branch), while a blobless partial clone keeps the persistent miss smaller. Cache identity includes
+ * both revisions, so a head force-push or base update cannot reuse a stale diff.
  */
 
 import { createHash } from "node:crypto";
@@ -23,6 +22,7 @@ import { WebError } from "./web-error";
 import type { ArtifactSource } from "./web-source";
 import type { Context } from "./web-server";
 import { cachedPrGraph } from "./web-pr-cache";
+import type { VerifiedFileArtifactMaterial } from "./web-graph-store";
 import {
   loadSyntheticScenarios,
   syntheticSourceFingerprint,
@@ -68,14 +68,15 @@ async function streamAnalysis(
       body,
       cached.headSha,
       cached.baseSha,
+      cached.artifactMaterial,
     );
     const comparisonGraphId = storeComparisonArtifact(
       ctx,
-      cached.comparisonArtifact,
       source,
       cached.comparisonSourceDir,
       body,
       cached.mergeBaseSha,
+      cached.comparisonMaterial,
     );
     writeLine(response, doneLine(
       stored.graphId,
@@ -101,8 +102,8 @@ function storeArtifact(
   body: PrAnalyzeRequest,
   headSha: string,
   baseSha: string,
+  material: VerifiedFileArtifactMaterial,
 ): { graphId: string; syntheticWarnings: string[] } {
-  const graphId = prGraphId(source, body, headSha, baseSha);
   const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
   let syntheticScenarios = [] as ReturnType<typeof loadSyntheticScenarios>;
   let syntheticFingerprint: string | null = null;
@@ -125,39 +126,51 @@ function storeArtifact(
       syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
     }
   }
-  ctx.graphs.set(graphId, artifact);
-  ctx.sourceRoots.set(graphId, sourceDir);
-  ctx.sources.set(graphId, { kind: "github", owner: source.owner, repo: source.repo, subdir: source.subdir });
-  if (syntheticFingerprint !== null) {
-    ctx.syntheticScenarios.set(graphId, syntheticScenarios);
-    ctx.syntheticSourceFingerprints.set(graphId, syntheticFingerprint);
-  } else {
-    ctx.syntheticScenarios.delete(graphId);
-    ctx.syntheticSourceFingerprints.delete(graphId);
-  }
-  if (syntheticTrustReady) {
-    ctx.syntheticExecutionTrust.set(graphId, {
-      mode: "sandboxed-pr",
-      provenance: { repository: `${source.owner}/${source.repo}`, headSha },
-    });
-  } else {
-    ctx.syntheticExecutionTrust.delete(graphId);
-  }
+  const synthetic = {
+    scenarios: syntheticFingerprint === null ? [] : syntheticScenarios,
+    sourceFingerprint: syntheticFingerprint,
+    trust: syntheticTrustReady
+      ? { mode: "sandboxed-pr" as const, provenance: { repository: `${source.owner}/${source.repo}`, headSha } }
+      : null,
+  };
+  const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
+  const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
+  const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
+  ctx.graphStore.publish({
+    id: graphId,
+    material,
+    metadata: {
+      sourceRoot,
+      source,
+      synthetic,
+    },
+  });
   return { graphId, syntheticWarnings };
 }
 
 function storeComparisonArtifact(
   ctx: Context,
-  artifact: GraphArtifact,
   source: GitHubSource,
   sourceDir: string,
   body: PrAnalyzeRequest,
   mergeBaseSha: string,
+  material: VerifiedFileArtifactMaterial,
 ): string {
-  const graphId = prComparisonGraphId(source, body, mergeBaseSha);
-  ctx.graphs.set(graphId, artifact);
-  ctx.sourceRoots.set(graphId, sourceDir);
-  ctx.sources.set(graphId, source);
+  const graphId = prComparisonGraphId(source, body, mergeBaseSha, material.byteDigest);
+  // One merge base can be rediscovered through multiple PR cache entries. Its source contents are
+  // commit-identical, so keep the first published checkout as the immutable source snapshot rather
+  // than rebinding the graph id to a newer filesystem path. Artifact/source mismatches still fail
+  // closed in WebGraphStore.publish.
+  const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
+  ctx.graphStore.publish({
+    id: graphId,
+    material,
+    metadata: {
+      sourceRoot,
+      source,
+      synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+    },
+  });
   return graphId;
 }
 
@@ -184,21 +197,24 @@ function doneLine(
   };
 }
 
-/** Exact file inventory from local Git; ranges are only a backward-compatible old-artifact fallback. */
+/** Exact status-rich file inventory from the canonical local Git analysis. */
 function changedFilesOf(artifact: GraphArtifact): ChangedFileManifestEntry[] {
   const manifest = changedFileManifestFromExtensions(artifact.extensions);
-  if (manifest !== null) {
-    return [...manifest].sort((left, right) => left.path.localeCompare(right.path));
+  if (manifest === null) {
+    throw new WebError(422, "pull request analysis did not produce a canonical changed-file manifest");
   }
-  const changedSince = (artifact.extensions?.changedSince ?? null) as { files?: Record<string, unknown> } | null;
-  const files = changedSince?.files ?? {};
-  return Object.keys(files)
-    .sort()
-    .map((path) => ({ path, status: "modified" as const }));
+  return [...manifest].sort((left, right) => left.path.localeCompare(right.path));
 }
 
-/** Deterministic per-commit id: a force-pushed ref can never replace a stale client's artifact. */
-function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string, baseSha: string): string {
+/** Immutable snapshot id: neither a force-push nor an explicit cache refresh can rebind a client. */
+function prGraphId(
+  source: GitHubSource,
+  body: PrAnalyzeRequest,
+  headSha: string,
+  baseSha: string,
+  artifactDigest: string,
+  syntheticDigest: string,
+): string {
   const key = [
     "pr",
     source.owner,
@@ -208,13 +224,20 @@ function prGraphId(source: GitHubSource, body: PrAnalyzeRequest, headSha: string
     body.headRef,
     headSha,
     baseSha,
+    artifactDigest,
+    syntheticDigest,
   ].join(" ");
   const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
   return `pr-${keyDigest}-${headSha}`;
 }
 
-/** The comparison id is pinned to the exact merge base, never to a branch name that can drift. */
-function prComparisonGraphId(source: GitHubSource, body: PrAnalyzeRequest, mergeBaseSha: string): string {
+/** The comparison id is pinned to the merge base plus exact extracted snapshot, never a moving ref. */
+function prComparisonGraphId(
+  source: GitHubSource,
+  body: PrAnalyzeRequest,
+  mergeBaseSha: string,
+  artifactDigest: string,
+): string {
   const key = [
     "pr-comparison",
     source.owner,
@@ -222,6 +245,7 @@ function prComparisonGraphId(source: GitHubSource, body: PrAnalyzeRequest, merge
     source.subdir ?? "",
     body.prNumber,
     mergeBaseSha,
+    artifactDigest,
   ].join(" ");
   const keyDigest = createHash("sha1").update(key).digest("hex").slice(0, 12);
   return `pr-base-${keyDigest}-${mergeBaseSha}`;
@@ -244,7 +268,7 @@ function safeMessage(error: unknown): string {
 }
 
 function requireGitHubSource(ctx: Context, id: string): GitHubSource {
-  const source = ctx.sources.get(id);
+  const source = ctx.graphStore.descriptor(id)?.source;
   if (source?.kind !== "github") {
     throw new WebError(404, "pull request analysis needs a GitHub-sourced session");
   }
