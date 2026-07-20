@@ -229,10 +229,9 @@ export function referenceFromCarrier(carrier: Node, exportedName: string | null)
 }
 
 export function resolvedModuleFile(carrier: Node, specifier: string): string | null {
-  if (!Node.isImportDeclaration(carrier) && !Node.isExportDeclaration(carrier)) {
-    return null;
-  }
-  const direct = carrier.getModuleSpecifierSourceFile()?.getFilePath();
+  const direct = Node.isImportDeclaration(carrier) || Node.isExportDeclaration(carrier)
+    ? carrier.getModuleSpecifierSourceFile()?.getFilePath()
+    : undefined;
   if (direct) {
     return direct;
   }
