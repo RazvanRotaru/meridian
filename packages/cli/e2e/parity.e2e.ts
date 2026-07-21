@@ -5,7 +5,7 @@
  * expand via the chevron, assert the selection ring + expansion; prove a ghost click replaces
  * selection without moving the graph and pin one ghost's home file; then prove the lens-carry round trip
  * (Map → Service → UI → Map) lands the same data-id selected on every surface. Gestures dispatch
- * DOM events on the card itself (never coordinate clicks): the
+ * DOM events on the card header itself (never coordinate clicks): the
  * canvas recenters with an animated fitView after every dive/relayout, so a position-based click
  * can land mid-pan — the React handlers see the same click/dblclick either way. Skips cleanly
  * when the Playwright browser is missing (`npx playwright install chromium`).
@@ -15,7 +15,7 @@ import { rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
-import { chromiumInstalled, generateGraphFrom, startView, FIXTURE } from "./harness";
+import { chromiumInstalled, generateGraphFrom, nodeHeader, startView, FIXTURE } from "./harness";
 import { join } from "node:path";
 
 const SHOPFRONT = join(FIXTURE, "..", "shopfront");
@@ -160,7 +160,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     await chevronOf(page, FILE).dispatchEvent("click");
     await page.waitForSelector(`[data-id="${CLASS}"]`);
     // …select the class (single click; the debounced select lights the extract strip)…
-    await page.locator(`[data-id="${CLASS}"]`).dispatchEvent("click");
+    await nodeHeader(page.locator(`[data-id="${CLASS}"]`)).dispatchEvent("click");
     await expectSoleSelection(page, CLASS);
     // …and expand the class via ITS chevron: member blocks nest inside, selection survives.
     await chevronOf(page, CLASS).dispatchEvent("click");
@@ -191,7 +191,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     const before = await visibleNodeTransforms(surface, null, false);
     const beforeIds = before.map(({ id }) => id);
 
-    await inspectableGhost.dispatchEvent("click");
+    await nodeHeader(inspectableGhost).dispatchEvent("click");
     await expectSoleSelection(page, inspectedId!, surface);
     const materialized = surface.locator(
       `.react-flow__node:not(.react-flow__node-ghost)[data-id="${inspectedId}"]:visible`,
@@ -259,7 +259,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     // The preceding ghost test intentionally replaces the primary selection. Start this scenario
     // from its own declared anchor instead of depending on selection state leaked by an earlier
     // test: lens carry must translate CartService itself through every incoming hierarchy.
-    await page.locator(`[data-id="${CLASS}"]`).dispatchEvent("click");
+    await nodeHeader(page.locator(`[data-id="${CLASS}"]`)).dispatchEvent("click");
     await expectSoleSelection(page, CLASS);
 
     for (const lens of ["Service", "UI", "Map"]) {
@@ -310,11 +310,11 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
 
       // Replay the same selection grammar on every mounted source lens: plain click replaces,
       // Ctrl adds, and Command removes. End back on CLASS so the next lens carries one stable anchor.
-      await visibleNode(activeCanvas, METHOD).dispatchEvent("click");
+      await nodeHeader(visibleNode(activeCanvas, METHOD)).dispatchEvent("click");
       await expectSoleSelection(page, METHOD, activeCanvas);
-      await visibleNode(activeCanvas, CLASS).dispatchEvent("click", { ctrlKey: true });
+      await nodeHeader(visibleNode(activeCanvas, CLASS)).dispatchEvent("click", { ctrlKey: true });
       await expectSelection(page, [CLASS, METHOD], activeCanvas);
-      await visibleNode(activeCanvas, METHOD).dispatchEvent("click", { metaKey: true });
+      await nodeHeader(visibleNode(activeCanvas, METHOD)).dispatchEvent("click", { metaKey: true });
       await expectSoleSelection(page, CLASS, activeCanvas);
       await expectMiniMapParity(activeCanvas, lens);
     }
@@ -329,7 +329,7 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
     await expect.poll(() => sourceCanvas.locator(`[data-id^="${CLASS}."]:visible`).count(), { timeout: 20_000 }).toBe(0);
     await nodeDisclosure(visibleNode(sourceCanvas, FILE), true).dispatchEvent("click");
     await expect.poll(() => visibleNode(sourceCanvas, CLASS).count(), { timeout: 20_000 }).toBe(0);
-    await visibleNode(sourceCanvas, FILE).dispatchEvent("click");
+    await nodeHeader(visibleNode(sourceCanvas, FILE)).dispatchEvent("click");
     await expectSoleSelection(page, FILE);
     await page.getByRole("button", { name: "Extract selection (1)" }).dispatchEvent("click");
 
@@ -351,11 +351,11 @@ describe.skipIf(!chromiumInstalled())("cross-lens parity drive (headless chromiu
       "method expansion does not cascade into nested flow containers in the extracted graph",
     ).toBe(0);
 
-    await visibleNode(minimalCanvas, METHOD).dispatchEvent("click");
+    await nodeHeader(visibleNode(minimalCanvas, METHOD)).dispatchEvent("click");
     await expectSoleSelection(page, METHOD, minimalCanvas);
-    await visibleNode(minimalCanvas, CLASS).dispatchEvent("click", { ctrlKey: true });
+    await nodeHeader(visibleNode(minimalCanvas, CLASS)).dispatchEvent("click", { ctrlKey: true });
     await expectSelection(page, [CLASS, METHOD], minimalCanvas);
-    await visibleNode(minimalCanvas, METHOD).dispatchEvent("click", { metaKey: true });
+    await nodeHeader(visibleNode(minimalCanvas, METHOD)).dispatchEvent("click", { metaKey: true });
     await expectSoleSelection(page, CLASS, minimalCanvas);
     await expectMiniMapParity(minimalCanvas, "Minimal");
     expect(pageErrors).toEqual([]);

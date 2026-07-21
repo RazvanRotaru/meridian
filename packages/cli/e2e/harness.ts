@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
-import { chromium } from "playwright";
+import { chromium, type Locator } from "playwright";
 import { buildCloneArgs } from "../src/server/clone";
 import { parsePatchDetail, parsePatchHunks } from "../src/server/github-parse";
 
@@ -53,6 +53,11 @@ export function chromiumInstalled(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Node selection belongs to BaseNode's title strip, never the expanded container body. */
+export function nodeHeader(node: Locator): Locator {
+  return node.locator('[data-base-node-header="true"]');
 }
 
 export function ensureBuilt(): void {
