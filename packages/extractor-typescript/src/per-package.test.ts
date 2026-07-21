@@ -50,6 +50,11 @@ beforeAll(async () => {
   }));
   write("packages/ui/src/local.ts", "export function localOnly(): number {\n  return 1;\n}\n");
   write(
+    "packages/ui/src/lazy.ts",
+    'export function loadContracts() {\n  return import("@fix/core/contracts");\n}\n' +
+      'export function loadContractsRelatively() {\n  return import("../../core/src/contracts");\n}\n',
+  );
+  write(
     "packages/ui/src/app.ts",
     'import { helper, normalize, parseOrder } from "@fix/core";\nimport { helper as helperDirect } from "@fix/core/helpers";\n' +
       'import { localOnly } from "@ui/local";\n' +
@@ -127,6 +132,18 @@ describe("extractPerPackage", () => {
     expect(resolvedEdge(result, "imports", "ts:packages/core/src/orders.ts", "ts:packages/util/src/index.ts")).toBeDefined();
     expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/helpers.ts")).toBeDefined();
     expect(resolvedEdge(result, "imports", "ts:packages/ui/src/app.ts", "ts:packages/core/src/contracts.ts")).toBeDefined();
+  });
+
+  it("resolves a literal runtime import across package boundaries", () => {
+    expect(
+      resolvedEdge(result, "imports", "ts:packages/ui/src/lazy.ts", "ts:packages/core/src/contracts.ts"),
+    ).toMatchObject({
+      weight: 2,
+      callSites: [
+        expect.objectContaining({ file: "packages/ui/src/lazy.ts", line: 2 }),
+        expect.objectContaining({ file: "packages/ui/src/lazy.ts", line: 5 }),
+      ],
+    });
   });
 
   it("honours a package-local tsconfig alias without externalizing it", () => {

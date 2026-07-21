@@ -7,6 +7,7 @@
 import { Node, SyntaxKind, type ClassDeclaration } from "ts-morph";
 import type { CallSite, EdgeKind, ExtractionDiagnostic } from "@meridian/core";
 import { callSiteOf, nodeKey, type NodeDescriptor } from "./model";
+import { isRuntimeImportCall } from "./import-dependency";
 import { resolveTarget, type CrossPackageResolver, type TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
 import type { ResolutionIndex } from "./resolution-index";
@@ -49,6 +50,9 @@ function collectBehaviouralEdges(
   resolver?: CrossPackageResolver,
 ): void {
   for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+    if (isRuntimeImportCall(call)) {
+      continue; // module loading belongs to the import pass, not unresolved callable accounting
+    }
     addCallableEdge(call, calleeOf(call), "calls", relPath, index, moduleByFilePath, diagnostics, edges, resolver);
     collectExplicitRegistration(call, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
     collectExplicitInjection(call, relPath, index, moduleByFilePath, diagnostics, edges, resolver);

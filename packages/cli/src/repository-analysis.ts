@@ -14,10 +14,9 @@ import type { GitDiffExecutor } from "./git-diff";
 
 /**
  * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
- * Version 7 includes imported value references and constructed singleton object nodes in
- * repository artifacts.
+ * Version 8 includes resolved module dependencies from literal runtime `import()` expressions.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 7;
+export const REPOSITORY_ANALYSIS_VERSION = 8;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
