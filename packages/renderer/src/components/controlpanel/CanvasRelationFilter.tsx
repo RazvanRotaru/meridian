@@ -132,7 +132,11 @@ export function CanvasRelationFilter({ kinds }: { kinds: readonly string[] }) {
           >
             Edge types
           </SectionLabel>
-          <RelationshipToggles kinds={filterKinds} />
+          {/* Keep the compact control aligned with the full lens vocabulary. Some relationships
+              (notably IPC) may enter the extracted graph through promotion or a later projection,
+              so limiting the pills to the currently painted edge set makes those paths impossible
+              to discover or preconfigure. */}
+          <RelationshipToggles />
         </div>,
         document.body,
       ) : null}

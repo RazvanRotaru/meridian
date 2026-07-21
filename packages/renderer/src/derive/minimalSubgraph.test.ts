@@ -37,6 +37,10 @@ function callsEdge(source: string, target: string): GraphEdge {
   return { id: `calls:${source}->${target}`, source, target, kind: "calls", resolution: "resolved" } as GraphEdge;
 }
 
+function relationEdge(kind: string, source: string, target: string): GraphEdge {
+  return { id: `${kind}:${source}->${target}`, source, target, kind, resolution: "resolved" } as GraphEdge;
+}
+
 /** members default to origin; `coupling` feeds the blockDeps substrate the ghost projection reads. */
 function build(nodes: GraphNode[], edges: GraphEdge[], members: string[], origin: string[] = members, coupling: GraphEdge[] = []) {
   const index = buildGraphIndex({ nodes, edges: [...edges, ...coupling] } as unknown as GraphArtifact);
@@ -77,6 +81,62 @@ describe("buildMinimalSubgraph", () => {
       parentId: null,
       data: { label: "foo", blockKind: "function" },
     });
+  });
+
+  it("collapses RPC halves into an incoming IPC caller ghost for a selected handler", () => {
+    const channelId = "ipc:rpc/delegateService/acknowledgeHookRegistration";
+    const channel = {
+      id: channelId,
+      kind: "channel",
+      qualifiedName: "delegateService/acknowledgeHookRegistration",
+      displayName: "delegateService/acknowledgeHookRegistration",
+      parentId: null,
+      location: { file: "(rpc)", startLine: 1 },
+    } as GraphNode;
+    const rpc = [
+      relationEdge("sends", "fn:foo", channelId),
+      relationEdge("handles", channelId, "fn:baz"),
+    ];
+
+    const spec = build([...NODES, channel], rpc, ["fn:baz"]);
+
+    expect(nodeById(spec.nodes, "fn:foo")).toMatchObject({ kind: "ghost" });
+    expect(nodeById(spec.nodes, channelId)).toBeUndefined();
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "gdep:ipc:fn:foo->fn:baz",
+      source: "fn:foo",
+      target: "fn:baz",
+      kind: "dep",
+      depKind: "ipc",
+      ghost: true,
+    }));
+  });
+
+  it("collapses RPC halves into one direct IPC wire when sender and handler are selected", () => {
+    const channelId = "ipc:rpc/delegateService/acknowledgeHookRegistration";
+    const channel = {
+      id: channelId,
+      kind: "channel",
+      qualifiedName: "delegateService/acknowledgeHookRegistration",
+      displayName: "delegateService/acknowledgeHookRegistration",
+      parentId: null,
+      location: { file: "(rpc)", startLine: 1 },
+    } as GraphNode;
+    const rpc = [
+      relationEdge("sends", "fn:foo", channelId),
+      relationEdge("handles", channelId, "fn:baz"),
+    ];
+
+    const spec = build([...NODES, channel], rpc, ["fn:foo", "fn:baz"]);
+
+    expect(spec.nodes.filter((node) => node.kind === "ghost")).toEqual([]);
+    expect(spec.edges).toContainEqual(expect.objectContaining({
+      id: "dep:ipc:fn:foo->fn:baz",
+      source: "fn:foo",
+      target: "fn:baz",
+      kind: "dep",
+      depKind: "ipc",
+    }));
   });
 
   it("keeps a selected review directory in the group vocabulary", () => {
