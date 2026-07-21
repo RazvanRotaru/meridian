@@ -6,7 +6,7 @@
  * of the reader's automatic-open preference.
  */
 
-import { memo, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import type { ChangeGroup } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { affectedFlowTouchesIds, tickStateOf, type AffectedFlowRow } from "../../derive/reviewData";
@@ -15,6 +15,11 @@ import { basename, CARET, EMPTY_NOTE, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTIO
 import type { ReviewTick } from "../../state/reviewTicksPref";
 import { REVIEW_FLOW_SPLIT_ID } from "../flowexplorer/flowSelection";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
+import { affectedReviewFlowRelatesToNodes, reviewFlowRootsRelatedToNodes } from "../../derive/reviewFlowRelation";
+import { buildFlowContainmentIndex } from "../../derive/flowInspect";
+
+const EMPTY_SELECTED_NODES: ReadonlySet<string> = new Set();
+const FLOW_LIST_ID = "review-affected-logic-flows-list";
 
 function ReviewFlowsSectionImpl() {
   const review = useBlueprint((state) => state.review);
@@ -24,15 +29,28 @@ function ReviewFlowsSectionImpl() {
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const prSelected = useBlueprint((state) => state.prSelected);
   const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const selectedNodeIds = useBlueprint((state) => state.flowSelection === null && state.moduleSelected.size === 1
+    ? state.moduleSelected
+    : EMPTY_SELECTED_NODES);
+  const selectedNodeLabel = useBlueprint((state) => {
+    if (state.flowSelection !== null || state.moduleSelected.size !== 1) return null;
+    const nodeId = state.moduleSelected.values().next().value;
+    return nodeId === undefined ? null : state.index.nodesById.get(nodeId)?.displayName ?? null;
+  });
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
+  const selectedNodeId = selectedNodeIds.values().next().value ?? null;
+  const relatedFilterKey = review === null || selectedNodeId === null
+    ? null
+    : `${review.context.reviewKey}\0${selectedNodeId}`;
+  const [relatedOnlyFor, setRelatedOnlyFor] = useState<string | null>(null);
   const allAffected = useMemo(
     () => visibleAffectedFlows(review?.rows ?? [], prSelected === null || preparedHeadCurrent),
     [preparedHeadCurrent, prSelected, review],
   );
   // An isolated change group scopes the affected list to its own flows; a flow crossing groups
   // appears in every group it touches, marked with the "spans groups" chip.
-  const rows = useMemo(() => {
+  const scopedRows = useMemo(() => {
     let scoped = allAffected;
     if (activeGroup !== null) {
       const member = new Set(activeGroup.flowIds);
@@ -52,23 +70,66 @@ function ReviewFlowsSectionImpl() {
       .sort((left, right) => Number(right.row.flowChange === "new") - Number(left.row.flowChange === "new") || left.order - right.order)
       .map(({ row }) => row);
   }, [allAffected, activeGroup, focusedSubgraphPaths, pathScope]);
+  const flowContainment = useMemo(() => buildFlowContainmentIndex(review?.flows ?? {}), [review?.flows]);
+  const relatedFlowIds = useMemo(
+    () => reviewFlowRootsRelatedToNodes(flowContainment, selectedNodeIds),
+    [flowContainment, selectedNodeIds],
+  );
+  const relatedRows = useMemo(
+    () => scopedRows.filter((row) => affectedReviewFlowRelatesToNodes(row, relatedFlowIds, selectedNodeIds)),
+    [relatedFlowIds, scopedRows, selectedNodeIds],
+  );
+  const filterAvailable = selectedNodeIds.size > 0 && relatedRows.length > 0;
+  const showingRelated = filterAvailable && relatedOnlyFor === relatedFilterKey;
+  const rows = showingRelated ? relatedRows : scopedRows;
+  useEffect(() => {
+    if (relatedOnlyFor !== null && relatedOnlyFor !== relatedFilterKey) setRelatedOnlyFor(null);
+  }, [relatedFilterKey, relatedOnlyFor]);
   const crossGroup = useMemo(() => new Set(reviewGroups?.crossGroupFlowIds ?? []), [reviewGroups]);
   if (!review || allAffected.length === 0) {
     return null;
   }
-  const done = rows.filter((row) => tickStateOf(row, ticks) === "done").length;
-  const newCount = rows.filter((row) => row.flowChange === "new").length;
+  const done = scopedRows.filter((row) => tickStateOf(row, ticks) === "done").length;
+  const newCount = scopedRows.filter((row) => row.flowChange === "new").length;
   return (
     <section style={SECTION}>
-      <button type="button" style={SECTION_HEAD} onClick={() => setOpen((value) => !value)}>
-        <span style={CARET}>{open ? "▾" : "▸"}</span>
-        <span style={SECTION_TITLE}>Affected logic flows</span>
-        <span style={SECTION_COUNT}>{done}/{rows.length}</span>
-        {newCount > 0 ? <span style={SECTION_NEW_COUNT}>{newCount} new</span> : null}
-        <span style={SECTION_HINT}>changed or reaches changed code</span>
-      </button>
+      <div style={FLOW_HEADER}>
+        <button
+          type="button"
+          style={FLOW_DISCLOSURE}
+          aria-expanded={open}
+          aria-controls={FLOW_LIST_ID}
+          title="Affected logic flows: changed or reaches changed code"
+          onClick={() => setOpen((value) => !value)}
+        >
+          <span style={CARET}>{open ? "▾" : "▸"}</span>
+          <span style={FLOW_HEADER_TITLE}>Affected logic flows</span>
+          <span style={SECTION_COUNT}>{done}/{scopedRows.length}</span>
+          {newCount > 0 ? <span style={SECTION_NEW_COUNT}>{newCount} new</span> : null}
+        </button>
+        {filterAvailable ? (
+          <button
+            type="button"
+            style={showingRelated ? RELATED_FILTER_ACTIVE : RELATED_FILTER}
+            aria-label={selectedNodeLabel === null
+              ? "Show only flows related to selected blocks"
+              : `Show only flows related to ${selectedNodeLabel}`}
+            aria-pressed={showingRelated}
+            title={selectedNodeLabel === null
+              ? "Limit this list to flows owned by or calling the selected blocks"
+              : `Limit this list to flows owned by or calling ${selectedNodeLabel}`}
+            onClick={() => {
+              setRelatedOnlyFor(showingRelated ? null : relatedFilterKey);
+              if (!open) setOpen(true);
+            }}
+          >
+            <span>Related</span>
+            <span style={RELATED_COUNT}>{relatedRows.length}</span>
+          </button>
+        ) : null}
+      </div>
       {open && (
-        <div style={FLOW_LIST} role="region" aria-label="Affected logic flows list">
+        <div id={FLOW_LIST_ID} style={FLOW_LIST} role="region" aria-label="Affected logic flows list">
           {rows.length === 0
             ? <div style={EMPTY_NOTE}>No affected flows in this review scope.</div>
             : rows.map((row) => (
@@ -204,9 +265,14 @@ export function visibleAffectedFlows(rows: AffectedFlowRow[], headAccurate: bool
 }
 
 const SECTION: React.CSSProperties = { display: "flex", flexDirection: "column", width: "100%", height: "100%", boxSizing: "border-box", minHeight: 0, overflow: "hidden", padding: "4px 10px 8px", background: "#0B0E13" };
-const SECTION_HINT: React.CSSProperties = { marginLeft: "auto", fontSize: 10, color: "#5A6472", whiteSpace: "nowrap" };
+const FLOW_HEADER: React.CSSProperties = { ...SECTION_HEAD, boxSizing: "border-box", cursor: "default", paddingRight: 2, flexShrink: 0 };
+const FLOW_DISCLOSURE: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: 0, textAlign: "left", ...NO_FOCUS_RING };
+const FLOW_HEADER_TITLE: React.CSSProperties = { ...SECTION_TITLE, minWidth: 0, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const SECTION_NEW_COUNT: React.CSSProperties = { fontSize: 9, fontWeight: 750, color: "#65D58A", border: "1px solid #315B3C", borderRadius: 999, padding: "0 5px", whiteSpace: "nowrap" };
 const FLOW_LIST: React.CSSProperties = { minHeight: 0, overflowY: "auto", overscrollBehavior: "contain", paddingRight: 2 };
+const RELATED_FILTER: React.CSSProperties = { minHeight: 22, flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 5, border: "1px solid #34404E", borderRadius: 5, background: "#111720", color: "#8F9AA8", padding: "0 6px", fontFamily: MONO, fontSize: 9.5, cursor: "pointer", ...NO_FOCUS_RING };
+const RELATED_FILTER_ACTIVE: React.CSSProperties = { ...RELATED_FILTER, borderColor: "#3B7AC0", background: "rgba(59,122,192,0.2)", color: "#B8D9FF" };
+const RELATED_COUNT: React.CSSProperties = { minWidth: 14, borderRadius: 4, background: "rgba(255,255,255,0.08)", padding: "0 4px", textAlign: "center", color: "inherit" };
 const ROW: React.CSSProperties = { borderRadius: 7, padding: "2px 4px", marginBottom: 2 };
 const ROW_SELECTED: React.CSSProperties = { ...ROW, background: "rgba(86,194,113,0.12)", boxShadow: "inset 2px 0 0 #56C271" };
 const ROW_HEAD: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4 };

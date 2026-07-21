@@ -1,33 +1,53 @@
-# Design QA: PR review discussion filter
+# Design QA — Affected Logic Flows header
 
-## Reference and implementation
+## Comparison Target
 
-- Reference: selected Product Design concept 2 (`exec-ae07694a-91db-4066-8643-85163fe1f872.png`)
-- Implementation capture: `artifacts/pr-comment-filters/option-2-initial.png`
-- Combined comparison: `artifacts/pr-comment-filters/design-qa-comparison.png`
-- Viewport: 1440 x 1024
+- Source visual truth: selected concept 1, preserved as the left-hand source capture in `artifacts/pr-related-flows/design-qa/option-1-vs-implementation.png`
+- Browser-rendered implementation: `artifacts/pr-related-flows/design-qa/implementation-active.png`
+- Viewport: source normalized from 1672×941 to 1280×720; implementation captured at 1280×720
+- State: PR #7 prepared in the graph, `loyaltyTierFor` selected, Affected Logic Flows expanded, Related filter active
+- Full-view comparison: `artifacts/pr-related-flows/design-qa/option-1-vs-implementation.png`
+- Focused header comparison: `artifacts/pr-related-flows/design-qa/option-1-header-vs-implementation.png`
 
-## Visual review
+## Findings
 
-- The Discussion toolbar occupies the same location immediately above Files changed.
-- Typography, dark surfaces, restrained borders, compact spacing, and blue active treatment match Meridian's existing review and search-modal language.
-- The dropdown trigger carries the active scope and result ratio; its menu uses checked rows and right-aligned counts as in the selected concept.
-- The visibility action is a compact icon control at the far edge of the toolbar.
-- Pending drafts remain separate from GitHub comment filtering and render as an amber count chip when present.
-- The implementation capture's fixture had no pending draft and the dropdown was closed; those are data/interaction states rather than layout differences. Both states are covered by the implemented control logic and renderer tests.
+No actionable P0, P1, or P2 differences remain.
 
-## Interaction and accessibility review
+- Typography: The implementation preserves the product's existing uppercase section-label treatment, compact count text, and semantic green status badge. The complete `AFFECTED LOGIC FLOWS` title remains readable instead of inheriting the mock's generated truncation.
+- Spacing and layout rhythm: The disclosure, stable totals, new badge, and Related control share one 22 px header row. The trailing control remains separated from the disclosure hit area and the list begins immediately below the divider, matching the selected direction.
+- Colors and tokens: The inactive and active controls use Meridian's existing review-panel borders, foregrounds, and blue pressed-state tokens. The green `2 new` state remains consistent with the list's `NEW` badges.
+- Image and asset fidelity: This component introduces no image asset. Existing graph, toolbar, and review-panel assets remain unchanged and sharp in the browser capture; no placeholder, CSS-art, or substitute graphic was added.
+- Copy and content: The compact `Related 1` label communicates both the action and result count. The long explanatory hint was removed from the visible header and retained as disclosure help text.
+- Icons and affordances: The existing disclosure glyph remains attached only to the expandable left side. The Related control intentionally omits the mock's generated trailing arrow because it is a pressed-state filter, not navigation.
+- Behavior and accessibility: The disclosure exposes `aria-expanded` and `aria-controls`; the filter exposes a selected-node-specific accessible name and `aria-pressed`. Activating the filter keeps `0/2 · 2 new` stable, shows `loyaltyTierFor`, and removes `reviewFixtureMarker`.
+- Responsiveness: At the default 380 px PR-review rail, the full title and trailing action fit without wrapping or overlap. The title has an ellipsis fallback for narrower splitter positions.
 
-- All, Mine, and Participated update every existing-comment projection: files, code rows, and graph indicators.
-- Pending comments remain visible in every filter mode.
-- Changing filters re-enables comment visibility so a selected focus always produces visible feedback.
-- The menu supports Arrow Up/Down, Home/End, Enter/Space, Escape, focus return, and outside-click dismissal.
-- Menu rows expose `menuitemradio` and `aria-checked`; the trigger and visibility toggle expose descriptive accessible names and state.
+## Open Questions
 
-## Validation
+- None for the requested header redesign.
 
-- Renderer typecheck: passed.
-- Renderer tests: 225 files, 2017 tests passed.
-- Monorepo production build: passed.
+## Implementation Checklist
+
+- [x] Keep disclosure and Related filtering as independent controls.
+- [x] Keep aggregate progress totals stable while filtering.
+- [x] Preserve a single compact row at the default PR-review width.
+- [x] Verify inactive, active, and restored list states in the browser.
+- [x] Check browser console errors; none were present.
+
+## Follow-up Polish
+
+- [P3] The first flow name truncates slightly earlier than the generated mock at the default rail width. This predates the header placement change and does not obscure which flow is selected or block the filter interaction.
+
+## Comparison History
+
+- Pass 1: The normalized full-view and focused header comparisons found no actionable P0/P1/P2 mismatch, so no post-comparison visual fix was required. Evidence is the full-view and focused comparison files listed above.
+
+## Primary Interactions Tested
+
+- Selected `loyaltyTierFor` from the extracted graph.
+- Closed the code preview and confirmed the compact Related control appeared in the header.
+- Activated Related and verified only the related flow remained.
+- Deactivated Related and verified both affected flows returned.
+- Confirmed the disclosure totals remained `0/2 · 2 new` throughout.
 
 final result: passed

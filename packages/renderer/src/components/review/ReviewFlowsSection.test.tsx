@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import { affectedFlowTouchesIds, type AffectedFlowRow } from "../../derive/reviewData";
+import { affectedReviewFlowRelatesToNodes } from "../../derive/reviewFlowRelation";
 import { ReviewFlowsSection, affectedFlowFiles, affectedFlowGroupCount, visibleAffectedFlows } from "./ReviewFlowsSection";
 
 const WAIT_FLOW = {
@@ -67,6 +68,8 @@ const STATE = {
   reviewActiveGroupId: null,
   reviewPathScope: null,
   reviewFocusedSubgraph: null,
+  moduleSelected: new Set([ACK_FLOW.flowId]),
+  index: { nodesById: new Map([[ACK_FLOW.flowId, { displayName: "acknowledgeHookRegistration" }]]) },
   flowSelection: null,
   reviewFlowSplitView: "timeline",
   reviewOpenFlowSplitOnSelect: true,
@@ -97,6 +100,13 @@ describe("ReviewFlowsSection", () => {
     expect(markup).toContain('aria-label="View sequence for waitForHookRegistration"');
     expect(markup).not.toContain('aria-label="View sequence for acknowledgeHookRegistration"');
     expect(markup).toContain('aria-label="Affected logic flows list"');
+    expect(markup).toContain('aria-label="Show only flows related to acknowledgeHookRegistration"');
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain(">Related<");
+    expect(markup.indexOf('aria-label="Show only flows related to acknowledgeHookRegistration"'))
+      .toBeLessThan(markup.indexOf('role="region" aria-label="Affected logic flows list"'));
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('aria-controls="review-affected-logic-flows-list"');
   });
 
   it("retains every member's owner file for path and change-group scoping", () => {
@@ -106,6 +116,16 @@ describe("ReviewFlowsSection", () => {
       { id: "client", label: "client", files: ["src/client.ts"], moduleIds: [], flowIds: [WAIT_FLOW.flowId] },
       { id: "host", label: "host", files: ["src/hooks.ts"], moduleIds: [], flowIds: [ACK_FLOW.flowId] },
     ])).toBe(2);
+    expect(affectedReviewFlowRelatesToNodes(
+      NEW_ROW,
+      new Set([ACK_FLOW.flowId]),
+      new Set([ACK_FLOW.flowId]),
+    )).toBe(true);
+    expect(affectedReviewFlowRelatesToNodes(
+      NEW_ROW,
+      new Set(),
+      new Set([NEW_ROW.causalResourceId!]),
+    )).toBe(true);
   });
 
   it("does not offer base-side direct roots as PR-head flows in synchronous review mode", () => {
