@@ -209,6 +209,21 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+
+    // Ordinary preview actions remain transient: toggling viewed must not introduce a second
+    // pinned mode, extra close affordance, or a card that survives the hover-close grace.
+    const previewViewedButton = loyaltyPreview.locator(".review-node-viewed-button");
+    expect(await previewViewedButton.count()).toBe(1);
+    await previewViewedButton.click();
+    expect(await loyaltyPreview.getByText("Pinned", { exact: true }).count()).toBe(0);
+    expect(await loyaltyPreview.getByRole("button", { name: "Close code preview" }).count()).toBe(0);
+    await previewViewedButton.click();
+    await page.getByText("Files changed", { exact: true }).hover();
+    await page.waitForTimeout(500);
+    await loyaltyPreview.waitFor({ state: "detached" });
+    await loyaltyTierNode.hover();
+    await loyaltyPreview.waitFor();
+
     const sourceCommentRow = loyaltyPreview.locator(`tr[data-source-line="${SOURCE_COMMENT_LINE}"]`);
     const loyaltyReturnRow = loyaltyPreview.locator(`tr[data-source-line="${LOYALTY_RETURN_LINE}"]`);
     await sourceCommentRow.getByText(SOURCE_COMMENT_TEXT, { exact: true }).waitFor();
@@ -238,9 +253,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyPreview.waitFor();
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
 
-    // Starting a line comment turns the default hover preview into a sticky work surface. Pointer
-    // movement past the full hover-close grace preserves the exact draft, adding it keeps the card
-    // open with Pending confirmation, and only its explicit close control dismisses it.
+    // Starting a line comment keeps the default hover preview stable while the draft is active.
+    // Pointer movement past the full hover-close grace preserves the exact draft, and adding it
+    // keeps the card open with Pending confirmation until the reader dismisses it from the canvas.
     const inlineRange = fixture!.files[0].headerHunks[0];
     const firstInlineLine = inlineRange.start;
     const secondInlineLine = inlineRange.end;
@@ -269,7 +284,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await previewPendingDraft.getByText(DRAFT_TEXT, { exact: true }).waitFor();
     await previewPendingDraft.getByText("Pending", { exact: true }).waitFor();
     expect(await loyaltyPreview.isVisible()).toBe(true);
-    await loyaltyPreview.getByRole("button", { name: "Close code preview" }).click();
+    await clickBareCanvas(page, extractedReviewSurface);
     await loyaltyPreview.waitFor({ state: "detached" });
 
     // Agent-authored source explanations can be removed from the review surface. The preference
@@ -287,7 +302,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await loyaltyPreview.getByText(SOURCE_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
-    // Readers can independently switch previews from hover dwell to click-to-pin. Restore the
+    // Readers can independently switch previews from hover dwell to click-to-open. Restore the
     // source-comment diff before exercising that contract, then restore hover for the journey.
     await preferencesButton.click();
     await hideSourceCommentDiff.uncheck();

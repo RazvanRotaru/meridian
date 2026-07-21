@@ -3,7 +3,7 @@
  * node elements (and scales/clips them with the canvas), so this hook listens at the shared surface
  * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
  * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
- * pointer bridge the gap into the card and scroll it. Click previews stay pinned until another node
+ * pointer bridge the gap into the card and scroll it. Click previews stay open until another node
  * or the canvas is clicked. Source payload reuse belongs to the store's immutable request cache, so
  * hover and click cannot diverge through a second node-local cache that outlives a review revision.
  */
@@ -18,6 +18,8 @@ import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
 import type { CodeView } from "../../state/store";
 import { SourceDiffBody, useSourceDiffModel } from "../SourceDiffBody";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
+import { MaximizeIcon } from "../controlpanel/icons";
+import { ReviewPreviewViewedControl } from "./ReviewFileNodeViewedControls";
 import { useReviewLineComposerGuard } from "./useReviewLineComposerGuard";
 
 const OPEN_DWELL_MS = 220;
@@ -168,6 +170,17 @@ export interface NodeDiffPreviewControls {
   layer: ReactNode;
 }
 
+type ShowCodeAction = (
+  node: GraphNode,
+  opts?: { wholeFile?: boolean; mode?: CodeView["mode"] },
+) => void | Promise<void>;
+
+/** Promote the current subject without closing the preview directly. `showCode` owns the guarded
+ * modal transition, after which the hook's `codeModalOpen` effect performs the normal cleanup. */
+export function expandNodeDiffPreview(showCode: ShowCodeAction, node: LocatedGraphNode): void {
+  void showCode(node, { mode: "modal" });
+}
+
 export function useNodeDiffPreview(
   enabled: boolean,
   trigger: ReviewCodePreviewTrigger,
@@ -176,17 +189,17 @@ export function useNodeDiffPreview(
   const index = useBlueprint((state) => state.index);
   const reviewRevision = useBlueprint((state) => state.prReviewRevision);
   const codeModalOpen = useBlueprint((state) => state.codeView?.mode === "modal");
-  const { loadCodePreview } = useBlueprintActions();
+  const composerPath = useBlueprint((state) => state.reviewLineComposer?.path ?? null);
+  const { loadCodePreview, showCode } = useBlueprintActions();
   const [preview, setPreview] = useState<PreviewState | null>(null);
   const openTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const requestToken = useRef(0);
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
-  // Opening method and interaction intent are distinct. Click previews are already visually pinned
-  // but may still switch on another explicit node click; engaging with the card locks its subject.
-  const engagedRef = useRef(false);
-  const [pinnedNodeId, setPinnedNodeId] = useState<string | null>(null);
+  // An active line composer locks its source subject so a pointer crossing the graph cannot replace
+  // the code underneath a draft. Ordinary preview actions remain transient.
+  const composerEngagedRef = useRef(false);
 
   const clearOpenTimer = useCallback(() => {
     if (openTimer.current !== null) {
@@ -206,12 +219,11 @@ export function useNodeDiffPreview(
     clearCloseTimer();
     requestToken.current += 1;
     activeId.current = null;
-    engagedRef.current = false;
-    setPinnedNodeId(null);
+    composerEngagedRef.current = false;
     setPreview(null);
   }, [clearCloseTimer, clearOpenTimer]);
   const scheduleHide = useCallback(() => {
-    if (engagedRef.current || (activeId.current === null && pendingId.current === null)) {
+    if (composerEngagedRef.current || (activeId.current === null && pendingId.current === null)) {
       return;
     }
     clearOpenTimer();
@@ -224,17 +236,22 @@ export function useNodeDiffPreview(
     clearOpenTimer();
     clearCloseTimer();
   }, [clearCloseTimer, clearOpenTimer]);
-  const pinPreview = useCallback(() => {
+  const engageComposer = useCallback(() => {
     if (activeId.current === null) return;
-    engagedRef.current = true;
-    setPinnedNodeId(activeId.current);
+    composerEngagedRef.current = true;
     holdPreview();
   }, [holdPreview]);
   const requestHide = useReviewLineComposerGuard(hideNow, preview?.node.location.file ?? null);
   const requestHideRef = useRef(requestHide);
   const previousTrigger = useRef(trigger);
   requestHideRef.current = requestHide;
-  useClearOnEscape(requestHide, preview !== null && pinnedNodeId !== null);
+  useClearOnEscape(requestHide, preview !== null);
+
+  useEffect(() => {
+    if (preview === null || composerPath !== preview.node.location.file) {
+      composerEngagedRef.current = false;
+    }
+  }, [composerPath, preview?.node.location.file]);
 
   useEffect(() => {
     hideNow();
@@ -275,9 +292,9 @@ export function useNodeDiffPreview(
       return;
     }
     const { anchorId, node: graphNode, focus, label } = subject;
-    // Once the reader interacts with a preview it becomes a small working surface. Incidental node
-    // hover—and even another node click while writing—cannot replace its subject underneath them.
-    if (engagedRef.current) {
+    // Incidental node hover—and even another node click while writing—cannot replace the source
+    // subject underneath an active line-comment composer.
+    if (composerEngagedRef.current) {
       clearOpenTimer();
       return;
     }
@@ -304,8 +321,7 @@ export function useNodeDiffPreview(
       pendingId.current = null;
       const token = ++requestToken.current;
       activeId.current = anchorId;
-      engagedRef.current = false;
-      setPinnedNodeId(dwell ? null : anchorId);
+      composerEngagedRef.current = false;
       setPreview({
         anchorId,
         node: graphNode,
@@ -361,9 +377,8 @@ export function useNodeDiffPreview(
     ? createPortal(
         <NodeDiffPreviewCard
           preview={preview}
-          pinned={pinnedNodeId === preview.anchorId}
-          onEngage={pinPreview}
-          onClose={requestHide}
+          onComposerEngage={engageComposer}
+          onExpand={() => expandNodeDiffPreview(showCode, preview.node)}
           onMouseEnter={holdPreview}
           onMouseLeave={onPointerLeave}
         />,
@@ -384,9 +399,8 @@ export function useNodeDiffPreview(
 
 function NodeDiffPreviewCard(props: {
   preview: PreviewState;
-  pinned: boolean;
-  onEngage(): void;
-  onClose(): void;
+  onComposerEngage(): void;
+  onExpand(): void;
   onMouseEnter(): void;
   onMouseLeave(): void;
 }) {
@@ -418,19 +432,18 @@ function NodeDiffPreviewCard(props: {
 
   return (
     <div
-      className="nodrag nopan nowheel"
+      className="review-node-diff-preview nodrag nopan nowheel"
       role="dialog"
       aria-label={`Code preview for ${previewLabel}`}
       style={{ ...PANEL_STYLE, ...placement }}
       onMouseEnter={props.onMouseEnter}
       onMouseLeave={props.onMouseLeave}
-      onMouseDownCapture={props.onEngage}
-      onFocusCapture={props.onEngage}
       onMouseDown={stop}
       onClick={stop}
       onDoubleClick={stop}
       onWheel={stop}
     >
+      <ReviewPreviewViewedControl nodeId={preview.node.id} />
       <header style={HEADER_STYLE}>
         <div style={HEADER_TEXT_STYLE}>
           <div style={PATH_STYLE} title={preview.node.location.file}>{preview.node.location.file}</div>
@@ -442,18 +455,7 @@ function NodeDiffPreviewCard(props: {
             <span style={DELETED_STYLE}>−{model.summary.deleted}</span>
           </span>
         ) : null}
-        {props.pinned ? <span style={PINNED_STYLE}>Pinned</span> : null}
-        {props.pinned ? (
-          <button
-            type="button"
-            aria-label="Close code preview"
-            title="Close code preview"
-            style={CLOSE_STYLE}
-            onClick={props.onClose}
-          >
-            ×
-          </button>
-        ) : null}
+        <NodeDiffPreviewExpandButton onExpand={props.onExpand} />
       </header>
       <div style={BODY_STYLE}>
         <SourceDiffBody
@@ -464,10 +466,32 @@ function NodeDiffPreviewCard(props: {
           )}
           focusLines={focusLines}
           showGutter
-          onComposerEngage={props.onEngage}
+          onComposerEngage={props.onComposerEngage}
         />
       </div>
     </div>
+  );
+}
+
+/** Keep the header action pure so its graph-gesture contract is independently testable. The action
+ * requests the modal and lets `codeModalOpen` retire the preview through the hook's lifecycle. */
+export function NodeDiffPreviewExpandButton({ onExpand }: { onExpand: () => void }) {
+  return (
+    <button
+      type="button"
+      className="review-node-diff-preview-expand nodrag nopan"
+      aria-label="Expand code preview"
+      title="Expand code preview"
+      style={EXPAND_STYLE}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={(event) => {
+        event.stopPropagation();
+        onExpand();
+      }}
+      onDoubleClick={(event) => event.stopPropagation()}
+    >
+      <MaximizeIcon size={13} />
+    </button>
   );
 }
 
@@ -500,7 +524,7 @@ const PANEL_STYLE: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   boxSizing: "border-box",
-  overflow: "hidden",
+  overflow: "visible",
   background: "#0E1116",
   border: "1px solid #3A414C",
   borderRadius: 10,
@@ -516,6 +540,7 @@ const HEADER_STYLE: React.CSSProperties = {
   padding: "9px 12px",
   background: "#191E25",
   borderBottom: "1px solid #303742",
+  borderRadius: "9px 9px 0 0",
 };
 const HEADER_TEXT_STYLE: React.CSSProperties = { flex: 1, minWidth: 0 };
 const PATH_STYLE: React.CSSProperties = {
@@ -547,32 +572,24 @@ const SUMMARY_STYLE: React.CSSProperties = {
 };
 const ADDED_STYLE: React.CSSProperties = { color: "#56C271" };
 const DELETED_STYLE: React.CSSProperties = { color: "#F0787C" };
-const PINNED_STYLE: React.CSSProperties = {
-  flexShrink: 0,
-  border: "1px solid rgba(125,211,252,0.36)",
-  borderRadius: 999,
-  padding: "1px 6px",
-  color: "#7DD3FC",
-  background: "rgba(56,139,253,0.10)",
-  fontSize: 9.5,
-  fontWeight: 700,
-  letterSpacing: "0.02em",
-  textTransform: "uppercase",
-};
-const CLOSE_STYLE: React.CSSProperties = {
+const EXPAND_STYLE: React.CSSProperties = {
   flexShrink: 0,
   width: 24,
   height: 24,
   display: "inline-flex",
   alignItems: "center",
   justifyContent: "center",
-  border: "none",
+  padding: 0,
+  border: "1px solid #343C48",
   borderRadius: 6,
-  background: "transparent",
-  color: "#9AA4B2",
+  background: "#151A21",
+  color: "#A8B2C1",
   cursor: "pointer",
-  font: "inherit",
-  fontSize: 18,
-  lineHeight: 1,
 };
-const BODY_STYLE: React.CSSProperties = { minHeight: 0, padding: 9, overflow: "hidden", background: "#10151B" };
+const BODY_STYLE: React.CSSProperties = {
+  minHeight: 0,
+  padding: 9,
+  overflow: "hidden",
+  background: "#10151B",
+  borderRadius: "0 0 9px 9px",
+};

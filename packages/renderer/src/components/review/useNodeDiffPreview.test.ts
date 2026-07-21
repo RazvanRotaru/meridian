@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { GraphNode } from "@meridian/core";
 import type { Node as FlowNode } from "@xyflow/react";
 import type { PrGitHubComment } from "../../state/prTypes";
@@ -6,6 +6,8 @@ import type { ReviewComment } from "../../state/reviewTicksPref";
 import { codeReviewComments, codeReviewDrafts, commentableReviewLines, isHeadSideReviewComment } from "./useCodeReviewComments";
 import {
   codePreviewNode,
+  expandNodeDiffPreview,
+  NodeDiffPreviewExpandButton,
   placeNodeDiffPreview,
   resolveNodeDiffPreviewSubject,
   type PreviewRect,
@@ -101,6 +103,42 @@ describe("placeNodeDiffPreview", () => {
     expect(placement.left).toBeGreaterThanOrEqual(112);
     expect(placement.left + placement.width).toBeLessThanOrEqual(588);
     expect(placement.top).toBe(62);
+  });
+});
+
+describe("NodeDiffPreviewExpandButton", () => {
+  it("exposes a named header action while isolating pointer, click, and double-click gestures", () => {
+    const onExpand = vi.fn();
+    const button = NodeDiffPreviewExpandButton({ onExpand });
+    const stopPropagation = vi.fn();
+
+    button.props.onPointerDown({ stopPropagation });
+    button.props.onClick({ stopPropagation });
+    button.props.onDoubleClick({ stopPropagation });
+
+    expect(stopPropagation).toHaveBeenCalledTimes(3);
+    expect(onExpand).toHaveBeenCalledTimes(1);
+    expect(button.props.className).toContain("nodrag nopan");
+    expect(button.props["aria-label"]).toBe("Expand code preview");
+    expect(button.props.title).toBe("Expand code preview");
+    expect(button.props.type).toBe("button");
+  });
+
+  it("promotes the exact preview subject into the guarded modal source action", () => {
+    const node = {
+      id: "ts:src/live.ts#run",
+      kind: "function",
+      qualifiedName: "run",
+      displayName: "run",
+      parentId: null,
+      location: { file: "src/live.ts", startLine: 4, endLine: 8 },
+    };
+    const showCode = vi.fn();
+
+    expect(expandNodeDiffPreview(showCode, node)).toBeUndefined();
+
+    expect(showCode).toHaveBeenCalledTimes(1);
+    expect(showCode).toHaveBeenCalledWith(node, { mode: "modal" });
   });
 });
 
