@@ -330,6 +330,13 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
   };
 
   const onNodeClick: NodeMouseHandler<Node> = (event, node) => {
+    // React Flow reports a node click for any descendant of its wrapper. Expanded cards use that
+    // wrapper as a frame around their entire nested graph, so accepting every report makes blank
+    // body space and child content select the container. Selection belongs to the shared title
+    // strip only; nested controls already stop propagation and retain their own gestures.
+    if (!isNodeHeaderSelectionTarget(event.target)) {
+      return;
+    }
     // Selection is deliberately type-agnostic: real cards, synthetic parents, exact ghosts and
     // grouped ghost parents all enter the same selection (and therefore extraction) path.
     const gesture = selectionGestureFor(node, event);
@@ -423,6 +430,16 @@ export function useModuleNodeInteractions(overrides: NodeInteractionOverrides = 
 }
 
 export type SelectionGesture = "replace" | "toggle";
+
+/** React Flow's node wrapper is larger than the selectable chrome for expanded containers. Keep
+ * the hit-test structural so text, badges and other non-interactive header descendants all select,
+ * while the frame body and its nested graph do not. */
+export function isNodeHeaderSelectionTarget(target: EventTarget | null): boolean {
+  if (target === null || typeof (target as { closest?: unknown }).closest !== "function") {
+    return false;
+  }
+  return (target as Element).closest('[data-base-node-header="true"]') !== null;
+}
 
 /** The universal click contract is independent of node kind: plain click replaces selection,
  * ctrl/cmd click toggles membership. Keeping the node parameter makes that invariant testable. */

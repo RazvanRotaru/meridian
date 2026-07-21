@@ -7,6 +7,7 @@ import {
   ghostInspectionSelectionsToDrop,
   ghostPaintSeedOverride,
   ghostGroupInteractionOf,
+  isNodeHeaderSelectionTarget,
   navigationNodeForBaseNode,
   navigationForNode,
   retainsGhostPaintContext,
@@ -130,6 +131,19 @@ describe("universal module-node selection", () => {
       expect(selectionGestureFor(candidate, { ctrlKey: true, metaKey: false }), candidate.type).toBe("toggle");
       expect(selectionGestureFor(candidate, { ctrlKey: false, metaKey: true }), candidate.type).toBe("toggle");
     }
+  });
+
+  it("accepts selection only from the node header, not the expanded container body", () => {
+    const target = (header: boolean): EventTarget => ({
+      closest: (selector: string) => header && selector === '[data-base-node-header="true"]'
+        ? ({} as Element)
+        : null,
+    }) as unknown as EventTarget;
+
+    expect(isNodeHeaderSelectionTarget(target(true))).toBe(true);
+    expect(isNodeHeaderSelectionTarget(target(false))).toBe(false);
+    expect(isNodeHeaderSelectionTarget({} as EventTarget)).toBe(false);
+    expect(isNodeHeaderSelectionTarget(null)).toBe(false);
   });
 
   it("keeps each ghost's paint provenance through its debounce and multi-selection membership", () => {
