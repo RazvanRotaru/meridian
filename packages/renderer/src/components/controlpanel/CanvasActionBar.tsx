@@ -22,6 +22,7 @@ import {
   BackToGraphIcon,
   CloseIcon,
   CodebaseHighlightIcon,
+  CodePreviewVisibilityIcon,
   CollapseIcon,
   ExpandIcon,
   ExpandSelectionIcon,
@@ -70,6 +71,7 @@ export function CanvasActionBar({
   const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
   const showHighways = useBlueprint((state) => state.showHighways);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
   const reviewFlowOwnsSelection = useBlueprint((state) => state.review !== null && state.flowSelection !== null);
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
@@ -120,6 +122,7 @@ export function CanvasActionBar({
     resetMinimalGraph,
     closeMinimalGraph,
     openReviewSubgraph,
+    toggleReviewCodePreview,
     toggleHighways,
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
@@ -136,6 +139,7 @@ export function CanvasActionBar({
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";
   const showSourceSelectionActions = canExtract && !minimalOpen;
+  const showReviewCodePreviewAction = reviewActive && minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
   // Back is present at every extraction depth. A root graph also needs the wider nested-action
   // footprint whenever Extract (or the review-container equivalent) sits beside it.
@@ -151,7 +155,7 @@ export function CanvasActionBar({
     surfaceSize?.width ?? null,
     mode,
     surfaceSize?.height ?? null,
-    45,
+    45 + (showReviewCodePreviewAction ? 45 : 0),
   );
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -287,6 +291,17 @@ export function CanvasActionBar({
                   pressed={ghostNodesVisible}
                 />
               )}
+              {showReviewCodePreviewAction ? (
+                <CanvasActionButton
+                  ariaLabel="Code previews"
+                  title={reviewCodePreviewEnabled
+                    ? "Disable automatic code previews; use the node header View source button instead"
+                    : "Enable automatic code previews using the saved hover or click behavior"}
+                  icon={<CodePreviewVisibilityIcon size={18} />}
+                  onClick={toggleReviewCodePreview}
+                  pressed={reviewCodePreviewEnabled}
+                />
+              ) : null}
               <CanvasActionButton
                 ariaLabel="Highways"
                 title={showHighways
@@ -378,6 +393,17 @@ export function CanvasActionBar({
                   }}
                 />
               )}
+              {showReviewCodePreviewAction ? (
+                <CanvasActionButton
+                  ariaLabel="Code previews"
+                  title={reviewCodePreviewEnabled
+                    ? "Disable automatic code previews; use the node header View source button instead"
+                    : "Enable automatic code previews using the saved hover or click behavior"}
+                  icon={<CodePreviewVisibilityIcon size={18} />}
+                  onClick={toggleReviewCodePreview}
+                  pressed={reviewCodePreviewEnabled}
+                />
+              ) : null}
               <CanvasActionButton
                 ariaLabel="Back to extracted graph"
                 title="Return to the curated extracted graph"

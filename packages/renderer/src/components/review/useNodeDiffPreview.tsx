@@ -243,6 +243,7 @@ export function useNodeDiffPreview(
   }, [holdPreview]);
   const requestHide = useReviewLineComposerGuard(hideNow, preview?.node.location.file ?? null);
   const requestHideRef = useRef(requestHide);
+  const previousEnabled = useRef(enabled);
   const previousTrigger = useRef(trigger);
   requestHideRef.current = requestHide;
   useClearOnEscape(requestHide, preview !== null);
@@ -257,10 +258,19 @@ export function useNodeDiffPreview(
     hideNow();
   }, [reviewRevision, hideNow]);
   useEffect(() => {
-    if (!enabled || codeModalOpen) {
+    if (codeModalOpen) {
       hideNow();
     }
-  }, [codeModalOpen, enabled, hideNow]);
+  }, [codeModalOpen, hideNow]);
+  useEffect(() => {
+    if (previousEnabled.current === enabled) return;
+    previousEnabled.current = enabled;
+    if (!enabled) {
+      // Disabling previews is a user-facing host close. Preserve the same Keep/Discard guard used
+      // for trigger changes so an active line-comment draft is never orphaned.
+      requestHideRef.current();
+    }
+  }, [enabled]);
   useEffect(() => {
     if (previousTrigger.current === trigger) return;
     previousTrigger.current = trigger;

@@ -1,6 +1,9 @@
+import { CopyIcon } from "@radix-ui/react-icons";
+import codePreviewBracesUrl from "./code-preview-braces.png";
+
 /**
- * Tiny inline stroke icons for the control panel. Each inherits `currentColor` so the button that
- * hosts it decides the hue. Kept as bare SVGs (no icon dependency) to stay in the browser bundle.
+ * Tiny icons for the control panel. Each inherits `currentColor` so the button that hosts it
+ * decides the hue. Most stay as bare SVGs; sourced marks compose with the installed Radix set.
  */
 
 type IconProps = { size?: number };
@@ -45,6 +48,43 @@ export function RecenterIcon({ size = 15 }: IconProps) {
     <svg {...svgProps(size)}>
       <path d="M3 7V5a2 2 0 0 1 2-2h2M17 3h2a2 2 0 0 1 2 2v2M21 17v2a2 2 0 0 1-2 2h-2M7 21H5a2 2 0 0 1-2-2v-2" />
     </svg>
+  );
+}
+
+/** Supplied source braces over Radix preview cards — automatic review code previews. */
+export function CodePreviewVisibilityIcon({ size = 15 }: IconProps) {
+  const braceSize = size * 0.68;
+  return (
+    <span
+      aria-hidden
+      style={{
+        position: "relative",
+        display: "inline-flex",
+        width: size,
+        height: size,
+        alignItems: "center",
+        justifyContent: "center",
+        lineHeight: 0,
+      }}
+    >
+      <CopyIcon width={size} height={size} style={{ opacity: 0.58 }} />
+      <span
+        style={{
+          position: "absolute",
+          width: braceSize,
+          height: braceSize,
+          backgroundColor: "currentColor",
+          WebkitMaskImage: `url("${codePreviewBracesUrl}")`,
+          WebkitMaskPosition: "center",
+          WebkitMaskRepeat: "no-repeat",
+          WebkitMaskSize: "contain",
+          maskImage: `url("${codePreviewBracesUrl}")`,
+          maskPosition: "center",
+          maskRepeat: "no-repeat",
+          maskSize: "contain",
+        }}
+      />
+    </span>
   );
 }
 

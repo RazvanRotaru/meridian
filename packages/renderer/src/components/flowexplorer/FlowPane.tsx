@@ -716,10 +716,12 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
   const edges = useBlueprint((state) => state.flowPaneRfEdges);
   const status = useBlueprint((state) => state.flowPaneLayoutStatus);
   const logicSelected = useBlueprint((state) => state.logicSelected);
-  const reviewCodePreviewEnabled = useBlueprint(
+  const reviewCodePreviewEligible = useBlueprint(
     (state) => state.flowSelection !== null && state.reviewFlowBaseline !== null,
   );
+  const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
   const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
+  const codePreviewEnabled = reviewCodePreviewEligible && reviewCodePreviewEnabled;
   const executionOpen = useBlueprint((state) => state.flowPaneOrigin === "request" || state.flowPaneOrigin === "synthetic");
   const syntheticOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic");
   const syntheticPresentation = useBlueprint((state) => state.syntheticFlowPresentation);
@@ -732,7 +734,7 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
     openLogicFlow,
   } = useBlueprintActions();
   const nodeDiff = useNodeDiffPreview(
-    reviewCodePreviewEnabled,
+    codePreviewEnabled,
     reviewCodePreviewTrigger,
     flowPaneCodePreviewTarget,
   );
@@ -859,7 +861,7 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
               fitReadyNodes(instance);
             }}
             onNodeClick={(event, node) => {
-              if (reviewCodePreviewEnabled) {
+              if (codePreviewEnabled) {
                 nodeDiff.onNodeClick(event, node);
               }
               const target = artifactTargetOf(node);
@@ -878,12 +880,12 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
                 selectFlowPaneTarget(executionOpen ? target : target === logicSelected ? null : target);
               }
             }}
-            onNodeMouseEnter={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseEnter : undefined}
-            onNodeMouseMove={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseMove : undefined}
-            onNodeMouseLeave={reviewCodePreviewEnabled ? nodeDiff.onNodeMouseLeave : undefined}
-            onPaneMouseMove={reviewCodePreviewEnabled ? nodeDiff.onPaneMouseMove : undefined}
+            onNodeMouseEnter={codePreviewEnabled ? nodeDiff.onNodeMouseEnter : undefined}
+            onNodeMouseMove={codePreviewEnabled ? nodeDiff.onNodeMouseMove : undefined}
+            onNodeMouseLeave={codePreviewEnabled ? nodeDiff.onNodeMouseLeave : undefined}
+            onPaneMouseMove={codePreviewEnabled ? nodeDiff.onPaneMouseMove : undefined}
             onPaneClick={() => {
-              if (reviewCodePreviewEnabled) {
+              if (codePreviewEnabled) {
                 nodeDiff.onPaneClick();
               }
               selectFlowPaneTarget(null);

@@ -53,6 +53,26 @@ function freshStore() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("flow explorer store slice", () => {
+  it("keeps automatic code-preview availability as session-only view state", () => {
+    const persisted = new Map<string, string>();
+    vi.stubGlobal("window", {
+      localStorage: {
+        getItem: (key: string) => persisted.get(key) ?? null,
+        setItem: (key: string, value: string) => void persisted.set(key, value),
+      },
+    });
+    const store = freshStore();
+
+    expect(store.getState().reviewCodePreviewEnabled).toBe(true);
+    store.getState().toggleReviewCodePreview();
+    expect(store.getState().reviewCodePreviewEnabled).toBe(false);
+    expect(persisted.size).toBe(0);
+    store.getState().toggleReviewCodePreview();
+    expect(store.getState().reviewCodePreviewEnabled).toBe(true);
+    expect(persisted.size).toBe(0);
+    expect(freshStore().getState().reviewCodePreviewEnabled).toBe(true);
+  });
+
   it("persists projection, split-opening, code-preview, and source-comment preferences without clobbering another choice", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {

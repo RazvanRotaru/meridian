@@ -583,6 +583,9 @@ export interface BlueprintState {
   /** Pointer gesture which opens the graph node's transient code preview. Browser-local so a
    * reader's preference follows them between repositories and reviews. */
   reviewCodePreviewTrigger: ReviewCodePreviewTrigger;
+  /** Whether graph and logic-flow node gestures may open transient code previews. Session-only;
+   * source stays available through each node header's explicit View source action. */
+  reviewCodePreviewEnabled: boolean;
   /** Show newly added, comment-only source rows as neutral context instead of diff additions.
    * Browser-local so the reader's source-diff preference follows them between reviews. */
   reviewHideAddedSourceCommentDiffs: boolean;
@@ -918,6 +921,7 @@ export interface BlueprintState {
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
   setReviewCodePreviewTrigger(trigger: ReviewCodePreviewTrigger): void;
+  toggleReviewCodePreview(): void;
   setReviewHideAddedSourceCommentDiffs(hide: boolean): void;
   toggleReviewDiffOnly(): void;
   toggleReviewPanel(): void;
@@ -2549,6 +2553,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewFlowExplicitView: null,
     reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
+    reviewCodePreviewEnabled: true,
     reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
@@ -5632,6 +5637,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
       });
       set({ reviewCodePreviewTrigger: trigger });
+    },
+
+    toggleReviewCodePreview() {
+      set((state) => ({ reviewCodePreviewEnabled: !state.reviewCodePreviewEnabled }));
     },
 
     setReviewHideAddedSourceCommentDiffs(hide) {
