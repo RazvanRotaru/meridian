@@ -89,6 +89,7 @@ const KIND_RANK: Record<string, number> = {
   module: 1,
   namespace: 1,
   class: 2,
+  object: 2,
   interface: 2,
   enum: 2,
   typeAlias: 2,

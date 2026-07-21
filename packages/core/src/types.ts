@@ -25,6 +25,7 @@ export type NodeKind =
   | "module"
   | "namespace"
   | "class"
+  | "object"
   | "interface"
   | "enum"
   | "typeAlias"

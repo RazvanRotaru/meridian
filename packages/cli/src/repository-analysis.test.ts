@@ -33,7 +33,7 @@ describe("canonical repository analysis", () => {
       includeUnresolved: false,
       materializeBoundary: true,
       excludeTests: false,
-      valueRefs: false,
+      valueRefs: true,
       changedSince: "origin/main",
       changedSinceTimeoutMs: undefined,
       changedSinceGitExecutor: undefined,
