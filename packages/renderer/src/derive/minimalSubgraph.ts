@@ -29,6 +29,7 @@ import { BLOCK_KINDS, UNIT_CARD_KINDS, constructionTarget, type BlockDeps } from
 import type { StepData } from "./flowSteps";
 import { depWireEdges, stepCallEdges } from "./codeWalk";
 import { ghostDepWires, withoutHidden, type GhostData, type GhostEmission } from "./ghostDeps";
+import { buildIpcEdges } from "./moduleIpc";
 import { crossesPackageBoundary, underlyingEdgesCrossPackage } from "./packageBoundary";
 import {
   walkCodeRoot,
@@ -117,10 +118,16 @@ export function buildMinimalSubgraph(
   code: CodeContext = NO_CODE,
   hiddenIds: ReadonlySet<string> = EMPTY_IDS,
 ): MinimalSubgraphSpec {
+  // The ordinary Map collapses each sends→channel→handles pair into one sender→handler IPC edge.
+  // Carry that same semantic edge into the extracted overlay as a local dependency substrate: when
+  // both endpoints are members it becomes a direct wire, and when only one is present the other is
+  // retained as a ghost. Keeping this local avoids double-emitting IPC in the ordinary Map, which
+  // already adds its own `ipcTreeEdges` layer.
+  const effectiveCode = withMinimalIpcEdges(index, code);
   const fileVisible = new Set([...memberIds].filter((id) => isModule(index, id)));
   const { keptNodeIds, fileCountByGroup } = closeOverAncestors(index, fileVisible);
   const collapse = collapseChains(index, keptNodeIds);
-  const allWalks = walkVisibleMembers(index, graph, memberIds, code);
+  const allWalks = walkVisibleMembers(index, graph, memberIds, effectiveCode);
   const walks = withoutEmbeddedMemberWalks(allWalks);
   // An exact member absorbed into another selected expansion is still code, even though it no
   // longer owns a second top-level walk. Keep it out of the group-card fallback.
@@ -132,10 +139,10 @@ export function buildMinimalSubgraph(
     collapse,
     fileCountByGroup,
     walks,
-    expandableGroupIds: code.expandableGroupIds ?? EMPTY_IDS,
+    expandableGroupIds: effectiveCode.expandableGroupIds ?? EMPTY_IDS,
   };
-  const emission = projectGhosts(index, memberIds, walks, code, hiddenIds);
-  const inspection = inspectionDepEdges(index, memberIds, walks, code);
+  const emission = projectGhosts(index, memberIds, walks, effectiveCode, hiddenIds);
+  const inspection = inspectionDepEdges(index, memberIds, walks, effectiveCode);
   const visibility = minimalVisibility(memberIds, walks);
   // Cross-expansion step calls are needed only when the extraction itself names an exact
   // declaration/step root. Ordinary file members retain their grouped file-level relationships.
@@ -155,10 +162,10 @@ export function buildMinimalSubgraph(
   // Direct mode is the settled presentation substrate: it already projects every visible raw
   // dependency, so do not scan the full dependency set again merely to exclude every one of them.
   // Exact synthetic step calls are separate from that artifact substrate and remain additive.
-  const projectedDependencies = code.directDependencies === true
+  const projectedDependencies = effectiveCode.directDependencies === true
     ? inspection.edges
     : [
-        ...depEdges(index, memberIds, code, inspection.incidentEdgeIds, supersededCalls),
+        ...depEdges(index, memberIds, effectiveCode, inspection.incidentEdgeIds, supersededCalls),
         ...inspection.edges,
       ];
   const dependencies = mergeProjectedDepEdges([
@@ -167,7 +174,12 @@ export function buildMinimalSubgraph(
     // roots over the complete extracted frontier so step→definition relationships survive.
     ...exactStepCallEdges,
   ]);
-  const flowEdges = visibleFlowChainEdges(visibility.visibleIds, index, code.expanded, code.flows)
+  const flowEdges = visibleFlowChainEdges(
+    visibility.visibleIds,
+    index,
+    effectiveCode.expanded,
+    effectiveCode.flows,
+  )
     .map(toMinimalFlowEdge);
   // A folder group-ghost can carry the id of a member's own (never-rendered) ancestor frame — the
   // ghost card wins the id so the spec stays one-node-per-id (frames are flattened away anyway).
@@ -192,6 +204,24 @@ export function buildMinimalSubgraph(
         return id.startsWith("step:") && owner !== undefined ? [[id, owner] as const] : [];
       }),
     ),
+  };
+}
+
+/** Add the Map's collapsed RPC/IPC semantics only to this extracted-graph derivation. */
+function withMinimalIpcEdges(index: GraphIndex, code: CodeContext): CodeContext {
+  const existing = new Set(
+    code.blockDeps.edges
+      .filter((edge) => edge.kind === "ipc")
+      .map((edge) => `${edge.source}\u0000${edge.target}`),
+  );
+  const ipcEdges = buildIpcEdges(index.edges)
+    .filter((edge) => !existing.has(`${edge.source}\u0000${edge.target}`));
+  if (ipcEdges.length === 0) {
+    return code;
+  }
+  return {
+    ...code,
+    blockDeps: { edges: [...code.blockDeps.edges, ...ipcEdges] },
   };
 }
 

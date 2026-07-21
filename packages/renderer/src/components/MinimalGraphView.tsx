@@ -223,11 +223,12 @@ export function MinimalGraphView({
       >
         {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
             overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
-            shows only when a group member/ghost card is actually present; IPC opts out always. */}
+            shows only when a group member/ghost card is actually present; IPC joins the key only
+            when the extracted graph contains a collapsed sender→handler wire. */}
         <MapLegend
           hasSteps={visibleGraph.nodes.some((node) => node.type === "step")}
           showPackages={visibleGraph.nodes.some((node) => node.type === "package")}
-          showIpc={false}
+          showIpc={relationKinds.includes("ipc")}
           relationPolicy={relations}
         />
         <CanvasActionBar
