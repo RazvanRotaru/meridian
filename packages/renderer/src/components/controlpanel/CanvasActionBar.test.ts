@@ -22,15 +22,15 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(936, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
-  it("accounts for the review-only neighbourhood action in row and stacked placement", () => {
-    expect(canvasActionPlacement(1349, "review-focus", null, 45)).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1038, "review-focus", null, 45)).toEqual({
+  it("accounts for the review-only neighbourhood and code-preview actions in row and stacked placement", () => {
+    expect(canvasActionPlacement(1394, "review-focus", null, 90)).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1083, "review-focus", null, 90)).toEqual({
       position: "bottom-left",
       layout: "row",
       left: 327,
       bottom: 181,
     });
-    expect(canvasActionPlacement(1037, "review-focus", null, 45)).toEqual({
+    expect(canvasActionPlacement(1082, "review-focus", null, 90)).toEqual({
       position: "bottom-left",
       layout: "stacked",
       left: 327,
@@ -334,6 +334,57 @@ describe("CanvasActionBar ghost visibility", () => {
     const hiddenButton = actionButtonMarkup(hiddenMarkup, "Show ghost nodes");
     expect(hiddenButton).toContain('aria-pressed="false"');
     expect(describedText(hiddenMarkup, hiddenButton)).toBe("Show ghost nodes and their connections");
+  });
+});
+
+describe("CanvasActionBar code-preview visibility", () => {
+  it("places one accessible enable/disable action in each review surface's right-side group", () => {
+    const store = actionBarStore();
+    expect(renderActionBar(store)).not.toContain('aria-label="Code previews"');
+
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-code-preview",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    expect(renderActionBar(store)).not.toContain('aria-label="Code previews"');
+
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+    });
+
+    const graphMarkup = renderActionBar(store);
+    const enabledButton = actionButtonMarkup(graphMarkup, "Code previews");
+    expect(enabledButton).toContain('aria-pressed="true"');
+    expect(describedText(graphMarkup, enabledButton)).toBe(
+      "Disable automatic code previews; use the node header View source button instead",
+    );
+    expect(graphMarkup.match(/aria-label="Code previews"/g)).toHaveLength(1);
+    expect(graphMarkup.indexOf('aria-label="Code previews"')).toBeGreaterThan(
+      graphMarkup.indexOf('aria-label="Extracted graph actions"'),
+    );
+
+    store.setState({ reviewCodePreviewEnabled: false });
+    const codebaseMarkup = renderActionBar(store, { minimalView: "codebase" });
+    const disabledButton = actionButtonMarkup(codebaseMarkup, "Code previews");
+    expect(disabledButton).toContain('aria-pressed="false"');
+    expect(describedText(codebaseMarkup, disabledButton)).toBe(
+      "Enable automatic code previews using the saved hover or click behavior",
+    );
+    expect(codebaseMarkup.match(/aria-label="Code previews"/g)).toHaveLength(1);
+    expect(codebaseMarkup.indexOf('aria-label="Code previews"')).toBeGreaterThan(
+      codebaseMarkup.indexOf('aria-label="Codebase view actions"'),
+    );
   });
 });
 

@@ -113,6 +113,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByRole("button", { name: "Highlight code in codebase" }).click();
     const codebaseContext = page.getByRole("region", { name: "Codebase context graph" });
     await codebaseContext.getByText("READ-ONLY", { exact: true }).waitFor();
+    const codebasePreviewToggle = codebaseContext
+      .getByRole("group", { name: "Canvas actions" })
+      .getByRole("group", { name: "Codebase view actions" })
+      .getByRole("button", { name: "Code previews", exact: true });
+    expect(await codebasePreviewToggle.getAttribute("aria-pressed")).toBe("true");
     await codebaseContext.locator(`.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`).waitFor();
     await codebaseContext.locator(`.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`).waitFor();
     const unchangedModule = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_SERVICE_MODULE_ID}"]`);
@@ -366,8 +371,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await loyaltyPreview.getByText(SOURCE_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
-    // Readers can independently switch previews from hover dwell to click-to-open. Restore the
-    // source-comment diff before exercising that contract, then restore hover for the journey.
+    // The saved hover/click preference remains independently configurable. Restore the source-comment
+    // diff before exercising click-to-open, then return to hover for the visibility control below.
     await preferencesButton.click();
     await hideSourceCommentDiff.uncheck();
     await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
@@ -385,6 +390,29 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await preferencesButton.click();
     await preferencesPane.getByRole("radio", { name: /^On hover/ }).check();
     await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
+
+    // The right-side action fully disables automatic previews without disabling the node header's
+    // explicit source action. Both hover and click stay inert while the control is unpressed.
+    const codePreviewToggle = extractedReviewSurface
+      .getByRole("group", { name: "Canvas actions" })
+      .getByRole("group", { name: "Extracted graph actions" })
+      .getByRole("button", { name: "Code previews", exact: true });
+    expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("true");
+    await loyaltyTierNode.hover();
+    await loyaltyPreview.waitFor();
+    await codePreviewToggle.click();
+    await loyaltyPreview.waitFor({ state: "detached" });
+    expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("false");
+    await loyaltyTierNode.hover();
+    await page.waitForTimeout(350);
+    expect(await loyaltyPreview.count()).toBe(0);
+    await preferencesButton.click();
+    await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
+    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
+    expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("false");
+    await nodeHeader(loyaltyTierNode).click();
+    await page.waitForTimeout(250);
+    expect(await loyaltyPreview.count()).toBe(0);
 
     const loyaltyCodeButton = loyaltyTierNode.getByRole("button", { name: "View source" });
     await loyaltyCodeButton.click();

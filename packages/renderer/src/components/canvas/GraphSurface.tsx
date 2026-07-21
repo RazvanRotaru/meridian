@@ -296,6 +296,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const selected = props.selectionOverride ?? storeSelected;
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
   const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
+  const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
   const telemetryMode = useBlueprint((state) => state.telemetryMode);
@@ -659,8 +660,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
     () => [...wire.edges, ...preparedEdges.hierarchyEdges],
     [wire.edges, preparedEdges.hierarchyEdges],
   );
-  const nodeDiffEnabled = props.nodeDiffPreview === true;
-  const nodeDiff = useNodeDiffPreview(nodeDiffEnabled, reviewCodePreviewTrigger);
+  const reviewSurfaceEnabled = props.nodeDiffPreview === true;
+  const codePreviewEnabled = reviewSurfaceEnabled && reviewCodePreviewEnabled;
+  const nodeDiff = useNodeDiffPreview(codePreviewEnabled, reviewCodePreviewTrigger);
   const surfaceNodeClick = props.readOnly
     ? props.selectionOnly
       ? props.interactions.onNodeClick
@@ -687,7 +689,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     <SurfaceInteractionScope
       readOnly={props.readOnly === true}
       selectionOverride={props.selectionOverride ?? null}
-      reviewProgressEnabled={nodeDiffEnabled}
+      reviewProgressEnabled={reviewSurfaceEnabled}
     >
     <div
       style={SURFACE_STYLE}
@@ -721,19 +723,19 @@ export function GraphSurface(props: GraphSurfaceProps) {
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
-        onNodeClick={nodeDiffEnabled
+        onNodeClick={codePreviewEnabled
           ? (event, node) => {
               nodeDiff.onNodeClick(event, node);
               surfaceNodeClick?.(event, node);
             }
           : surfaceNodeClick}
         onNodeDoubleClick={props.readOnly || props.selectionOnly ? undefined : props.interactions.onNodeDoubleClick}
-        onNodeMouseEnter={nodeDiffEnabled ? nodeDiff.onNodeMouseEnter : undefined}
-        onNodeMouseMove={nodeDiffEnabled ? nodeDiff.onNodeMouseMove : undefined}
-        onNodeMouseLeave={nodeDiffEnabled ? nodeDiff.onNodeMouseLeave : undefined}
-        onPaneMouseMove={nodeDiffEnabled ? nodeDiff.onPaneMouseMove : undefined}
+        onNodeMouseEnter={codePreviewEnabled ? nodeDiff.onNodeMouseEnter : undefined}
+        onNodeMouseMove={codePreviewEnabled ? nodeDiff.onNodeMouseMove : undefined}
+        onNodeMouseLeave={codePreviewEnabled ? nodeDiff.onNodeMouseLeave : undefined}
+        onPaneMouseMove={codePreviewEnabled ? nodeDiff.onPaneMouseMove : undefined}
         onPaneClick={() => {
-          if (nodeDiffEnabled) {
+          if (codePreviewEnabled) {
             nodeDiff.onPaneClick();
           }
           // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
@@ -770,7 +772,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           semanticFirstPreviewMax={semanticFirstPreviewMax}
           semanticLodEnabled={props.semanticLodEnabled}
         />
-        {nodeDiffEnabled ? <ReviewCommentNodeIndicators visibleNodes={requestPaintedNodes} /> : null}
+        {reviewSurfaceEnabled ? <ReviewCommentNodeIndicators visibleNodes={requestPaintedNodes} /> : null}
         {projectedRequestNodes === null ? null : (
           <RequestGraphNodeBadges visibleNodes={requestPaintedNodes} evidenceByNodeId={projectedRequestNodes} />
         )}
