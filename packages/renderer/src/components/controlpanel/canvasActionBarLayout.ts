@@ -19,13 +19,14 @@ export function canvasActionPlacement(
   surfaceWidth: number | null,
   mode: CanvasActionMode,
   surfaceHeight: number | null = null,
+  extraActionWidth = 0,
 ): CanvasActionPlacement {
-  const rowWidth = BAR_WIDTHS[mode];
+  const rowWidth = BAR_WIDTHS[mode] + extraActionWidth;
   const layout: CanvasActionLayout =
     surfaceWidth !== null && mode !== "base" && surfaceWidth < CONTROL_CLEARANCE + rowWidth + EDGE_GAP
       ? "stacked"
       : "row";
-  const barWidth = layout === "stacked" ? STACKED_BAR_WIDTHS[mode] : rowWidth;
+  const barWidth = layout === "stacked" ? STACKED_BAR_WIDTHS[mode] + extraActionWidth : rowWidth;
 
   if (surfaceWidth === null || (layout === "row" && surfaceWidth >= CONTROL_CLEARANCE * 2 + rowWidth)) {
     return { position: "bottom-center", layout };

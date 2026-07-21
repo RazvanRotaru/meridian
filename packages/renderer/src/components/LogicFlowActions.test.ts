@@ -27,6 +27,23 @@ describe("Logic Flow action scope", () => {
       canCollapse: false,
     });
   });
+
+  it("uses an exact occurrence selection, including targetless structural nodes", () => {
+    const scope = logicSelectionActionScope([
+      logicNode("selected-control", { expandable: true, isExpanded: false }),
+      {
+        ...logicNode("selected-child", { expandable: true, isExpanded: true }),
+        parentId: "selected-control",
+      },
+      logicNode("peer", { expandable: true, isExpanded: false }),
+    ] as never, "persisted-target", new Set(["selected-control"]));
+
+    expect(scope).toEqual({
+      nodeIds: ["selected-control"],
+      canExpand: true,
+      canCollapse: true,
+    });
+  });
 });
 
 function logicNode(

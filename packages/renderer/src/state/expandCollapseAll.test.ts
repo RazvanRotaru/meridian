@@ -371,6 +371,24 @@ describe("expandAll / collapseAll — Logic-flow graph", () => {
     expect(store.getState().expandedLogic).toEqual(new Set(["selected-call-1", "selected-call-2"]));
   });
 
+  it("scopes containment to a transient exact occurrence selection", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "logic",
+      logicSelected: "ts:src/callee.ts#run",
+      logicRfNodes: [
+        { id: "selected-call", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/callee.ts#run", expandable: true, isExpanded: false, isContainer: false } },
+        { id: "neighbour-control", type: "control", position: { x: 0, y: 0 }, data: { targetId: null, expandable: true, isExpanded: false, isContainer: false } },
+        { id: "same-target-peer", type: "block", position: { x: 0, y: 0 }, data: { targetId: "ts:src/callee.ts#run", expandable: true, isExpanded: false, isContainer: false } },
+      ] as never,
+      expandedLogic: new Set(),
+    });
+
+    store.getState().expandLogicOccurrences(["selected-call", "neighbour-control"]);
+
+    expect(store.getState().expandedLogic).toEqual(new Set(["selected-call", "neighbour-control"]));
+  });
+
   it("collapseAll closes only the selected occurrences and their open descendants", () => {
     const store = freshStore();
     store.setState({

@@ -59,6 +59,20 @@ export function ExtractSelectionIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** A selected center gaining its complete one-hop graph neighbourhood. */
+export function ExpandSelectionIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <circle cx="12" cy="12" r="2.5" />
+      <circle cx="5" cy="6" r="1.7" />
+      <circle cx="19" cy="6" r="1.7" />
+      <circle cx="5" cy="18" r="1.7" />
+      <circle cx="19" cy="18" r="1.7" />
+      <path d="m10 10-3.7-2.8M14 10l3.7-2.8M10 14l-3.7 2.8M14 14l3.7 2.8" />
+    </svg>
+  );
+}
+
 /** A card with a minus — remove view-local membership without implying code deletion. */
 export function RemoveSelectionIcon({ size = 15 }: IconProps) {
   return (

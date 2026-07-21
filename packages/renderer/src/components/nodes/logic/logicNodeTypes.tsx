@@ -30,6 +30,7 @@ import {
   handoffLogicEdgeDisclosureFocus,
   useLogicEdgeCollapseAction,
 } from "../../edges/LogicEdgeActionScope";
+import { useLogicOccurrenceSelection } from "./LogicOccurrenceSelectionContext";
 
 const MONO = "ui-monospace, SFMono-Regular, Menlo, monospace";
 
@@ -203,9 +204,14 @@ function BlockNode({ id, data }: NodeProps<LogicRfNode>) {
     [artifact, coverageMode],
   );
   const d = data as LogicNodeData;
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const select = d.runtime && flowPaneOrigin === "synthetic" && syntheticSelectedMomentId !== null
     ? syntheticOccurrenceSelectState(id, syntheticSelectedMomentId)
-    : selectStateFor(d.targetId, d.runtime ? requestSelected : logicSelected);
+    : selectStateForOccurrence(
+        exactOccurrenceSelected,
+        d.targetId,
+        d.runtime ? requestSelected : logicSelected,
+      );
   const changedStatus = d.changedStatus
     ?? (d.definition && d.targetId ? index.changedStatus.get(d.targetId) : undefined);
   const changed = changedStatus !== undefined;
@@ -498,14 +504,19 @@ function formatRuntimeDuration(durationMs: number): string {
  * navigates). It carries NO exec pins: the white wires thread between the child blocks across frames,
  * never through the frame itself. The body stays transparent for ELK-placed children.
  */
-function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
+function ServiceGroupNode({ id, data }: NodeProps<LogicRfNode>) {
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
   const owner = d.owner;
   if (!owner) {
     return null; // a service frame is only ever emitted WITH an owner; defensive against a bad spec.
   }
   return (
-    <div style={serviceFrameStyle(owner.health)}>
+    <div style={selectStyle(
+      serviceFrameStyle(owner.health),
+      selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected),
+    )}>
       <div style={{ ...SERVICE_RAIL, background: owner.health }} />
       <div style={SERVICE_TITLE} title="Double-click to open in Service composition">
         <span style={{ ...SERVICE_DOT, background: owner.health }} />
@@ -521,9 +532,10 @@ function ServiceGroupNode({ data }: NodeProps<LogicRfNode>) {
 
 function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
   const model = controlBaseNodeModel(id, d);
-  const select = selectStateFor(d.targetId, logicSelected);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const accent = CONTROL_ACCENT[d.logicKind] ?? LOOP_ACCENT;
   const glyph = CONTROL_GLYPH[d.logicKind] ?? "↻";
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
@@ -563,9 +575,10 @@ function ControlNode({ id, data }: NodeProps<LogicRfNode>) {
 function BranchNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
   const model = controlBaseNodeModel(id, d);
-  const select = selectStateFor(d.targetId, logicSelected);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   const ports = d.isExpanded ? (
     <>
@@ -588,7 +601,7 @@ function BranchNode({ id, data }: NodeProps<LogicRfNode>) {
   return (
     <BaseNode
       model={model}
-      style={withChanged(structuralBodyStyle(BRANCH_ACCENT), changedRing, select)}
+      style={withChanged(selectStyle(structuralBodyStyle(BRANCH_ACCENT), select), changedRing, select)}
       headerStyle={structuralHeaderStyle(BRANCH_ACCENT)}
       labelStyle={NAME}
       labelContent={conditionText(d.label)}
@@ -612,9 +625,10 @@ function BranchNode({ id, data }: NodeProps<LogicRfNode>) {
 function ExceptionNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
   const model = controlBaseNodeModel(id, d);
-  const select = selectStateFor(d.targetId, logicSelected);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   const ports = d.isExpanded ? (
     <>
@@ -640,7 +654,7 @@ function ExceptionNode({ id, data }: NodeProps<LogicRfNode>) {
   return (
     <BaseNode
       model={model}
-      style={withChanged(structuralBodyStyle(TRY_ACCENT), changedRing, select)}
+      style={withChanged(selectStyle(structuralBodyStyle(TRY_ACCENT), select), changedRing, select)}
       headerStyle={structuralHeaderStyle(TRY_ACCENT)}
       labelStyle={NAME}
       labelContent="protected block"
@@ -663,14 +677,15 @@ function ExceptionNode({ id, data }: NodeProps<LogicRfNode>) {
  * never as another optional branch or ordinary call. */
 function FinallyNode({ id, data }: NodeProps<LogicRfNode>) {
   const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
   const model = controlBaseNodeModel(id, d);
-  const select = selectStateFor(d.targetId, logicSelected);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   return (
     <BaseNode
       model={model}
-      style={withChanged(structuralBodyStyle(TRY_ACCENT), changedRing, select)}
+      style={withChanged(selectStyle(structuralBodyStyle(TRY_ACCENT), select), changedRing, select)}
       headerStyle={structuralHeaderStyle(TRY_ACCENT)}
       labelStyle={NAME}
       labelContent="cleanup"
@@ -710,10 +725,13 @@ function exceptionPinStyle(
 
 /** Explicit branch reconvergence. A one-way open funnel deliberately avoids the closed diamond
  * silhouette reserved for decisions. A return/throw arm dead-ends before it and never arrives here. */
-function JoinNode() {
+function JoinNode({ id }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, null, logicSelected);
   return (
-    <div style={JOIN_WRAP} title="Branch paths merge" role="img" aria-label="Branch paths merge">
+    <div style={selectStyle(JOIN_WRAP, select)} title="Branch paths merge" role="img" aria-label="Branch paths merge">
       <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={JOIN_INPUT_PIN} isConnectable={false} />
       <Handle type="source" position={orientation === "horizontal" ? Position.Right : Position.Bottom} style={JOIN_OUTPUT_PIN} isConnectable={false} />
       <svg viewBox="0 0 42 72" preserveAspectRatio="none" style={orientation === "horizontal" ? BRANCH_SVG : JOIN_SVG_VERTICAL} aria-hidden="true">
@@ -728,13 +746,16 @@ function JoinNode() {
 /** A later `await pending` is a real execution gate: the ivory exec thread enters/leaves sideways,
  * while the cyan lifetime rail lands on one of the sockets below. */
 function AsyncNode({ id, data }: NodeProps<LogicRfNode>) {
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as LogicNodeData;
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
   const model = { ...controlBaseNodeModel(id, d), nodeType: "async" };
   return (
     <BaseNode
       model={model}
-      style={withChanged(ASYNC_GATE_BODY, changedRing, "none")}
+      style={withChanged(selectStyle(ASYNC_GATE_BODY, select), changedRing, select)}
       headerStyle={ASYNC_GATE_HEADER}
       labelStyle={ASYNC_GATE_LABEL}
       leading={<span style={ASYNC_GATE_GLYPH}>⌟</span>}
@@ -957,13 +978,16 @@ function JumpFlowNode({ data }: NodeProps<JumpFlowRfNode>) {
  * first step. The EXIT is a dead end: a left TARGET pin, no source. Neither is a call site
  * (`targetId: null`), so clicking one is a harmless no-op.
  */
-function TerminalNode({ data }: NodeProps<LogicRfNode>) {
+function TerminalNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, null, logicSelected);
   const d = data as TerminalData;
   if (d.terminal === "entry") {
     const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
-      <div style={withChanged(ENTRY_BODY, changedRing, "none")} title={`Flow entry: ${d.label}`}>
+      <div style={withChanged(selectStyle(ENTRY_BODY, select), changedRing, select)} title={`Flow entry: ${d.label}`}>
         <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
         <Handle type="source" position={orientation === "horizontal" ? Position.Right : Position.Bottom} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>▶</span>
@@ -978,7 +1002,7 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
   if (d.terminal === "return" || d.terminal === "throw") {
     const changedRing = d.changedStatus === undefined ? null : changedColor(d.changedStatus);
     return (
-      <div style={withChanged(RETURN_BODY, changedRing, "none")} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
+      <div style={withChanged(selectStyle(RETURN_BODY, select), changedRing, select)} title={`Path ${d.terminal === "throw" ? "throws" : "returns"} here: ${d.label}`}>
         <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
         <span style={TERMINAL_GLYPH}>{d.terminal === "throw" ? "⚡" : "⏎"}</span>
         <span style={NAME} title={d.label}>{d.label}</span>
@@ -987,7 +1011,7 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
     );
   }
   return (
-    <div style={EXIT_BODY} title="Flow exit">
+    <div style={selectStyle(EXIT_BODY, select)} title="Flow exit">
       <Handle type="target" position={orientation === "horizontal" ? Position.Left : Position.Top} style={PIN} isConnectable={false} />
       <span style={TERMINAL_GLYPH}>■</span>
       <span style={NAME}>EXIT</span>
@@ -997,8 +1021,11 @@ function TerminalNode({ data }: NodeProps<LogicRfNode>) {
 
 /** The persistent continuation for one manually folded edge. Unlike a branch node's disclosure,
  * this restores only the exact path/connection represented by its stable semantic edge key. */
-function FoldNode({ data }: NodeProps<LogicRfNode>) {
+function FoldNode({ id, data }: NodeProps<LogicRfNode>) {
   const orientation = useLogicFlowOrientation();
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
+  const select = selectStateForOccurrence(exactOccurrenceSelected, null, logicSelected);
   const toggleCollapse = useLogicEdgeCollapseAction();
   const d = data as CollapsedEdgeData;
   const [hovered, setHovered] = useState(false);
@@ -1010,7 +1037,7 @@ function FoldNode({ data }: NodeProps<LogicRfNode>) {
     ? `Expand ${pathLabel}, ${hidden} hidden step${hidden === 1 ? "" : "s"} toward ${d.targetLabel}`
     : `Expand ${pathLabel} connection toward ${d.targetLabel}`;
   return (
-    <div style={FOLD_WRAP} data-logic-edge-fold="true" data-edge-role={d.branchRole}>
+    <div style={selectStyle(FOLD_WRAP, select)} data-logic-edge-fold="true" data-edge-role={d.branchRole}>
       <Handle
         type="target"
         position={orientation === "horizontal" ? Position.Left : Position.Top}
@@ -1061,7 +1088,10 @@ function FoldNode({ data }: NodeProps<LogicRfNode>) {
  * harmless no-op (no selection/drill); only the def blocks inside it are interactive.
  */
 function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
+  const logicSelected = useBlueprint((s) => s.logicSelected);
+  const exactOccurrenceSelected = useLogicOccurrenceSelection(id);
   const d = data as DefGroupData;
+  const select = selectStateForOccurrence(exactOccurrenceSelected, d.targetId, logicSelected);
   const model: BaseNodeModel = {
     instanceId: id,
     targetId: d.targetId,
@@ -1077,7 +1107,7 @@ function DefGroupNode({ id, data }: NodeProps<LogicRfNode>) {
   return (
     <BaseNode
       model={model}
-      style={DEFGROUP_FRAME}
+      style={selectStyle(DEFGROUP_FRAME, select)}
       headerStyle={d.isExpanded ? DEFGROUP_TITLE : DEFGROUP_COLLAPSED_TITLE}
       labelStyle={DEFGROUP_NAME}
       labelTitle={d.label}
@@ -1109,6 +1139,17 @@ function selectStateFor(targetId: string | null, logicSelected: string | null): 
     return "none";
   }
   return targetId !== null && targetId === logicSelected ? "selected" : "dimmed";
+}
+
+function selectStateForOccurrence(
+  exactOccurrenceSelected: boolean | null,
+  targetId: string | null,
+  logicSelected: string | null,
+): SelectState {
+  if (exactOccurrenceSelected === null) {
+    return selectStateFor(targetId, logicSelected);
+  }
+  return exactOccurrenceSelected ? "selected" : "dimmed";
 }
 
 // Layer the selection state over a node's base style: a bright ring at full opacity when matched,

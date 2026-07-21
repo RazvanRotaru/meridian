@@ -8,6 +8,10 @@ import { createBlueprintStore } from "../../state/store";
 import { StoreProvider } from "../../state/StoreContext";
 import { CanvasActionBar } from "./CanvasActionBar";
 import { canvasActionPlacement, panelAnchorStyle } from "./canvasActionBarLayout";
+import {
+  SurfaceSelectionGraphProvider,
+  type SurfaceSelectionGraph,
+} from "../canvas/SurfaceSelectionGraphContext";
 
 describe("canvasActionPlacement", () => {
   it("centers each single-row footprint at its exact clearance threshold", () => {
@@ -16,6 +20,22 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(1244, "minimal")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(1304, "review-focus")).toEqual({ position: "bottom-center", layout: "row" });
     expect(canvasActionPlacement(936, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
+  });
+
+  it("accounts for the review-only neighbourhood action in row and stacked placement", () => {
+    expect(canvasActionPlacement(1349, "review-focus", null, 45)).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1038, "review-focus", null, 45)).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 327,
+      bottom: 181,
+    });
+    expect(canvasActionPlacement(1037, "review-focus", null, 45)).toEqual({
+      position: "bottom-left",
+      layout: "stacked",
+      left: 327,
+      bottom: 181,
+    });
   });
 
   it("moves a full row beside the control panel when centering would overlap it", () => {
@@ -237,6 +257,61 @@ describe("CanvasActionBar empty review sentinel", () => {
   });
 });
 
+describe("CanvasActionBar selection expansion", () => {
+  it("shows the action on every mode with the exact one-hop count and disables it at the frontier", () => {
+    const store = actionBarStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-selection-expansion",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      minimalSeedIds: [ACTION_METHOD],
+      minimalMemberIds: [ACTION_FILE],
+      minimalLayoutStatus: "ready",
+      minimalRfNodes: [ACTION_METHOD, PROMOTED_METHOD].map((id) => ({
+        id,
+        type: "block",
+        position: { x: 0, y: 0 },
+        data: {},
+      })),
+      minimalRfEdges: [{ id: "action-promoted", source: ACTION_METHOD, target: PROMOTED_METHOD }],
+      moduleSelected: new Set([ACTION_METHOD]),
+    });
+
+    const selectionGraph = {
+      nodes: store.getState().minimalRfNodes,
+      edges: store.getState().minimalRfEdges,
+      ready: true,
+    };
+    const enabledMarkup = renderActionBar(store, {}, selectionGraph);
+    const enabledButton = actionButtonMarkup(enabledMarkup, "Expand selection by one level");
+    expect(enabledButton).not.toContain("aria-disabled");
+    expect(describedText(enabledMarkup, enabledButton)).toBe("Add 1 visible one-hop neighbour to the selection");
+
+    store.getState().expandModuleSelectionByOneHop(selectionGraph.nodes, selectionGraph.edges);
+    const disabledMarkup = renderActionBar(store, {}, selectionGraph);
+    const disabledButton = actionButtonMarkup(disabledMarkup, "Expand selection by one level");
+    expect(disabledButton).toContain('aria-disabled="true"');
+    expect(describedText(disabledMarkup, disabledButton)).toBe(
+      "The selection already includes every visible one-hop neighbour",
+    );
+
+    store.setState({ review: null });
+    expect(renderActionBar(store, {}, selectionGraph)).toContain('aria-label="Expand selection by one level"');
+    expect(renderActionBar(store, { minimalView: "codebase" }, selectionGraph)).toContain(
+      'aria-label="Expand selection by one level"',
+    );
+  });
+});
+
 describe("CanvasActionBar ghost visibility", () => {
   it("exposes the extracted graph's paint-only ghost toggle as a pressed control", () => {
     const store = actionBarStore();
@@ -368,6 +443,7 @@ function actionBarStore() {
 function renderActionBar(
   store: ReturnType<typeof actionBarStore>,
   props: ComponentProps<typeof CanvasActionBar> = {},
+  selectionGraph: SurfaceSelectionGraph = { nodes: [], edges: [], ready: true },
 ): string {
   // Zustand's server snapshot is normally the store's boot state. For this static component test,
   // make the explicitly prepared current state the hydration snapshot for the duration of render.
@@ -382,8 +458,14 @@ function renderActionBar(
           ReactFlowProvider,
           null,
           createElement(
-            CanvasActionBar as FunctionComponent<ComponentProps<typeof CanvasActionBar>>,
-            { ...props, key: null },
+            SurfaceSelectionGraphProvider,
+            {
+              value: selectionGraph,
+              children: createElement(
+                CanvasActionBar as FunctionComponent<ComponentProps<typeof CanvasActionBar>>,
+                { ...props, key: null },
+              ),
+            },
           ),
         ),
       },

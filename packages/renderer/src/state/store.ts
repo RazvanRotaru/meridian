@@ -98,6 +98,7 @@ import {
 } from "../derive/serviceClusteringModes";
 import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
+import { expandedSelectionByOneHop, type SelectionEdge, type SelectionNode } from "../derive/selectionExpansion";
 import {
   activeModuleSurfaceSpec,
   moduleSurfaceSpec,
@@ -762,9 +763,17 @@ export interface BlueprintState {
   /** Reveal one more containment level within the current selection (or the whole view / root
    * container when nothing is selected). Surface-aware: module surfaces and the Logic graph each. */
   expandAll(): void;
+  /** Grow the module-family surface's literal selection across every visible incident edge by one
+   * undirected hop. The mounted surface supplies its post-filter paint graph so hidden relations,
+   * grouped ghosts, and mount-local codebase layouts obey what the reader can actually see. */
+  expandModuleSelectionByOneHop(nodes: readonly SelectionNode[], edges: readonly SelectionEdge[]): void;
+  /** Logic's transient one-hop selection is occurrence-based; keep its containment actions scoped
+   * to those exact visible occurrence ids without widening the persisted target selection. */
+  expandLogicOccurrences(nodeIds: readonly string[]): void;
   /** Fully collapse the current selection (or the whole view / root container when nothing is
    * selected) — closes every open container in scope in one click. Surface-aware. */
   collapseAll(): void;
+  collapseLogicOccurrences(nodeIds: readonly string[]): void;
   recenter(): void;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
@@ -2633,9 +2642,39 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToExpand, "open", { label: "Expanding one level…" });
     },
 
+    // Grow the literal selection over the exact painted graph supplied by the mounted surface.
+    // Dependency direction is irrelevant for adjacency; graph membership/layout remain untouched.
+    expandModuleSelectionByOneHop(nodes, edges) {
+      const state = get();
+      if (
+        state.moduleSelected.size === 0
+        || state.syntheticExecutionStatus === "running"
+        || (state.review !== null && state.flowSelection !== null)
+      ) {
+        return;
+      }
+      const expanded = expandedSelectionByOneHop(state.moduleSelected, nodes, edges);
+      if (expanded.size <= state.moduleSelected.size) {
+        return;
+      }
+      set({
+        moduleSelected: expanded,
+        reviewSelectedId: null,
+        reviewLitNodeIds: null,
+      });
+    },
+
+    expandLogicOccurrences(nodeIds) {
+      applyLogicOccurrenceScope(get, set, nodeIds, idsToExpand, { label: "Expanding one level…" });
+    },
+
     // Fully collapse the same scope: close every open container within it in one click.
     collapseAll() {
       applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToCollapse, "close", { label: "Collapsing graph…" });
+    },
+
+    collapseLogicOccurrences(nodeIds) {
+      applyLogicOccurrenceScope(get, set, nodeIds, idsToCollapse, { label: "Collapsing graph…" });
     },
 
     // Bump the recenter signal so the active graph surface re-fits its viewport (to the current
@@ -8338,6 +8377,28 @@ function withToggledMany(expanded: ReadonlySet<string>, ids: readonly string[]):
 }
 
 type ScopedPick = (nodes: readonly ExpandableNode[], scope: readonly (string | null)[]) => string[];
+
+/** Apply a containment command to Logic's transient exact-occurrence selection. The ordinary
+ * surface-wide actions keep using `logicSelected`; this narrow adapter is used only after the
+ * one-hop action has widened the selection beyond one serializable call target. */
+function applyLogicOccurrenceScope(
+  get: BlueprintStore["getState"],
+  set: (partial: Partial<BlueprintState>) => void,
+  nodeIds: readonly string[],
+  pick: ScopedPick,
+  activity: LayoutActivity,
+): void {
+  const state = get();
+  if (state.viewMode !== "logic" || nodeIds.length === 0) {
+    return;
+  }
+  const ids = pick(logicVisibleNodes(state), nodeIds);
+  if (ids.length === 0) {
+    return;
+  }
+  set({ expandedLogic: withToggledMany(state.expandedLogic, ids) });
+  void get().logicRelayout(activity);
+}
 
 /**
  * The shared body of `expandAll`/`collapseAll`: read the active surface's visible frontier and

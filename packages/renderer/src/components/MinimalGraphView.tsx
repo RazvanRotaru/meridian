@@ -205,6 +205,7 @@ export function MinimalGraphView({
         interactions={interactions}
         nodeDiffPreview={reviewActive}
         wireHover
+        selectionReady={layoutStatus === "ready"}
         requestOverlayChrome={false}
         reviewEmphasis={reviewActive}
         emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
