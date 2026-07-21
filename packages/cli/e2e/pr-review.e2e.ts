@@ -18,6 +18,7 @@ import {
   chromiumInstalled,
   ensureBuilt,
   listenServer,
+  nodeHeader,
   startSmartGitServer,
   verifySmartHttpClone,
   type PrReviewFixture,
@@ -212,7 +213,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const allAffectedHeaderText = await affectedFlowsDisclosure.textContent();
     expect(allAffectedFlowNames).toContain("View sequence for loyaltyTierFor");
     expect(allAffectedFlowNames).toContain("View sequence for reviewFixtureMarker");
-    await loyaltyTierNode.click();
+    await nodeHeader(loyaltyTierNode).click();
     const relatedOnly = page.getByRole("button", { name: "Show only flows related to loyaltyTierFor" });
     await relatedOnly.waitFor();
     expect(await relatedOnly.getAttribute("aria-pressed")).toBe("false");
@@ -374,7 +375,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyTierNode.hover();
     await page.waitForTimeout(350);
     expect(await loyaltyPreview.count()).toBe(0);
-    await loyaltyTierNode.click();
+    await nodeHeader(loyaltyTierNode).click();
     await loyaltyPreview.waitFor();
     await page.mouse.move(0, 0);
     await page.waitForTimeout(250);

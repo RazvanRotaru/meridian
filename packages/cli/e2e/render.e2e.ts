@@ -9,7 +9,7 @@ import { rmSync } from "node:fs";
 import type { ChildProcess } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
-import { chromiumInstalled, generateGraph, runCli, startViewWithoutOverlay } from "./harness";
+import { chromiumInstalled, generateGraph, nodeHeader, runCli, startViewWithoutOverlay } from "./harness";
 
 let graphDir: string | undefined;
 
@@ -119,7 +119,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
 
   it("keeps the compact action bar clear of canvas chrome at a narrow desktop width", async () => {
     const packageNode = page.locator('[data-id="ts:src"]');
-    await packageNode.click();
+    await nodeHeader(packageNode).click();
     const actionBar = page.getByRole("group", { name: "Canvas actions" });
     await actionBar.getByRole("button", { name: "Extract selection (1)" }).waitFor();
 
@@ -142,7 +142,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(beforeSelection).toContain("WHEN YOU SELECT");
 
     const packageNode = page.locator('[data-id="ts:src"]');
-    await packageNode.click();
+    await nodeHeader(packageNode).click();
     await page.getByRole("group", { name: "Canvas actions" }).getByRole("button", { name: "Extract selection (1)" }).waitFor();
     expect(await legend.innerText()).toBe(beforeSelection);
 
@@ -172,7 +172,12 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     expect(unassignedMatch).not.toBeNull();
     const unassignedGroupCount = Number(unassignedMatch?.[1] ?? 0);
     expect(unassignedGroupCount).toBeGreaterThan(0);
+    // React Flow reports a wrapper click for the entire card/container. The wrapper itself is not
+    // selectable chrome: only BaseNode's header may enter the universal selection path.
     await domain.dispatchEvent("click");
+    await page.waitForTimeout(300);
+    expect(await page.getByRole("button", { name: "Extract selection (1)", exact: true }).count()).toBe(0);
+    await nodeHeader(domain).dispatchEvent("click");
     await page.getByRole("button", { name: "Extract selection (1)", exact: true }).waitFor();
     expect(await page.locator("#meridian-control-panel").getByText("Unassigned code", { exact: true }).count()).toBe(1);
 
@@ -337,7 +342,9 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
       expect(await page.locator(`.react-flow__node[data-id="${id}"]`).getAttribute("data-request-observed")).toBe("true");
     }
     await expect.poll(() => page.locator(".request-graph-edge--observed:visible").count(), { timeout: 20_000 }).toBeGreaterThan(0);
-    await page.locator('.react-flow__node[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]').click();
+    await nodeHeader(page.locator(
+      '.react-flow__node[data-id="ts:src/services/orderService.ts#OrderService.placeOrder"]',
+    )).click();
     await page.waitForTimeout(350);
     expect(await requestFlow.isVisible()).toBe(true);
     expect(await sendOrderConfirmation.count()).toBe(1);
@@ -392,7 +399,7 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
     }
     expect(await page.locator('.react-flow__node[data-id="ts:src/api/orderRoutes.ts#OrderRoutes.handleCreateOrder"]').getAttribute("data-request-observed")).toBe("true");
     const unobservedPrice = page.locator('.react-flow__node[data-id="ts:src/pricing/pricingService.ts#PricingService.price"]');
-    await unobservedPrice.click();
+    await nodeHeader(unobservedPrice).click();
     await expect.poll(() => unobservedPrice.getAttribute("data-request-manual-context"), { timeout: 20_000 }).toBe("true");
     expect(await unobservedPrice.getAttribute("data-request-observed")).toBe("false");
 

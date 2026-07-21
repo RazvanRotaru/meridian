@@ -6,7 +6,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
-import { chromiumInstalled, FIXTURE, generateGraphFrom, startView } from "./harness";
+import { chromiumInstalled, FIXTURE, generateGraphFrom, nodeHeader, startView } from "./harness";
 
 const SHOPFRONT = join(FIXTURE, "..", "shopfront");
 const ROOT = "ts:src";
@@ -59,7 +59,8 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
     await dive(page, SERVICES);
     await page.waitForSelector(`[data-id="${MEMBER_FILES[0]}"]`);
     for (const [index, member] of MEMBER_FILES.entries()) {
-      await page.locator(`[data-id="${member}"]`).dispatchEvent("click", index === 0 ? {} : { ctrlKey: true });
+      await nodeHeader(page.locator(`[data-id="${member}"]`))
+        .dispatchEvent("click", index === 0 ? {} : { ctrlKey: true });
     }
 
     const actionBar = page.getByRole("group", { name: "Canvas actions" });
@@ -88,7 +89,7 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
 
     // Extraction is recursive: narrow the current selection, push a child, then restore the exact
     // eight-member parent with one Back step instead of closing the whole overlay.
-    await extractedGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`).dispatchEvent("click");
+    await nodeHeader(extractedGraph.locator(`[data-id="${MEMBER_FILES[0]}"]`)).dispatchEvent("click");
     const extractOne = extractedActions.getByRole("button", { name: "Extract selection (1)" });
     await extractOne.waitFor();
     await extractOne.click();
