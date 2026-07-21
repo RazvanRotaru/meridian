@@ -16,6 +16,7 @@ import {
 } from "./logicNodeTypes";
 import { LogicFlowOrientationProvider } from "./LogicFlowOrientationContext";
 import { LogicEdgeActionScope } from "../../edges/LogicEdgeActionScope";
+import { LogicOccurrenceSelectionScope } from "./LogicOccurrenceSelectionContext";
 
 describe("logic PR-change paint", () => {
   it("washes the whole node, keeps external hatching, and strengthens a dimmed changed node", () => {
@@ -94,10 +95,13 @@ describe("Logic definition-owner frame", () => {
       isContainer: true,
     };
     const props = { id: "module::defgroup/interface", data } as NodeProps<LogicRfNode>;
+    const store = freshStore();
     const markup = renderToStaticMarkup(
-      <BaseNodeActionScope toggleExpand={() => undefined}>
-        <DefGroup {...props} />
-      </BaseNodeActionScope>,
+      <StoreProvider store={store}>
+        <BaseNodeActionScope toggleExpand={() => undefined}>
+          <DefGroup {...props} />
+        </BaseNodeActionScope>
+      </StoreProvider>,
     );
 
     expect(markup).toContain('data-base-node="true"');
@@ -122,14 +126,17 @@ describe("Logic edge fold", () => {
       branchRole: "then",
     };
     const props = { id: "flow::fold/then", data } as NodeProps<LogicRfNode>;
+    const store = freshStore();
     const markup = renderToStaticMarkup(
-      <ReactFlowProvider>
-        <LogicFlowOrientationProvider value="horizontal">
-          <LogicEdgeActionScope toggleCollapse={() => undefined}>
-            <Fold {...props} />
-          </LogicEdgeActionScope>
-        </LogicFlowOrientationProvider>
-      </ReactFlowProvider>,
+      <StoreProvider store={store}>
+        <ReactFlowProvider>
+          <LogicFlowOrientationProvider value="horizontal">
+            <LogicEdgeActionScope toggleCollapse={() => undefined}>
+              <Fold {...props} />
+            </LogicEdgeActionScope>
+          </LogicFlowOrientationProvider>
+        </ReactFlowProvider>
+      </StoreProvider>,
     );
 
     expect(markup).toContain('data-logic-edge-fold="true"');
@@ -163,8 +170,11 @@ describe("Logic async node composition", () => {
       asyncPorts: [],
     };
     const props = { id: "flow::await/0", data } as NodeProps<LogicRfNode>;
+    const store = freshStore();
     const markup = renderToStaticMarkup(
-      <ReactFlowProvider><AsyncNode {...props} /></ReactFlowProvider>,
+      <StoreProvider store={store}>
+        <ReactFlowProvider><AsyncNode {...props} /></ReactFlowProvider>
+      </StoreProvider>,
     );
 
     expect(markup).toContain('data-base-node-kind="await"');
@@ -175,6 +185,28 @@ describe("Logic async node composition", () => {
 });
 
 describe("Logic callable semantic composition", () => {
+  it("lets exact occurrence selection override the persisted target selection", () => {
+    const store = freshStore();
+    store.setState({ logicSelected: ALPHA_RUN });
+    const data: LogicNodeData = {
+      logicKind: "call",
+      label: "run",
+      targetId: ALPHA_RUN,
+      resolution: "resolved",
+      expandable: false,
+      isExpanded: false,
+      isContainer: false,
+      compact: true,
+      callScope: "internal",
+      greyed: false,
+      provenance: null,
+      childCount: 0,
+    };
+
+    expect(renderBlock(data, store, new Set(["flow::call/0"]))).toContain("box-shadow:0 0 0 2px");
+    expect(renderBlock(data, store, new Set(["another-occurrence"]))).toContain("opacity:0.5");
+  });
+
   it("gives the source action a descriptive accessible name", () => {
     const store = freshStore();
     store.setState({ sourceUrl: "/source" });
@@ -406,7 +438,11 @@ describe("synthetic runtime node snapshots", () => {
   });
 });
 
-function renderBlock(data: LogicNodeData, store = freshStore()): string {
+function renderBlock(
+  data: LogicNodeData,
+  store = freshStore(),
+  exactOccurrenceIds: ReadonlySet<string> | null = null,
+): string {
   const state = store.getState();
   Object.assign(store, { getInitialState: () => state });
   const Block = logicNodeTypes.block;
@@ -414,9 +450,11 @@ function renderBlock(data: LogicNodeData, store = freshStore()): string {
   return renderToStaticMarkup(
     <StoreProvider store={store}>
       <ReactFlowProvider>
-        <BaseNodeActionScope toggleExpand={() => undefined}>
-          <Block {...props} />
-        </BaseNodeActionScope>
+        <LogicOccurrenceSelectionScope selectedIds={exactOccurrenceIds}>
+          <BaseNodeActionScope toggleExpand={() => undefined}>
+            <Block {...props} />
+          </BaseNodeActionScope>
+        </LogicOccurrenceSelectionScope>
       </ReactFlowProvider>
     </StoreProvider>,
   );

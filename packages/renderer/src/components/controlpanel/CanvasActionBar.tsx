@@ -8,6 +8,8 @@ import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { removableModuleSelectionCount } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
+import { selectionExpansionCount } from "../../derive/selectionExpansion";
+import { useSurfaceSelectionGraph } from "../canvas/SurfaceSelectionGraphContext";
 import {
   CanvasActionBarFrame,
   CanvasActionButton,
@@ -22,6 +24,7 @@ import {
   CodebaseHighlightIcon,
   CollapseIcon,
   ExpandIcon,
+  ExpandSelectionIcon,
   ExtractSelectionIcon,
   GhostVisibilityIcon,
   HighwaysIcon,
@@ -54,8 +57,10 @@ export function CanvasActionBar({
   onToggleGhostNodes,
   relationKinds,
 }: CanvasActionBarProps = {}) {
-  const selectedCount = useBlueprint((state) => state.moduleSelected.size);
+  const selected = useBlueprint((state) => state.moduleSelected);
+  const selectedCount = selected.size;
   const removableCount = useBlueprint(removableModuleSelectionCount);
+  const selectionGraph = useSurfaceSelectionGraph();
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
   const minimalArranged = useBlueprint((state) => state.minimalArrange);
@@ -65,6 +70,7 @@ export function CanvasActionBar({
   const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
   const showHighways = useBlueprint((state) => state.showHighways);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewFlowOwnsSelection = useBlueprint((state) => state.review !== null && state.flowSelection !== null);
   const selectedReviewContainerId = useBlueprint((state) => {
     if (
       state.review === null
@@ -105,6 +111,7 @@ export function CanvasActionBar({
   const {
     recenter,
     expandAll,
+    expandModuleSelectionByOneHop,
     collapseAll,
     buildMinimalGraph,
     backMinimalGraph,
@@ -116,6 +123,13 @@ export function CanvasActionBar({
     toggleHighways,
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
+
+  const selectionNeighbourCount = selectionGraph === null
+    ? 0
+    : selectionExpansionCount(selected, selectionGraph.nodes, selectionGraph.edges);
+  const selectionExpansionReady = selectionGraph?.ready === true
+    && syntheticExecutionStatus !== "running"
+    && !reviewFlowOwnsSelection;
 
   const canExtract = selectedCount > 0
     && (!minimalOpen || minimalLayoutStatus === "ready")
@@ -133,7 +147,12 @@ export function CanvasActionBar({
     : minimalOpen
       ? wideMinimalActions ? "review-focus" : "minimal"
       : showSourceSelectionActions ? "extract" : "base";
-  const placement = canvasActionPlacement(surfaceSize?.width ?? null, mode, surfaceSize?.height ?? null);
+  const placement = canvasActionPlacement(
+    surfaceSize?.width ?? null,
+    mode,
+    surfaceSize?.height ?? null,
+    45,
+  );
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
     <Panel ref={anchorRef} position={placement.position} style={panelAnchorStyle(placement)}>
@@ -144,6 +163,25 @@ export function CanvasActionBar({
             title="Recenter on the current selection, or the whole graph if nothing is selected"
             icon={<RecenterIcon size={18} />}
             onClick={recenter}
+          />
+          <CanvasActionButton
+            ariaLabel="Expand selection by one level"
+            title={
+              selectedCount === 0
+                ? "Select one or more nodes to include their one-hop neighbours"
+                : !selectionExpansionReady
+                  ? "Selection expansion is unavailable while this graph is updating"
+                  : selectionNeighbourCount === 0
+                    ? "The selection already includes every visible one-hop neighbour"
+                    : `Add ${selectionNeighbourCount} visible one-hop ${selectionNeighbourCount === 1 ? "neighbour" : "neighbours"} to the selection`
+            }
+            icon={<ExpandSelectionIcon size={18} />}
+            onClick={() => {
+              if (selectionGraph !== null) {
+                expandModuleSelectionByOneHop(selectionGraph.nodes, selectionGraph.edges);
+              }
+            }}
+            disabled={!selectionExpansionReady || selectionNeighbourCount === 0}
           />
           {codebaseView ? null : (
             <>

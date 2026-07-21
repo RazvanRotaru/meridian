@@ -119,6 +119,7 @@ import {
 } from "../RequestGraphOverlayChrome";
 import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicators";
 import { REVIEW_NODE_VIEWED_CSS } from "../review/ReviewFileNodeViewedControls";
+import { SurfaceSelectionGraphProvider } from "./SurfaceSelectionGraphContext";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -285,6 +286,9 @@ export interface GraphSurfaceProps {
   /** True only after the source layout has published a settled graph. A laying-out or failed
    * candidate must stay behind the admission barrier instead of contaminating position history. */
   positionAdmissionReady?: boolean;
+  /** Whether actions may mutate selection for the painted scene. Defaults to the absence of a busy
+   * overlay; mount-local layouts can supply their stronger ready/error contract explicitly. */
+  selectionReady?: boolean;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
@@ -431,6 +435,17 @@ export function GraphSurface(props: GraphSurfaceProps) {
     const currentDepth = semanticDepths[0];
     return renderedNodesAtSemanticDepth(reactFlowNodes, currentDepth);
   }, [reactFlowNodes, semanticDepths]);
+  const surfaceSelectionGraph = useMemo(() => {
+    const nodeIds = new Set(occupancyNodes.map((node) => node.id));
+    return {
+      nodes: occupancyNodes,
+      edges: paintedEdges.filter((edge) =>
+        edge.type !== GHOST_HIERARCHY_EDGE_TYPE
+        && nodeIds.has(edge.source)
+        && nodeIds.has(edge.target)),
+      ready: props.selectionReady ?? props.busy === undefined,
+    };
+  }, [occupancyNodes, paintedEdges, props.busy, props.selectionReady]);
   const occupancyBounds = useMemo(
     () => graphBounds(reactFlowNodes, occupancyNodes),
     [occupancyNodes, reactFlowNodes],
@@ -772,7 +787,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
         <EdgeInspectionDock pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
       ) : null}
       {nodeDiff.layer}
-      {props.children}
+      <SurfaceSelectionGraphProvider value={surfaceSelectionGraph}>
+        {props.children}
+      </SurfaceSelectionGraphProvider>
       {props.busy ? <GraphLayoutIndicator {...props.busy} /> : null}
     </div>
     </SurfaceInteractionScope>

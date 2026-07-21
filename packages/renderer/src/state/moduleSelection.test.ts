@@ -16,6 +16,7 @@ import {
   reviewExpansionForMatches,
   type BlueprintStore,
 } from "./store";
+import { selectionExpansionCount } from "../derive/selectionExpansion";
 
 function node(id: string, kind: string, file: string, parentId?: string): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id, parentId, location: { file, startLine: 1 } };
@@ -295,6 +296,111 @@ describe("module-map selection set", () => {
     expect(state.moduleSelected).toEqual(new Set([BUILD_ORDERS]));
     expect(state.moduleRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_METHOD, type: "block" }));
     expect(state.moduleRfNodes.some((node) => node.id === ROUTES_METHOD && node.type === "ghost")).toBe(false);
+  });
+});
+
+describe("module-surface selection expansion", () => {
+  it("unions exactly one undirected visible edge hop on each click", () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "selection-expansion",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      minimalSeedIds: [BUILD_ORDERS],
+      minimalMemberIds: [BUILD_ORDERS],
+      minimalLayoutStatus: "ready",
+      minimalRfNodes: [BUILD_ORDERS, ROUTES_METHOD, DOWNSTREAM_METHOD, TERMINAL_METHOD].map((id) => ({
+        id,
+        type: "block",
+        position: { x: 0, y: 0 },
+        data: {},
+      })),
+      minimalRfEdges: [
+        { id: "a-b", source: BUILD_ORDERS, target: ROUTES_METHOD },
+        { id: "b-c", source: ROUTES_METHOD, target: DOWNSTREAM_METHOD },
+        { id: "d-a", source: TERMINAL_METHOD, target: BUILD_ORDERS },
+      ],
+      moduleSelected: new Set([BUILD_ORDERS]),
+      reviewSelectedId: BUILD_ORDERS,
+      reviewLitNodeIds: new Set([BUILD_ORDERS]),
+    });
+
+    expect(selectionExpansionCount(
+      store.getState().moduleSelected,
+      store.getState().minimalRfNodes,
+      store.getState().minimalRfEdges,
+    )).toBe(2);
+    store.getState().expandModuleSelectionByOneHop(
+      store.getState().minimalRfNodes,
+      store.getState().minimalRfEdges,
+    );
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS, ROUTES_METHOD, TERMINAL_METHOD]));
+    expect(store.getState().reviewSelectedId).toBeNull();
+    expect(store.getState().reviewLitNodeIds).toBeNull();
+
+    expect(selectionExpansionCount(
+      store.getState().moduleSelected,
+      store.getState().minimalRfNodes,
+      store.getState().minimalRfEdges,
+    )).toBe(1);
+    store.getState().expandModuleSelectionByOneHop(
+      store.getState().minimalRfNodes,
+      store.getState().minimalRfEdges,
+    );
+    expect(store.getState().moduleSelected).toEqual(
+      new Set([BUILD_ORDERS, ROUTES_METHOD, TERMINAL_METHOD, DOWNSTREAM_METHOD]),
+    );
+    expect(selectionExpansionCount(
+      store.getState().moduleSelected,
+      store.getState().minimalRfNodes,
+      store.getState().minimalRfEdges,
+    )).toBe(0);
+  });
+
+  it("does not select hidden ghost neighbours", () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "hidden-ghost-expansion",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      minimalSeedIds: [BUILD_ORDERS],
+      minimalMemberIds: [BUILD_ORDERS],
+      minimalLayoutStatus: "ready",
+      minimalShowGhostNodes: false,
+      minimalRfNodes: [
+        { id: BUILD_ORDERS, type: "block", position: { x: 0, y: 0 }, data: {} },
+        { id: ROUTES_METHOD, type: "ghost", position: { x: 0, y: 0 }, data: {} },
+      ],
+      minimalRfEdges: [{ id: "visible-hidden", source: BUILD_ORDERS, target: ROUTES_METHOD }],
+      moduleSelected: new Set([BUILD_ORDERS]),
+    });
+
+    const visibleNodes = store.getState().minimalRfNodes.filter((candidate) => candidate.type !== "ghost");
+    expect(selectionExpansionCount(
+      store.getState().moduleSelected,
+      visibleNodes,
+      store.getState().minimalRfEdges,
+    )).toBe(0);
+    store.getState().expandModuleSelectionByOneHop(visibleNodes, store.getState().minimalRfEdges);
+    expect(store.getState().moduleSelected).toEqual(new Set([BUILD_ORDERS]));
   });
 });
 

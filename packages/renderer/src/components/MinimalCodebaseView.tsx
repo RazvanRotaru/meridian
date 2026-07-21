@@ -212,6 +212,7 @@ export function MinimalCodebaseView({
       emphasisMode={reviewFlowOpen ? (reviewSelectedId === null ? "subgraph" : "node") : undefined}
       groupGhosts={reviewFlowOpen && reviewSelectedId !== null ? false : undefined}
       wireHover
+      selectionReady={layoutStatus === "ready"}
       requestOverlayChrome={false}
       busy={layoutStatus === "laying-out" ? { label: "Locating code in the codebase…" } : undefined}
       autoFitView={false}

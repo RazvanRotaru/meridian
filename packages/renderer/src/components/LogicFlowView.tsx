@@ -53,12 +53,42 @@ import { BaseNodeActionScope, type BaseNodeModel } from "./nodes/BaseNode";
 import { LogicActionBar } from "./controlpanel/LogicActionBar";
 import { changedColor } from "./ChangedBadge";
 import { LogicEdgeActionScope } from "./edges/LogicEdgeActionScope";
+import { expandedSelectionByOneHop, selectionExpansionCount } from "../derive/selectionExpansion";
+import { LogicOccurrenceSelectionScope } from "./nodes/logic/LogicOccurrenceSelectionContext";
 
 export function LogicFlowView() {
   const logicRoot = useBlueprint((state) => state.logicRoot);
   const logicView = useBlueprint((state) => state.logicView);
+  const logicFocus = useBlueprint((state) => state.logicFocus);
+  const logicSelected = useBlueprint((state) => state.logicSelected);
+  const logicNodes = useBlueprint((state) => state.logicRfNodes);
+  const logicEdges = useBlueprint((state) => state.logicRfEdges);
   const layoutStatus = useBlueprint((state) => state.logicLayoutStatus);
   const layoutActivity = useBlueprint((state) => state.logicLayoutActivity);
+  const selectionKey = `${logicRoot ?? ""}|${logicFocus.map((entry) => entry.id).join(">")}|${logicSelected ?? ""}`;
+  const [expandedOccurrences, setExpandedOccurrences] = useState<{
+    key: string;
+    ids: ReadonlySet<string>;
+  } | null>(null);
+  const exactOccurrenceIds = expandedOccurrences?.key === selectionKey
+    ? expandedOccurrences.ids
+    : null;
+  const selectedOccurrenceIds = useMemo(() => {
+    const visibleIds = new Set(logicNodes.map((node) => node.id));
+    if (exactOccurrenceIds !== null) {
+      return new Set([...exactOccurrenceIds].filter((id) => visibleIds.has(id)));
+    }
+    return logicSelected === null
+      ? new Set<string>()
+      : callSiteNodeIds(logicNodes, logicSelected);
+  }, [exactOccurrenceIds, logicNodes, logicSelected]);
+  const neighbourCount = selectionExpansionCount(selectedOccurrenceIds, logicNodes, logicEdges);
+  const expandOccurrenceSelection = useCallback(() => {
+    const expanded = expandedSelectionByOneHop(selectedOccurrenceIds, logicNodes, logicEdges);
+    if (expanded.size > selectedOccurrenceIds.size) {
+      setExpandedOccurrences({ key: selectionKey, ids: expanded });
+    }
+  }, [logicEdges, logicNodes, selectedOccurrenceIds, selectionKey]);
   if (logicRoot === null) {
     return <LogicFlowPicker />;
   }
@@ -69,7 +99,15 @@ export function LogicFlowView() {
       style={{ position: "relative", width: "100%", height: "100%" }}
       aria-busy={layoutStatus === "laying-out" ? "true" : undefined}
     >
-      {logicView === "graph" ? <LogicFlowGraph rootId={logicRoot} /> : <AltLogicSurface rootId={logicRoot} mode={logicView} />}
+      {logicView === "graph" ? (
+        <LogicFlowGraph
+          rootId={logicRoot}
+          selectedOccurrenceIds={selectedOccurrenceIds}
+          exactOccurrenceIds={exactOccurrenceIds}
+          neighbourCount={neighbourCount}
+          onExpandOccurrenceSelection={expandOccurrenceSelection}
+        />
+      ) : <AltLogicSurface rootId={logicRoot} mode={logicView} />}
       <LogicViewTabs rootId={logicRoot} />
       {layoutStatus === "laying-out" && layoutActivity ? <GraphLayoutIndicator {...layoutActivity} /> : null}
     </div>
@@ -81,7 +119,13 @@ export function LogicFlowView() {
  * graph's canvas props) with the overlay header floating above it, and a centered card when the
  * charted callable has no calls or control flow of its own.
  */
-function LogicFlowGraph(props: { rootId: NodeId }) {
+function LogicFlowGraph(props: {
+  rootId: NodeId;
+  selectedOccurrenceIds: ReadonlySet<string>;
+  exactOccurrenceIds: ReadonlySet<string> | null;
+  neighbourCount: number;
+  onExpandOccurrenceSelection: () => void;
+}) {
   const logicRoot = props.rootId;
   const logicStack = useBlueprint((state) => state.logicStack);
   const logicFocus = useBlueprint((state) => state.logicFocus);
@@ -101,7 +145,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [artifact, coverageMode],
   );
   const showLogicTests = useBlueprint((state) => state.showLogicTests);
-  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleLogicExpand, toggleLogicEdgeCollapse, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests, expandAll, collapseAll } =
+  const { drillLogicFlow, logicFlowTo, diveLogicContainer, logicFocusTo, toggleLogicExpand, toggleLogicEdgeCollapse, toggleHideGreyed, toggleNestByService, setGhostDepth, selectLogicTarget, openComposition, toggleLogicTests, expandAll, collapseAll, expandLogicOccurrences, collapseLogicOccurrences } =
     useBlueprintActions();
 
   // The two gestures the node components don't own, mutually exclusive by node kind: a control
@@ -162,8 +206,8 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
     [coverage, edges, executionLaneModel, nodes],
   );
   const styledEdges = useMemo(
-    () => emphasizeSelectedEdges(coverageEdges, nodes, logicSelected),
-    [coverageEdges, logicSelected, nodes],
+    () => emphasizeSelectedEdges(coverageEdges, props.selectedOccurrenceIds),
+    [coverageEdges, props.selectedOccurrenceIds],
   );
   const hasStaticLaneSignals = coverageEdges.some((edge) => edge.data?.staticLane !== undefined);
   const hasExecutionLaneSignals = coverageEdges.some((edge) => edge.data?.executionLane !== undefined);
@@ -215,15 +259,16 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
   // this to recentre the viewport imperatively.
   const [rfInstance, setRfInstance] = useState<ReactFlowInstance<Node, Edge> | null>(null);
   const selectedActionScope = useMemo(
-    () => logicSelectionActionScope(nodes, logicSelected),
-    [nodes, logicSelected],
+    () => logicSelectionActionScope(nodes, logicSelected, props.exactOccurrenceIds),
+    [logicSelected, nodes, props.exactOccurrenceIds],
   );
   const focusSelection = useCallback(() => {
-    if (rfInstance === null || (logicSelected !== null && selectedActionScope.nodeIds.length === 0)) {
+    const hasSelection = props.selectedOccurrenceIds.size > 0;
+    if (rfInstance === null || (hasSelection && selectedActionScope.nodeIds.length === 0)) {
       return;
     }
     void rfInstance.fitView({
-      ...(logicSelected === null
+      ...(!hasSelection
         ? {}
         : { nodes: selectedActionScope.nodeIds.map((id) => ({ id })) }),
       padding: 0.28,
@@ -231,7 +276,7 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
       minZoom: 0.01,
       maxZoom: 1.05,
     });
-  }, [logicSelected, rfInstance, selectedActionScope.nodeIds]);
+  }, [props.selectedOccurrenceIds, rfInstance, selectedActionScope.nodeIds]);
 
   // The navigation identity: the callable drill trail plus the container-dive focus stack. It changes
   // on EVERY navigation — open/drill/dive/jump/pick, and breadcrumb-BACK too (the trail then differs
@@ -267,31 +312,39 @@ function LogicFlowGraph(props: { rootId: NodeId }) {
         navigateInto={navigateBaseNode}
       >
         <LogicEdgeActionScope toggleCollapse={toggleLogicEdgeCollapse}>
-          <ReadonlyGraphCanvas<Node, Edge>
-            nodes={[...nodes, ...jumpNodes, ...testNodes]}
-            edges={[...styledEdges, ...jumpEdges, ...testEdges]}
-            nodeTypes={logicNodeTypes}
-            edgeTypes={logicEdgeTypes}
-            onInit={(instance) => {
-              setRfInstance(instance);
-            }}
-            onNodeClick={onNodeClick}
-            onNodeDoubleClick={onNodeDoubleClick}
-            onPaneClick={() => selectLogicTarget(null)}
-            miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
-          >
-            <LogicActionBar
-              selectedCount={selectedActionScope.nodeIds.length}
-              canFocus={rfInstance !== null && (logicSelected === null
-                ? nodes.length + jumpNodes.length + testNodes.length > 0
-                : selectedActionScope.nodeIds.length > 0)}
-              canExpand={selectedActionScope.canExpand}
-              canCollapse={selectedActionScope.canCollapse}
-              onFocusSelection={focusSelection}
-              onExpandSelection={expandAll}
-              onCollapseSelection={collapseAll}
-            />
-          </ReadonlyGraphCanvas>
+          <LogicOccurrenceSelectionScope selectedIds={props.exactOccurrenceIds}>
+            <ReadonlyGraphCanvas<Node, Edge>
+              nodes={[...nodes, ...jumpNodes, ...testNodes]}
+              edges={[...styledEdges, ...jumpEdges, ...testEdges]}
+              nodeTypes={logicNodeTypes}
+              edgeTypes={logicEdgeTypes}
+              onInit={(instance) => {
+                setRfInstance(instance);
+              }}
+              onNodeClick={onNodeClick}
+              onNodeDoubleClick={onNodeDoubleClick}
+              onPaneClick={() => selectLogicTarget(null)}
+              miniMapColor={(node) => miniMapColor(node, coverage, logicRoot, execution, index)}
+            >
+              <LogicActionBar
+                selectedCount={selectedActionScope.nodeIds.length}
+                canFocus={rfInstance !== null && (props.selectedOccurrenceIds.size === 0
+                  ? nodes.length + jumpNodes.length + testNodes.length > 0
+                  : selectedActionScope.nodeIds.length > 0)}
+                neighbourCount={props.neighbourCount}
+                canExpand={selectedActionScope.canExpand}
+                canCollapse={selectedActionScope.canCollapse}
+                onFocusSelection={focusSelection}
+                onExpandSelectionByOneLevel={props.onExpandOccurrenceSelection}
+                onExpandSelection={() => props.exactOccurrenceIds === null
+                  ? expandAll()
+                  : expandLogicOccurrences(selectedActionScope.nodeIds)}
+                onCollapseSelection={() => props.exactOccurrenceIds === null
+                  ? collapseAll()
+                  : collapseLogicOccurrences(selectedActionScope.nodeIds)}
+              />
+            </ReadonlyGraphCanvas>
+          </LogicOccurrenceSelectionScope>
         </LogicEdgeActionScope>
       </BaseNodeActionScope>
       <LogicOverlayHeader
@@ -339,17 +392,21 @@ export interface LogicSelectionActionScope {
 export function logicSelectionActionScope(
   nodes: readonly LogicRfNode[],
   selectedTarget: NodeId | null,
+  exactOccurrenceIds: ReadonlySet<string> | null = null,
 ): LogicSelectionActionScope {
-  const nodeIds = selectedTarget === null
-    ? []
-    : nodes
-      .filter((node) => node.data.targetId === selectedTarget)
-      .map((node) => node.id);
-  if (selectedTarget !== null && nodeIds.length === 0) {
+  const nodeIds = exactOccurrenceIds === null
+    ? selectedTarget === null
+      ? []
+      : nodes
+        .filter((node) => node.data.targetId === selectedTarget)
+        .map((node) => node.id)
+    : nodes.filter((node) => exactOccurrenceIds.has(node.id)).map((node) => node.id);
+  const hasSelection = exactOccurrenceIds !== null || selectedTarget !== null;
+  if (hasSelection && nodeIds.length === 0) {
     return { nodeIds, canExpand: false, canCollapse: false };
   }
 
-  const inScope = new Set(selectedTarget === null ? nodes.map((node) => node.id) : nodeIds);
+  const inScope = new Set(hasSelection ? nodeIds : nodes.map((node) => node.id));
   // Layouts normally order parents before children, but repeat until stable so availability is
   // independent of array order and stays in lockstep with scopedExpansion's tree walk.
   let changed = true;
@@ -422,15 +479,15 @@ const EMPHASIS_WIDTH = 3;
  */
 function emphasizeSelectedEdges(
   edges: LogicRfEdge[],
-  nodes: LogicRfNode[],
-  logicSelected: NodeId | null,
+  selectedOccurrenceIds: ReadonlySet<string>,
 ): LogicRfEdge[] {
-  if (logicSelected === null) {
+  if (selectedOccurrenceIds.size === 0) {
     return edges;
   }
-  const callSites = callSiteNodeIds(nodes, logicSelected);
   return edges.map((edge) =>
-    callSites.has(edge.source) || callSites.has(edge.target) ? emphasizeEdge(edge) : dimEdge(edge),
+    selectedOccurrenceIds.has(edge.source) || selectedOccurrenceIds.has(edge.target)
+      ? emphasizeEdge(edge)
+      : dimEdge(edge),
   );
 }
 

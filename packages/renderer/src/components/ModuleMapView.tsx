@@ -272,6 +272,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       interactions={interactions}
       positionRetentionKey={inspectionPositionKey}
       positionAdmissionReady={layoutStatus === "ready"}
+      selectionReady={layoutStatus === "ready" && !covered}
       busy={busy}
       autoFitView={false}
       semanticLayers={semanticLayers}

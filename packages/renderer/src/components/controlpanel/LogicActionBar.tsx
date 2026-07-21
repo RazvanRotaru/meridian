@@ -12,25 +12,28 @@ import {
   CanvasActionGroup,
 } from "./canvasActionBarKit";
 import { canvasActionPlacement, panelAnchorStyle, useSurfaceSize } from "./canvasActionBarLayout";
-import { CollapseIcon, ExpandIcon, RecenterIcon } from "./icons";
+import { CollapseIcon, ExpandIcon, ExpandSelectionIcon, RecenterIcon } from "./icons";
 
 export interface LogicActionBarProps {
   selectedCount: number;
   canFocus: boolean;
+  neighbourCount: number;
   canExpand: boolean;
   canCollapse: boolean;
   onFocusSelection: () => void;
+  onExpandSelectionByOneLevel: () => void;
   onExpandSelection: () => void;
   onCollapseSelection: () => void;
 }
 
 export function LogicActionBar(props: LogicActionBarProps) {
   const [anchorRef, surfaceSize] = useSurfaceSize();
-  // Three icon actions have the same footprint as the shared base bar.
+  // The one-hop selection action adds one shared icon slot to the base footprint.
   const placement = canvasActionPlacement(
     surfaceSize?.width ?? null,
     "base",
     surfaceSize?.height ?? null,
+    45,
   );
   const hasSelection = props.selectedCount > 0;
 
@@ -46,6 +49,17 @@ export function LogicActionBar(props: LogicActionBarProps) {
             icon={<RecenterIcon size={18} />}
             onClick={props.onFocusSelection}
             disabled={!props.canFocus}
+          />
+          <CanvasActionButton
+            ariaLabel="Expand selection by one level"
+            title={!hasSelection
+              ? "Select one or more occurrences to include their one-hop neighbours"
+              : props.neighbourCount === 0
+                ? "The selection already includes every visible one-hop neighbour"
+                : `Add ${props.neighbourCount} visible one-hop ${props.neighbourCount === 1 ? "neighbour" : "neighbours"} to the selection`}
+            icon={<ExpandSelectionIcon size={18} />}
+            onClick={props.onExpandSelectionByOneLevel}
+            disabled={!hasSelection || props.neighbourCount === 0}
           />
           <CanvasActionButton
             ariaLabel="Expand selection"
