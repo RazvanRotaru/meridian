@@ -2,8 +2,8 @@
  * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
  * top-level and lexically nested functions plus callable-binding consts/properties/default exports (see
  * `resolveCallableBinding` — inline callables, possibly under `memo`/`forwardRef`), object-literal
- * consts -> methods, and namespaces (recursed). Emission is top-down so a child's parent
- * descriptor always already exists.
+ * consts -> methods, constructed singleton objects, and namespaces (recursed). Emission is top-down
+ * so a child's parent descriptor always already exists.
  */
 
 import {
@@ -120,7 +120,8 @@ function emitDefaultExports(node: Container, parent: NodeDescriptor, enclosingNa
 }
 
 // A callable-binding const emits a function node; an object-literal const emits a container node
-// whose function-valued members are methods. Only Identifier-named declarations qualify — a
+// whose function-valued members are methods; and a `new`-initialized binding emits the constructed
+// singleton as an object node. Only Identifier-named declarations qualify — a
 // destructuring pattern (`const { save } = buildApi(…)`) binds pieces, and its pattern text would
 // make a malformed node id.
 function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
@@ -132,9 +133,20 @@ function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosi
     emitBinding(binding, "function", node.getName(), node, parent, enclosingNames, context);
     return;
   }
-  if (Node.isObjectLiteralExpression(node.getInitializer())) {
+  const initializer = node.getInitializer();
+  if (Node.isObjectLiteralExpression(initializer)) {
     emitObjectLiteralConst(node, parent, enclosingNames, context);
+    return;
   }
+  if (Node.isNewExpression(initializer)) {
+    emitConstructedObject(node, parent, enclosingNames, context);
+  }
+}
+
+function emitConstructedObject(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+  context.emit(
+    memberDescriptor(context, container("object", node.getName(), enclosingNames, parent, node)),
+  );
 }
 
 function emitObjectLiteralConst(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {

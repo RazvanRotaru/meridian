@@ -43,7 +43,7 @@ export interface PipelineRequest {
   materializeBoundary: boolean;
   /** Drop test code from the artifact entirely; canonical product analysis keeps and tags it. */
   excludeTests?: boolean;
-  /** Emit `references` edges for imported symbols used as values; canonical product analysis leaves this off. */
+  /** Emit `references` edges for imported symbols used as values. */
   valueRefs?: boolean;
   /** Tag nodes the PR changed (git diff --merge-base <ref> vs the working tree) `"changed"`. */
   changedSince?: string;

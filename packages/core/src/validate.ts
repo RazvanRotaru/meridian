@@ -24,7 +24,7 @@ export interface ValidationResult {
 }
 
 const KNOWN_NODE_KINDS = new Set([
-  "package", "module", "namespace", "class", "interface", "enum", "typeAlias", "function", "method",
+  "package", "module", "namespace", "class", "object", "interface", "enum", "typeAlias", "function", "method",
   "external", "unresolved", "channel", "system", "promise",
 ]);
 const KNOWN_EDGE_KINDS = new Set([

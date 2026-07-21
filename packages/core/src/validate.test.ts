@@ -102,6 +102,14 @@ describe("validateArtifact", () => {
     }
   });
 
+  it("recognizes object nodes", () => {
+    const artifact = validArtifact();
+    artifact.nodes[3]!.kind = "object";
+    const result = validateArtifact(artifact);
+    expect(result.ok).toBe(true);
+    expect(result.warnings).toEqual([]);
+  });
+
   it("recognizes method-level interface implementation edges", () => {
     const artifact = validArtifact();
     const edge = artifact.edges[0]!;

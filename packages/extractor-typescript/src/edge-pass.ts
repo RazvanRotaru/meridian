@@ -259,7 +259,7 @@ function addCallableEdge(
 ): void {
   const resolution = resolveTarget(callee, index, resolver);
   recordThrow(resolution, relPath, site, diagnostics);
-  const enclosing = kind === "references"
+  const enclosing = kind === "references" || kind === "instantiates"
     ? enclosingSemanticDeclaration(site, index)
     : enclosingCallable(site, index);
   if (enclosing === null && kind === "renders") {
@@ -346,10 +346,11 @@ export function enclosingCallable(site: Node, index: ResolutionIndex): string | 
 }
 
 /**
- * The nearest emitted declaration enclosing a type reference. Type annotations in a callable's
- * parameters and return type sit outside its body, so the behavioural body index cannot see them.
- * Declaration ancestry also gives un-emitted class/interface properties to their owning type,
- * while a reference with no emitted declaration ancestor remains a module-level reference.
+ * The nearest emitted declaration enclosing a semantic occurrence. Type annotations in a
+ * callable's parameters and return type sit outside its body, so the behavioural body index cannot
+ * see them. A constructed object likewise owns the `new` in its initializer. Declaration ancestry
+ * also gives un-emitted class/interface properties to their owning type, while an occurrence with
+ * no emitted declaration ancestor remains module-level.
  */
 function enclosingSemanticDeclaration(site: Node, index: ResolutionIndex): string | null {
   let current = site.getParent();

@@ -14,9 +14,10 @@ import type { GitDiffExecutor } from "./git-diff";
 
 /**
  * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
- * Version 6 includes Python Protocol implementation inference in repository artifacts.
+ * Version 7 includes imported value references and constructed singleton object nodes in
+ * repository artifacts.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 6;
+export const REPOSITORY_ANALYSIS_VERSION = 7;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
@@ -24,7 +25,7 @@ export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   includeExternal: true,
   includeUnresolved: false,
   excludeTests: false,
-  valueRefs: false,
+  valueRefs: true,
   materializeBoundary: true,
 } as const);
 
