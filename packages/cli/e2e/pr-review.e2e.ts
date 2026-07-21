@@ -28,7 +28,8 @@ const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const DRAFT_TEXT = "Please keep this tier boundary explicit.";
 const EDITED_DRAFT_TEXT = "Please keep this tier boundary explicit and documented.";
 const SECOND_DRAFT_TEXT = "Please cover the standard-tier fallback with a focused test.";
-const EXISTING_COMMENT_TEXT = "Should this threshold stay aligned with the billing tier for every existing customer configuration, including installations that still rely on the previous browser-prefix allowlist behavior?";
+const WRAPPING_COMMENT_TOKEN = "previous_browser_prefix_allowlist_configuration_that_must_remain_readable_without_resizing_the_comment_overlay";
+const EXISTING_COMMENT_TEXT = `Should this threshold stay aligned with the billing tier for every existing customer configuration, including installations that still rely on the previous browser-prefix allowlist behavior? ${WRAPPING_COMMENT_TOKEN}`;
 const EDITED_EXISTING_COMMENT_TEXT = "Keep this threshold aligned with the billing tier.";
 const THREAD_REPLY_TEXT = "Agreed — I will keep the two thresholds together.";
 const SOURCE_COMMENT_TEXT = "// Keep the loyalty threshold explicit before choosing the customer's tier.";
@@ -200,11 +201,45 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // the review-panel control hides and restores that layer without disabling either host.
     const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
-    const loyaltyCommentIndicator = extractedReviewSurface
-      .locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`)
-      .getByRole("button", { name: "1 review comment" });
+    const loyaltyCommentToolbar = extractedReviewSurface.locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    const loyaltyCommentIndicator = loyaltyCommentToolbar.getByRole("button", { name: "1 review comment" });
     await loyaltyCommentIndicator.waitFor();
     expect(await extractedReviewSurface.locator(`[data-review-comment-node-id="${ORDER_SERVICE_MODULE_ID}"]`).count()).toBe(0);
+
+    // Comment chrome is screen-space UI, not graph content: the hit target and open card keep exact
+    // dimensions as the viewport zoom changes. The container remains horizontally scrollable, while
+    // long comment text wraps onto the next line without widening or escaping its bordered card.
+    const commentTooltip = loyaltyCommentToolbar.getByRole("tooltip");
+    const commentScroller = commentTooltip;
+    await loyaltyCommentIndicator.hover();
+    await commentTooltip.waitFor();
+    const commentOverlayAtReadingZoom = await reviewCommentOverlayMetrics(loyaltyCommentIndicator, commentTooltip, commentScroller);
+    expect(commentOverlayAtReadingZoom.tooltip.width).toBeCloseTo(310, 0);
+    expect(commentOverlayAtReadingZoom.tooltip.height).toBeCloseTo(300, 0);
+    expect(commentOverlayAtReadingZoom.overflowX).toBe("auto");
+    expect(commentOverlayAtReadingZoom.scrollerScrollWidth).toBeLessThanOrEqual(commentOverlayAtReadingZoom.scrollerClientWidth + 1);
+    expect(commentOverlayAtReadingZoom.cardScrollWidth).toBeLessThanOrEqual(commentOverlayAtReadingZoom.cardClientWidth + 1);
+    expect(commentOverlayAtReadingZoom.bodyScrollWidth).toBeLessThanOrEqual(commentOverlayAtReadingZoom.bodyClientWidth + 1);
+    expect(commentOverlayAtReadingZoom.bodyOverflowWrap).toBe("anywhere");
+    expect(commentOverlayAtReadingZoom.wrappedTokenLineCount).toBeGreaterThan(1);
+    await page.mouse.move(0, 0);
+    await commentTooltip.waitFor({ state: "detached" });
+
+    const zoomOutForCommentCheck = extractedReviewSurface.locator(".react-flow__controls-zoomout");
+    await zoomOutForCommentCheck.click();
+    await waitForGraphViewportToSettle(extractedReviewSurface);
+    await loyaltyCommentIndicator.hover();
+    await commentTooltip.waitFor();
+    const commentOverlayAfterZoom = await reviewCommentOverlayMetrics(loyaltyCommentIndicator, commentTooltip, commentScroller);
+    expect(Math.abs(commentOverlayAfterZoom.indicator.width - commentOverlayAtReadingZoom.indicator.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(commentOverlayAfterZoom.indicator.height - commentOverlayAtReadingZoom.indicator.height)).toBeLessThanOrEqual(1);
+    expect(Math.abs(commentOverlayAfterZoom.tooltip.width - commentOverlayAtReadingZoom.tooltip.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(commentOverlayAfterZoom.tooltip.height - commentOverlayAtReadingZoom.tooltip.height)).toBeLessThanOrEqual(1);
+    await page.mouse.move(0, 0);
+    await commentTooltip.waitFor({ state: "detached" });
+    await extractedReviewSurface.locator(".react-flow__controls-zoomin").click();
+    await waitForGraphViewportToSettle(extractedReviewSurface);
+
     await loyaltyTierNode.hover();
     const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await loyaltyPreview.waitFor();
@@ -548,6 +583,62 @@ async function lineActionStyle(action: Locator): Promise<{ opacity: string; poin
     const style = getComputedStyle(element);
     return { opacity: style.opacity, pointerEvents: style.pointerEvents };
   });
+}
+
+async function reviewCommentOverlayMetrics(indicator: Locator, tooltip: Locator, scroller: Locator): Promise<{
+  indicator: { width: number; height: number };
+  tooltip: { width: number; height: number };
+  overflowX: string;
+  scrollerClientWidth: number;
+  scrollerScrollWidth: number;
+  cardClientWidth: number;
+  cardScrollWidth: number;
+  bodyClientWidth: number;
+  bodyScrollWidth: number;
+  bodyOverflowWrap: string;
+  wrappedTokenLineCount: number;
+}> {
+  const [indicatorBox, tooltipBox, scroll] = await Promise.all([
+    indicator.boundingBox(),
+    tooltip.boundingBox(),
+    scroller.evaluate((element, wrappingToken) => {
+      const card = element.querySelector<HTMLElement>('[data-review-comment-card="true"]');
+      const body = element.querySelector<HTMLElement>('[data-review-comment-body="true"]');
+      if (card === null || body === null) throw new Error("review comment content is not measurable");
+      const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+      const tokenLineTops = new Set<number>();
+      for (let textNode = walker.nextNode(); textNode !== null; textNode = walker.nextNode()) {
+        const text = textNode.textContent ?? "";
+        const tokenStart = text.indexOf(wrappingToken);
+        if (tokenStart < 0) continue;
+        const range = document.createRange();
+        range.setStart(textNode, tokenStart);
+        range.setEnd(textNode, tokenStart + wrappingToken.length);
+        for (const rect of Array.from(range.getClientRects())) tokenLineTops.add(Math.round(rect.top));
+        break;
+      }
+      if (tokenLineTops.size === 0) throw new Error("wrapping review comment token is not measurable");
+      return {
+        overflowX: getComputedStyle(element).overflowX,
+        scrollerClientWidth: element.clientWidth,
+        scrollerScrollWidth: element.scrollWidth,
+        cardClientWidth: card.clientWidth,
+        cardScrollWidth: card.scrollWidth,
+        bodyClientWidth: body.clientWidth,
+        bodyScrollWidth: body.scrollWidth,
+        bodyOverflowWrap: getComputedStyle(body).overflowWrap,
+        wrappedTokenLineCount: tokenLineTops.size,
+      };
+    }, WRAPPING_COMMENT_TOKEN),
+  ]);
+  if (indicatorBox === null || tooltipBox === null) {
+    throw new Error("review comment overlay is not measurable");
+  }
+  return {
+    indicator: { width: indicatorBox.width, height: indicatorBox.height },
+    tooltip: { width: tooltipBox.width, height: tooltipBox.height },
+    ...scroll,
+  };
 }
 
 /** Pick an actual empty point on React Flow's pane before issuing the real pointer click. A fixed
