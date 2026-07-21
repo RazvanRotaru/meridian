@@ -201,6 +201,34 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // the review-panel control hides and restores that layer without disabling either host.
     const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
+
+    // A graph-node selection offers a local affected-flow filter. It keeps the block's own flow and
+    // direct callers, removes unrelated review stories, and disappears again with the selection.
+    const affectedFlows = page.getByRole("region", { name: "Affected logic flows list" });
+    const affectedFlowsDisclosure = page.getByTitle("Affected logic flows: changed or reaches changed code");
+    const affectedFlowRows = affectedFlows.getByRole("button", { name: /^View sequence for / });
+    const allAffectedFlowNames = await affectedFlowRows.evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label")));
+    const allAffectedHeaderText = await affectedFlowsDisclosure.textContent();
+    expect(allAffectedFlowNames).toContain("View sequence for loyaltyTierFor");
+    expect(allAffectedFlowNames).toContain("View sequence for reviewFixtureMarker");
+    await loyaltyTierNode.click();
+    const relatedOnly = page.getByRole("button", { name: "Show only flows related to loyaltyTierFor" });
+    await relatedOnly.waitFor();
+    expect(await relatedOnly.getAttribute("aria-pressed")).toBe("false");
+    await relatedOnly.click();
+    expect(await relatedOnly.getAttribute("aria-pressed")).toBe("true");
+    expect(await affectedFlowsDisclosure.textContent()).toBe(allAffectedHeaderText);
+    await expect.poll(() => affectedFlowRows.evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label"))),
+    ).toEqual(["View sequence for loyaltyTierFor"]);
+    await relatedOnly.click();
+    await expect.poll(() => affectedFlowRows.evaluateAll((buttons) =>
+      buttons.map((button) => button.getAttribute("aria-label"))),
+    ).toEqual(allAffectedFlowNames);
+    await clickBareCanvas(page, extractedReviewSurface);
+    await relatedOnly.waitFor({ state: "detached" });
+
     const loyaltyCommentToolbar = extractedReviewSurface.locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     const loyaltyCommentIndicator = loyaltyCommentToolbar.getByRole("button", { name: "1 review comment" });
     await loyaltyCommentIndicator.waitFor();
