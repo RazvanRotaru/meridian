@@ -1,7 +1,7 @@
 /** Comment previews attached inside the visible representatives of commented review nodes. */
 
 import { useMemo } from "react";
-import { NodeToolbar, Position, useViewport, type Node } from "@xyflow/react";
+import { NodeToolbar, Position, type Node } from "@xyflow/react";
 import { SEMANTIC_LAYER_CLASS, semanticLayerClass } from "../../derive/moduleSemanticComposite";
 import {
   deriveReviewCommentNodeEvidence,
@@ -64,7 +64,6 @@ function VisibleReviewCommentNodeIndicators({
   visibleNodes: readonly Node[];
   evidence: ReadonlyMap<string, ReviewCommentNodeEvidence>;
 }) {
-  const { zoom } = useViewport();
   return (
     <>
       {visibleNodes.map((node) => {
@@ -83,14 +82,14 @@ function VisibleReviewCommentNodeIndicators({
             align="end"
             // Keep the interactive indicator just outside the card. Tucking it into the bottom-right
             // corner overlaps BaseNode's shared source/disclosure rail on compact callable cards.
-            offset={2 * zoom}
+            offset={2}
             className={toolbarClass(depth)}
-            style={toolbarStyle(zoom)}
+            style={TOOLBAR_STYLE}
             data-review-comment-node-id={node.id}
             data-review-draft-count={counts.draftCount}
             data-review-existing-count={counts.existingCount}
           >
-            <ReviewCommentIndicator label={label} count={count} comments={counts.comments} zoom={zoom} />
+            <ReviewCommentIndicator label={label} count={count} comments={counts.comments} />
           </NodeToolbar>
         );
       })}
@@ -109,6 +108,7 @@ function toolbarClass(depth: number | undefined): string {
     : `review-comment-node-toolbar ${SEMANTIC_LAYER_CLASS} ${semanticLayerClass(depth)}`;
 }
 
-function toolbarStyle(zoom: number): React.CSSProperties {
-  return { pointerEvents: "all", width: 26 * zoom, height: 26 * zoom };
-}
+// NodeToolbar renders in React Flow's screen-space renderer, so viewport zoom must never be applied
+// a second time here. The marker and its open comment card remain a stable hit/read target while the
+// graph beneath them changes scale.
+const TOOLBAR_STYLE: React.CSSProperties = { pointerEvents: "all", width: 26, height: 26 };

@@ -17,7 +17,6 @@ vi.mock("@xyflow/react", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@xyflow/react")>();
   return {
     ...actual,
-    useViewport: () => ({ x: 0, y: 0, zoom: 0.5 }),
     NodeToolbar: ({
       children,
       nodeId,
@@ -58,14 +57,17 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
     );
 
     expect(toolbarCalls).toEqual([
-      { nodeId: "one", className: expect.stringContaining("semantic-layer-2"), position: "bottom", align: "end", offset: 1 },
-      { nodeId: "two", className: "review-comment-node-toolbar", position: "bottom", align: "end", offset: 1 },
+      { nodeId: "one", className: expect.stringContaining("semantic-layer-2"), position: "bottom", align: "end", offset: 2 },
+      { nodeId: "two", className: "review-comment-node-toolbar", position: "bottom", align: "end", offset: 2 },
     ]);
     expect(markup).toContain('aria-label="1 review comment"');
     expect(markup).toContain('aria-label="2 review comments"');
     expect(markup).toContain('data-review-draft-count="2"');
     expect(markup).toContain('data-review-existing-count="1"');
-    expect(markup).toContain("transform:translateX(-2px) scale(0.5)");
+    expect(markup).toContain("width:26px;height:26px");
+    expect(markup).toContain("transform:translateX(-4px)");
+    expect(markup).not.toContain("scale(");
+    expect(markup).toContain("nodrag nopan nowheel");
     expect(markup.match(/aria-hidden="true"/g)).toHaveLength(2);
     expect(markup).not.toContain("not-visible");
   });
@@ -87,6 +89,15 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
     expect(markup).toContain("<strong>the helper</strong>");
     expect(markup).toContain('href="https://github.com/o/r/pull/1#comment"');
     expect(markup).toContain("Draft comment");
+    expect(markup).toContain("width:310px;height:300px;overflow-x:auto;overflow-y:auto");
+    expect(markup).toContain("overscroll-behavior:contain");
+    expect(markup).toContain('data-review-comment-scroll="true"');
+    expect(markup).toContain("display:flex;flex-direction:column;gap:7px;width:100%;min-width:0");
+    expect(markup).toContain('data-review-comment-card="true"');
+    expect(markup).toContain("width:100%;min-width:0;box-sizing:border-box");
+    expect(markup).toContain('data-review-comment-body="true"');
+    expect(markup).toContain("min-width:0;max-width:100%");
+    expect(markup).toContain("overflow-wrap:anywhere;word-break:normal");
   });
 });
 
