@@ -22,6 +22,7 @@ import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionCon
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
 
 export type ReviewViewedScope = "folder" | "file" | "unit";
+type ReviewViewedTargetScope = ReviewViewedScope | "source";
 
 interface FolderTarget {
   kind: "folder";
@@ -98,21 +99,11 @@ function EnabledReviewNodeViewedChrome({
   borderRadius: number;
   children: ReactNode;
 }) {
-  const target = useBlueprint((state) => targetFor(
-    state.reviewFiles,
-    scope,
-    nodeId,
-    state.minimalRollups[nodeId],
-    state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
-    state.index,
-  ));
-  const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
-  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick, toggleReviewUnitsViewed } = useBlueprintActions();
-  if (target === null || state === null) {
+  const control = useReviewViewedControl(nodeId, scope);
+  if (control === null) {
     return children;
   }
-  const label = viewedLabel(target, state);
-  const color = stateColor(state);
+  const { color, state } = control;
   return (
     <div
       className="review-node-viewed-shell"
@@ -131,6 +122,7 @@ function EnabledReviewNodeViewedChrome({
       )}
       <div
         className="review-node-viewed-indicator"
+        data-review-view-state={state}
         style={indicatorStyle(color, state)}
       >
         <ViewedIcon state={state} />
@@ -138,21 +130,50 @@ function EnabledReviewNodeViewedChrome({
           nodeId={nodeId}
           scope={scope}
           state={state}
-          label={label}
-          onToggle={() => {
-            if (target.kind === "folder") {
-              toggleReviewFilesViewed(target.files.map((file) => file.path));
-            } else if (target.kind === "file") {
-              toggleReviewFileViewed(target.file.path);
-            } else if (target.kind === "unit-group") {
-              toggleReviewUnitsViewed(target.units.map((unit) => unit.nodeId));
-            } else {
-              toggleReviewUnitTick(target.unit.nodeId);
-            }
-          }}
+          label={control.label}
+          onToggle={control.onToggle}
         />
       </div>
     </div>
+  );
+}
+
+/** The preview counterpart of the node-attached control. `source` resolution deliberately checks
+ * the review index instead of guessing from an open-vocabulary graph kind, so module aliases and
+ * grouped declaration nodes retain the exact same aggregate semantics as their Map nodes. */
+export function ReviewPreviewViewedControl({
+  nodeId,
+}: {
+  nodeId: string;
+}) {
+  const control = useReviewViewedControl(nodeId, "source");
+  if (control === null) {
+    return null;
+  }
+  return (
+    <>
+      {control.state === "todo" ? null : (
+        <div
+          aria-hidden="true"
+          className="review-node-viewed-outline"
+          style={outlineStyle(control.color, 10, control.state)}
+        />
+      )}
+      <div
+        className="review-node-viewed-indicator"
+        data-review-view-state={control.state}
+        style={indicatorStyle(control.color, control.state)}
+      >
+        <ViewedIcon state={control.state} />
+        <ReviewViewedButton
+          nodeId={nodeId}
+          scope={control.scope}
+          state={control.state}
+          label={control.label}
+          onToggle={control.onToggle}
+        />
+      </div>
+    </>
   );
 }
 
@@ -191,6 +212,52 @@ export function ReviewViewedButton({
   );
 }
 
+interface ReviewViewedControl {
+  color: string;
+  label: string;
+  onToggle: () => void;
+  scope: ReviewViewedScope;
+  state: CheckState;
+}
+
+function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope): ReviewViewedControl | null {
+  const target = useBlueprint((state) => targetFor(
+    state.reviewFiles,
+    scope,
+    nodeId,
+    state.minimalRollups[nodeId],
+    state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
+    state.index,
+  ));
+  const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
+  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick, toggleReviewUnitsViewed } = useBlueprintActions();
+  if (target === null || state === null) {
+    return null;
+  }
+  return {
+    color: stateColor(state),
+    label: viewedLabel(target, state),
+    scope: scopeForTarget(target),
+    state,
+    onToggle: () => {
+      if (target.kind === "folder") {
+        toggleReviewFilesViewed(target.files.map((file) => file.path));
+      } else if (target.kind === "file") {
+        toggleReviewFileViewed(target.file.path);
+      } else if (target.kind === "unit-group") {
+        toggleReviewUnitsViewed(target.units.map((unit) => unit.nodeId));
+      } else {
+        toggleReviewUnitTick(target.unit.nodeId);
+      }
+    },
+  };
+}
+
+function scopeForTarget(target: ReviewViewedTarget): ReviewViewedScope {
+  if (target.kind === "folder") return "folder";
+  return target.kind === "file" ? "file" : "unit";
+}
+
 function ViewedIcon({ state }: { state: CheckState }) {
   if (state === "done") {
     return <CheckIcon width={13} height={13} aria-hidden="true" />;
@@ -203,13 +270,19 @@ function ViewedIcon({ state }: { state: CheckState }) {
 
 function targetFor(
   files: readonly ReviewFileRow[],
-  scope: ReviewViewedScope,
+  scope: ReviewViewedTargetScope,
   nodeId: string,
   folderMemberIds: readonly string[] | undefined,
   folderLabel: string,
   graphIndex: GraphIndex,
 ): ReviewViewedTarget | null {
   const index = reviewTargetIndex(files, graphIndex);
+  if (scope === "source") {
+    return index.filesByModuleId.get(nodeId)
+      ?? index.unitGroupsByNodeId.get(nodeId)
+      ?? index.unitsByNodeId.get(nodeId)
+      ?? null;
+  }
   if (scope === "file") {
     return index.filesByModuleId.get(nodeId) ?? null;
   }
@@ -382,8 +455,13 @@ export const REVIEW_NODE_VIEWED_CSS = `
 .review-node-viewed-shell[data-review-view-state="todo"] .review-node-viewed-indicator {
   opacity: 0.28;
 }
+.review-node-viewed-indicator[data-review-view-state="todo"] {
+  opacity: 0.28;
+}
 .review-node-viewed-shell[data-review-view-state="todo"]:hover .review-node-viewed-indicator,
-.review-node-viewed-shell[data-review-view-state="todo"]:focus-within .review-node-viewed-indicator {
+.review-node-viewed-shell[data-review-view-state="todo"]:focus-within .review-node-viewed-indicator,
+.review-node-diff-preview:hover .review-node-viewed-indicator[data-review-view-state="todo"],
+.review-node-diff-preview:focus-within .review-node-viewed-indicator[data-review-view-state="todo"] {
   opacity: 0.9;
 }
 .review-node-viewed-button:focus-visible {

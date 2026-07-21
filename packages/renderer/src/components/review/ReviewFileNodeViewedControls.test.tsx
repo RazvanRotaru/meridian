@@ -8,6 +8,7 @@ import { SurfaceInteractionScope } from "../canvas/SurfaceInteractionContext";
 import {
   REVIEW_NODE_VIEWED_CSS,
   ReviewNodeViewedChrome,
+  ReviewPreviewViewedControl,
   ReviewViewedButton,
 } from "./ReviewFileNodeViewedControls";
 
@@ -156,6 +157,70 @@ describe("ReviewViewedButton", () => {
     expect(onToggle).toHaveBeenCalledTimes(1);
     expect(button.props.className).toContain("nodrag nopan");
     expect(button.props["aria-pressed"]).toBe(true);
+    expect(button.props["aria-label"]).toBe("Viewed run — click to unmark");
+    expect(button.props.title).toBe("Viewed run — click to unmark");
+    expect(button.props["data-review-view-state"]).toBe("done");
+  });
+
+  it.each([
+    ["todo", "Mark run as viewed", false],
+    ["stale", "run changed since viewed — click to mark again", false],
+    ["done", "Viewed run — click to unmark", true],
+  ] as const)("exposes the %s state through its semantic label and pressed state", (state, label, pressed) => {
+    const markup = renderToStaticMarkup(
+      <ReviewViewedButton
+        nodeId={UNIT_ID}
+        scope="unit"
+        state={state}
+        label={label}
+        onToggle={() => undefined}
+      />,
+    );
+
+    expect(markup).toContain(`aria-label="${label}"`);
+    expect(markup).toContain(`title="${label}"`);
+    expect(markup).toContain(`aria-pressed="${pressed}"`);
+    expect(markup).toContain(`data-review-view-state="${state}"`);
+  });
+});
+
+describe("ReviewPreviewViewedControl", () => {
+  it("resolves file and declaration previews to the same semantic state and top-right control as their nodes", () => {
+    const store = reviewStore({ fingerprint: "unit-fingerprint", folderMembers: [FILE_ID] });
+
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewPreviewViewedControl nodeId={FILE_ID} />
+        <ReviewPreviewViewedControl nodeId={CLASS_ID} />
+        <ReviewPreviewViewedControl nodeId={UNIT_ID} />
+      </StoreProvider>,
+    );
+
+    expect(markup.match(/data-review-view-state="done"/g)?.length).toBe(6);
+    expect(markup).toContain('data-review-viewed-scope="file"');
+    expect(markup.match(/data-review-viewed-scope="unit"/g)?.length).toBe(2);
+    expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
+    expect(markup).toContain("Viewed OsService — click to unmark");
+    expect(markup).toContain("Viewed run — click to unmark");
+    expect(markup).toContain("top:-10px;right:-10px");
+    expect(markup.match(/class="review-node-viewed-outline"/g)?.length).toBe(3);
+    expect(markup).toContain("background-color:#A78BFA1A");
+  });
+
+  it("exposes an unviewed preview as a quiet but keyboard-discoverable control", () => {
+    const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewPreviewViewedControl nodeId={UNIT_ID} />
+      </StoreProvider>,
+    );
+
+    expect(markup).toContain('data-review-view-state="todo"');
+    expect(markup).toContain('aria-label="Mark run as viewed"');
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).not.toContain('class="review-node-viewed-outline"');
+    expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:hover");
+    expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:focus-within");
   });
 });
 
