@@ -1001,7 +1001,7 @@ function beginInvoke(ctx: Context, body: unknown) {
 
 function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo: "repo" }): Context {
   const graphStore = new WebGraphStore();
-  const analysisCoordinator = new AnalysisCoordinator();
+  const analysisCoordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
   activeGraphStores.push(graphStore);
   activeCoordinators.push(analysisCoordinator);
   graphStore.publish({

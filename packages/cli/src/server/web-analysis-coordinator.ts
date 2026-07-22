@@ -6,8 +6,6 @@
  * heavy-analysis pool through `context.runAnalysis` only around the memory-intensive phase.
  */
 
-export const DEFAULT_MAX_CONCURRENT_ANALYSES = 2;
-
 export type AnalysisProgressListener<Progress> = (progress: Progress) => void | Promise<void>;
 export type AnalysisWork<Result> = (signal: AbortSignal) => Result | Promise<Result>;
 
@@ -23,7 +21,7 @@ export interface AnalysisJobContext<Progress> {
 }
 
 export interface AnalysisCoordinatorOptions {
-  maxConcurrentAnalyses?: number;
+  maxConcurrentAnalyses: number;
 }
 
 export class AnalysisCoordinatorClosedError extends Error {
@@ -249,8 +247,8 @@ export class AnalysisCoordinator {
   #closed = false;
   #closePromise: Promise<void> | undefined;
 
-  constructor(options: AnalysisCoordinatorOptions = {}) {
-    const maxConcurrentAnalyses = options.maxConcurrentAnalyses ?? DEFAULT_MAX_CONCURRENT_ANALYSES;
+  constructor(options: AnalysisCoordinatorOptions) {
+    const { maxConcurrentAnalyses } = options;
     if (!Number.isInteger(maxConcurrentAnalyses) || maxConcurrentAnalyses < 1) {
       throw new RangeError("maxConcurrentAnalyses must be a positive integer");
     }

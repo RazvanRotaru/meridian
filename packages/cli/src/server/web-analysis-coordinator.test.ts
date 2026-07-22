@@ -3,7 +3,6 @@ import {
   AnalysisCoordinator,
   AnalysisCoordinatorAbortError,
   AnalysisCoordinatorClosedError,
-  DEFAULT_MAX_CONCURRENT_ANALYSES,
 } from "./web-analysis-coordinator";
 
 describe("AnalysisCoordinator", () => {
@@ -33,7 +32,7 @@ describe("AnalysisCoordinator", () => {
   });
 
   it("replays the latest progress to a late waiter and broadcasts later progress in order", async () => {
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const cloneReported = deferred<void>();
     const continueWork = deferred<void>();
     const firstEvents: string[] = [];
@@ -74,7 +73,7 @@ describe("AnalysisCoordinator", () => {
   });
 
   it("delivers queued progress before resolving that waiter", async () => {
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const releaseProgress = deferred<void>();
     const events: string[] = [];
     let resolved = false;
@@ -106,7 +105,7 @@ describe("AnalysisCoordinator", () => {
   });
 
   it("isolates synchronous and asynchronous progress callback failures from shared work", async () => {
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const release = deferred<void>();
     const syncFailure = new Error("sync writer failed");
     const asyncFailure = new Error("async writer failed");
@@ -146,7 +145,7 @@ describe("AnalysisCoordinator", () => {
   });
 
   it("aborting one waiter leaves shared work alive for the remaining waiter", async () => {
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const firstController = new AbortController();
     const secondController = new AbortController();
     const started = deferred<void>();
@@ -430,7 +429,7 @@ describe("AnalysisCoordinator", () => {
   });
 
   it("close rejects a waiter still draining progress after its worker settled", async () => {
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const progressStarted = deferred<void>();
     const releaseProgress = deferred<void>();
     const result = coordinator.run<string, string>(
@@ -456,12 +455,11 @@ describe("AnalysisCoordinator", () => {
     await flushMicrotasks();
   });
 
-  it("uses a default limit of two and rejects invalid limits", async () => {
-    expect(DEFAULT_MAX_CONCURRENT_ANALYSES).toBe(2);
+  it("uses the explicit limit and rejects invalid limits", async () => {
     expect(() => new AnalysisCoordinator({ maxConcurrentAnalyses: 0 })).toThrow(RangeError);
     expect(() => new AnalysisCoordinator({ maxConcurrentAnalyses: 1.5 })).toThrow(RangeError);
 
-    const coordinator = new AnalysisCoordinator();
+    const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const releases = [deferred<void>(), deferred<void>(), deferred<void>()];
     const starts: number[] = [];
     const jobs = releases.map((release, index) => coordinator.run(String(index), ({ runAnalysis }) =>

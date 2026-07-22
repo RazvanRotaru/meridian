@@ -54,6 +54,10 @@ import {
   runRepositoryAnalysisChild,
   runRepositoryArtifactRestampChild,
 } from "./repository-analysis-child";
+import {
+  repositoryAnalysisMemoryPolicy,
+  type RepositoryAnalysisMemoryPolicy,
+} from "./repository-analysis-memory";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -79,7 +83,7 @@ export interface WebServerConfig {
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
   allowSyntheticPrExecution?: boolean;
-  /** Bound simultaneous memory-heavy repository analyses; cache and Git preparation stay outside. */
+  /** Internal upper bound for memory-heavy analysis concurrency; never bypasses the memory budget. */
   maxConcurrentAnalyses?: number;
   /** Internal analysis boundary override used by deterministic server tests. */
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
@@ -119,13 +123,16 @@ export interface Context {
 }
 
 export function createWebServer(config: WebServerConfig): Server {
+  const analysisMemory = repositoryAnalysisMemoryPolicy({
+    maxConcurrentAnalyses: config.maxConcurrentAnalyses,
+  });
   const graphStore = new WebGraphStore();
   const analysisCoordinator = new AnalysisCoordinator({
-    maxConcurrentAnalyses: config.maxConcurrentAnalyses,
+    maxConcurrentAnalyses: analysisMemory.maxConcurrentAnalyses,
   });
   let ctx: Context;
   try {
-    ctx = buildContext(config, graphStore, analysisCoordinator);
+    ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory);
   } catch (error) {
     void analysisCoordinator.close();
     graphStore.dispose();
@@ -142,6 +149,7 @@ function buildContext(
   config: WebServerConfig,
   graphStore: WebGraphStore,
   analysisCoordinator: AnalysisCoordinator,
+  analysisMemory: RepositoryAnalysisMemoryPolicy,
 ): Context {
   const indexPath = join(config.rendererRoot, "index.html");
   if (!existsSync(indexPath)) {
@@ -150,12 +158,21 @@ function buildContext(
   const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
+  const repositoryAnalysis = config.repositoryAnalysis ?? runRepositoryAnalysisChild;
+  const repositoryArtifactRestamp = config.repositoryArtifactRestamp
+    ?? runRepositoryArtifactRestampChild;
   const ctx: Context = {
     graphStore,
     prFilesCache: new Map(),
     analysisCoordinator,
-    repositoryAnalysis: config.repositoryAnalysis ?? runRepositoryAnalysisChild,
-    repositoryArtifactRestamp: config.repositoryArtifactRestamp ?? runRepositoryArtifactRestampChild,
+    repositoryAnalysis: (request, options) => repositoryAnalysis(request, {
+      ...options,
+      workerHeapMb: analysisMemory.workerHeapMb,
+    }),
+    repositoryArtifactRestamp: (request, options) => repositoryArtifactRestamp(request, {
+      ...options,
+      workerHeapMb: analysisMemory.workerHeapMb,
+    }),
     cacheRoot,
     refreshCache: config.refreshCache === true,
     rendererIndex: readFileSync(indexPath, "utf8"),

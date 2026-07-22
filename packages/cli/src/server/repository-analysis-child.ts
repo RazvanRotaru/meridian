@@ -27,6 +27,7 @@ import {
   type VerifiedFileArtifactMaterial,
   type WebGraphArtifactSummary,
 } from "./web-graph-store";
+import { repositoryAnalysisWorkerHeapArg } from "./repository-analysis-memory";
 
 export type { SerializableRepositoryAnalysisRequest } from "./repository-analysis-worker-job";
 export { isRepositoryAnalysisFacts } from "./repository-analysis-worker-job";
@@ -35,7 +36,6 @@ export type { RepositoryAnalysisFacts } from "./repository-analysis-worker-job";
 const DEFAULT_TERMINATE_GRACE_MS = 5_000;
 const DEFAULT_PROCESS_TREE_KILL_WAIT_MS = 5_000;
 const PROCESS_TREE_POLL_MS = 25;
-const DEFAULT_WORKER_HEAP_MB = 8_192;
 const DEFAULT_ANALYSIS_TIMEOUT_MS = 20 * 60_000;
 const WORKER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
@@ -73,6 +73,8 @@ export interface RepositoryAnalysisChildOptions {
   workerEntry?: string | URL;
   /** Test/dev override for a source worker. */
   workerExecArgv?: readonly string[];
+  /** Immutable web-server reservation; other callers resolve the same environment by default. */
+  workerHeapMb?: number;
   terminateGraceMs?: number;
   processTreeKillWaitMs?: number;
   timeoutMs?: number;
@@ -148,8 +150,10 @@ function runRepositoryWorkerProcess(
   const execArgv = options.workerExecArgv
     ? [...options.workerExecArgv]
     : isTypeScriptEntry(workerEntry)
-      ? [workerHeapArg(), ...sourceWorkerExecArgv()]
-      : [workerHeapArg()];
+      ? sourceWorkerExecArgv()
+      : [];
+  // Keep this last so test/dev argv and inherited NODE_OPTIONS cannot enlarge the reserved heap.
+  execArgv.push(repositoryAnalysisWorkerHeapArg(options.workerHeapMb));
 
   return new Promise<RepositoryAnalysisWorkerFileResult>((resolve, reject) => {
     let child: ReturnType<typeof fork>;
@@ -436,29 +440,6 @@ function cleanupWorkerOutputs(request: RepositoryAnalysisWorkerRequest): void {
   if (request.type === "analyze" && request.branchVariant !== null) {
     rmSync(request.branchVariant.artifactOutputPath, { force: true });
   }
-}
-
-/** Heap reservation shared with server admission accounting. */
-export function repositoryAnalysisWorkerHeapMb(): number {
-  const configured = Number.parseInt(process.env.MERIDIAN_REPOSITORY_ANALYSIS_WORKER_HEAP_MB ?? "", 10);
-  if (validHeapMb(configured)) return configured;
-  const pinned = pinnedNodeHeapMb(process.env.NODE_OPTIONS);
-  return pinned ?? DEFAULT_WORKER_HEAP_MB;
-}
-
-function workerHeapArg(): string {
-  return `--max-old-space-size=${repositoryAnalysisWorkerHeapMb()}`;
-}
-
-function validHeapMb(value: number): boolean {
-  return Number.isSafeInteger(value) && value >= 1_024 && value <= 131_072;
-}
-
-function pinnedNodeHeapMb(nodeOptions: string | undefined): number | undefined {
-  if (!nodeOptions) return undefined;
-  const matches = [...nodeOptions.matchAll(/--max[-_]old[-_]space[-_]size(?:=|\s+)(\d+)/g)];
-  const value = Number.parseInt(matches.at(-1)?.[1] ?? "", 10);
-  return validHeapMb(value) ? value : undefined;
 }
 
 function configuredAnalysisTimeoutMs(): number {
