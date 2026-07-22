@@ -246,6 +246,38 @@ describe("repository analysis child", () => {
     expect((error as Error).message).not.toContain("github_pat_");
   }, 15_000);
 
+  it("enforces the reserved heap after custom worker arguments", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const heapPath = `${artifactOutputPath}.heap`;
+    const workerEntry = customWorker(directory, `
+      const { writeFileSync } = require("node:fs");
+      const { getHeapStatistics } = require("node:v8");
+      process.once("message", (message) => {
+        const heapMb = getHeapStatistics().heap_size_limit / (1024 * 1024);
+        writeFileSync(message.artifactOutputPath + ".heap", String(heapMb));
+        setInterval(() => {}, 1000);
+      });
+    `);
+    const controller = new AbortController();
+    const reason = new Error("heap probe complete");
+    const pending = runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      signal: controller.signal,
+      workerEntry,
+      workerExecArgv: ["--max-old-space-size=2048"],
+      workerHeapMb: 1_024,
+    });
+
+    await waitForFile(heapPath);
+    expect(Number(readFileSync(heapPath, "utf8"))).toBeLessThan(1_536);
+    controller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  }, 15_000);
+
   it("stream-verifies the child digest before creating a verified-file proof", async () => {
     const directory = temporaryDirectory();
     const artifactOutputPath = join(directory, "artifact.json");

@@ -61,7 +61,7 @@ let analysisCoordinator: AnalysisCoordinator;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "meridian-generation-store-test-"));
   graphStore = new WebGraphStore();
-  analysisCoordinator = new AnalysisCoordinator();
+  analysisCoordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
   vi.mocked(analyzeRepository).mockResolvedValue({ artifact: LOCAL_ARTIFACT, warnings: [] } as never);
   vi.mocked(syntheticExecutionRuntimeSupported).mockReturnValue(false);
   vi.mocked(loadSyntheticScenarios).mockReturnValue([]);

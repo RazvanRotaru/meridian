@@ -62,7 +62,7 @@ describe("generate canonical repository analysis", () => {
     );
 
     const graphStore = new WebGraphStore();
-    const analysisCoordinator = new AnalysisCoordinator();
+    const analysisCoordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const context = {
       cwd: root,
       graphStore,
