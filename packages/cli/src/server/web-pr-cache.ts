@@ -10,7 +10,7 @@ import { generatorVersion } from "../version";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { ChangedFileManifestEntry } from "@meridian/core";
 import { parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
-import { base64Auth, runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import {
   isRepositoryAnalysisFacts,
   runRepositoryAnalysisChild,
@@ -20,14 +20,12 @@ import {
 } from "./repository-analysis-child";
 import { isOperationCancelled, throwIfAborted } from "./web-cancellation";
 import { prepareWebCache } from "./web-cache";
-import { repositoryCacheKey } from "./web-cache-checkout";
 import {
   verifiedArtifactFile,
   type VerifiedFileArtifactMaterial,
 } from "./web-graph-store";
 import {
   createStageDirectory,
-  isDirectory,
   publishImmutable,
   readJson,
   removeEntry,
@@ -37,16 +35,29 @@ import { WebError } from "./web-error";
 import type { PrAnalyzeRequest } from "./web-pr-request";
 import type { ArtifactSource } from "./web-source";
 import type { PhaseAdmission } from "./web-analysis-coordinator";
+import {
+  repositoryKeyFor,
+  type ExpectedRemoteRef,
+  type RepositoryMirror,
+  type RepositoryWorkspaceLease,
+} from "./web-repository-mirror";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage = "clone" | "checkout" | "extract";
 
-const FORMAT_VERSION = 9;
+const FORMAT_VERSION = 10;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SNAPSHOT_ID = /^[a-f0-9]{16}$/;
-const CLONE_TIMEOUT_MS = 600_000;
+const WORKSPACE_ID = /^[a-f0-9]{32}$/;
 const GIT_TIMEOUT_MS = 300_000;
+
+interface ResolvedPrRevisions {
+  base: ExpectedRemoteRef;
+  baseSha: string;
+  head: ExpectedRemoteRef;
+  headSha: string;
+}
 
 interface PrSnapshotMetadata {
   formatVersion: number;
@@ -64,13 +75,14 @@ interface PrSnapshotMetadata {
   comparisonFacts: RepositoryAnalysisFacts;
   snapshotDigest: string;
   snapshotId: string;
+  workspaceId: string;
   warnings: string[];
 }
 
 /**
- * The revision/analysis slot contains only this small mutable pointer. Every path handed to a
- * graph descriptor lives below the selected immutable snapshot and is therefore never rebound or
- * removed while this server process is alive.
+ * The revision/analysis slot contains only this small mutable pointer. Artifact bytes live below
+ * the selected immutable snapshot; exact source workspaces are named by its validated workspaceId
+ * and pinned separately when a graph descriptor is published.
  */
 interface PrSnapshotPointer {
   formatVersion: number;
@@ -90,14 +102,17 @@ export interface CachedPrGraph {
   comparisonMaterial: VerifiedFileArtifactMaterial;
   comparisonFacts: RepositoryAnalysisFacts;
   comparisonSourceDir: string;
+  comparisonSourceLease: RepositoryWorkspaceLease;
   headSha: string;
   mergeBaseSha: string;
   sourceDir: string;
+  sourceLease: RepositoryWorkspaceLease;
   warnings: string[];
 }
 
 export async function cachedPrGraph(inputs: {
   cacheRoot: string;
+  repositories: RepositoryMirror;
   source: GitHubSource;
   body: PrAnalyzeRequest;
   cwd: string;
@@ -112,8 +127,9 @@ export async function cachedPrGraph(inputs: {
   prepareWebCache(inputs.cacheRoot);
   throwIfAborted(inputs.signal);
   const remoteUrl = parseGitHubSource(`${inputs.source.owner}/${inputs.source.repo}`);
-  const revisions = await remoteRevisions(remoteUrl, inputs.body, inputs.cwd, inputs.token, inputs.signal);
-  const repositoryKey = repositoryCacheKey(remoteUrl);
+  const resolved = await remoteRevisions(remoteUrl, inputs.body, inputs.cwd, inputs.token, inputs.signal);
+  const revisions = revisionCoordinates(resolved);
+  const repositoryKey = repositoryKeyFor(remoteUrl);
   const analysisKey = prAnalysisKey(inputs.source, inputs.body);
   const entry = join(
     inputs.cacheRoot,
@@ -128,49 +144,60 @@ export async function cachedPrGraph(inputs: {
     inputs.source,
     inputs.body,
     remoteUrl,
+    inputs.repositories,
     inputs.signal,
   );
   if (cached) {
     return { ...cached, cache: "hit" };
   }
-  return createCachedGraph(entry, repositoryKey, revisions, analysisKey, remoteUrl, inputs);
+  return createCachedGraph(entry, repositoryKey, resolved, analysisKey, remoteUrl, inputs);
 }
 
 async function createCachedGraph(
   entry: string,
   repositoryKey: string,
-  revisions: { headSha: string; baseSha: string },
+  revisions: ResolvedPrRevisions,
   analysisKey: string,
   remoteUrl: string,
   inputs: Parameters<typeof cachedPrGraph>[0],
 ): Promise<CachedPrGraph> {
   let stage: string | undefined;
+  let preparedWorkspace: Awaited<ReturnType<RepositoryMirror["preparePullRequest"]>> | undefined;
+  let borrowedWorkspace: Pick<CachedPrGraph, "sourceLease" | "comparisonSourceLease"> | undefined;
+  let retainWorkspace = false;
   try {
     const runPreparation = inputs.runPreparation;
     const prepared = await runPreparation(async () => {
       const preparedStage = createStageDirectory(join(inputs.cacheRoot, "pr-staging"));
       // Admission can discard a late success after cancellation, so ownership must escape now.
       stage = preparedStage;
-      const repoDir = join(preparedStage, "repo");
       try {
         await inputs.onStage("clone");
         throwIfAborted(inputs.signal);
-        await cloneFullHistory(remoteUrl, repoDir, inputs.token, inputs.signal);
-        await inputs.onStage("checkout");
-        throwIfAborted(inputs.signal);
-        await checkoutPrHead(repoDir, inputs.body, inputs.token, inputs.signal);
-        await verifyRevisions(repoDir, inputs.body.baseRef, revisions, inputs.signal);
-        const mergeBaseSha = await resolveMergeBase(repoDir, inputs.body.baseRef, inputs.signal);
-        const comparisonRepoDir = join(preparedStage, "comparison-repo");
-        await checkoutComparison(repoDir, comparisonRepoDir, mergeBaseSha, inputs.token, inputs.signal);
-        return { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage };
+        const workspace = await inputs.repositories.preparePullRequest({
+          remoteUrl,
+          base: revisions.base,
+          head: revisions.head,
+          token: inputs.token,
+          signal: inputs.signal,
+          onFetchComplete: () => inputs.onStage("checkout"),
+        });
+        preparedWorkspace = workspace;
+        return {
+          comparisonRepoDir: workspace.comparison.repoDir,
+          mergeBaseSha: workspace.mergeBaseSha,
+          repoDir: workspace.head.repoDir,
+          stage: preparedStage,
+          workspace,
+        };
       } catch (error) {
         removeEntry(preparedStage);
         stage = undefined;
         throw error;
       }
     });
-    const { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage } = prepared;
+    const { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage, workspace } = prepared;
+    const revisionCoords = revisionCoordinates(revisions);
     await inputs.onStage("extract");
     throwIfAborted(inputs.signal);
     const runAnalysis = inputs.runAnalysis;
@@ -203,7 +230,7 @@ async function createCachedGraph(
           inputs.source,
           inputs.body,
           remoteUrl,
-          revisions,
+          revisionCoords,
           mergeBaseSha,
           artifactPath,
           inputs.token,
@@ -217,7 +244,7 @@ async function createCachedGraph(
           inputs.source,
           inputs.body,
           remoteUrl,
-          revisions,
+          revisionCoords,
           mergeBaseSha,
           artifactPath,
           inputs.token,
@@ -251,7 +278,7 @@ async function createCachedGraph(
     requireExactArtifactCoordinates(
       artifactFacts,
       comparisonFacts,
-      revisions,
+      revisionCoords,
       mergeBaseSha,
       inputs.body.headRef,
       remoteUrl,
@@ -264,7 +291,7 @@ async function createCachedGraph(
       formatVersion: FORMAT_VERSION,
       analysisVersion: REPOSITORY_ANALYSIS_VERSION,
       repositoryKey,
-      ...revisions,
+      ...revisionCoords,
       mergeBaseSha,
       analysisKey,
       artifactDigest,
@@ -273,6 +300,7 @@ async function createCachedGraph(
       comparisonArtifactDigest,
       comparisonArtifactBytes: comparison.byteLength,
       comparisonFacts,
+      workspaceId: workspace.workspaceId,
       warnings,
     });
     // A digest alone is insufficient as a generation key: a corrupt/poisoned old checkout can
@@ -283,7 +311,7 @@ async function createCachedGraph(
       formatVersion: FORMAT_VERSION,
       analysisVersion: REPOSITORY_ANALYSIS_VERSION,
       repositoryKey,
-      ...revisions,
+      ...revisionCoords,
       mergeBaseSha,
       analysisKey,
       artifactDigest,
@@ -294,6 +322,7 @@ async function createCachedGraph(
       comparisonFacts,
       snapshotDigest,
       snapshotId,
+      workspaceId: workspace.workspaceId,
       warnings,
     } satisfies PrSnapshotMetadata);
     throwIfAborted(inputs.signal);
@@ -306,36 +335,55 @@ async function createCachedGraph(
           artifactDigest,
           comparisonFacts,
           comparisonArtifactDigest,
-          revisions,
+          revisionCoords,
           mergeBaseSha,
           warnings,
           inputs.source,
+          workspace,
         )
       : await readSnapshot(
           destination,
           repositoryKey,
-          revisions,
+          revisionCoords,
           analysisKey,
           snapshotId,
           snapshotDigest,
           inputs.source,
           inputs.body,
           remoteUrl,
+          inputs.repositories,
           inputs.signal,
-        );
+    );
     if (!published) throw new WebError(422, "cached PR analysis failed verification");
+    if (!wonPublication) {
+      // The existing generation's leases are already ours. Record them before asynchronous loser
+      // cleanup so a cleanup failure cannot leak the borrowed workspace pins.
+      borrowedWorkspace = published;
+      await workspace.discard();
+      preparedWorkspace = undefined;
+    }
     throwIfAborted(inputs.signal);
     writeCurrentPointer(entry, {
       formatVersion: FORMAT_VERSION,
       repositoryKey,
-      ...revisions,
+      ...revisionCoords,
       analysisKey,
       snapshotDigest,
       snapshotId,
     });
+    retainWorkspace = wonPublication;
     return { ...published, cache: "miss" };
   } catch (error) {
     if (stage !== undefined) removeEntry(stage);
+    const cleanup: Array<Promise<unknown>> = [];
+    if (preparedWorkspace !== undefined && !retainWorkspace) cleanup.push(preparedWorkspace.discard());
+    if (borrowedWorkspace !== undefined) {
+      cleanup.push(Promise.resolve().then(() => borrowedWorkspace!.sourceLease.release()));
+      cleanup.push(Promise.resolve().then(() => borrowedWorkspace!.comparisonSourceLease.release()));
+    }
+    // Every cleanup owner settles independently; a failed Git rollback cannot strand winner leases
+    // or replace the request's primary failure with a memoized discard rejection.
+    await Promise.allSettled(cleanup);
     throw error;
   }
 }
@@ -348,6 +396,7 @@ async function readCached(
   source: GitHubSource,
   body: PrAnalyzeRequest,
   remoteUrl: string,
+  repositories: RepositoryMirror,
   signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
   try {
@@ -363,6 +412,7 @@ async function readCached(
       source,
       body,
       remoteUrl,
+      repositories,
       signal,
     );
     if (!cached) return null;
@@ -383,10 +433,10 @@ async function readSnapshot(
   source: GitHubSource,
   body: PrAnalyzeRequest,
   remoteUrl: string,
+  repositories: RepositoryMirror,
   signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
-  const repoDir = join(snapshot, "repo");
-  if (!isDirectory(repoDir)) return null;
+  let workspace: Awaited<ReturnType<RepositoryMirror["acquirePreparedPullRequest"]>> | undefined;
   try {
     const metadata = readJson(join(snapshot, "metadata.json")) as Partial<PrSnapshotMetadata>;
     if (!validSnapshotMetadata(
@@ -397,13 +447,6 @@ async function readSnapshot(
       snapshotId,
       snapshotDigest,
     )) return null;
-    throwIfAborted(signal);
-    const actualHead = requireCommit((await runGit(["rev-parse", "HEAD"], {
-      cwd: repoDir,
-      timeoutMs: GIT_TIMEOUT_MS,
-      signal,
-    })).trim());
-    if (actualHead !== revisions.headSha) return null;
     const artifactPath = join(snapshot, "artifact.json");
     const comparisonArtifactPath = join(snapshot, "comparison-artifact.json");
     requireExactArtifactCoordinates(
@@ -433,20 +476,33 @@ async function readSnapshot(
       signal,
     );
     if (artifactMaterial === null) return null;
-    const comparisonSourceDir = resolveExtractionSubdir(join(snapshot, "comparison-repo"), source.subdir);
     throwIfAborted(signal);
+    workspace = await repositories.acquirePreparedPullRequest({
+      repositoryKey,
+      remoteUrl,
+      workspaceId: metadata.workspaceId,
+      baseSha: revisions.baseSha,
+      headSha: revisions.headSha,
+      mergeBaseSha: metadata.mergeBaseSha,
+      signal,
+    });
+    if (workspace === null) return null;
+    const comparisonSourceDir = resolveExtractionSubdir(workspace.comparison.repoDir, source.subdir);
     return {
       artifactFacts: metadata.artifactFacts,
       artifactMaterial,
       comparisonFacts: metadata.comparisonFacts,
       comparisonMaterial,
       comparisonSourceDir,
+      comparisonSourceLease: workspace.comparison,
       ...revisions,
       mergeBaseSha: metadata.mergeBaseSha,
-      sourceDir: resolveExtractionSubdir(repoDir, source.subdir),
+      sourceDir: resolveExtractionSubdir(workspace.head.repoDir, source.subdir),
+      sourceLease: workspace.head,
       warnings: metadata.warnings,
     };
   } catch (error) {
+    workspace?.release();
     if (isOperationCancelled(error)) throw error;
     return null;
   }
@@ -462,10 +518,10 @@ function publishedGeneratedSnapshot(
   mergeBaseSha: string,
   warnings: string[],
   source: GitHubSource,
+  workspace: Awaited<ReturnType<RepositoryMirror["preparePullRequest"]>>,
 ): Omit<CachedPrGraph, "cache"> {
   const artifactPath = join(snapshot, "artifact.json");
   const comparisonArtifactPath = join(snapshot, "comparison-artifact.json");
-  const repoDir = join(snapshot, "repo");
   return {
     artifactFacts,
     artifactMaterial: verifiedArtifactFile(artifactPath, artifactDigest, artifactFacts.summary),
@@ -475,10 +531,12 @@ function publishedGeneratedSnapshot(
       comparisonArtifactDigest,
       comparisonFacts.summary,
     ),
-    comparisonSourceDir: resolveExtractionSubdir(join(snapshot, "comparison-repo"), source.subdir),
+    comparisonSourceDir: resolveExtractionSubdir(workspace.comparison.repoDir, source.subdir),
+    comparisonSourceLease: workspace.comparison,
     ...revisions,
     mergeBaseSha,
-    sourceDir: resolveExtractionSubdir(repoDir, source.subdir),
+    sourceDir: resolveExtractionSubdir(workspace.head.repoDir, source.subdir),
+    sourceLease: workspace.head,
     warnings,
   };
 }
@@ -585,6 +643,7 @@ function validSnapshotMetadata(
     || !isRepositoryAnalysisFacts(value.comparisonFacts)
     || value.snapshotId !== snapshotId || value.snapshotDigest !== snapshotDigest
     || !SNAPSHOT_ID.test(value.snapshotId) || !SHA256.test(value.snapshotDigest)
+    || typeof value.workspaceId !== "string" || !WORKSPACE_ID.test(value.workspaceId)
     || !value.warnings.every((warning) => typeof warning === "string")
     || !sameStringArray(
       value.warnings,
@@ -611,6 +670,7 @@ function prSnapshotDigest(value: Omit<PrSnapshotMetadata, "snapshotDigest" | "sn
     comparisonArtifactDigest: value.comparisonArtifactDigest,
     comparisonArtifactBytes: value.comparisonArtifactBytes,
     comparisonFacts: value.comparisonFacts,
+    workspaceId: value.workspaceId,
     warnings: value.warnings,
   })).digest("hex");
 }
@@ -639,7 +699,7 @@ async function remoteRevisions(
   cwd: string,
   token?: string,
   signal?: AbortSignal,
-) {
+): Promise<ResolvedPrRevisions> {
   const baseRef = `refs/heads/${body.baseRef}`;
   const headRef = `refs/pull/${body.prNumber}/head`;
   const output = await runGit(["ls-remote", "--exit-code", url, baseRef, headRef], {
@@ -655,71 +715,18 @@ async function remoteRevisions(
   const baseSha = rows.get(baseRef);
   const headSha = rows.get(headRef);
   if (!baseSha || !headSha) throw new WebError(422, "pull request revisions were not found");
-  return { baseSha: requireCommit(baseSha), headSha: requireCommit(headSha) };
+  const normalizedBase = requireCommit(baseSha);
+  const normalizedHead = requireCommit(headSha);
+  return {
+    base: { remoteRef: baseRef, expectedSha: normalizedBase },
+    baseSha: normalizedBase,
+    head: { remoteRef: headRef, expectedSha: normalizedHead },
+    headSha: normalizedHead,
+  };
 }
 
-async function cloneFullHistory(
-  url: string,
-  dir: string,
-  token?: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  const auth = token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
-  await runGitClone(
-    [...auth, "-c", "core.longpaths=true", "clone", "--no-tags", "--filter=blob:none", "--", url, dir],
-    token,
-    { timeoutMs: CLONE_TIMEOUT_MS, signal },
-  );
-}
-
-async function checkoutPrHead(
-  cwd: string,
-  body: PrAnalyzeRequest,
-  token?: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  const options = { cwd, token, timeoutMs: GIT_TIMEOUT_MS, signal };
-  await runGit(["fetch", "origin", `+refs/heads/${body.baseRef}:refs/remotes/origin/${body.baseRef}`], options);
-  await runGit(["fetch", "origin", `pull/${body.prNumber}/head`], options);
-  await runGit(["checkout", "--detach", "FETCH_HEAD"], options);
-}
-
-async function verifyRevisions(
-  cwd: string,
-  baseRef: string,
-  expected: { headSha: string; baseSha: string },
-  signal?: AbortSignal,
-): Promise<void> {
-  const options = { cwd, timeoutMs: GIT_TIMEOUT_MS, signal };
-  const headSha = requireCommit((await runGit(["rev-parse", "HEAD"], options)).trim());
-  const baseSha = requireCommit((await runGit(["rev-parse", `origin/${baseRef}`], options)).trim());
-  if (headSha !== expected.headSha || baseSha !== expected.baseSha) throw new WebError(409, "pull request changed during analysis; retry");
-}
-
-async function resolveMergeBase(cwd: string, baseRef: string, signal?: AbortSignal): Promise<string> {
-  // GitHub compares base...head, and multiple best bases in a criss-cross history make argument
-  // order observable. Resolve once in that exact order, then use this SHA for both source sides.
-  const output = await runGit(["merge-base", `origin/${baseRef}`, "HEAD"], {
-    cwd,
-    timeoutMs: GIT_TIMEOUT_MS,
-    signal,
-  });
-  return requireCommit(output.trim());
-}
-
-async function checkoutComparison(
-  cwd: string,
-  comparisonDir: string,
-  mergeBaseSha: string,
-  token?: string,
-  signal?: AbortSignal,
-): Promise<void> {
-  await runGit(["worktree", "add", "--detach", comparisonDir, mergeBaseSha], {
-    cwd,
-    token,
-    timeoutMs: GIT_TIMEOUT_MS,
-    signal,
-  });
+function revisionCoordinates(revisions: ResolvedPrRevisions): { headSha: string; baseSha: string } {
+  return { headSha: revisions.headSha, baseSha: revisions.baseSha };
 }
 
 async function extractPrHead(

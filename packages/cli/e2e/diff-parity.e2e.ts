@@ -35,7 +35,7 @@ import {
   listenServer,
   nodeHeader,
   startSmartGitServer,
-  verifySmartHttpClone,
+  verifySmartHttpRemote,
 } from "./harness";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
@@ -99,7 +99,7 @@ async function setup(): Promise<void> {
   fixture = buildDiffParityFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
-  await verifySmartHttpClone(smartGit.repoUrl);
+  await verifySmartHttpRemote(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
   vi.stubGlobal("fetch", fakeGitHub(fixture));
   const cacheRoot = join(fixture.dir, "cache");

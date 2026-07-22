@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import {
   artifactSummary,
@@ -105,6 +105,63 @@ describe("WebGraphStore", () => {
     }))).toThrow(/different immutable coordinates/);
   });
 
+  it("retains a newly published source lease until disposal", () => {
+    const store = createStore();
+    const release = vi.fn();
+
+    store.publish(registrationWithLease("leased-graph", release));
+
+    expect(release).not.toHaveBeenCalled();
+    store.dispose();
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an exact-republish candidate while retaining the original source lease", () => {
+    const store = createStore();
+    const releaseOriginal = vi.fn();
+    const releaseCandidate = vi.fn();
+    const first = store.publish(registrationWithLease("leased-graph", releaseOriginal));
+
+    const second = store.publish(registrationWithLease("leased-graph", releaseCandidate));
+
+    expect(second).toEqual(first);
+    expect(releaseCandidate).toHaveBeenCalledTimes(1);
+    expect(releaseOriginal).not.toHaveBeenCalled();
+
+    store.dispose();
+    expect(releaseOriginal).toHaveBeenCalledTimes(1);
+    expect(releaseCandidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases source lease candidates when publication or conflict fails", () => {
+    const store = createStore();
+    const releaseFailed = vi.fn();
+    const releaseOriginal = vi.fn();
+    const releaseConflict = vi.fn();
+    const sourcePath = join(temporaryRoot(), "removed-before-publication.json");
+    const bytes = Buffer.from(`${JSON.stringify(ARTIFACT)}\n`, "utf8");
+    writeFileSync(sourcePath, bytes);
+    const failed = registrationWithLease("failed-graph", releaseFailed);
+    failed.material = verifiedArtifactFile(
+      sourcePath,
+      createHash("sha256").update(bytes).digest("hex"),
+      artifactSummary(ARTIFACT),
+    );
+    unlinkSync(sourcePath);
+
+    expect(() => store.publish(failed)).toThrow();
+    expect(releaseFailed).toHaveBeenCalledTimes(1);
+
+    store.publish(registrationWithLease("leased-graph", releaseOriginal));
+    expect(() => store.publish(registrationWithLease("leased-graph", releaseConflict, "/workspace/other")))
+      .toThrow(/different immutable coordinates/);
+    expect(releaseConflict).toHaveBeenCalledTimes(1);
+    expect(releaseOriginal).not.toHaveBeenCalled();
+
+    store.dispose();
+    expect(releaseOriginal).toHaveBeenCalledTimes(1);
+  });
+
   it("owns exact artifact bytes independently of later source writes or removal", () => {
     const store = createStore();
     const sourceRoot = temporaryRoot();
@@ -171,15 +228,26 @@ describe("WebGraphStore", () => {
 
   it("disposes its private root once and rejects later access", () => {
     const store = createStore();
-    store.publish(registration("graph-1"));
+    const release = vi.fn();
+    store.publish(registrationWithLease("graph-1", release));
     const rootPath = store.rootPath;
 
     store.dispose();
     store.dispose();
 
+    expect(release).toHaveBeenCalledTimes(1);
     expect(existsSync(rootPath)).toBe(false);
     expect(typeof store.rootPath).toBe("string");
     expect(() => store.has("graph-1")).toThrow(/disposed/);
+  });
+
+  it("consumes and releases a transferred source lease even after disposal", () => {
+    const store = createStore();
+    const release = vi.fn();
+    store.dispose();
+
+    expect(() => store.publish(registrationWithLease("late-graph", release))).toThrow(/disposed/);
+    expect(release).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -209,4 +277,19 @@ function registration(
     },
     ...overrides,
   };
+}
+
+function registrationWithLease(
+  id: string,
+  release: () => void,
+  sourceRoot = "/workspace/shop",
+): WebGraphRegistration {
+  return registration(id, {
+    metadata: {
+      sourceRoot,
+      sourceLease: { release },
+      source: { kind: "path" },
+      synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+    },
+  });
 }

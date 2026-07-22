@@ -20,7 +20,7 @@ import {
   listenServer,
   nodeHeader,
   startSmartGitServer,
-  verifySmartHttpClone,
+  verifySmartHttpRemote,
   type PrReviewFixture,
 } from "./harness";
 
@@ -591,7 +591,7 @@ async function setup(): Promise<void> {
   fixture = buildPrReviewFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
-  await verifySmartHttpClone(smartGit.repoUrl);
+  await verifySmartHttpRemote(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
 
   vi.stubGlobal("fetch", fakeGitHub(fixture, submittedReviews));

@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository } from "../repository-analysis";
-import { runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import { ANALYSIS_VERSION, cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { probeRemoteGraph } from "./web-cache-probe";
 import {
@@ -13,6 +13,8 @@ import {
   runRepositoryArtifactRestampChildInProcess,
 } from "./repository-analysis-child-test-adapter";
 import { remoteArtifactId, type GenerateRequest } from "./web-request";
+import { FakeRepositoryMirror } from "./web-repository-mirror-test-fake";
+import { repositoryKeyFor } from "./web-repository-mirror";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -21,7 +23,6 @@ vi.mock("../repository-analysis", async (importOriginal) => {
 vi.mock("./git-exec", () => ({
   base64Auth: (token: string) => Buffer.from(`x-access-token:${token}`, "utf8").toString("base64"),
   runGit: vi.fn(),
-  runGitClone: vi.fn(),
 }));
 
 const FIRST_COMMIT = "a".repeat(64);
@@ -31,18 +32,23 @@ const REQUEST: GenerateRequest = { kind: "github", value: "owner/repo" };
 
 let cacheRoot: string;
 let advertisedCommit: string;
+let advertisedRefKinds: Map<string, "branch" | "tag">;
+let repositories: FakeRepositoryMirror;
 
 beforeEach(() => {
   cacheRoot = mkdtempSync(join(tmpdir(), "meridian-cache-test-"));
   advertisedCommit = FIRST_COMMIT;
+  advertisedRefKinds = new Map();
   vi.mocked(runGit).mockImplementation(async (args) => {
     const branchRef = args.find((arg) => arg.startsWith("refs/heads/"));
-    return args[0] === "ls-remote"
-      ? `${advertisedCommit}\t${branchRef ?? "HEAD"}\n`
-      : `${advertisedCommit}\n`;
+    if (args[0] !== "ls-remote") throw new Error(`unexpected Git command: ${args.join(" ")}`);
+    if (branchRef === undefined) return `${advertisedCommit}\tHEAD\n`;
+    const ref = branchRef.slice("refs/heads/".length);
+    return advertisedRefKinds.get(ref) === "tag"
+      ? `${advertisedCommit}\trefs/tags/${ref}^{}\n`
+      : `${advertisedCommit}\t${branchRef}\n`;
   });
-  vi.mocked(runGitClone).mockImplementation(async (args) => {
-    const repoDir = args.at(-1)!;
+  repositories = new FakeRepositoryMirror(join(cacheRoot, "fake-repositories"), (repoDir) => {
     mkdirSync(join(repoDir, "apps", "one"), { recursive: true });
     mkdirSync(join(repoDir, "apps", "two"), { recursive: true });
     writeFileSync(join(repoDir, "apps", "one", "index.ts"), "export const one = 1;\n");
@@ -59,6 +65,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  repositories.releaseAllForTest();
   rmSync(cacheRoot, { recursive: true, force: true });
   vi.unstubAllEnvs();
   vi.clearAllMocks();
@@ -90,7 +97,7 @@ describe("persistent web graph cache", () => {
     expect(second.cache).toBe("hit");
     expect(second.checkout.cache).toBe("hit");
     expect(secondStages).toEqual([]);
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(first.material.kind).toBe("verified-file");
     expect(second.material.kind).toBe("verified-file");
@@ -111,9 +118,38 @@ describe("persistent web graph cache", () => {
     expect(first.snapshotDigest).toBe(first.material.byteDigest);
     expect(second.snapshotDigest).toBe(first.snapshotDigest);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
+    expect(repositories.acquireWorkspaceCalls[0]?.revision).toEqual({
+      remoteRef: "HEAD",
+      expectedSha: FIRST_COMMIT,
+    });
+    expect(repositories.activeLeaseCount).toBe(2);
+    first.checkout.sourceLease.release();
+    second.checkout.sourceLease.release();
+    expect(repositories.activeLeaseCount).toBe(0);
   });
 
-  it("admits only cold clone/extraction work and keeps an exact warm hit outside both pools", async () => {
+  it("does not fall back to the retired checkout-cache layout", async () => {
+    const repositoryKey = repositoryKeyFor("https://github.com/owner/repo.git");
+    const legacyEntry = join(cacheRoot, "repositories", repositoryKey, FIRST_COMMIT);
+    const legacyRepo = join(legacyEntry, "repo");
+    mkdirSync(legacyRepo, { recursive: true });
+    writeFileSync(join(legacyRepo, "legacy.ts"), "export const legacy = true;\n", "utf8");
+    writeFileSync(join(legacyEntry, "metadata.json"), JSON.stringify({
+      formatVersion: 2,
+      repositoryKey,
+      commit: FIRST_COMMIT,
+      remoteUrl: "https://github.com/owner/repo.git",
+    }), "utf8");
+
+    const generated = await generate(REQUEST);
+
+    expect(generated.checkout.cache).toBe("miss");
+    expect(generated.checkout.repoDir).not.toBe(legacyRepo);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
+    expect(runGit).toHaveBeenCalledTimes(1);
+  });
+
+  it("admits only cold workspace/extraction work and keeps an exact warm hit outside both pools", async () => {
     let preparationCalls = 0;
     let analysisCalls = 0;
     const runPreparation = <Result>(work: () => Promise<Result>) => {
@@ -133,7 +169,7 @@ describe("persistent web graph cache", () => {
     expect(second.cache).toBe("hit");
     expect(preparationCalls).toBe(1);
     expect(analysisCalls).toBe(1);
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(1);
   });
 
@@ -152,8 +188,74 @@ describe("persistent web graph cache", () => {
     )).rejects.toThrow("request aborted after worker completion");
 
     expect(stagePaths(cacheRoot)).toEqual([]);
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(1);
+    expect(repositories.activeLeaseCount).toBe(0);
+    expect(repositories.releasedLeaseCount).toBe(1);
+  });
+
+  it("releases a cold workspace when preparation admission discards its completed result", async () => {
+    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
+      await work();
+      throw new Error("request aborted after workspace completion");
+    };
+
+    await expect(generate(
+      REQUEST,
+      undefined,
+      [],
+      undefined,
+      { preparation: discardCompletedResult },
+    )).rejects.toThrow("request aborted after workspace completion");
+
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
+    expect(repositories.activeLeaseCount).toBe(0);
+    expect(repositories.releasedLeaseCount).toBe(1);
+    expect(analyzeRepository).not.toHaveBeenCalled();
+  });
+
+  it("releases a warm winner when preparation admission discards its completed recheck", async () => {
+    const discardCompletedWinner = async <Result>(work: () => Promise<Result>): Promise<Result> => {
+      repositories.seedWorkspace("https://github.com/owner/repo.git", FIRST_COMMIT);
+      await work();
+      throw new Error("request aborted after warm workspace recheck");
+    };
+
+    await expect(generate(
+      REQUEST,
+      undefined,
+      [],
+      undefined,
+      { preparation: discardCompletedWinner },
+    )).rejects.toThrow("request aborted after warm workspace recheck");
+
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(0);
+    expect(repositories.activeLeaseCount).toBe(0);
+    expect(repositories.releasedLeaseCount).toBe(1);
+    expect(analyzeRepository).not.toHaveBeenCalled();
+  });
+
+  it("releases its source lease when repository analysis is cancelled", async () => {
+    const controller = new AbortController();
+    const reason = new Error("request cancelled during extraction");
+    vi.mocked(analyzeRepository).mockImplementationOnce(async () => {
+      controller.abort(reason);
+      throw reason;
+    });
+
+    await expect(generate(
+      REQUEST,
+      undefined,
+      [],
+      undefined,
+      undefined,
+      controller.signal,
+    )).rejects.toThrow(reason.message);
+
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
+    expect(repositories.activeLeaseCount).toBe(0);
+    expect(repositories.releasedLeaseCount).toBe(1);
+    expect(stagePaths(cacheRoot)).toEqual([]);
   });
 
   it("persists analysis warnings for web cache hits", async () => {
@@ -184,23 +286,27 @@ describe("persistent web graph cache", () => {
     expect(first.checkout.commit).toBe(FIRST_COMMIT);
     expect(second.checkout.commit).toBe(SECOND_COMMIT);
     expect(second.cache).toBe("miss");
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(2);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(2);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
   it("probes an unchanged graph without loading or regenerating it", async () => {
     const generated = await generate(REQUEST);
+    const activeBeforeProbe = repositories.activeLeaseCount;
+    const releasedBeforeProbe = repositories.releasedLeaseCount;
 
-    const hit = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const hit = await probeRemoteGraph({ cacheRoot, repositories, request: REQUEST, cwd: cacheRoot });
     advertisedCommit = SECOND_COMMIT;
-    const miss = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const miss = await probeRemoteGraph({ cacheRoot, repositories, request: REQUEST, cwd: cacheRoot });
 
     expect(hit).toEqual({ status: "hit", commit: FIRST_COMMIT, id: expect.any(String) });
     expect(hit.id).toHaveLength(12);
     expect(miss).toEqual({ status: "miss" });
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
     expect(generated.checkout.commit).toBe(FIRST_COMMIT);
+    expect(repositories.activeLeaseCount).toBe(activeBeforeProbe);
+    expect(repositories.releasedLeaseCount).toBe(releasedBeforeProbe + 1);
   });
 
   it("rejects legacy v7 metadata and regenerates after runtime import extraction", async () => {
@@ -213,7 +319,7 @@ describe("persistent web graph cache", () => {
     previousMetadata.analysisVersion = LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES;
     writeFileSync(metadataPath, `${JSON.stringify(previousMetadata)}\n`, "utf8");
 
-    const probe = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
+    const probe = await probeRemoteGraph({ cacheRoot, repositories, request: REQUEST, cwd: cacheRoot });
     const regenerated = await generate(REQUEST);
     const retainedLegacyMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
       analysisVersion: number;
@@ -229,7 +335,7 @@ describe("persistent web graph cache", () => {
     expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
     expect(currentMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
     expect(artifactFromMaterial(first.material)).toEqual(artifactFor("owner/repo", FIRST_COMMIT));
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
@@ -238,7 +344,7 @@ describe("persistent web graph cache", () => {
     const second = await generate({ ...REQUEST, subdir: "apps/two" });
 
     expect(first.analysisKey).not.toBe(second.analysisKey);
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
@@ -247,10 +353,16 @@ describe("persistent web graph cache", () => {
     const fromMain = await generate({ ...REQUEST, ref: "main" });
     const fromRelease = await generate({ ...REQUEST, ref: "release" });
     const fromHeadAgain = await generate(REQUEST);
-    const headProbe = await probeRemoteGraph({ cacheRoot, request: REQUEST, cwd: cacheRoot });
-    const mainProbe = await probeRemoteGraph({ cacheRoot, request: { ...REQUEST, ref: "main" }, cwd: cacheRoot });
+    const headProbe = await probeRemoteGraph({ cacheRoot, repositories, request: REQUEST, cwd: cacheRoot });
+    const mainProbe = await probeRemoteGraph({
+      cacheRoot,
+      repositories,
+      request: { ...REQUEST, ref: "main" },
+      cwd: cacheRoot,
+    });
     const releaseProbe = await probeRemoteGraph({
       cacheRoot,
+      repositories,
       request: { ...REQUEST, ref: "release" },
       cwd: cacheRoot,
     });
@@ -274,8 +386,24 @@ describe("persistent web graph cache", () => {
     expect(headProbe.id).toBe(idFor(fromHead, REQUEST));
     expect(mainProbe.id).toBe(idFor(fromMain, { ...REQUEST, ref: "main" }));
     expect(releaseProbe.id).toBe(idFor(fromRelease, { ...REQUEST, ref: "release" }));
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
+  });
+
+  it("resolves an annotated tag to its peeled commit without claiming branch provenance", async () => {
+    advertisedRefKinds.set("v1.2.3", "tag");
+    const request = { ...REQUEST, ref: "v1.2.3" };
+
+    const fromTag = await generate(request);
+
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
+    expect(repositories.acquireWorkspaceCalls[0]?.revision).toEqual({
+      remoteRef: "refs/tags/v1.2.3",
+      expectedSha: FIRST_COMMIT,
+    });
+    expect(fromTag.checkout.branch).toBeUndefined();
+    expect(fromTag.facts.target.vcs?.branch).toBeUndefined();
+    expect(artifactFromMaterial(fromTag.material).target.vcs?.branch).toBeUndefined();
   });
 
   it("persists a cold branch variant from one extraction without a restamp", async () => {
@@ -292,6 +420,10 @@ describe("persistent web graph cache", () => {
     expect(second.material.path).toBe(first.material.path);
     expect(first.material.path).toContain(join(first.analysisKey, "branches"));
     expect(artifactFromMaterial(first.material).target.vcs?.branch).toBe("main");
+    expect(repositories.acquireWorkspaceCalls[0]?.revision).toEqual({
+      remoteRef: "refs/heads/main",
+      expectedSha: FIRST_COMMIT,
+    });
   });
 
   it("restamps one warm unseen branch once and reuses its immutable derivative", async () => {
@@ -364,7 +496,7 @@ describe("persistent web graph cache", () => {
         for (const ref of refs) {
           const request = requestFor(ref);
           const graph = generated.get(refKey(ref))!;
-          const probe = await probeRemoteGraph({ cacheRoot, request, cwd: cacheRoot });
+          const probe = await probeRemoteGraph({ cacheRoot, repositories, request, cwd: cacheRoot });
           const served = artifactFromMaterial(graph.material);
           const id = idFor(graph, request);
 
@@ -396,6 +528,7 @@ describe("persistent web graph cache", () => {
     const refreshed = await generate({ ...REQUEST, ref: "main", refresh: true });
     const probe = await probeRemoteGraph({
       cacheRoot,
+      repositories,
       request: { ...REQUEST, ref: "main" },
       cwd: cacheRoot,
     });
@@ -422,12 +555,12 @@ describe("persistent web graph cache", () => {
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
-  it("forces re-extraction without cloning the unchanged checkout again", async () => {
+  it("forces re-extraction without reacquiring the unchanged workspace", async () => {
     await generate(REQUEST);
     const refreshed = await generate({ ...REQUEST, refresh: true });
 
     expect(refreshed.cache).toBe("miss");
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
@@ -479,15 +612,19 @@ describe("persistent web graph cache", () => {
     expect(verifiedPath(current)).toBe(verifiedPath(refreshedA));
   });
 
-  it("never persists the clone token", async () => {
+  it("passes credentials only to mirror acquisition without persisting them in graph cache files", async () => {
     const token = "secret-cache-token";
-    const result = await generate(REQUEST, token);
-    const checkoutMetadata = readFileSync(
-      join(cacheRoot, "repositories", result.checkout.repositoryKey, result.checkout.commit, "metadata.json"),
-      "utf8",
-    );
-    expect(checkoutMetadata).not.toContain(token);
-    expect(checkoutMetadata).toContain("https://github.com/owner/repo.git");
+    await generate(REQUEST, token);
+
+    expect(repositories.acquireWorkspaceCalls).toHaveLength(1);
+    expect(repositories.acquireWorkspaceCalls[0]).toMatchObject({
+      remoteUrl: "https://github.com/owner/repo.git",
+      revision: { remoteRef: "HEAD", expectedSha: FIRST_COMMIT },
+      token,
+    });
+    const persisted = allFileText(cacheRoot);
+    expect(persisted).not.toContain(token);
+    expect(persisted).toContain("https://github.com/owner/repo.git");
   });
 });
 
@@ -506,9 +643,11 @@ function generate(
     preparation?: <Result>(work: () => Promise<Result>) => Promise<Result>;
     analysis?: <Result>(work: () => Promise<Result>) => Promise<Result>;
   } = {},
+  signal?: AbortSignal,
 ) {
   return cachedRemoteGraph({
     cacheRoot,
+    repositories,
     request,
     cwd: cacheRoot,
     token,
@@ -518,6 +657,7 @@ function generate(
     runAnalysis: admissions.analysis ?? immediateAdmission,
     repositoryAnalysis: runners.analysis,
     repositoryArtifactRestamp: runners.restamp,
+    signal,
   });
 }
 
@@ -568,6 +708,20 @@ function stagePaths(root: string): string[] {
     if (entry.isDirectory()) paths.push(...stagePaths(path));
   }
   return paths;
+}
+
+function allFileText(root: string): string {
+  if (!existsSync(root)) return "";
+  const contents: Buffer[] = [];
+  const visit = (path: string) => {
+    for (const entry of readdirSync(path, { withFileTypes: true })) {
+      const child = join(path, entry.name);
+      if (entry.isDirectory()) visit(child);
+      else if (entry.isFile()) contents.push(readFileSync(child));
+    }
+  };
+  visit(root);
+  return Buffer.concat(contents).toString("utf8");
 }
 
 function refKey(ref: string | undefined): string {

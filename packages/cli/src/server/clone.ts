@@ -1,22 +1,17 @@
 /**
- * Resolving a user-supplied source (GitHub repo or local path) to a directory to extract from.
+ * Validating a user-supplied source and resolving local paths for extraction.
  *
  * Security is the whole point of this module: GitHub input is parsed to an https URL through a
  * strict allowlist (owner/repo or an http(s) git URL — never ssh, file://, or shell
- * metacharacters), git runs via an argv array so nothing is shell-interpreted, and any auth
- * token travels only in an `http.extraHeader` (never the URL, never a log, never a response).
- * The spawn itself and stderr-scrubbing live in `git-exec`.
+ * metacharacters). Persistent remote preparation is owned by `WebRepositoryMirror`; this module
+ * intentionally has no second clone path.
  */
 
-import { mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { realpathSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAgainst } from "../paths";
 import { WebError } from "./web-error";
-import { base64Auth, runGitClone } from "./git-exec";
-import { isAllowedCloneRef } from "./git-ref";
-
-export { base64Auth };
 
 const OWNER_REPO = /^[\w.-]+\/[\w.-]+$/;
 const SHELL_METACHARS = /[\s;&|`$<>()]/;
@@ -28,28 +23,29 @@ export interface SourceRequest {
   subdir?: string;
 }
 
-export interface ResolvedSource {
-  /** The directory to extract from (clone root joined with any sanitized subdir). */
+export interface ResolvedLocalSource {
+  /** The local directory to extract from. */
   dir: string;
   /** A human label for the artifact — never carries credentials. */
   target: string;
-  /** Remove any temp clone; a no-op for local paths. */
-  cleanup(): void;
 }
 
 /** owner/repo or an http(s) git URL -> a clone URL. Everything else is rejected. */
 export function parseGitHubSource(value: string): string {
   const trimmed = value.trim();
   if (OWNER_REPO.test(trimmed)) {
-    return `https://github.com/${trimmed.replace(/\.git$/, "")}.git`;
+    return canonicalGitRemoteUrl(`https://github.com/${trimmed.replace(/\.git$/i, "")}.git`);
   }
   if (/^https?:\/\//i.test(trimmed)) {
-    return validateHttpGitUrl(trimmed);
+    return canonicalGitRemoteUrl(trimmed);
   }
   throw new WebError(400, "enter owner/repo or an https git URL (ssh, file://, and shell characters are rejected)");
 }
 
-function validateHttpGitUrl(value: string): string {
+export function canonicalGitRemoteUrl(
+  value: string,
+  options: { allowFile?: boolean } = {},
+): string {
   if (SHELL_METACHARS.test(value)) {
     throw new WebError(400, "URL contains illegal characters");
   }
@@ -59,33 +55,23 @@ function validateHttpGitUrl(value: string): string {
   } catch {
     throw new WebError(400, "invalid URL");
   }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
+  if (url.protocol !== "http:" && url.protocol !== "https:" && !(options.allowFile && url.protocol === "file:")) {
     throw new WebError(400, "only http(s) git URLs are allowed");
   }
   if (url.username || url.password) {
     throw new WebError(400, "do not embed credentials in the URL; use the token field");
   }
-  return url.toString();
-}
-
-/**
- * The full argv passed after `git`. A token becomes a `-c http.extraHeader` (placed before the
- * subcommand, as git requires) so it never lands in the URL; `--` fences the URL from option
- * parsing. This is pure so the auth-arg construction can be unit-tested without a network.
- */
-export function buildCloneArgs(url: string, targetDir: string, opts: { ref?: string; token?: string }): string[] {
-  const args: string[] = [];
-  if (opts.token) {
-    args.push("-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(opts.token)}`);
+  if (url.search || url.hash) {
+    throw new WebError(400, "repository URLs must not contain a query string or fragment");
   }
-  // Windows checkout dies at MAX_PATH (260 chars) without this; git on other platforms ignores it.
-  args.push("-c", "core.longpaths=true");
-  args.push("clone", "--depth", "1", "--single-branch");
-  if (opts.ref) {
-    args.push("--branch", opts.ref);
+  if (url.hostname === "github.com") {
+    const components = url.pathname.split("/").filter(Boolean);
+    if (components.length === 2) {
+      const repo = components[1]!.replace(/\.git$/i, "");
+      return `https://github.com/${components[0]!.toLowerCase()}/${repo.toLowerCase()}.git`;
+    }
   }
-  args.push("--", url, targetDir);
-  return args;
+  return url.protocol === "file:" ? pathToFileURL(resolve(fileURLToPath(url))).href : url.toString();
 }
 
 /** Resolve an existing subdir to a canonical directory contained by the canonical clone root.
@@ -117,8 +103,7 @@ export function sanitizeSubdir(cloneDir: string, subdir?: string): string {
   return candidate;
 }
 
-/** Backwards-compatible name used by the remote cache path. `sanitizeSubdir` now performs both
- * lexical and canonical containment checks itself. */
+/** Resolve an extraction subdirectory with lexical and canonical containment checks. */
 export function resolveExtractionSubdir(cloneDir: string, subdir?: string): string {
   return sanitizeSubdir(cloneDir, subdir);
 }
@@ -128,40 +113,19 @@ function isPathWithin(root: string, candidate: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
-export async function resolveSource(request: SourceRequest, cwd: string, token?: string): Promise<ResolvedSource> {
-  if (request.kind === "path") {
-    return resolveLocalPath(request.value, cwd);
+export function resolveLocalSource(request: SourceRequest, cwd: string): ResolvedLocalSource {
+  if (request.kind !== "path") {
+    throw new Error("remote sources must be prepared through WebRepositoryMirror");
   }
-  return cloneGitHub(request, token);
+  return resolveLocalPath(request.value, cwd);
 }
 
-function resolveLocalPath(value: string, cwd: string): ResolvedSource {
+function resolveLocalPath(value: string, cwd: string): ResolvedLocalSource {
   const dir = resolveAgainst(cwd, value.trim());
   if (!isDirectory(dir)) {
     throw new WebError(400, `local path is not a directory: ${value}`);
   }
-  return { dir, target: value.trim(), cleanup: () => {} };
-}
-
-async function cloneGitHub(request: SourceRequest, token?: string): Promise<ResolvedSource> {
-  if (request.ref && !isAllowedCloneRef(request.ref)) {
-    throw new WebError(400, "branch contains illegal characters");
-  }
-  const url = parseGitHubSource(request.value);
-  // realpath expands Windows 8.3 short names (a short-form %TEMP% is common). A short-name root
-  // makes ts-morph's long-name file paths look outside the project, and extraction finds nothing.
-  const tmpRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "blueprint-clone-")));
-  const removeTmp = () => rmSync(tmpRoot, { recursive: true, force: true });
-  // Any failure past the mkdtemp — clone, subdir escape, missing subdir — must remove the temp
-  // clone; only a successful resolve hands the cleanup responsibility back to the caller.
-  try {
-    await runGitClone(buildCloneArgs(url, tmpRoot, { ref: request.ref, token }), token);
-    const dir = resolveExtractionSubdir(tmpRoot, request.subdir);
-    return { dir, target: sourceLabel(request.value, request.subdir), cleanup: removeTmp };
-  } catch (error) {
-    removeTmp();
-    throw error;
-  }
+  return { dir, target: value.trim() };
 }
 
 /** The human label for the artifact: the repo the reader entered, plus the analyzed subfolder when

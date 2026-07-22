@@ -13,6 +13,7 @@ import type { GenerateRequest } from "./web-request";
 import type { PhaseAdmission } from "./web-analysis-coordinator";
 import { checkoutFor } from "./web-cache-checkout";
 import type { CachedCheckout } from "./web-cache-checkout";
+import type { RepositoryMirror } from "./web-repository-mirror";
 import { throwIfAborted } from "./web-cancellation";
 import {
   isRepositoryAnalysisFacts,
@@ -111,6 +112,7 @@ type RepositoryAnalysisRunner = typeof runRepositoryAnalysisChild;
 type RepositoryArtifactRestampRunner = typeof runRepositoryArtifactRestampChild;
 export async function cachedRemoteGraph(inputs: {
   cacheRoot: string;
+  repositories: RepositoryMirror;
   request: GenerateRequest;
   cwd: string;
   token?: string;
@@ -125,7 +127,7 @@ export async function cachedRemoteGraph(inputs: {
   prepareWebCache(inputs.cacheRoot);
   throwIfAborted(inputs.signal);
   const checkout = await checkoutFor(
-    inputs.cacheRoot,
+    inputs.repositories,
     inputs.request,
     inputs.cwd,
     inputs.runPreparation,
@@ -133,94 +135,99 @@ export async function cachedRemoteGraph(inputs: {
     inputs.onClone,
     inputs.signal,
   );
-  const sourceDir = resolveExtractionSubdir(checkout.repoDir, inputs.request.subdir);
-  const analysisKey = webAnalysisKey(inputs.request);
-  const artifactEntry = join(inputs.cacheRoot, "artifacts", checkout.repositoryKey, checkout.commit, analysisKey);
-  const runAnalysis = inputs.runAnalysis;
-  const repositoryArtifactRestamp = inputs.repositoryArtifactRestamp ?? runRepositoryArtifactRestampChild;
-  const cached = inputs.request.refresh
-    ? null
-    : await readCachedArtifact(artifactEntry, checkout, analysisKey, inputs.signal);
-  if (cached) {
-    return resultFor(
-      cached,
-      "hit",
-      checkout,
-      sourceDir,
-      analysisKey,
-      artifactEntry,
-      inputs.request,
-      runAnalysis,
-      repositoryArtifactRestamp,
-      inputs.signal,
-    );
-  }
-
-  await inputs.onExtract();
-  throwIfAborted(inputs.signal);
-  const target = sourceLabel(inputs.request.value, inputs.request.subdir);
-  const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
-  const branch = checkout.branch;
-  let ownedPrimaryStage: string | undefined;
-  let ownedBranchStage: string | undefined;
   try {
-    const analyzed = await runAnalysis(async () => {
-      const primaryStage = createStageDirectory(dirname(artifactEntry));
-      // Admission can discard a late success after cancellation, so ownership must escape now.
-      ownedPrimaryStage = primaryStage;
-      const primaryOutputPath = join(primaryStage, "artifact.json");
-      const branchStage = branch === undefined
-        ? undefined
-        : createStageDirectory(join(artifactEntry, "branches"));
-      ownedBranchStage = branchStage;
-      const branchOutputPath = branchStage === undefined ? undefined : join(branchStage, "artifact.json");
-      try {
-        const result = await repositoryAnalysis({
-          absoluteRoot: sourceDir,
-          cwd: sourceDir,
-          targetName: target,
-          vcs: { repository: checkout.remoteUrl, commit: checkout.commit },
-        }, {
-          artifactOutputPath: primaryOutputPath,
-          ...(branch === undefined || branchOutputPath === undefined ? {} : {
-            branchVariant: { artifactOutputPath: branchOutputPath, branch },
-          }),
-          token: inputs.token,
-          signal: inputs.signal,
-        });
-        return { branchStage, primaryStage, result };
-      } catch (error) {
-        removeEntry(primaryStage);
-        if (branchStage !== undefined) removeEntry(branchStage);
-        ownedPrimaryStage = undefined;
-        ownedBranchStage = undefined;
-        throw error;
-      }
-    });
-    const { branchStage, primaryStage, result } = analyzed;
+    const sourceDir = resolveExtractionSubdir(checkout.repoDir, inputs.request.subdir);
+    const analysisKey = webAnalysisKey(inputs.request);
+    const artifactEntry = join(inputs.cacheRoot, "artifacts", checkout.repositoryKey, checkout.commit, analysisKey);
+    const runAnalysis = inputs.runAnalysis;
+    const repositoryArtifactRestamp = inputs.repositoryArtifactRestamp ?? runRepositoryArtifactRestampChild;
+    const cached = inputs.request.refresh
+      ? null
+      : await readCachedArtifact(artifactEntry, checkout, analysisKey, inputs.signal);
+    if (cached) {
+      return resultFor(
+        cached,
+        "hit",
+        checkout,
+        sourceDir,
+        analysisKey,
+        artifactEntry,
+        inputs.request,
+        runAnalysis,
+        repositoryArtifactRestamp,
+        inputs.signal,
+      );
+    }
+
+    await inputs.onExtract();
     throwIfAborted(inputs.signal);
-    requireNeutralFacts(result, checkout);
-    const published = publishArtifact(artifactEntry, primaryStage, result, checkout, analysisKey);
-    if (branch === undefined) {
-      return graphResult(published, "miss", checkout, sourceDir, analysisKey, inputs.request, published);
+    const target = sourceLabel(inputs.request.value, inputs.request.subdir);
+    const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
+    const branch = checkout.branch;
+    let ownedPrimaryStage: string | undefined;
+    let ownedBranchStage: string | undefined;
+    try {
+      const analyzed = await runAnalysis(async () => {
+        const primaryStage = createStageDirectory(dirname(artifactEntry));
+        // Admission can discard a late success after cancellation, so ownership must escape now.
+        ownedPrimaryStage = primaryStage;
+        const primaryOutputPath = join(primaryStage, "artifact.json");
+        const branchStage = branch === undefined
+          ? undefined
+          : createStageDirectory(join(artifactEntry, "branches"));
+        ownedBranchStage = branchStage;
+        const branchOutputPath = branchStage === undefined ? undefined : join(branchStage, "artifact.json");
+        try {
+          const result = await repositoryAnalysis({
+            absoluteRoot: sourceDir,
+            cwd: sourceDir,
+            targetName: target,
+            vcs: { repository: checkout.remoteUrl, commit: checkout.commit },
+          }, {
+            artifactOutputPath: primaryOutputPath,
+            ...(branch === undefined || branchOutputPath === undefined ? {} : {
+              branchVariant: { artifactOutputPath: branchOutputPath, branch },
+            }),
+            token: inputs.token,
+            signal: inputs.signal,
+          });
+          return { branchStage, primaryStage, result };
+        } catch (error) {
+          removeEntry(primaryStage);
+          if (branchStage !== undefined) removeEntry(branchStage);
+          ownedPrimaryStage = undefined;
+          ownedBranchStage = undefined;
+          throw error;
+        }
+      });
+      const { branchStage, primaryStage, result } = analyzed;
+      throwIfAborted(inputs.signal);
+      requireNeutralFacts(result, checkout);
+      const published = publishArtifact(artifactEntry, primaryStage, result, checkout, analysisKey);
+      if (branch === undefined) {
+        return graphResult(published, "miss", checkout, sourceDir, analysisKey, inputs.request, published);
+      }
+      if (branchStage === undefined || result.branchVariant === null) {
+        throw new Error("repository analysis child omitted its requested branch artifact");
+      }
+      requireBranchTarget(result.branchVariant.target, published.facts, branch);
+      const prepared = publishBranchArtifact(
+        artifactEntry,
+        branchStage,
+        result.branchVariant,
+        published,
+        checkout,
+        analysisKey,
+        branch,
+      );
+      return graphResult(prepared, "miss", checkout, sourceDir, analysisKey, inputs.request, published);
+    } catch (error) {
+      if (ownedPrimaryStage !== undefined) removeEntry(ownedPrimaryStage);
+      if (ownedBranchStage !== undefined) removeEntry(ownedBranchStage);
+      throw error;
     }
-    if (branchStage === undefined || result.branchVariant === null) {
-      throw new Error("repository analysis child omitted its requested branch artifact");
-    }
-    requireBranchTarget(result.branchVariant.target, published.facts, branch);
-    const prepared = publishBranchArtifact(
-      artifactEntry,
-      branchStage,
-      result.branchVariant,
-      published,
-      checkout,
-      analysisKey,
-      branch,
-    );
-    return graphResult(prepared, "miss", checkout, sourceDir, analysisKey, inputs.request, published);
   } catch (error) {
-    if (ownedPrimaryStage !== undefined) removeEntry(ownedPrimaryStage);
-    if (ownedBranchStage !== undefined) removeEntry(ownedBranchStage);
+    checkout.sourceLease.release();
     throw error;
   }
 }

@@ -31,6 +31,7 @@ import type { VerifiedFileArtifactMaterial } from "./web-graph-store";
 import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 import { streamedOverloadLine } from "./web-overload";
+import type { RepositoryWorkspaceLease } from "./web-repository-mirror";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrAnalysisStage = "clone" | "checkout" | "extract";
@@ -63,56 +64,71 @@ async function streamAnalysis(
 ): Promise<void> {
   try {
     const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
-    const cached = await ctx.analysisCoordinator.run<
-      Awaited<ReturnType<typeof cachedPrGraph>>,
-      PrAnalysisStage
-    >(
+    const completed = await ctx.analysisCoordinator.run<Record<string, unknown>, PrAnalysisStage>(
       prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache),
-      ({ signal: jobSignal, report, runPreparation, runAnalysis }) => cachedPrGraph({
-        cacheRoot: ctx.cacheRoot,
-        source,
-        body,
-        cwd: ctx.cwd,
-        token,
-        refresh: ctx.refreshCache,
-        signal: jobSignal,
-        onStage: report,
-        runPreparation,
-        // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
-        // consume exactly one memory admission slot together.
-        runAnalysis,
-        repositoryAnalysis: ctx.repositoryAnalysis,
-      }),
+      async ({ signal: jobSignal, report, runPreparation, runAnalysis }) => {
+        const cached = await cachedPrGraph({
+          cacheRoot: ctx.cacheRoot,
+          repositories: ctx.repositories,
+          source,
+          body,
+          cwd: ctx.cwd,
+          token,
+          refresh: ctx.refreshCache,
+          signal: jobSignal,
+          onStage: report,
+          runPreparation,
+          // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
+          // consume exactly one memory admission slot together.
+          runAnalysis,
+          repositoryAnalysis: ctx.repositoryAnalysis,
+        });
+        let headHandedOff = false;
+        let comparisonHandedOff = false;
+        try {
+          throwIfAborted(jobSignal);
+          // Publication belongs to the keyed job. Waiters share only this immutable terminal line,
+          // never either single-owner source lease.
+          headHandedOff = true;
+          const stored = await storeArtifact(
+            ctx,
+            cached.artifactFacts,
+            source,
+            cached.sourceDir,
+            cached.sourceLease,
+            body,
+            cached.headSha,
+            cached.baseSha,
+            cached.artifactMaterial,
+          );
+          comparisonHandedOff = true;
+          const comparisonGraphId = storeComparisonArtifact(
+            ctx,
+            source,
+            cached.comparisonSourceDir,
+            cached.comparisonSourceLease,
+            body,
+            cached.mergeBaseSha,
+            cached.comparisonMaterial,
+          );
+          return doneLine(
+            stored.graphId,
+            comparisonGraphId,
+            cached.headSha,
+            cached.mergeBaseSha,
+            cached.artifactFacts,
+            [...cached.warnings, ...stored.syntheticWarnings],
+            cached.cache,
+          );
+        } finally {
+          if (!headHandedOff) cached.sourceLease.release();
+          if (!comparisonHandedOff) cached.comparisonSourceLease.release();
+        }
+      },
       { signal, onProgress: (stage) => writeLine(response, { stage }) },
     );
     throwIfAborted(signal);
-    const stored = await storeArtifact(
-      ctx,
-      cached.artifactFacts,
-      source,
-      cached.sourceDir,
-      body,
-      cached.headSha,
-      cached.baseSha,
-      cached.artifactMaterial,
-    );
-    const comparisonGraphId = storeComparisonArtifact(
-      ctx,
-      source,
-      cached.comparisonSourceDir,
-      body,
-      cached.mergeBaseSha,
-      cached.comparisonMaterial,
-    );
-    await writeLine(response, doneLine(
-      stored.graphId,
-      comparisonGraphId,
-      cached.headSha,
-      cached.mergeBaseSha,
-      cached.artifactFacts,
-      [...cached.warnings, ...stored.syntheticWarnings],
-      cached.cache,
-    ));
+    await writeLine(response, completed);
   } catch (error) {
     if (!isOperationCancelled(error) && responseCanWrite(response)) {
       await writeLine(
@@ -151,80 +167,96 @@ async function storeArtifact(
   artifact: RepositoryAnalysisFacts,
   source: GitHubSource,
   sourceDir: string,
+  sourceLease: RepositoryWorkspaceLease,
   body: PrAnalyzeRequest,
   headSha: string,
   baseSha: string,
   material: VerifiedFileArtifactMaterial,
 ): Promise<{ graphId: string; syntheticWarnings: string[] }> {
-  const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
-  let syntheticScenarios: SyntheticScenarioDescriptor[] = [];
-  let syntheticFingerprint: string | null = null;
-  let syntheticTrustReady = sandboxAdmission;
-  const syntheticWarnings: string[] = [];
-  if (sandboxAdmission) {
-    try {
-      const { loadSyntheticScenarios } = await import("./synthetic-execution");
-      syntheticScenarios = loadSyntheticScenarios(sourceDir);
-      if (syntheticScenarios.length > 0) {
-        syntheticFingerprint = syntheticSourceFingerprintForFiles(sourceDir, artifact.sourceFiles);
-      } else {
-        syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
+  let handedOff = false;
+  try {
+    const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
+    let syntheticScenarios: SyntheticScenarioDescriptor[] = [];
+    let syntheticFingerprint: string | null = null;
+    let syntheticTrustReady = sandboxAdmission;
+    const syntheticWarnings: string[] = [];
+    if (sandboxAdmission) {
+      try {
+        const { loadSyntheticScenarios } = await import("./synthetic-execution");
+        syntheticScenarios = loadSyntheticScenarios(sourceDir);
+        if (syntheticScenarios.length > 0) {
+          syntheticFingerprint = syntheticSourceFingerprintForFiles(sourceDir, artifact.sourceFiles);
+        } else {
+          syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
+        }
+      } catch {
+        // A PR controls this file. Never leak parser/path details and never let a malformed manifest
+        // prevent review of the graph itself; simply withhold the executable capability.
+        syntheticScenarios = [];
+        syntheticFingerprint = null;
+        syntheticTrustReady = false;
+        syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
       }
-    } catch {
-      // A PR controls this file. Never leak parser/path details and never let a malformed manifest
-      // prevent review of the graph itself; simply withhold the executable capability.
-      syntheticScenarios = [];
-      syntheticFingerprint = null;
-      syntheticTrustReady = false;
-      syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
     }
+    const synthetic = {
+      scenarios: syntheticFingerprint === null ? [] : syntheticScenarios,
+      sourceFingerprint: syntheticFingerprint,
+      trust: syntheticTrustReady
+        ? { mode: "sandboxed-pr" as const, provenance: { repository: `${source.owner}/${source.repo}`, headSha } }
+        : null,
+    };
+    const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
+    const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
+    const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
+    handedOff = true;
+    ctx.graphStore.publish({
+      id: graphId,
+      material,
+      metadata: {
+        sourceRoot,
+        sourceLease,
+        source,
+        synthetic,
+      },
+    });
+    return { graphId, syntheticWarnings };
+  } finally {
+    if (!handedOff) sourceLease.release();
   }
-  const synthetic = {
-    scenarios: syntheticFingerprint === null ? [] : syntheticScenarios,
-    sourceFingerprint: syntheticFingerprint,
-    trust: syntheticTrustReady
-      ? { mode: "sandboxed-pr" as const, provenance: { repository: `${source.owner}/${source.repo}`, headSha } }
-      : null,
-  };
-  const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
-  const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
-  const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
-  ctx.graphStore.publish({
-    id: graphId,
-    material,
-    metadata: {
-      sourceRoot,
-      source,
-      synthetic,
-    },
-  });
-  return { graphId, syntheticWarnings };
 }
 
 function storeComparisonArtifact(
   ctx: Context,
   source: GitHubSource,
   sourceDir: string,
+  sourceLease: RepositoryWorkspaceLease,
   body: PrAnalyzeRequest,
   mergeBaseSha: string,
   material: VerifiedFileArtifactMaterial,
 ): string {
-  const graphId = prComparisonGraphId(source, body, mergeBaseSha, material.byteDigest);
-  // One merge base can be rediscovered through multiple PR cache entries. Its source contents are
-  // commit-identical, so keep the first published checkout as the immutable source snapshot rather
-  // than rebinding the graph id to a newer filesystem path. Artifact/source mismatches still fail
-  // closed in WebGraphStore.publish.
-  const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
-  ctx.graphStore.publish({
-    id: graphId,
-    material,
-    metadata: {
-      sourceRoot,
-      source,
-      synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
-    },
-  });
-  return graphId;
+  let handedOff = false;
+  try {
+    const graphId = prComparisonGraphId(source, body, mergeBaseSha, material.byteDigest);
+    // One merge base can be rediscovered through multiple PR cache entries. Its source contents are
+    // commit-identical, so keep the first published checkout as the immutable source snapshot rather
+    // than rebinding the graph id to a newer filesystem path. Artifact/source mismatches still fail
+    // closed in WebGraphStore.publish.
+    const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
+    handedOff = true;
+    ctx.graphStore.publish({
+      id: graphId,
+      material,
+      metadata: {
+        sourceRoot,
+        sourceLease,
+        source,
+        synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+      },
+    });
+    return graphId;
+  } finally {
+    if (!handedOff) sourceLease.release();
+  }
 }
 
 /** The terminal `done` line carries immutable ids and commit provenance for both comparison sides. */

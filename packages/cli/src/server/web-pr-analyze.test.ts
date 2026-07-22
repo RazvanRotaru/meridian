@@ -1,7 +1,7 @@
 /**
- * POST /api/pr/analyze behaviour with git and the extract pipeline mocked — no network, no real
- * git. Pins the miss stream, revision-addressed restart hit, force-push/base invalidation, blobless
- * full-history clone argv, token-only-in-extraHeader, and failed-stage cleanup.
+ * POST /api/pr/analyze behaviour with a structural repository mirror and mocked extraction — no
+ * network, no real Git. Pins progress, two-sided revision semantics, restart hits, invalidation,
+ * cancellation, singleflight publication, source-lease ownership, and failed-stage cleanup.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,7 +24,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository, REPOSITORY_ANALYSIS_VERSION } from "../repository-analysis";
-import { base64Auth, runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
@@ -35,12 +35,16 @@ import { createGitHubClient } from "./github";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import type { AnalysisCoordinatorOptions } from "./web-analysis-coordinator";
-import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
+import {
+  runRepositoryAnalysisChildInProcess,
+  runRepositoryArtifactRestampChildInProcess,
+} from "./repository-analysis-child-test-adapter";
 import {
   loadSyntheticScenarios,
   runSyntheticScenarioInOci,
 } from "./synthetic-execution";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
+import { FakePrRepositoryMirror } from "./pr-repository-mirror-test-fake";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -48,7 +52,7 @@ vi.mock("../repository-analysis", async (importOriginal) => {
 });
 vi.mock("./git-exec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./git-exec")>();
-  return { ...actual, runGit: vi.fn(), runGitClone: vi.fn() };
+  return { ...actual, runGit: vi.fn() };
 });
 vi.mock("./synthetic-execution", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./synthetic-execution")>();
@@ -66,7 +70,6 @@ const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x" 
 const HEAD_SHA = "abc1234def5678900000aaaabbbbccccddddeeee";
 const BASE_SHA = "def1234def5678900000aaaabbbbccccddddeeee";
 const MERGE_BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
-const REVERSED_MERGE_BASE_SHA = "76543210fedcba9876543210fedcba9876543210";
 const LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES = 7;
 
 const ARTIFACT = {
@@ -107,6 +110,7 @@ const COMPARISON_ARTIFACT = {
 let cacheRoot: string;
 let activeGraphStores: WebGraphStore[];
 let activeCoordinators: AnalysisCoordinator[];
+let repositories: FakePrRepositoryMirror;
 
 describe("handlePrAnalyze", () => {
   beforeEach(() => {
@@ -115,9 +119,11 @@ describe("handlePrAnalyze", () => {
     activeCoordinators = [];
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(args.at(-1)!, { recursive: true });
-    });
+    repositories = new FakePrRepositoryMirror(cacheRoot, MERGE_BASE_SHA);
+    repositories.materialize = (_inputs, workspace) => {
+      writeFileSync(join(workspace.headDir, "head-source.ts"), "export const head = true;\n");
+      writeFileSync(join(workspace.comparisonDir, "base-source.ts"), "export const base = true;\n");
+    };
     mockGitRevisions();
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
       const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
@@ -133,6 +139,7 @@ describe("handlePrAnalyze", () => {
   afterEach(async () => {
     await Promise.all(activeCoordinators.map((coordinator) => coordinator.close()));
     for (const store of activeGraphStores) store.dispose();
+    repositories.releaseAllForTest();
     rmSync(cacheRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
     vi.clearAllMocks();
@@ -212,7 +219,7 @@ describe("handlePrAnalyze", () => {
     expect(secondResult.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     expect(firstResult.lines().at(-1)?.graphId).not.toBe(secondResult.lines().at(-1)?.graphId);
     expect(maximumActive).toBe(2);
-    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
   });
 
@@ -222,20 +229,19 @@ describe("handlePrAnalyze", () => {
       maxConcurrentPreparations: 1,
       maxQueuedPreparations: 0,
     });
-    const firstCloneStarted = deferred<void>();
-    const releaseFirstClone = deferred<void>();
-    let clones = 0;
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(args.at(-1)!, { recursive: true });
-      clones += 1;
-      if (clones === 1) {
-        firstCloneStarted.resolve();
-        await releaseFirstClone.promise;
+    const firstPreparationStarted = deferred<void>();
+    const releaseFirstPreparation = deferred<void>();
+    let preparations = 0;
+    repositories.beforeFetchComplete = async () => {
+      preparations += 1;
+      if (preparations === 1) {
+        firstPreparationStarted.resolve();
+        await releaseFirstPreparation.promise;
       }
-    });
+    };
 
     const first = beginInvoke(ctx, BODY);
-    await firstCloneStarted.promise;
+    await firstPreparationStarted.promise;
     const overloaded = await invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
 
     expect(overloaded.lines()).toEqual([{
@@ -243,15 +249,15 @@ describe("handlePrAnalyze", () => {
       message: "repository preparation capacity is full; try again shortly",
       retryAfterSeconds: 5,
     }]);
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(repositories.prepareCalls).toHaveLength(1);
 
-    releaseFirstClone.resolve();
+    releaseFirstPreparation.resolve();
     await first.completion;
     expect(first.captured.lines().at(-1)?.stage).toBe("done");
 
     const retry = await invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
     expect(retry.lines().at(-1)?.stage).toBe("done");
-    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(repositories.prepareCalls).toHaveLength(2);
   });
 
   it("cleans its prepared checkout when the bounded analysis queue refuses it", async () => {
@@ -291,6 +297,12 @@ describe("handlePrAnalyze", () => {
       retryAfterSeconds: 5,
     });
     expect(stageEntries()).toHaveLength(1);
+    expect(repositories.discardedWorkspaceIds).toEqual([repositories.createdWorkspaces[1]!.workspaceId]);
+    expect(repositories.leaseRecordsFor(repositories.discardedWorkspaceIds[0]!))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ side: "head", releaseCount: 1 }),
+        expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+      ]));
 
     releaseFirstAnalysis.resolve();
     await first.completion;
@@ -298,26 +310,27 @@ describe("handlePrAnalyze", () => {
     expect(stageEntries()).toEqual([]);
   });
 
-  it("reclaims preparation staging after the sole waiter aborts non-cooperative Git work", async () => {
+  it("reclaims preparation staging after the sole waiter aborts non-cooperative mirror work", async () => {
     const ctx = githubCtx();
-    const cloneStarted = deferred<void>();
-    const releaseClone = deferred<void>();
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(args.at(-1)!, { recursive: true });
-      cloneStarted.resolve();
-      await releaseClone.promise;
-    });
+    const preparationStarted = deferred<void>();
+    const releasePreparation = deferred<void>();
+    repositories.beforeFetchComplete = async () => {
+      preparationStarted.resolve();
+      await releasePreparation.promise;
+    };
 
     const abandoned = beginInvoke(ctx, BODY);
-    await cloneStarted.promise;
+    await preparationStarted.promise;
     expect(stageEntries()).toHaveLength(1);
     abandoned.request.emit("aborted");
     await abandoned.completion;
-    releaseClone.resolve();
+    releasePreparation.resolve();
     await waitFor(() => stageEntries().length === 0);
 
     expect(abandoned.captured.lines().some((line) => line.stage === "done" || line.stage === "error")).toBe(false);
     expect(analyzeRepository).not.toHaveBeenCalled();
+    expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
+    expect(repositories.leaseRecords).toEqual([]);
   });
 
   it("reclaims analyzed staging when a non-cooperative worker resolves after the last abort", async () => {
@@ -344,6 +357,12 @@ describe("handlePrAnalyze", () => {
 
     expect(abandoned.captured.lines().some((line) => line.stage === "done" || line.stage === "error")).toBe(false);
     expect(ctx.graphStore.descriptor("artifact")).toBeDefined();
+    expect(repositories.discardedWorkspaceIds).toHaveLength(1);
+    expect(repositories.leaseRecordsFor(repositories.discardedWorkspaceIds[0]!))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ side: "head", releaseCount: 1 }),
+        expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+      ]));
   });
 
   it("serves an exact warm PR snapshot while both cold-work pools are saturated", async () => {
@@ -354,7 +373,8 @@ describe("handlePrAnalyze", () => {
       maxQueuedPreparations: 0,
     });
     expect((await invoke(ctx, BODY)).lines().at(-1)).toMatchObject({ stage: "done", cache: "miss" });
-    const cloneCalls = vi.mocked(runGitClone).mock.calls.length;
+    const prepareCalls = repositories.prepareCalls.length;
+    const acquireCalls = repositories.acquirePreparedCalls.length;
     const analysisCalls = vi.mocked(analyzeRepository).mock.calls.length;
     const releasePreparation = deferred<void>();
     const releaseAnalysis = deferred<void>();
@@ -372,8 +392,13 @@ describe("handlePrAnalyze", () => {
 
     const warm = await invoke(ctx, BODY);
     expect(warm.lines()).toEqual([expect.objectContaining({ stage: "done", cache: "hit" })]);
-    expect(runGitClone).toHaveBeenCalledTimes(cloneCalls);
+    expect(repositories.prepareCalls).toHaveLength(prepareCalls);
+    expect(repositories.acquirePreparedCalls).toHaveLength(acquireCalls + 1);
     expect(analyzeRepository).toHaveBeenCalledTimes(analysisCalls);
+    expect(repositories.leaseRecords.slice(-2)).toEqual([
+      expect.objectContaining({ side: "head", releaseCount: 1 }),
+      expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+    ]);
 
     releasePreparation.resolve();
     releaseAnalysis.resolve();
@@ -382,6 +407,7 @@ describe("handlePrAnalyze", () => {
 
   it("singleflights identical PR requests while preserving each response stream", async () => {
     const ctx = githubCtx();
+    const publish = vi.spyOn(ctx.graphStore, "publish");
     const firstAnalysisStarted = deferred<void>();
     const release = deferred<void>();
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
@@ -403,9 +429,25 @@ describe("handlePrAnalyze", () => {
 
     expect(first.captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     expect(follower.captured.lines().map((line) => line.stage)).toEqual(["extract", "done"]);
-    expect(follower.captured.lines().at(-1)?.graphId).toBe(first.captured.lines().at(-1)?.graphId);
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(follower.captured.lines().at(-1)).toStrictEqual(first.captured.lines().at(-1));
+    expect(repositories.prepareCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledTimes(2);
+    const transferredLeases = publish.mock.calls.map(([registration]) => registration.metadata.sourceLease);
+    expect(transferredLeases).toStrictEqual(repositories.leaseRecords.map((record) => record.lease));
+    expect(repositories.leaseRecords).toEqual([
+      expect.objectContaining({ side: "head", releaseCount: 0 }),
+      expect.objectContaining({ side: "comparison", releaseCount: 0 }),
+    ]);
+    expect(repositories.discardedWorkspaceIds).toEqual([]);
+
+    ctx.graphStore.dispose();
+    expect(repositories.leaseRecords).toEqual([
+      expect.objectContaining({ side: "head", releaseCount: 1 }),
+      expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+    ]);
+    ctx.graphStore.dispose();
+    expect(repositories.leaseRecords.every((record) => record.releaseCount === 1)).toBe(true);
   });
 
   it("detaches an aborted waiter without cancelling its identical surviving request", async () => {
@@ -433,7 +475,7 @@ describe("handlePrAnalyze", () => {
 
     expect(abandoned.captured.lines().some((line) => line.stage === "error" || line.stage === "done")).toBe(false);
     expect(survivor.captured.lines().at(-1)?.stage).toBe("done");
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(repositories.prepareCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
   });
 
@@ -564,20 +606,20 @@ describe("handlePrAnalyze", () => {
 
   it("rejects a PR-controlled extraction subdir symlink before extracting or storing a capability", async () => {
     const outside = mkdtempSync(join(tmpdir(), "meridian-pr-outside-"));
-    vi.mocked(runGitClone).mockImplementationOnce(async (args) => {
-      const cloneRoot = args.at(-1)!;
-      symlinkSync(outside, join(cloneRoot, "selected"));
-    });
+    repositories.materialize = (_inputs, workspace) => {
+      symlinkSync(outside, join(workspace.headDir, "selected"));
+    };
     const ctx = githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "selected" });
     const publish = vi.spyOn(ctx.graphStore, "publish");
     ctx.allowSyntheticPrExecution = true;
     ctx.syntheticPrSandboxRuntimeSupported = () => true;
     try {
       const captured = await invoke(ctx, BODY);
-      expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "error"]);
+      expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
       expect(publish).not.toHaveBeenCalled();
       expect(analyzeRepository).not.toHaveBeenCalled();
-      expect(existsSync(clonedDir())).toBe(false);
+      expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
+      expect(repositories.discardedWorkspaceIds).toHaveLength(1);
     } finally {
       rmSync(outside, { recursive: true, force: true });
     }
@@ -608,7 +650,8 @@ describe("handlePrAnalyze", () => {
     expect(second.at(-1)?.graphId).toBe(first.at(-1)?.graphId);
     expect(second.at(-1)?.comparisonGraphId).toBe(first.at(-1)?.comparisonGraphId);
     expect(second.at(-1)?.warnings).toEqual(["w1", "base warning"]);
-    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(repositories.prepareCalls).toHaveLength(1);
+    expect(repositories.acquirePreparedCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.graphId as string).sourceRoot)).toBe(true);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.comparisonGraphId as string).sourceRoot)).toBe(true);
@@ -674,7 +717,7 @@ describe("handlePrAnalyze", () => {
     const firstDone = first.at(-1)!;
     expect(firstDone.cache).toBe("miss");
 
-    const metadataPath = join(graphDescriptor(firstCtx, firstDone.graphId as string).sourceRoot, "..", "metadata.json");
+    const metadataPath = currentPrSnapshotMetadataPath();
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
     expect(metadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
     expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
@@ -695,14 +738,10 @@ describe("handlePrAnalyze", () => {
     expect(secondDone.mergeBaseSha).toBe(MERGE_BASE_SHA);
     expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.graphId as string), ARTIFACT);
     expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.comparisonGraphId as string), COMPARISON_ARTIFACT);
-    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
-    const restoredMetadataPath = join(
-      graphDescriptor(restarted, secondDone.graphId as string).sourceRoot,
-      "..",
-      "metadata.json",
-    );
+    const restoredMetadataPath = currentPrSnapshotMetadataPath();
     expect(restoredMetadataPath).not.toBe(metadataPath);
     const retainedLegacyMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
     expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
@@ -712,12 +751,11 @@ describe("handlePrAnalyze", () => {
 
   it("analyzes a configured subdirectory added wholesale with an empty comparison root, including cache hits", async () => {
     const subdir = "packages/new-app";
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(join(args.at(-1)!, subdir), { recursive: true });
-    });
+    repositories.materialize = (_inputs, workspace) => {
+      mkdirSync(join(workspace.headDir, subdir), { recursive: true });
+    };
     // The comparison worktree intentionally contains only its repository root: `subdir` did not
     // exist at the merge base.
-    mockGitRevisions();
     const source = { kind: "github", owner: "org", repo: "repo", subdir } as const;
     const firstCtx = githubCtx(source);
     const first = (await invoke(firstCtx, BODY)).lines();
@@ -782,7 +820,9 @@ describe("handlePrAnalyze", () => {
       } as never;
     });
     // The cloned PR head intentionally lacks `subdir`; the comparison worktree proves it existed.
-    mockGitRevisions(HEAD_SHA, "main", BASE_SHA, subdir);
+    repositories.materialize = (_inputs, workspace) => {
+      mkdirSync(join(workspace.comparisonDir, subdir), { recursive: true });
+    };
     const source = { kind: "github", owner: "org", repo: "repo", subdir } as const;
     const ctx = githubCtx(source);
     const lines = (await invoke(ctx, BODY)).lines();
@@ -829,11 +869,9 @@ describe("handlePrAnalyze", () => {
   it("rejects an extraction subdirectory that escapes a fresh HEAD checkout through a symlink", async () => {
     const outside = join(cacheRoot, "outside-miss");
     mkdirSync(outside, { recursive: true });
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      const repoDir = args.at(-1)!;
-      mkdirSync(repoDir, { recursive: true });
-      symlinkSync(outside, join(repoDir, "linked"), process.platform === "win32" ? "junction" : "dir");
-    });
+    repositories.materialize = (_inputs, workspace) => {
+      symlinkSync(outside, join(workspace.headDir, "linked"), process.platform === "win32" ? "junction" : "dir");
+    };
 
     const lines = (await invoke(
       githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "linked" }),
@@ -848,16 +886,14 @@ describe("handlePrAnalyze", () => {
   it("rejects an extraction subdirectory that escapes a fresh comparison checkout through a symlink", async () => {
     const outside = join(cacheRoot, "outside-comparison-miss");
     mkdirSync(outside, { recursive: true });
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(join(args.at(-1)!, "linked"), { recursive: true });
-    });
-    vi.mocked(runGit).mockImplementation(async (args) => {
-      if (args[0] === "worktree" && args[1] === "add") {
-        mkdirSync(args[3], { recursive: true });
-        symlinkSync(outside, join(args[3], "linked"), process.platform === "win32" ? "junction" : "dir");
-      }
-      return gitOutput(args, HEAD_SHA, "main", BASE_SHA);
-    });
+    repositories.materialize = (_inputs, workspace) => {
+      mkdirSync(join(workspace.headDir, "linked"), { recursive: true });
+      symlinkSync(
+        outside,
+        join(workspace.comparisonDir, "linked"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    };
 
     const lines = (await invoke(
       githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "linked" }),
@@ -868,23 +904,21 @@ describe("handlePrAnalyze", () => {
     expect(lines.at(-1)?.message).toContain("escapes the repository through a symbolic link");
     expect(analyzeRepository).toHaveBeenCalledTimes(1);
     const headRequest = vi.mocked(analyzeRepository).mock.calls[0][0];
-    expect(headRequest.absoluteRoot.endsWith(join("repo", "linked"))).toBe(true);
+    expect(headRequest.absoluteRoot.endsWith(join("head", "linked"))).toBe(true);
     expect(headRequest.changedSince).toBe(MERGE_BASE_SHA);
   });
 
   it("does not materialize an absent comparison subdirectory through an escaping symlink parent", async () => {
     const outside = join(cacheRoot, "outside-comparison-parent");
     mkdirSync(outside, { recursive: true });
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(join(args.at(-1)!, "packages", "app"), { recursive: true });
-    });
-    vi.mocked(runGit).mockImplementation(async (args) => {
-      if (args[0] === "worktree" && args[1] === "add") {
-        mkdirSync(args[3], { recursive: true });
-        symlinkSync(outside, join(args[3], "packages"), process.platform === "win32" ? "junction" : "dir");
-      }
-      return gitOutput(args, HEAD_SHA, "main", BASE_SHA);
-    });
+    repositories.materialize = (_inputs, workspace) => {
+      mkdirSync(join(workspace.headDir, "packages", "app"), { recursive: true });
+      symlinkSync(
+        outside,
+        join(workspace.comparisonDir, "packages"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    };
 
     const lines = (await invoke(
       githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "packages/app" }),
@@ -904,10 +938,10 @@ describe("handlePrAnalyze", () => {
     ["comparison", "comparisonGraphId"],
   ] as const)("invalidates a cache hit whose %s source subdirectory was replaced by an escaping symlink", async (_side, idField) => {
     const subdir = "packages/app";
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      mkdirSync(join(args.at(-1)!, subdir), { recursive: true });
-    });
-    mockGitRevisions(HEAD_SHA, "main", BASE_SHA, subdir);
+    repositories.materialize = (_inputs, workspace) => {
+      mkdirSync(join(workspace.headDir, subdir), { recursive: true });
+      mkdirSync(join(workspace.comparisonDir, subdir), { recursive: true });
+    };
     const source = { kind: "github", owner: "org", repo: "repo", subdir } as const;
     const firstCtx = githubCtx(source);
     const firstDone = (await invoke(firstCtx, BODY)).lines().at(-1)!;
@@ -923,7 +957,7 @@ describe("handlePrAnalyze", () => {
     const secondLines = (await invoke(restarted, BODY)).lines();
     expect(secondLines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     expect(secondLines.at(-1)?.cache).toBe("miss");
-    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
     const replacement = graphDescriptor(restarted, secondLines.at(-1)?.[idField] as string).sourceRoot;
@@ -958,73 +992,32 @@ describe("handlePrAnalyze", () => {
 
     expect(second.headSha).toBe(first.headSha);
     expect(second.graphId).not.toBe(first.graphId);
-    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
   });
 
-  it("pins GitHub's base-first merge base to both comparison source and canonical diff", async () => {
-    vi.mocked(runGit).mockImplementation(async (args) => {
-      if (args[0] === "worktree" && args[1] === "add") {
-        mkdirSync(args[3], { recursive: true });
-      }
-      if (args[0] === "merge-base") {
-        // A valid criss-cross history may select a different best base when these arguments are
-        // reversed. The production flow must ask only GitHub's base...head ordering.
-        return `${args[1] === "origin/main" && args[2] === "HEAD"
-          ? MERGE_BASE_SHA
-          : REVERSED_MERGE_BASE_SHA}\n`;
-      }
-      return gitOutput(args, HEAD_SHA, "main", BASE_SHA);
-    });
-
+  it("uses the mirror's exact merge base for both comparison source and canonical diff", async () => {
     const done = (await invoke(githubCtx(), BODY)).lines().at(-1)!;
 
     expect(done.mergeBaseSha).toBe(MERGE_BASE_SHA);
     expect(vi.mocked(analyzeRepository).mock.calls[0][0].changedSince).toBe(MERGE_BASE_SHA);
     expect(vi.mocked(analyzeRepository).mock.calls[1][0].vcs?.commit).toBe(MERGE_BASE_SHA);
-    expect(runGit).not.toHaveBeenCalledWith(
-      ["merge-base", "HEAD", "origin/main"],
-      expect.anything(),
-    );
+    expect(repositories.prepareCalls[0]).toMatchObject({
+      base: { remoteRef: "refs/heads/main", expectedSha: BASE_SHA },
+      head: { remoteRef: "refs/pull/41/head", expectedSha: HEAD_SHA },
+    });
   });
 
-  it("clones full history and drives git in fetch-base, fetch-pr-head, detach order", async () => {
+  it("prepares the exact remote refs structurally and analyzes both returned workspaces", async () => {
     await invoke(githubCtx(), BODY);
-    const cloneArgs = vi.mocked(runGitClone).mock.calls[0][0];
-    expect(cloneArgs).toContain("--no-tags");
-    expect(cloneArgs).toContain("--filter=blob:none");
-    expect(cloneArgs).toContain("--");
-    expect(cloneArgs).not.toContain("--depth");
-    expect(cloneArgs).not.toContain("--single-branch");
-    const tmpDir = clonedDir();
-    expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({
-      timeoutMs: 600_000,
+    expect(repositories.prepareCalls).toHaveLength(1);
+    expect(repositories.prepareCalls[0]).toMatchObject({
+      remoteUrl: "https://github.com/org/repo.git",
+      base: { remoteRef: "refs/heads/main", expectedSha: BASE_SHA },
+      head: { remoteRef: "refs/pull/41/head", expectedSha: HEAD_SHA },
       signal: expect.any(AbortSignal),
+      onFetchComplete: expect.any(Function),
     });
-    expect(runGit).toHaveBeenCalledWith(
-      ["ls-remote", "--exit-code", "https://github.com/org/repo.git", "refs/heads/main", "refs/pull/41/head"],
-      { cwd: "", token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
-    expect(runGit).toHaveBeenCalledWith(
-      ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
-    expect(runGit).toHaveBeenCalledWith(
-      ["fetch", "origin", "pull/41/head"],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
-    expect(runGit).toHaveBeenCalledWith(
-      ["checkout", "--detach", "FETCH_HEAD"],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
-    expect(runGit).toHaveBeenCalledWith(
-      ["merge-base", "origin/main", "HEAD"],
-      { cwd: tmpDir, timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
-    expect(runGit).toHaveBeenCalledWith(
-      ["worktree", "add", "--detach", expect.stringContaining("comparison-repo"), MERGE_BASE_SHA],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
-    );
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledWith(
       expect.objectContaining({
         changedSince: MERGE_BASE_SHA,
@@ -1037,14 +1030,14 @@ describe("handlePrAnalyze", () => {
     expect(vi.mocked(analyzeRepository).mock.calls[1][0]).not.toHaveProperty("changedSince");
   });
 
-  it("puts the env token ONLY in the clone's -c http.extraHeader, never raw in argv", async () => {
+  it("passes the token opaquely to preflight, mirror preparation, and canonical diff", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     await invoke(githubCtx(), BODY);
-    const cloneArgs = vi.mocked(runGitClone).mock.calls[0][0];
-    expect(cloneArgs.slice(0, 2)).toEqual(["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth("env_secret")}`]);
-    expect(cloneArgs.join(" ")).not.toContain("env_secret");
+    expect(repositories.prepareCalls[0]).toMatchObject({
+      remoteUrl: "https://github.com/org/repo.git",
+      token: "env_secret",
+    });
     expect(vi.mocked(runGit).mock.calls[0][1]).toMatchObject({ token: "env_secret" });
-    expect(vi.mocked(runGit).mock.calls[2][1]).toMatchObject({ token: "env_secret" });
 
     const executeDiff = vi.mocked(analyzeRepository).mock.calls[0][0].changedSinceGitExecutor;
     expect(executeDiff).toBeTypeOf("function");
@@ -1060,15 +1053,15 @@ describe("handlePrAnalyze", () => {
   it("emits exactly one error line mid-pipeline and removes the temp dir", async () => {
     const ctx = githubCtx();
     const publish = vi.spyOn(ctx.graphStore, "publish");
-    vi.mocked(runGit).mockImplementation(async (args) => {
-      if (args[0] === "fetch") throw new WebError(422, "git failed: boom");
-      return gitOutput(args, HEAD_SHA, "main");
-    });
+    repositories.afterFetchComplete = () => {
+      throw new WebError(422, "repository preparation failed: boom");
+    };
     const captured = await invoke(ctx, BODY);
     const lines = captured.lines();
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
-    expect(lines[2].message).toBe("git failed: boom");
-    expect(existsSync(clonedDir())).toBe(false);
+    expect(lines[2].message).toBe("repository preparation failed: boom");
+    expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
+    expect(repositories.leaseRecords).toEqual([]);
     expect(publish).not.toHaveBeenCalled();
   });
 
@@ -1078,7 +1071,8 @@ describe("handlePrAnalyze", () => {
     const errors = lines.filter((line) => line.stage === "error");
     expect(errors).toHaveLength(1);
     expect(errors[0].message).toBe("internal error while analyzing the pull request");
-    expect(existsSync(clonedDir())).toBe(false);
+    expect(repositories.discardedWorkspaceIds).toHaveLength(1);
+    expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
   });
 
   it("rejects unsafe refs and non-integer PR numbers before touching git", async () => {
@@ -1091,7 +1085,7 @@ describe("handlePrAnalyze", () => {
     ]) {
       expect((await invoke(githubCtx(), bad)).status()).toBe(400);
     }
-    expect(runGitClone).not.toHaveBeenCalled();
+    expect(repositories.prepareCalls).toEqual([]);
     expect(runGit).not.toHaveBeenCalled();
   });
 
@@ -1101,45 +1095,26 @@ describe("handlePrAnalyze", () => {
     const captured = await invoke(githubCtx(), body);
 
     expect(captured.status()).toBe(200);
-    expect(runGit).toHaveBeenCalledWith(
-      ["fetch", "origin", `+refs/heads/${body.baseRef}:refs/remotes/origin/${body.baseRef}`],
-      expect.objectContaining({ timeoutMs: 300_000 }),
-    );
+    expect(repositories.prepareCalls[0]).toMatchObject({
+      base: { remoteRef: `refs/heads/${body.baseRef}`, expectedSha: BASE_SHA },
+      head: { remoteRef: "refs/pull/41/head", expectedSha: HEAD_SHA },
+    });
   });
 
   it("404s a non-GitHub artifact source without streaming", async () => {
     const captured = await invoke(githubCtx({ kind: "other" }), BODY);
     expect(captured.status()).toBe(404);
-    expect(runGitClone).not.toHaveBeenCalled();
+    expect(repositories.prepareCalls).toEqual([]);
   });
 });
 
-/** The temp clone dir is the last positional of the clone argv — how tests find what to check. */
-function clonedDir(): string {
-  const args = vi.mocked(runGitClone).mock.calls[0][0];
-  return args[args.length - 1];
-}
-
-function mockGitRevisions(headSha = HEAD_SHA, baseRef = "main", baseSha = BASE_SHA, subdir?: string): void {
+function mockGitRevisions(headSha = HEAD_SHA, baseRef = "main", baseSha = BASE_SHA): void {
   vi.mocked(runGit).mockImplementation(async (args) => {
-    if (args[0] === "worktree" && args[1] === "add") {
-      mkdirSync(subdir ? join(args[3], subdir) : args[3], { recursive: true });
+    if (args[0] === "ls-remote") {
+      return `${baseSha}\trefs/heads/${baseRef}\n${headSha}\t${args.at(-1)}\n`;
     }
-    return gitOutput(args, headSha, baseRef, baseSha);
+    return "";
   });
-}
-
-function gitOutput(args: string[], headSha: string, baseRef: string, baseSha = BASE_SHA): string {
-  if (args[0] === "ls-remote") {
-    return `${baseSha}\trefs/heads/${baseRef}\n${headSha}\t${args.at(-1)}\n`;
-  }
-  if (args[0] === "rev-parse") {
-    return `${args[1] === "HEAD" ? headSha : baseSha}\n`;
-  }
-  if (args[0] === "merge-base") {
-    return `${MERGE_BASE_SHA}\n`;
-  }
-  return "";
 }
 
 async function invoke(ctx: Context, body: unknown) {
@@ -1184,7 +1159,9 @@ function githubCtx(
   return {
     graphStore,
     analysisCoordinator,
+    repositories,
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
+    repositoryArtifactRestamp: runRepositoryArtifactRestampChildInProcess,
     prFilesCache: new Map(),
     rendererIndex: "",
     landingHtml: "",
@@ -1204,6 +1181,15 @@ function githubCtx(
 function stageEntries(): string[] {
   const root = join(cacheRoot, "pr-staging");
   return existsSync(root) ? readdirSync(root).filter((entry) => entry.startsWith(".stage-")) : [];
+}
+
+function currentPrSnapshotMetadataPath(): string {
+  const artifactsRoot = join(cacheRoot, "pr-artifacts");
+  const slots = readdirSync(artifactsRoot);
+  expect(slots).toHaveLength(1);
+  const slot = join(artifactsRoot, slots[0]!);
+  const pointer = JSON.parse(readFileSync(join(slot, "metadata.json"), "utf8")) as { snapshotId: string };
+  return join(slot, "snapshots", pointer.snapshotId, "metadata.json");
 }
 
 function graphDescriptor(ctx: Context, id: string) {

@@ -1,8 +1,9 @@
 /**
  * Process-private, disk-backed graph registrations for web mode.
  *
- * A store retains only its temporary root path. Every descriptor and artifact lookup goes back to
- * disk, so registering a graph never makes its object graph part of long-lived server state.
+ * A store retains its temporary root path plus compact source-workspace lease handles. Every
+ * descriptor and artifact lookup goes back to disk, so registering a graph never makes its object
+ * graph part of long-lived server state.
  */
 
 import { createHash } from "node:crypto";
@@ -62,6 +63,18 @@ export interface VerifiedFileArtifactMaterial extends ProvenArtifactMaterial {
 }
 
 export type WebGraphArtifactMaterial = SerializedArtifactMaterial | VerifiedFileArtifactMaterial;
+
+/**
+ * Ownership token for a source workspace referenced by a graph descriptor.
+ *
+ * Repository workspaces live outside the process-private graph directory. Publishing consumes the
+ * lease and keeps it until the graph store is disposed; an exact republish releases the redundant
+ * lease. This gives persistent-cache eviction an explicit pinning boundary without retaining graph
+ * objects in memory.
+ */
+export interface WebGraphSourceLease {
+  release(): void;
+}
 
 /**
  * Serialize one graph that an upstream analysis boundary has already validated.
@@ -135,6 +148,7 @@ export interface WebGraphRegistration {
   material: WebGraphArtifactMaterial;
   metadata: {
     sourceRoot: string;
+    sourceLease?: WebGraphSourceLease;
     source: ArtifactSource;
     synthetic: {
       scenarios: SyntheticScenarioDescriptor[];
@@ -145,12 +159,13 @@ export interface WebGraphRegistration {
 }
 
 /**
- * An immutable graph registry whose only retained state is the path to its private temporary root.
- * All operations are synchronous so one publication is visible as a complete directory or not at
- * all to the request that follows it.
+ * An immutable graph registry that retains compact lease handles alongside its private temporary
+ * root, never graph objects or artifact bytes. All operations are synchronous so one publication
+ * is visible as a complete directory or not at all to the request that follows it.
  */
 export class WebGraphStore {
   readonly rootPath: string;
+  readonly #sourceLeases = new Map<string, WebGraphSourceLease>();
   #disposed = false;
 
   constructor() {
@@ -158,44 +173,63 @@ export class WebGraphStore {
   }
 
   publish(registration: WebGraphRegistration): WebGraphDescriptor {
-    this.#assertActive();
-    const id = requireNonEmptyString(registration.id, "graph id");
-    const material = requireArtifactMaterial(registration.material, id);
-    const descriptor = parseDescriptor({
-      formatVersion: DESCRIPTOR_FORMAT_VERSION,
-      id,
-      byteDigest: material.byteDigest,
-      summary: material.summary,
-      sourceRoot: registration.metadata.sourceRoot,
-      source: registration.metadata.source,
-      synthetic: registration.metadata.synthetic,
-    }, id);
-
-    const existing = this.descriptor(id);
-    if (existing !== undefined) {
-      return this.#acceptExactRepublish(existing, descriptor);
-    }
-
-    const stage = mkdtempSync(join(this.rootPath, ".stage-"));
-    const destination = this.#entryPath(id);
+    const sourceLease = registration.metadata.sourceLease;
+    let retainedSourceLease = false;
+    const retainSourceLease = (id: string) => {
+      if (sourceLease === undefined || this.#sourceLeases.has(id)) return;
+      this.#sourceLeases.set(id, sourceLease);
+      retainedSourceLease = true;
+    };
     try {
-      publishArtifactMaterial(material, join(stage, ARTIFACT_NAME));
-      writeFileSync(
-        join(stage, DESCRIPTOR_NAME),
-        `${JSON.stringify(descriptor, null, 2)}\n`,
-        { encoding: "utf8", flag: "wx", mode: 0o600 },
-      );
-      try {
-        renameSync(stage, destination);
-      } catch (error) {
-        if (!existsSync(destination)) throw error;
-        const raced = this.descriptor(id);
-        if (raced === undefined) throw error;
-        return this.#acceptExactRepublish(raced, descriptor);
+      // Calling publish transfers ownership immediately, including when the store is already closed.
+      this.#assertActive();
+      const id = requireNonEmptyString(registration.id, "graph id");
+      const material = requireArtifactMaterial(registration.material, id);
+      const descriptor = parseDescriptor({
+        formatVersion: DESCRIPTOR_FORMAT_VERSION,
+        id,
+        byteDigest: material.byteDigest,
+        summary: material.summary,
+        sourceRoot: registration.metadata.sourceRoot,
+        source: registration.metadata.source,
+        synthetic: registration.metadata.synthetic,
+      }, id);
+
+      const existing = this.descriptor(id);
+      if (existing !== undefined) {
+        const accepted = this.#acceptExactRepublish(existing, descriptor);
+        retainSourceLease(id);
+        return accepted;
       }
-      return descriptor;
+
+      const stage = mkdtempSync(join(this.rootPath, ".stage-"));
+      const destination = this.#entryPath(id);
+      try {
+        publishArtifactMaterial(material, join(stage, ARTIFACT_NAME));
+        writeFileSync(
+          join(stage, DESCRIPTOR_NAME),
+          `${JSON.stringify(descriptor, null, 2)}\n`,
+          { encoding: "utf8", flag: "wx", mode: 0o600 },
+        );
+        try {
+          renameSync(stage, destination);
+        } catch (error) {
+          if (!existsSync(destination)) throw error;
+          const raced = this.descriptor(id);
+          if (raced === undefined) throw error;
+          const accepted = this.#acceptExactRepublish(raced, descriptor);
+          retainSourceLease(id);
+          return accepted;
+        }
+        retainSourceLease(id);
+        return descriptor;
+      } finally {
+        rmSync(stage, { recursive: true, force: true });
+      }
     } finally {
-      rmSync(stage, { recursive: true, force: true });
+      if (sourceLease !== undefined && !retainedSourceLease) {
+        releaseSourceLease(sourceLease);
+      }
     }
   }
 
@@ -249,6 +283,10 @@ export class WebGraphStore {
 
   dispose(): void {
     if (this.#disposed) return;
+    for (const lease of this.#sourceLeases.values()) {
+      releaseSourceLease(lease);
+    }
+    this.#sourceLeases.clear();
     rmSync(this.rootPath, { recursive: true, force: true });
     this.#disposed = true;
   }
@@ -270,6 +308,15 @@ export class WebGraphStore {
 
   #assertActive(): void {
     if (this.#disposed) throw new Error("web graph store has been disposed");
+  }
+}
+
+function releaseSourceLease(lease: WebGraphSourceLease): void {
+  try {
+    lease.release();
+  } catch {
+    // Cleanup is best-effort. A lease implementation must not make graph publication or process
+    // shutdown fail merely because its bookkeeping was already removed by external cache cleanup.
   }
 }
 

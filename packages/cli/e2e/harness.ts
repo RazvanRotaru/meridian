@@ -21,7 +21,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
 import { chromium, type Locator } from "playwright";
-import { buildCloneArgs } from "../src/server/clone";
 import { parsePatchDetail, parsePatchHunks } from "../src/server/github-parse";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -243,15 +242,11 @@ export function listenServer(server: Server): Promise<string> {
   });
 }
 
-export async function verifySmartHttpClone(repoUrl: string): Promise<void> {
-  const clone = mkdtempSync(join(tmpdir(), "meridian-smart-clone-"));
-  try {
-    // Verify the exact shallow clone argv used by /api/generate, not a more permissive full clone.
-    await fixtureGitAsync(buildCloneArgs(repoUrl, clone, {}));
-    fixtureGit(["rev-parse", "origin/main"], clone);
-  } finally {
-    rmSync(clone, { recursive: true, force: true });
-  }
+export async function verifySmartHttpRemote(repoUrl: string): Promise<void> {
+  // Production now resolves the advertised commit before its mirror fetch. Keep this fixture probe
+  // limited to smart-HTTP/ref availability instead of preserving the retired clone implementation.
+  const output = await fixtureGitAsync(["ls-remote", "--exit-code", repoUrl, "refs/heads/main"]);
+  if (!output.includes("refs/heads/main")) throw new Error("smart HTTP fixture did not advertise main");
 }
 
 function fixtureFile(worktree: string, path: string, status: "added" | "modified"): PrReviewFixtureFile {

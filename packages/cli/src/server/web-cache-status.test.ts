@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionStore } from "./session";
 import { probeRemoteGraph } from "./web-cache-probe";
 import { handleCacheStatus } from "./web-cache-status";
+import { FakeRepositoryMirror } from "./web-repository-mirror-test-fake";
 
 vi.mock("./web-cache-probe", () => ({ probeRemoteGraph: vi.fn() }));
 vi.mock("./web-auth", async (importOriginal) => {
@@ -21,9 +22,11 @@ describe("cache-status analysis identity", () => {
   });
 
   it("forwards repository, ref, and subdirectory while ignoring the retired language selector", async () => {
+    const repositories = new FakeRepositoryMirror("/repositories");
     await handleCacheStatus(
       {
         cacheRoot: "/cache",
+        repositories,
         cwd: "/workspace",
         refreshCache: false,
         sessions: new SessionStore(),
@@ -41,6 +44,7 @@ describe("cache-status analysis identity", () => {
 
     expect(probeRemoteGraph).toHaveBeenCalledWith({
       cacheRoot: "/cache",
+      repositories,
       cwd: "/workspace",
       request: {
         kind: "github",

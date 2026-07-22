@@ -59,6 +59,7 @@ import {
   repositoryAnalysisMemoryPolicy,
   type RepositoryAnalysisMemoryPolicy,
 } from "./repository-analysis-memory";
+import { WebRepositoryMirror, type RepositoryMirror } from "./web-repository-mirror";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -94,6 +95,8 @@ export interface WebServerConfig {
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
   /** Internal artifact-restamp boundary override used by deterministic server tests. */
   repositoryArtifactRestamp?: typeof runRepositoryArtifactRestampChild;
+  /** Internal persistent repository boundary override used by deterministic server tests. */
+  repositories?: RepositoryMirror;
 }
 
 export interface Context {
@@ -103,6 +106,8 @@ export interface Context {
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Ephemeral waiter-safe singleflight plus bounded admission for memory-heavy extraction. */
   analysisCoordinator: AnalysisCoordinator;
+  /** Shared credential-free mirrors and exact-revision source workspaces. */
+  repositories: RepositoryMirror;
   /** Disposable child boundary. The web parent never receives a graph object from it. */
   repositoryAnalysis: typeof runRepositoryAnalysisChild;
   /** Disposable child boundary for immutable branch-provenance derivatives. */
@@ -137,20 +142,23 @@ export function createWebServer(config: WebServerConfig): Server {
     maxQueuedPreparations: config.maxQueuedPreparations,
     maxQueuedAnalyses: config.maxQueuedAnalyses,
   });
+  const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
+  const repositories = config.repositories ?? new WebRepositoryMirror({ cacheRoot });
   // Validate every admission bound before allocating the graph store's private temporary root.
   const graphStore = new WebGraphStore();
   let ctx: Context;
   try {
-    ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory);
+    ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory, repositories, cacheRoot);
   } catch (error) {
     void analysisCoordinator.close();
+    void repositories.close();
     graphStore.dispose();
     throw error;
   }
   const server = createServer((request, response) => {
     handle(ctx, request, response).catch((error) => sendError(response, error));
   });
-  attachServerLifecycle(server, analysisCoordinator, graphStore);
+  attachServerLifecycle(server, analysisCoordinator, repositories, graphStore);
   return server;
 }
 
@@ -159,6 +167,8 @@ function buildContext(
   graphStore: WebGraphStore,
   analysisCoordinator: AnalysisCoordinator,
   analysisMemory: RepositoryAnalysisMemoryPolicy,
+  repositories: RepositoryMirror,
+  cacheRoot: string,
 ): Context {
   const indexPath = join(config.rendererRoot, "index.html");
   if (!existsSync(indexPath)) {
@@ -166,7 +176,6 @@ function buildContext(
   }
   const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
   const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
-  const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
   const repositoryAnalysis = config.repositoryAnalysis ?? runRepositoryAnalysisChild;
   const repositoryArtifactRestamp = config.repositoryArtifactRestamp
     ?? runRepositoryArtifactRestampChild;
@@ -174,6 +183,7 @@ function buildContext(
     graphStore,
     prFilesCache: new Map(),
     analysisCoordinator,
+    repositories,
     repositoryAnalysis: (request, options) => repositoryAnalysis(request, {
       ...options,
       workerHeapMb: analysisMemory.workerHeapMb,
@@ -206,6 +216,7 @@ function buildContext(
 function attachServerLifecycle(
   server: Server,
   analysisCoordinator: AnalysisCoordinator,
+  repositories: RepositoryMirror,
   graphStore: WebGraphStore,
 ): void {
   let disposed = false;
@@ -216,6 +227,7 @@ function attachServerLifecycle(
     // graph store, even when a CPU-bound extractor needs time to cooperatively return.
     void analysisCoordinator.close();
     graphStore.dispose();
+    void repositories.close();
   };
   process.once("exit", dispose);
   server.once("close", () => {
