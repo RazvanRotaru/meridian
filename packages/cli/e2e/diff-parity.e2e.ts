@@ -33,6 +33,7 @@ import {
   chromiumInstalled,
   ensureBuilt,
   listenServer,
+  nodeHeader,
   startSmartGitServer,
   verifySmartHttpClone,
 } from "./harness";
@@ -381,6 +382,7 @@ async function assertDeletedNodeDiff(
   const node = reviewSurface.locator(`.react-flow__node[data-id="${nodeId}"]`);
   await node.waitFor({ state: "visible", timeout: 60_000 });
   await expectDeletedRing(node, `PR #${pr.number} deleted declaration ${deleted.qualname}`);
+  await assertDeletedExecutionNeighbourhood(reviewSurface, node, nodeId, deleted);
 
   const expectedRows = pr.oracleRows.filter((row) =>
     row.origin === "delete"
@@ -426,6 +428,33 @@ async function assertDeletedNodeDiff(
   expect(modalRows, `PR #${pr.number} deleted-node hover and modal diverged`).toEqual(previewRows);
   await modal.getByRole("button", { name: "Close source" }).click();
   await modal.waitFor({ state: "detached" });
+}
+
+async function assertDeletedExecutionNeighbourhood(
+  reviewSurface: Locator,
+  deletedNode: Locator,
+  deletedId: string,
+  spec: NonNullable<DiffParityCaseSpec["deletedNode"]>,
+): Promise<void> {
+  const callers = spec.callers ?? [];
+  const callees = spec.callees ?? [];
+  if (callers.length === 0 && callees.length === 0) return;
+
+  await nodeHeader(deletedNode).click();
+  for (const caller of callers) {
+    const callerId = buildNodeId({ lang: "ts", modulePath: caller.path, qualname: caller.qualname });
+    await reviewSurface.locator(`.react-flow__node[data-id="${callerId}"]`).waitFor({ state: "visible" });
+    await reviewSurface.locator(
+      `.react-flow__edge[data-id="gdep:calls:${callerId}->${deletedId}"]`,
+    ).waitFor({ state: "visible" });
+  }
+  for (const callee of callees) {
+    const calleeId = buildNodeId({ lang: "ts", modulePath: callee.path, qualname: callee.qualname });
+    await reviewSurface.locator(`.react-flow__node[data-id="${calleeId}"]`).waitFor({ state: "visible" });
+    await reviewSurface.locator(
+      `.react-flow__edge[data-id="gdep:calls:${deletedId}->${calleeId}"]`,
+    ).waitFor({ state: "visible" });
+  }
 }
 
 async function expectDeletedRing(node: Locator, label: string): Promise<void> {

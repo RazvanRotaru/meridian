@@ -1183,7 +1183,7 @@ function displayedEvidenceSpan(
 /** Resolve the source request once so click-to-open and hover-preview read identical code. */
 function codeLoadRequest(
   node: GraphNode,
-  opts: { wholeFile?: boolean } | undefined,
+  opts: { wholeFile?: boolean; sourceSide?: "base" } | undefined,
   state: BlueprintState,
   sourceUrl: string | null,
   prFileUrl: string | null,
@@ -1196,7 +1196,7 @@ function codeLoadRequest(
   // coordinates, while the head-file fallback below exists for reviews on the loaded base artifact.
   const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
   const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
-  const readsComparisonBase = state.reviewBaseNodeIds.has(node.id) || removedAtHead;
+  const readsComparisonBase = opts?.sourceSide === "base" || state.reviewBaseNodeIds.has(node.id) || removedAtHead;
   const resolvedSourceUrl = preparedArtifactCurrent
     ? readsComparisonBase && state.sourceUrl !== null && state.prPreparedComparisonGraphId !== null
       ? sourceUrlForGraph(state.sourceUrl, state.prPreparedComparisonGraphId)
@@ -6315,7 +6315,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const context = contexts[selectedIndex]!;
       const state = get();
       const node = edgeEvidenceNode(context, selectedIndex, state);
-      const request = codeLoadRequest(node, undefined, state, sourceUrl, prFileUrl);
+      // A wire touching a projected tombstone exists only on the merge-base graph. Its call sites
+      // are old-side evidence even when the source caller survived in HEAD, so route the synthetic
+      // evidence node explicitly instead of trying to infer ownership from its presentation-only id.
+      const readsComparisonBase = state.reviewDeletedNodeIds.has(context.source)
+        || state.reviewDeletedNodeIds.has(context.target);
+      const request = codeLoadRequest(
+        node,
+        readsComparisonBase ? { sourceSide: "base" } : undefined,
+        state,
+        sourceUrl,
+        prFileUrl,
+      );
       if (!request) {
         get().closeEdgeEvidence();
         return; // The pinned inspector remains visible and truthfully reports attribution only.
@@ -7345,9 +7356,15 @@ function applyPrReviewToMap(
   const swapped = prPreparedArtifactCurrent;
   // Tests reprojection and refresh can re-enter while the presentation composite is current. Strip
   // its prior base-only overlay first so every pass starts from one pure HEAD coordinate space and
-  // cannot duplicate tombstones or let their old spans influence HEAD affected-node derivation.
+  // cannot duplicate tombstones/edges or let their old spans influence HEAD affected-node derivation.
   const headArtifact = swapped && activeBaseNodeIds.size > 0
-    ? { ...activeArtifact, nodes: activeArtifact.nodes.filter((node) => !activeBaseNodeIds.has(node.id)) }
+    ? {
+        ...activeArtifact,
+        nodes: activeArtifact.nodes.filter((node) => !activeBaseNodeIds.has(node.id)),
+        // Every admitted comparison edge is incident to a projected base node by construction.
+        edges: activeArtifact.edges.filter((edge) =>
+          !activeBaseNodeIds.has(edge.source) && !activeBaseNodeIds.has(edge.target)),
+      }
     : activeArtifact;
   const headIndex = headArtifact === activeArtifact ? activeIndex : buildGraphIndex(headArtifact);
   // GitHub caps the PR-files endpoint, while line-less changes (fully deleted files, pure renames,
@@ -7508,7 +7525,14 @@ function applyPrReviewToMap(
   // Partition the change into disjoint groups (one per weakly-connected component of the changed
   // modules), sharing the SAME flow substrate the review rows already read. Stored so the rail can
   // offer per-group isolation; ignored (strip hidden) when the change is a single connected component.
-  const changeGroups = computeChangeGroups(artifact.nodes, artifact.edges, visibleContext.changedFiles, review.flows);
+  // Review grouping remains a HEAD/change topology decision. Comparison edges exist solely to make
+  // a selected tombstone's historical execution neighbourhood visible; they must not merge groups.
+  const changeGroups = computeChangeGroups(
+    artifact.nodes,
+    reviewedHeadArtifact.edges,
+    visibleContext.changedFiles,
+    review.flows,
+  );
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
   const artifactStats = swapped ? changedLineStatsFromExtensions(reviewedHeadArtifact.extensions) : null;

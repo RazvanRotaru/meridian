@@ -141,6 +141,29 @@ describe("edge source evidence store", () => {
     });
   });
 
+  it("loads evidence for a deleted-node wire from the comparison graph", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      code: "base call into deleted target",
+      startLine: 100,
+      truncated: false,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({
+      prPreparedArtifactCurrent: true,
+      prPreparedComparisonGraphId: "comparison-base",
+      reviewDeletedNodeIds: new Set([TARGET_ID]),
+    });
+
+    await store.getState().showEdgeEvidence([context()]);
+
+    const request = new URL(fetchMock.mock.calls[0]![0].toString());
+    expect(request.pathname).toBe("/api/source");
+    expect(request.searchParams.get("id")).toBe("comparison-base");
+    expect(request.searchParams.get("file")).toBe("src/a.ts");
+    expect(store.getState().codeView).toMatchObject({ sourceSide: "base" });
+  });
+
   it("does not invent a source modal when the session has no source capability", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

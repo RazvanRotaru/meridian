@@ -4,9 +4,11 @@
  * A prepared review normally renders the freshly extracted HEAD artifact. That is the right
  * coordinate space for surviving and added declarations, but it necessarily omits declarations
  * (and whole files) removed by the PR. This helper builds a presentation-only composite: HEAD stays
- * authoritative for nodes, edges, extensions, and flows, while proven base-only declarations are
- * appended as edge-less tombstones. Their original ids and source locations are retained; only a
- * parentId may be remapped to the corresponding surviving HEAD container after a rename.
+ * authoritative for surviving nodes, extensions, and flows, while proven base-only declarations
+ * are appended as tombstones. Their merge-base call edges are retained only when they touch a
+ * proven tombstone, so selecting deleted code can still show who called it and what it called.
+ * Original node ids and source locations are retained; only a parentId or a surviving edge endpoint
+ * may be remapped to the corresponding HEAD declaration after a rename.
  *
  * Modified/renamed files fail closed unless the PR supplied a complete, count-verified diff body.
  * A removed file is different: its status proves the whole pre-image disappeared, so every
@@ -17,6 +19,7 @@ import {
   changedDiffLinesFromExtensions,
   changedLineStatsFromExtensions,
   computeAffectedNodes,
+  edgeId,
   NON_BLOCK_KINDS,
   reviewFingerprintsFromArtifact,
 } from "@meridian/core";
@@ -26,6 +29,7 @@ import type {
   ChangedDiffLines,
   ChangedLineStats,
   GraphArtifact,
+  GraphEdge,
   GraphNode,
   LineRange,
   ReviewContext,
@@ -64,7 +68,7 @@ export interface DeletedReviewFileProjection {
 }
 
 export interface DeletedNodeProjection {
-  /** HEAD artifact plus edge-less base tombstones. Returns the input by identity when empty. */
+  /** HEAD artifact plus base tombstones and their incident call edges. */
   artifact: GraphArtifact;
   /** Index over `artifact`. Returns the input by identity when empty. */
   index: GraphIndex;
@@ -115,7 +119,9 @@ interface Counterparts {
   uncertainBaseIds: Set<string>;
 }
 
-/** Pure two-sided deletion projection. Base dependency edges/extensions are intentionally ignored. */
+const CALL_EDGE_KIND = "calls";
+
+/** Pure two-sided deletion projection. Unrelated base edges and every base extension stay excluded. */
 export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): DeletedNodeProjection {
   const rawByPath = new Map(args.prFiles.map((file) => [normalizePath(file.path), file]));
   const canonicalDiffLines = changedDiffLinesFromExtensions(args.headArtifact.extensions);
@@ -327,9 +333,23 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
     };
   }
 
-  // Spread HEAD only: its edges and extensions (including logicFlow) remain authoritative. No base
-  // dependency fact can leak into the presentation graph merely because its target was deleted.
-  const artifact: GraphArtifact = { ...args.headArtifact, nodes: [...args.headArtifact.nodes, ...appendedNodes] };
+  // HEAD remains authoritative for the current graph. The only old relationships admitted are the
+  // call edges needed to explain a proven tombstone's immediate caller/callee neighbourhood.
+  // Their surviving endpoints are translated through the same fail-closed semantic counterpart map
+  // as nodes, and dangling resolved edges are dropped rather than fabricating context declarations.
+  const deletedCallEdges = projectDeletedCallEdges(
+    args,
+    counterparts,
+    baseSourceNodeIds,
+    deletedNodeIds,
+  );
+  const artifact: GraphArtifact = {
+    ...args.headArtifact,
+    nodes: [...args.headArtifact.nodes, ...appendedNodes],
+    edges: deletedCallEdges.length === 0
+      ? args.headArtifact.edges
+      : [...args.headArtifact.edges, ...deletedCallEdges],
+  };
   return {
     artifact,
     index: buildGraphIndex(artifact),
@@ -340,6 +360,52 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
     affected: allAffected.sort(compareAffected),
     files: files.sort((left, right) => left.path.localeCompare(right.path)),
   };
+}
+
+/** Project only merge-base call edges incident to proven-deleted declarations. Surviving
+ * endpoints keep HEAD identity; projected tombstones keep base identity. This preserves the exact
+ * direction needed by caller/callee ghosts without importing the comparison graph wholesale. */
+function projectDeletedCallEdges(
+  args: DeletedNodeProjectionArgs,
+  counterparts: Counterparts,
+  baseSourceNodeIds: ReadonlySet<string>,
+  deletedNodeIds: ReadonlySet<string>,
+): GraphEdge[] {
+  const existingIds = new Set(args.headArtifact.edges.map((edge) => edge.id));
+  const projected: GraphEdge[] = [];
+  const endpointOnComposite = (baseId: string): string | null => {
+    if (args.headIndex.nodesById.has(baseId) || baseSourceNodeIds.has(baseId)) {
+      return baseId;
+    }
+    const counterpart = counterparts.byBaseId.get(baseId);
+    return counterpart && args.headIndex.nodesById.has(counterpart) ? counterpart : null;
+  };
+
+  for (const edge of args.baseIndex.edges) {
+    if (
+      edge.kind !== CALL_EDGE_KIND
+      || (!deletedNodeIds.has(edge.source) && !deletedNodeIds.has(edge.target))
+    ) {
+      continue;
+    }
+    const source = endpointOnComposite(edge.source);
+    const target = endpointOnComposite(edge.target)
+      ?? ((edge.resolution ?? "resolved") === "resolved" ? null : edge.target);
+    if (source === null || target === null || source === target) {
+      continue;
+    }
+    const id = edgeId(edge.kind, source, target);
+    if (existingIds.has(id)) {
+      continue;
+    }
+    existingIds.add(id);
+    projected.push(
+      id === edge.id && source === edge.source && target === edge.target
+        ? edge
+        : { ...edge, id, source, target },
+    );
+  }
+  return projected;
 }
 
 function matchedModuleId(index: GraphIndex, path: string): string | null {

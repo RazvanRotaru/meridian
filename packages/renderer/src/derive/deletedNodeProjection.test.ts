@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { edgeId } from "@meridian/core";
 import type { ChangedDiffLine, GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { PrChangedFile } from "../state/prTypes";
+import { buildBlockDeps } from "./blockDeps";
 import { deriveDeletedNodeProjection } from "./deletedNodeProjection";
+import { ghostDepWires } from "./ghostDeps";
 
 const PACKAGE_ID = "ts:src";
 
@@ -183,27 +186,35 @@ describe("deriveDeletedNodeProjection", () => {
     })]);
   });
 
-  it("projects every extracted unit and containment node for a fully removed file without its patch", () => {
+  it("projects every extracted unit plus its incoming callers and outgoing calls for a fully removed file", () => {
     const removedModule = "ts:src/removed.ts";
     const removedClass = `${removedModule}#Removed`;
     const removedMethod = `${removedModule}#Removed.run`;
     const liveModule = "ts:src/live.ts";
-    const liveFunction = `${liveModule}#live`;
-    const headEdge: GraphEdge = { id: "head-edge", source: liveFunction, target: liveFunction, kind: "calls" };
-    const baseEdge: GraphEdge = { id: "base-edge", source: removedMethod, target: liveFunction, kind: "calls" };
+    const liveCaller = `${liveModule}#caller`;
+    const liveCallee = `${liveModule}#callee`;
+    const unrelated = `${liveModule}#unrelated`;
+    const headEdge: GraphEdge = { id: edgeId("calls", liveCaller, liveCallee), source: liveCaller, target: liveCallee, kind: "calls" };
+    const incoming: GraphEdge = { id: edgeId("calls", liveCaller, removedMethod), source: liveCaller, target: removedMethod, kind: "calls" };
+    const outgoing: GraphEdge = { id: edgeId("calls", removedMethod, liveCallee), source: removedMethod, target: liveCallee, kind: "calls" };
+    const unrelatedBaseEdge: GraphEdge = { id: edgeId("calls", liveCaller, unrelated), source: liveCaller, target: unrelated, kind: "calls" };
     const base = artifact([
       node(PACKAGE_ID, "package", "src", "src", 1, 1, null),
       node(removedModule, "module", "src/removed.ts", "src/removed.ts", 1, 30, PACKAGE_ID),
       node(removedClass, "class", "src/removed.ts", "Removed", 2, 28, removedModule),
       node(removedMethod, "method", "src/removed.ts", "Removed.run", 5, 10, removedClass),
       node(liveModule, "module", "src/live.ts", "src/live.ts", 1, 5, PACKAGE_ID),
-      node(liveFunction, "function", "src/live.ts", "live", 2, 4, liveModule),
-    ], { edges: [baseEdge], extensions: { logicFlow: { [removedMethod]: [] }, baseOnly: true } });
+      node(liveCaller, "function", "src/live.ts", "caller", 2, 2, liveModule),
+      node(liveCallee, "function", "src/live.ts", "callee", 3, 3, liveModule),
+      node(unrelated, "function", "src/live.ts", "unrelated", 4, 4, liveModule),
+    ], { edges: [incoming, outgoing, unrelatedBaseEdge], extensions: { logicFlow: { [removedMethod]: [] }, baseOnly: true } });
     const head = artifact([
       node(PACKAGE_ID, "package", "src", "src", 1, 1, null),
       node(liveModule, "module", "src/live.ts", "src/live.ts", 1, 5, PACKAGE_ID),
-      node(liveFunction, "function", "src/live.ts", "live", 2, 4, liveModule),
-    ], { edges: [headEdge], extensions: { logicFlow: { [liveFunction]: [] }, headOnly: true } });
+      node(liveCaller, "function", "src/live.ts", "caller", 2, 2, liveModule),
+      node(liveCallee, "function", "src/live.ts", "callee", 3, 3, liveModule),
+      node(unrelated, "function", "src/live.ts", "unrelated", 4, 4, liveModule),
+    ], { edges: [headEdge], extensions: { logicFlow: { [liveCaller]: [] }, headOnly: true } });
     const result = project(
       head,
       base,
@@ -213,8 +224,8 @@ describe("deriveDeletedNodeProjection", () => {
 
     expect(result.deletedNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
     expect(result.baseSourceNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
-    expect(result.artifact.edges).toBe(head.edges);
-    expect(result.artifact.edges).toEqual([headEdge]);
+    expect(result.artifact.edges).toEqual([headEdge, incoming, outgoing]);
+    expect(result.index.edgesById.has(unrelatedBaseEdge.id)).toBe(false);
     expect(result.artifact.extensions).toBe(head.extensions);
     expect(result.artifact.extensions).not.toHaveProperty("baseOnly");
     expect(result.files[0]).toMatchObject({
@@ -228,6 +239,20 @@ describe("deriveDeletedNodeProjection", () => {
       [removedClass, "base"],
       [removedMethod, "base"],
     ]);
+
+    const ghosts = ghostDepWires(
+      buildBlockDeps(result.index),
+      [],
+      new Set([removedMethod]),
+      result.index,
+      (id) => id === removedMethod,
+      new Set(),
+    );
+    expect([...ghosts.ghosts.keys()].sort()).toEqual([liveCallee, liveCaller].sort());
+    expect(ghosts.wires).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: "calls" }),
+      expect.objectContaining({ source: removedMethod, target: liveCallee, kind: "calls" }),
+    ]));
   });
 
   it("does not invent tombstones for a pure rename", () => {
@@ -288,7 +313,10 @@ describe("deriveDeletedNodeProjection", () => {
       node(oldClass, "class", "src/old.ts", "Service", 2, 38, oldModule),
       node(oldKeep, "method", "src/old.ts", "Service.keep", 8, 12, oldClass),
       node(oldDeleted, "method", "src/old.ts", "Service.removed", 20, 24, oldClass),
-    ]);
+    ], { edges: [
+      { id: edgeId("calls", oldKeep, oldDeleted), source: oldKeep, target: oldDeleted, kind: "calls" },
+      { id: edgeId("calls", oldDeleted, oldKeep), source: oldDeleted, target: oldKeep, kind: "calls" },
+    ] });
     const rows = [deleted(20), deleted(21), deleted(22), deleted(23), deleted(24)];
     const head = artifact([
       node(PACKAGE_ID, "package", "src", "src", 1, 1, null),
@@ -316,6 +344,11 @@ describe("deriveDeletedNodeProjection", () => {
     expect(result.index.nodesById.get(oldDeleted)?.parentId).toBe(newClass);
     expect(result.index.nodesById.has(oldClass)).toBe(false);
     expect(result.index.nodesById.has(oldModule)).toBe(false);
+    expect(result.artifact.edges).toEqual([
+      { id: edgeId("calls", newKeep, oldDeleted), source: newKeep, target: oldDeleted, kind: "calls" },
+      { id: edgeId("calls", oldDeleted, newKeep), source: oldDeleted, target: newKeep, kind: "calls" },
+    ]);
+    expect(result.artifact.edges.some((edge) => edge.source === oldKeep || edge.target === oldKeep)).toBe(false);
     expect(result.files[0].moduleId).toBe(newModule);
     expect(result.files[0].basePath).toBe("src/old.ts");
   });
