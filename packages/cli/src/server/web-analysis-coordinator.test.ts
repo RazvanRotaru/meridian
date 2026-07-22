@@ -3,6 +3,7 @@ import {
   AnalysisCoordinator,
   AnalysisCoordinatorAbortError,
   AnalysisCoordinatorClosedError,
+  AnalysisCoordinatorOverloadedError,
 } from "./web-analysis-coordinator";
 
 describe("AnalysisCoordinator", () => {
@@ -290,6 +291,121 @@ describe("AnalysisCoordinator", () => {
     await coordinator.close();
   });
 
+  it("bounds preparation independently and rejects beyond the exact queue capacity", async () => {
+    const coordinator = new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 1,
+      maxQueuedPreparations: 1,
+    });
+    const runningRelease = deferred<void>();
+    const queuedRelease = deferred<void>();
+    const starts: string[] = [];
+    const run = (key: string, release: ReturnType<typeof deferred<void>>) => coordinator.run(
+      key,
+      ({ runPreparation }) => runPreparation(async () => {
+        starts.push(key);
+        await release.promise;
+        return key;
+      }),
+    );
+
+    const running = run("running-preparation", runningRelease);
+    await flushMicrotasks();
+    const queued = run("queued-preparation", queuedRelease);
+    const rejectedWork = vi.fn(async () => "must not run");
+    const rejected = coordinator.run(
+      "rejected-preparation",
+      ({ runPreparation }) => runPreparation(rejectedWork),
+    );
+
+    await expect(rejected).rejects.toMatchObject({
+      name: "AnalysisCoordinatorOverloadedError",
+      phase: "preparation",
+    });
+    expect(rejectedWork).not.toHaveBeenCalled();
+    expect(starts).toEqual(["running-preparation"]);
+
+    runningRelease.resolve();
+    await expect(running).resolves.toBe("running-preparation");
+    await flushMicrotasks();
+    expect(starts).toEqual(["running-preparation", "queued-preparation"]);
+    queuedRelease.resolve();
+    await expect(queued).resolves.toBe("queued-preparation");
+    await coordinator.close();
+  });
+
+  it("bounds analysis, lets same-key followers join a full queue, and permits a fresh retry", async () => {
+    const coordinator = new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxQueuedAnalyses: 1,
+    });
+    const runningRelease = deferred<void>();
+    const queuedRelease = deferred<void>();
+    const running = coordinator.run("analysis-running", ({ runAnalysis }) => runAnalysis(async () => {
+      await runningRelease.promise;
+      return "running";
+    }));
+    await flushMicrotasks();
+    const queuedWork = vi.fn(async () => {
+      await queuedRelease.promise;
+      return "shared";
+    });
+    const queued = coordinator.run("analysis-shared", ({ runAnalysis }) => runAnalysis(queuedWork));
+    const followerFactory = vi.fn(async () => "ignored");
+    const follower = coordinator.run("analysis-shared", followerFactory);
+    const rejectedWork = vi.fn(async () => "must not run");
+    const rejected = coordinator.run("analysis-overflow", ({ runAnalysis }) => runAnalysis(rejectedWork));
+
+    await expect(rejected).rejects.toBeInstanceOf(AnalysisCoordinatorOverloadedError);
+    expect(rejectedWork).not.toHaveBeenCalled();
+    expect(followerFactory).not.toHaveBeenCalled();
+
+    runningRelease.resolve();
+    await expect(running).resolves.toBe("running");
+    await flushMicrotasks();
+    expect(queuedWork).toHaveBeenCalledTimes(1);
+    queuedRelease.resolve();
+    await expect(Promise.all([queued, follower])).resolves.toEqual(["shared", "shared"]);
+
+    const retryWork = vi.fn(async () => "retry");
+    await expect(coordinator.run(
+      "analysis-overflow",
+      ({ runAnalysis }) => runAnalysis(retryWork),
+    )).resolves.toBe("retry");
+    expect(retryWork).toHaveBeenCalledTimes(1);
+    await coordinator.close();
+  });
+
+  it("keeps preparation and analysis admissions independent", async () => {
+    const coordinator = new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 1,
+      maxQueuedAnalyses: 0,
+      maxQueuedPreparations: 0,
+    });
+    const analysisRelease = deferred<void>();
+    const analysisStarted = deferred<void>();
+    const analysis = coordinator.run("analysis", ({ runAnalysis }) => runAnalysis(async () => {
+      analysisStarted.resolve();
+      await analysisRelease.promise;
+      return "analysis";
+    }));
+    await analysisStarted.promise;
+
+    await expect(coordinator.run(
+      "preparation",
+      ({ runPreparation }) => runPreparation(async () => "preparation"),
+    )).resolves.toBe("preparation");
+    await expect(coordinator.run(
+      "analysis-overload",
+      ({ runAnalysis }) => runAnalysis(async () => "blocked"),
+    )).rejects.toMatchObject({ phase: "analysis" });
+
+    analysisRelease.resolve();
+    await expect(analysis).resolves.toBe("analysis");
+    await coordinator.close();
+  });
+
   it("removes an aborted queued job without starting it or leaking the permit", async () => {
     const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 1 });
     const blockerStarted = deferred<void>();
@@ -458,6 +574,21 @@ describe("AnalysisCoordinator", () => {
   it("uses the explicit limit and rejects invalid limits", async () => {
     expect(() => new AnalysisCoordinator({ maxConcurrentAnalyses: 0 })).toThrow(RangeError);
     expect(() => new AnalysisCoordinator({ maxConcurrentAnalyses: 1.5 })).toThrow(RangeError);
+    expect(() => new AnalysisCoordinator({
+      maxConcurrentAnalyses: Number.MAX_SAFE_INTEGER + 1,
+    })).toThrow("maxConcurrentAnalyses must be a positive integer");
+    expect(() => new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 0,
+    })).toThrow("maxConcurrentPreparations must be a positive integer");
+    expect(() => new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxQueuedAnalyses: -1,
+    })).toThrow("maxQueuedAnalyses must be a non-negative integer");
+    expect(() => new AnalysisCoordinator({
+      maxConcurrentAnalyses: 1,
+      maxQueuedPreparations: 1.5,
+    })).toThrow("maxQueuedPreparations must be a non-negative integer");
 
     const coordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
     const releases = [deferred<void>(), deferred<void>(), deferred<void>()];
@@ -493,7 +624,7 @@ describe("AnalysisCoordinator", () => {
       });
       await firstStarted.promise;
       await expect(runAnalysis(async () => "overlap")).rejects.toThrow(
-        "one coordinated job cannot run overlapping analysis phases",
+        "one coordinated job cannot run overlapping admitted phases",
       );
       release.resolve();
       expect(await first).toBe("head");

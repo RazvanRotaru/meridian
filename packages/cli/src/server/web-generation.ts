@@ -52,7 +52,7 @@ async function generateRemote(
     GenerateStage
   >(
     `remote:${jobKey}`,
-    ({ signal: jobSignal, report, runAnalysis }) => cachedRemoteGraph({
+    ({ signal: jobSignal, report, runPreparation, runAnalysis }) => cachedRemoteGraph({
       cacheRoot: ctx.cacheRoot,
       request: effectiveRequest,
       cwd: ctx.cwd,
@@ -60,7 +60,8 @@ async function generateRemote(
       signal: jobSignal,
       onClone: () => report("source"),
       onExtract: () => report("extract"),
-      runAnalysis: (work) => runAnalysis(() => work()),
+      runPreparation,
+      runAnalysis,
       repositoryAnalysis: ctx.repositoryAnalysis,
       repositoryArtifactRestamp: ctx.repositoryArtifactRestamp,
     }),
@@ -114,16 +115,27 @@ async function generateLocal(
       `local:${jobKey}`,
       async ({ signal: jobSignal, report, runAnalysis }) => {
         report("extract");
-        const stage = createStageDirectory(join(ctx.graphStore.rootPath, "analysis"));
+        let stage: string | undefined;
         try {
-          const result = await runAnalysis(() => ctx.repositoryAnalysis({
-            absoluteRoot: source.dir,
-            cwd: source.dir,
-            targetName: source.target,
-          }, {
-            artifactOutputPath: join(stage, "artifact.json"),
-            signal: jobSignal,
-          }));
+          const result = await runAnalysis(async () => {
+            const analysisStage = createStageDirectory(join(ctx.graphStore.rootPath, "analysis"));
+            // Admission can discard a late success after cancellation, so ownership must escape now.
+            stage = analysisStage;
+            try {
+              return await ctx.repositoryAnalysis({
+                absoluteRoot: source.dir,
+                cwd: source.dir,
+                targetName: source.target,
+              }, {
+                artifactOutputPath: join(analysisStage, "artifact.json"),
+                signal: jobSignal,
+              });
+            } catch (error) {
+              removeEntry(analysisStage);
+              stage = undefined;
+              throw error;
+            }
+          });
           throwIfAborted(jobSignal);
           const synthetic = await localSyntheticCapability(ctx, source.dir, result.sourceFiles);
           const id = localArtifactId(source.dir, result.material.byteDigest, synthetic);
@@ -145,7 +157,7 @@ async function generateLocal(
             checkoutCache: "bypass",
           };
         } finally {
-          removeEntry(stage);
+          if (stage !== undefined) removeEntry(stage);
         }
       },
       { signal, onProgress: onStage },

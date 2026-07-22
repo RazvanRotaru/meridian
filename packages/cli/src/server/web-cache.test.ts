@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -111,6 +111,49 @@ describe("persistent web graph cache", () => {
     expect(first.snapshotDigest).toBe(first.material.byteDigest);
     expect(second.snapshotDigest).toBe(first.snapshotDigest);
     expect(readFileSync(join(second.sourceDir, "apps", "one", "index.ts"), "utf8")).toContain("one = 1");
+  });
+
+  it("admits only cold clone/extraction work and keeps an exact warm hit outside both pools", async () => {
+    let preparationCalls = 0;
+    let analysisCalls = 0;
+    const runPreparation = <Result>(work: () => Promise<Result>) => {
+      preparationCalls += 1;
+      return work();
+    };
+    const runAnalysis = <Result>(work: () => Promise<Result>) => {
+      analysisCalls += 1;
+      return work();
+    };
+    const admissions = { preparation: runPreparation, analysis: runAnalysis };
+
+    const first = await generate(REQUEST, undefined, [], undefined, admissions);
+    const second = await generate(REQUEST, undefined, [], undefined, admissions);
+
+    expect(first.cache).toBe("miss");
+    expect(second.cache).toBe("hit");
+    expect(preparationCalls).toBe(1);
+    expect(analysisCalls).toBe(1);
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(analyzeRepository).toHaveBeenCalledTimes(1);
+  });
+
+  it("reclaims cold artifact staging when admission discards a completed worker result", async () => {
+    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
+      await work();
+      throw new Error("request aborted after worker completion");
+    };
+
+    await expect(generate(
+      REQUEST,
+      undefined,
+      [],
+      undefined,
+      { analysis: discardCompletedResult },
+    )).rejects.toThrow("request aborted after worker completion");
+
+    expect(stagePaths(cacheRoot)).toEqual([]);
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(analyzeRepository).toHaveBeenCalledTimes(1);
   });
 
   it("persists analysis warnings for web cache hits", async () => {
@@ -266,6 +309,33 @@ describe("persistent web graph cache", () => {
     expect(firstMain.material.path).not.toBe(head.material.path);
     expect(firstMain.snapshotDigest).toBe(head.snapshotDigest);
     expect(artifactFromMaterial(firstMain.material).target.vcs?.branch).toBe("main");
+  });
+
+  it("reclaims a discarded restamp stage and retries the unseen branch cleanly", async () => {
+    const analysis = vi.fn(runRepositoryAnalysisChildInProcess);
+    const restamp = vi.fn(runRepositoryArtifactRestampChildInProcess);
+    const runners = { analysis, restamp };
+    await generate(REQUEST, undefined, [], runners);
+    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
+      await work();
+      throw new Error("request aborted after restamp completion");
+    };
+
+    await expect(generate(
+      { ...REQUEST, ref: "main" },
+      undefined,
+      [],
+      runners,
+      { analysis: discardCompletedResult },
+    )).rejects.toThrow("request aborted after restamp completion");
+    expect(stagePaths(cacheRoot)).toEqual([]);
+    expect(restamp).toHaveBeenCalledTimes(1);
+
+    const retry = await generate({ ...REQUEST, ref: "main" }, undefined, [], runners);
+    expect(retry.cache).toBe("hit");
+    expect(retry.facts.target.vcs?.branch).toBe("main");
+    expect(restamp).toHaveBeenCalledTimes(2);
+    expect(stagePaths(cacheRoot)).toEqual([]);
   });
 
   it("keeps HEAD, main, and release identities and served provenance stable for every warm-up order", async () => {
@@ -432,6 +502,10 @@ function generate(
     analysis: runRepositoryAnalysisChildInProcess,
     restamp: runRepositoryArtifactRestampChildInProcess,
   },
+  admissions: {
+    preparation?: <Result>(work: () => Promise<Result>) => Promise<Result>;
+    analysis?: <Result>(work: () => Promise<Result>) => Promise<Result>;
+  } = {},
 ) {
   return cachedRemoteGraph({
     cacheRoot,
@@ -440,9 +514,15 @@ function generate(
     token,
     onClone: () => { stages.push("source"); },
     onExtract: () => { stages.push("extract"); },
+    runPreparation: admissions.preparation ?? immediateAdmission,
+    runAnalysis: admissions.analysis ?? immediateAdmission,
     repositoryAnalysis: runners.analysis,
     repositoryArtifactRestamp: runners.restamp,
   });
+}
+
+function immediateAdmission<Result>(work: () => Promise<Result>): Promise<Result> {
+  return work();
 }
 
 function artifactFor(name: string, commit: string, branch?: string): GraphArtifact {
@@ -477,6 +557,17 @@ function idFor(graph: Awaited<ReturnType<typeof generate>>, request: GenerateReq
 
 function requestFor(ref: undefined | "main" | "release"): GenerateRequest {
   return ref === undefined ? REQUEST : { ...REQUEST, ref };
+}
+
+function stagePaths(root: string): string[] {
+  if (!existsSync(root)) return [];
+  const paths: string[] = [];
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.name.startsWith(".stage-")) paths.push(path);
+    if (entry.isDirectory()) paths.push(...stagePaths(path));
+  }
+  return paths;
 }
 
 function refKey(ref: string | undefined): string {

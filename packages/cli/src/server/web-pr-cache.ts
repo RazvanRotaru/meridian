@@ -36,6 +36,7 @@ import {
 import { WebError } from "./web-error";
 import type { PrAnalyzeRequest } from "./web-pr-request";
 import type { ArtifactSource } from "./web-source";
+import type { PhaseAdmission } from "./web-analysis-coordinator";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage = "clone" | "checkout" | "extract";
@@ -104,7 +105,8 @@ export async function cachedPrGraph(inputs: {
   refresh?: boolean;
   onStage(stage: PrStage): void | Promise<void>;
   signal?: AbortSignal;
-  runAnalysis?<T>(work: () => Promise<T>): Promise<T>;
+  runPreparation: PhaseAdmission;
+  runAnalysis: PhaseAdmission;
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
 }): Promise<CachedPrGraph> {
   prepareWebCache(inputs.cacheRoot);
@@ -142,26 +144,40 @@ async function createCachedGraph(
   remoteUrl: string,
   inputs: Parameters<typeof cachedPrGraph>[0],
 ): Promise<CachedPrGraph> {
-  const stage = createStageDirectory(join(inputs.cacheRoot, "pr-staging"));
-  const repoDir = join(stage, "repo");
+  let stage: string | undefined;
   try {
-    await inputs.onStage("clone");
-    throwIfAborted(inputs.signal);
-    await cloneFullHistory(remoteUrl, repoDir, inputs.token, inputs.signal);
-    await inputs.onStage("checkout");
-    throwIfAborted(inputs.signal);
-    await checkoutPrHead(repoDir, inputs.body, inputs.token, inputs.signal);
-    await verifyRevisions(repoDir, inputs.body.baseRef, revisions, inputs.signal);
-    const mergeBaseSha = await resolveMergeBase(repoDir, inputs.body.baseRef, inputs.signal);
-    const comparisonRepoDir = join(stage, "comparison-repo");
-    await checkoutComparison(repoDir, comparisonRepoDir, mergeBaseSha, inputs.token, inputs.signal);
+    const runPreparation = inputs.runPreparation;
+    const prepared = await runPreparation(async () => {
+      const preparedStage = createStageDirectory(join(inputs.cacheRoot, "pr-staging"));
+      // Admission can discard a late success after cancellation, so ownership must escape now.
+      stage = preparedStage;
+      const repoDir = join(preparedStage, "repo");
+      try {
+        await inputs.onStage("clone");
+        throwIfAborted(inputs.signal);
+        await cloneFullHistory(remoteUrl, repoDir, inputs.token, inputs.signal);
+        await inputs.onStage("checkout");
+        throwIfAborted(inputs.signal);
+        await checkoutPrHead(repoDir, inputs.body, inputs.token, inputs.signal);
+        await verifyRevisions(repoDir, inputs.body.baseRef, revisions, inputs.signal);
+        const mergeBaseSha = await resolveMergeBase(repoDir, inputs.body.baseRef, inputs.signal);
+        const comparisonRepoDir = join(preparedStage, "comparison-repo");
+        await checkoutComparison(repoDir, comparisonRepoDir, mergeBaseSha, inputs.token, inputs.signal);
+        return { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage };
+      } catch (error) {
+        removeEntry(preparedStage);
+        stage = undefined;
+        throw error;
+      }
+    });
+    const { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage } = prepared;
     await inputs.onStage("extract");
     throwIfAborted(inputs.signal);
-    const runAnalysis = inputs.runAnalysis ?? ((work) => work());
+    const runAnalysis = inputs.runAnalysis;
     const { head, comparison } = await runAnalysis(async () => {
       const roots = extractionRoots(repoDir, comparisonRepoDir, inputs.source.subdir);
-      const artifactPath = join(stage, "artifact.json");
-      const comparisonArtifactPath = join(stage, "comparison-artifact.json");
+      const artifactPath = join(preparedStage, "artifact.json");
+      const comparisonArtifactPath = join(preparedStage, "comparison-artifact.json");
       const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
       let headResult: RepositoryAnalysisChildResult;
       let comparisonResult: RepositoryAnalysisChildResult;
@@ -263,7 +279,7 @@ async function createCachedGraph(
     // have the same analyzed artifacts as its clean replacement. A unique immutable generation
     // keeps both paths alive and lets the pointer move without mutating either snapshot.
     const snapshotId = randomBytes(8).toString("hex");
-    writePrivateJson(join(stage, "metadata.json"), {
+    writePrivateJson(join(preparedStage, "metadata.json"), {
       formatVersion: FORMAT_VERSION,
       analysisVersion: REPOSITORY_ANALYSIS_VERSION,
       repositoryKey,
@@ -282,7 +298,7 @@ async function createCachedGraph(
     } satisfies PrSnapshotMetadata);
     throwIfAborted(inputs.signal);
     const destination = join(entry, "snapshots", snapshotId);
-    const wonPublication = publishImmutable(stage, destination);
+    const wonPublication = publishImmutable(preparedStage, destination);
     const published = wonPublication
       ? publishedGeneratedSnapshot(
           destination,
@@ -319,7 +335,7 @@ async function createCachedGraph(
     });
     return { ...published, cache: "miss" };
   } catch (error) {
-    removeEntry(stage);
+    if (stage !== undefined) removeEntry(stage);
     throw error;
   }
 }

@@ -16,6 +16,7 @@ import {
 import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
+import { streamedOverloadLine } from "./web-overload";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   if (acceptsNdjson(request)) {
@@ -50,7 +51,10 @@ async function handleGenerateStream(ctx: Context, request: IncomingMessage, resp
     await writeLine(response, { stage: "done", ...result });
   } catch (error) {
     if (!isOperationCancelled(error) && responseCanWrite(response)) {
-      await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
+      await writeLine(
+        response,
+        streamedOverloadLine(error) ?? { stage: "error", message: safeGenerateMessage(error) },
+      );
     }
   } finally {
     cancellation.dispose();

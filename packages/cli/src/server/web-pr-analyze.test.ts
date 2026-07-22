@@ -34,6 +34,7 @@ import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
+import type { AnalysisCoordinatorOptions } from "./web-analysis-coordinator";
 import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
 import {
   loadSyntheticScenarios,
@@ -213,6 +214,170 @@ describe("handlePrAnalyze", () => {
     expect(maximumActive).toBe(2);
     expect(runGitClone).toHaveBeenCalledTimes(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
+  });
+
+  it("returns a retryable preparation overload without starting another clone", async () => {
+    const ctx = githubCtx(undefined, {
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 1,
+      maxQueuedPreparations: 0,
+    });
+    const firstCloneStarted = deferred<void>();
+    const releaseFirstClone = deferred<void>();
+    let clones = 0;
+    vi.mocked(runGitClone).mockImplementation(async (args) => {
+      mkdirSync(args.at(-1)!, { recursive: true });
+      clones += 1;
+      if (clones === 1) {
+        firstCloneStarted.resolve();
+        await releaseFirstClone.promise;
+      }
+    });
+
+    const first = beginInvoke(ctx, BODY);
+    await firstCloneStarted.promise;
+    const overloaded = await invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
+
+    expect(overloaded.lines()).toEqual([{
+      stage: "error",
+      message: "repository preparation capacity is full; try again shortly",
+      retryAfterSeconds: 5,
+    }]);
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+
+    releaseFirstClone.resolve();
+    await first.completion;
+    expect(first.captured.lines().at(-1)?.stage).toBe("done");
+
+    const retry = await invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
+    expect(retry.lines().at(-1)?.stage).toBe("done");
+    expect(runGitClone).toHaveBeenCalledTimes(2);
+  });
+
+  it("cleans its prepared checkout when the bounded analysis queue refuses it", async () => {
+    const ctx = githubCtx(undefined, {
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 2,
+      maxQueuedAnalyses: 0,
+    });
+    const firstAnalysisStarted = deferred<void>();
+    const releaseFirstAnalysis = deferred<void>();
+    let analyses = 0;
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      analyses += 1;
+      if (analyses === 1) {
+        firstAnalysisStarted.resolve();
+        await releaseFirstAnalysis.promise;
+      }
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const first = beginInvoke(ctx, BODY);
+    await firstAnalysisStarted.promise;
+    const overloaded = await invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
+
+    expect(overloaded.lines().map((line) => line.stage)).toEqual([
+      "clone",
+      "checkout",
+      "extract",
+      "error",
+    ]);
+    expect(overloaded.lines().at(-1)).toMatchObject({
+      message: "repository analysis capacity is full; try again shortly",
+      retryAfterSeconds: 5,
+    });
+    expect(stageEntries()).toHaveLength(1);
+
+    releaseFirstAnalysis.resolve();
+    await first.completion;
+    expect(first.captured.lines().at(-1)?.stage).toBe("done");
+    expect(stageEntries()).toEqual([]);
+  });
+
+  it("reclaims preparation staging after the sole waiter aborts non-cooperative Git work", async () => {
+    const ctx = githubCtx();
+    const cloneStarted = deferred<void>();
+    const releaseClone = deferred<void>();
+    vi.mocked(runGitClone).mockImplementation(async (args) => {
+      mkdirSync(args.at(-1)!, { recursive: true });
+      cloneStarted.resolve();
+      await releaseClone.promise;
+    });
+
+    const abandoned = beginInvoke(ctx, BODY);
+    await cloneStarted.promise;
+    expect(stageEntries()).toHaveLength(1);
+    abandoned.request.emit("aborted");
+    await abandoned.completion;
+    releaseClone.resolve();
+    await waitFor(() => stageEntries().length === 0);
+
+    expect(abandoned.captured.lines().some((line) => line.stage === "done" || line.stage === "error")).toBe(false);
+    expect(analyzeRepository).not.toHaveBeenCalled();
+  });
+
+  it("reclaims analyzed staging when a non-cooperative worker resolves after the last abort", async () => {
+    const ctx = githubCtx();
+    const analysisStarted = deferred<void>();
+    const releaseAnalysis = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      analysisStarted.resolve();
+      await releaseAnalysis.promise;
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+
+    const abandoned = beginInvoke(ctx, BODY);
+    await analysisStarted.promise;
+    expect(stageEntries()).toHaveLength(1);
+    abandoned.request.emit("aborted");
+    await abandoned.completion;
+    releaseAnalysis.resolve();
+    await waitFor(() => stageEntries().length === 0);
+
+    expect(abandoned.captured.lines().some((line) => line.stage === "done" || line.stage === "error")).toBe(false);
+    expect(ctx.graphStore.descriptor("artifact")).toBeDefined();
+  });
+
+  it("serves an exact warm PR snapshot while both cold-work pools are saturated", async () => {
+    const ctx = githubCtx(undefined, {
+      maxConcurrentAnalyses: 1,
+      maxConcurrentPreparations: 1,
+      maxQueuedAnalyses: 0,
+      maxQueuedPreparations: 0,
+    });
+    expect((await invoke(ctx, BODY)).lines().at(-1)).toMatchObject({ stage: "done", cache: "miss" });
+    const cloneCalls = vi.mocked(runGitClone).mock.calls.length;
+    const analysisCalls = vi.mocked(analyzeRepository).mock.calls.length;
+    const releasePreparation = deferred<void>();
+    const releaseAnalysis = deferred<void>();
+    const preparationStarted = deferred<void>();
+    const analysisStarted = deferred<void>();
+    const preparation = ctx.analysisCoordinator.run("prep-blocker", ({ runPreparation }) => runPreparation(async () => {
+      preparationStarted.resolve();
+      await releasePreparation.promise;
+    }));
+    const analysis = ctx.analysisCoordinator.run("analysis-blocker", ({ runAnalysis }) => runAnalysis(async () => {
+      analysisStarted.resolve();
+      await releaseAnalysis.promise;
+    }));
+    await Promise.all([preparationStarted.promise, analysisStarted.promise]);
+
+    const warm = await invoke(ctx, BODY);
+    expect(warm.lines()).toEqual([expect.objectContaining({ stage: "done", cache: "hit" })]);
+    expect(runGitClone).toHaveBeenCalledTimes(cloneCalls);
+    expect(analyzeRepository).toHaveBeenCalledTimes(analysisCalls);
+
+    releasePreparation.resolve();
+    releaseAnalysis.resolve();
+    await Promise.all([preparation, analysis]);
   });
 
   it("singleflights identical PR requests while preserving each response stream", async () => {
@@ -999,9 +1164,12 @@ function beginInvoke(ctx: Context, body: unknown) {
   return { captured, completion, request };
 }
 
-function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo: "repo" }): Context {
+function githubCtx(
+  source: ArtifactSource | undefined = { kind: "github", owner: "org", repo: "repo" },
+  coordinatorOptions: AnalysisCoordinatorOptions = { maxConcurrentAnalyses: 2 },
+): Context {
   const graphStore = new WebGraphStore();
-  const analysisCoordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
+  const analysisCoordinator = new AnalysisCoordinator(coordinatorOptions);
   activeGraphStores.push(graphStore);
   activeCoordinators.push(analysisCoordinator);
   graphStore.publish({
@@ -1009,7 +1177,7 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     material: materializeValidatedArtifact(ARTIFACT),
     metadata: {
       sourceRoot: cacheRoot,
-      source,
+      source: source ?? { kind: "github", owner: "org", repo: "repo" },
       synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
     },
   });
@@ -1031,6 +1199,11 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     syntheticPrSandboxRuntimeSupported: () => false,
     runSyntheticScenarioInOci,
   } as Context;
+}
+
+function stageEntries(): string[] {
+  const root = join(cacheRoot, "pr-staging");
+  return existsSync(root) ? readdirSync(root).filter((entry) => entry.startsWith(".stage-")) : [];
 }
 
 function graphDescriptor(ctx: Context, id: string) {

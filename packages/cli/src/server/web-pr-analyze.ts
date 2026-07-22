@@ -30,6 +30,7 @@ import { cachedPrGraph } from "./web-pr-cache";
 import type { VerifiedFileArtifactMaterial } from "./web-graph-store";
 import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
+import { streamedOverloadLine } from "./web-overload";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrAnalysisStage = "clone" | "checkout" | "extract";
@@ -67,7 +68,7 @@ async function streamAnalysis(
       PrAnalysisStage
     >(
       prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache),
-      ({ signal: jobSignal, report, runAnalysis }) => cachedPrGraph({
+      ({ signal: jobSignal, report, runPreparation, runAnalysis }) => cachedPrGraph({
         cacheRoot: ctx.cacheRoot,
         source,
         body,
@@ -76,9 +77,10 @@ async function streamAnalysis(
         refresh: ctx.refreshCache,
         signal: jobSignal,
         onStage: report,
+        runPreparation,
         // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
         // consume exactly one memory admission slot together.
-        runAnalysis: (work) => runAnalysis(() => work()),
+        runAnalysis,
         repositoryAnalysis: ctx.repositoryAnalysis,
       }),
       { signal, onProgress: (stage) => writeLine(response, { stage }) },
@@ -113,7 +115,10 @@ async function streamAnalysis(
     ));
   } catch (error) {
     if (!isOperationCancelled(error) && responseCanWrite(response)) {
-      await writeLine(response, { stage: "error", message: safeMessage(error) });
+      await writeLine(
+        response,
+        streamedOverloadLine(error) ?? { stage: "error", message: safeMessage(error) },
+      );
     }
   } finally {
     if (responseCanWrite(response)) response.end();
