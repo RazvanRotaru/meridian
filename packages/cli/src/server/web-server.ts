@@ -60,6 +60,7 @@ import {
   type RepositoryAnalysisMemoryPolicy,
 } from "./repository-analysis-memory";
 import { WebRepositoryMirror, type RepositoryMirror } from "./web-repository-mirror";
+import type { RepositoryRetentionOptions } from "./web-repository-retention";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -97,6 +98,10 @@ export interface WebServerConfig {
   repositoryArtifactRestamp?: typeof runRepositoryArtifactRestampChild;
   /** Internal persistent repository boundary override used by deterministic server tests. */
   repositories?: RepositoryMirror;
+  /** Persistent repository-store budget override; production resolves environment defaults. */
+  repositoryRetention?: Partial<RepositoryRetentionOptions>;
+  /** Optional background-maintenance diagnostic sink. */
+  onRepositoryRetentionError?: (error: unknown) => void;
 }
 
 export interface Context {
@@ -143,7 +148,11 @@ export function createWebServer(config: WebServerConfig): Server {
     maxQueuedAnalyses: config.maxQueuedAnalyses,
   });
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
-  const repositories = config.repositories ?? new WebRepositoryMirror({ cacheRoot });
+  const repositories = config.repositories ?? new WebRepositoryMirror({
+    cacheRoot,
+    retention: config.repositoryRetention,
+    onRetentionError: config.onRepositoryRetentionError,
+  });
   // Validate every admission bound before allocating the graph store's private temporary root.
   const graphStore = new WebGraphStore();
   let ctx: Context;

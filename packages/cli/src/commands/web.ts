@@ -18,6 +18,7 @@ import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
 import { CliError, EXIT } from "../errors";
 import { isLoopbackHost } from "../server/web-guards";
+import { repositoryRetentionOptionsFromEnv } from "../server/web-repository-retention";
 
 export interface WebOptions extends GlobalOptions {
   port: number;
@@ -48,6 +49,13 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
   const reporter = new Reporter(options);
   const githubClientId = resolveGitHubClientId(options.githubClientId, process.env.MERIDIAN_GITHUB_CLIENT_ID);
   const fallback = await resolveFallbackAuth(githubClientId, reporter);
+  let repositoryRetention;
+  try {
+    repositoryRetention = repositoryRetentionOptionsFromEnv();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new CliError(EXIT.usage, `invalid repository cache retention configuration: ${message}`);
+  }
   const server = createWebServer({
     rendererRoot: rendererRoot(),
     webUiPath: webUiPath(),
@@ -56,6 +64,10 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     githubClientId,
     fallbackToken: fallback.token,
     fallbackUser: fallback.user,
+    repositoryRetention,
+    onRepositoryRetentionError: (error) => reporter.info(
+      `Repository cache maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
+    ),
     refreshCache: options.refreshCache,
     allowSyntheticExecution: options.allowSyntheticExecution === true,
     allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
