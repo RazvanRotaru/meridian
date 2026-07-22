@@ -33,6 +33,9 @@ export interface DiffParityCaseSpec {
     displayName: string;
     oldStartLine: number;
     oldEndLine: number;
+    /** Exact merge-base execution neighbours that must remain visible around the tombstone. */
+    callers?: readonly { path: string; qualname: string }[];
+    callees?: readonly { path: string; qualname: string }[];
   };
   /** The target path is absent from HEAD and must be rendered entirely from merge-base source. */
   removedFile?: boolean;
@@ -66,6 +69,8 @@ export const DIFF_PARITY_CASES: readonly DiffParityCaseSpec[] = [
       displayName: "getOrder",
       oldStartLine: 28,
       oldEndLine: 30,
+      callers: [{ path: "src/api/orderRoutes.ts", qualname: "OrderRoutes.handleGetOrder" }],
+      callees: [{ path: "src/repository/orderRepository.ts", qualname: "OrderRepository.findById" }],
     },
   },
   {
