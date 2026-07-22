@@ -147,6 +147,13 @@ Repository generation runs every detected language extractor. TypeScript discove
 and its package-local configs; there is no language or root-tsconfig mode, so the web app, headless
 export, cache, and PR analysis cannot drift.
 
+Remote repository mirrors and released workspaces use a background 30-day LRU with a 20 GiB high
+watermark and 16 GiB low watermark. Active reviews and served graphs keep durable source leases and
+are never evicted, so the limit is deliberately soft while those graph registrations are live.
+Advanced local setups can override the high watermark with
+`MERIDIAN_REPOSITORY_CACHE_MAX_GIB` and idle age with
+`MERIDIAN_REPOSITORY_CACHE_MAX_AGE_DAYS`.
+
 ## Packages
 
 ```

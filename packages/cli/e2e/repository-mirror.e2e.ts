@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -6,8 +7,10 @@ import {
   readFileSync,
   realpathSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   utimesSync,
   writeFileSync,
 } from "node:fs";
@@ -21,6 +24,7 @@ import {
   repositoryKeyFor,
   type PreparedPullRequest,
 } from "../src/server/web-repository-mirror";
+import { sizeOfPathNoFollow } from "../src/server/web-repository-retention";
 
 interface GitFixture {
   baseSha: string;
@@ -586,6 +590,437 @@ describe("WebRepositoryMirror", { timeout: 30_000 }, () => {
     repaired.release();
   });
 
+  it("evicts an old released commit workspace while preserving and cleanly reusing the repository", async () => {
+    let now = 1_000;
+    const mirror = createRetentionMirror(() => now);
+    const old = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const oldRoot = dirname(old.repoDir);
+    old.release();
+
+    now = 1_100;
+    const newer = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/pull/41/head", expectedSha: fixture.headSha },
+    });
+    const newerRoot = dirname(newer.repoDir);
+    newer.release();
+
+    now = 1_151;
+    const report = await mirror.maintain();
+
+    expect(report).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 1 });
+    expect(existsSync(oldRoot)).toBe(false);
+    expect(existsSync(newerRoot)).toBe(true);
+    expect(existsSync(join(repositoryEntryFor(fixture), "mirror.git"))).toBe(true);
+    expect(git(join(newerRoot, "repo"), "rev-parse", "HEAD")).toBe(fixture.headSha);
+
+    const regenerated = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    expect(regenerated.cache).toBe("miss");
+    expect(regenerated.repoDir).toBe(join(oldRoot, "repo"));
+    expect(git(regenerated.repoDir, "rev-parse", "HEAD")).toBe(fixture.baseSha);
+    regenerated.release();
+  });
+
+  it("gives pre-retention entries one initialization grace period before evicting them", async () => {
+    let now = Date.now();
+    const mirror = createRetentionMirror(() => now);
+    const workspace = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const workspaceRoot = dirname(workspace.repoDir);
+    const repositoryEntry = repositoryEntryFor(fixture);
+    workspace.release();
+
+    rmSync(join(workspaceRoot, "access.json"), { force: true });
+    rmSync(join(repositoryEntry, "access.json"), { force: true });
+    const old = new Date(now - 1_000);
+    utimesSync(join(workspaceRoot, "metadata.json"), old, old);
+    utimesSync(join(repositoryEntry, "metadata.json"), old, old);
+
+    const initialized = await mirror.maintain();
+    expect(initialized).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 0 });
+    expect(existsSync(join(workspaceRoot, "access.json"))).toBe(true);
+    expect(existsSync(join(repositoryEntry, "access.json"))).toBe(true);
+
+    now += 101;
+    const expired = await mirror.maintain();
+    expect(expired.evictedRepositories).toBe(1);
+    expect(existsSync(repositoryEntry)).toBe(false);
+  });
+
+  it("does not restart retention when a lease is released after close", async () => {
+    let now = 10_000;
+    const mirror = createRetentionMirror(() => now, {
+      retention: { initialDelayMs: 1, sweepIntervalMs: 10_000 },
+    });
+    const workspace = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const workspaceRoot = dirname(workspace.repoDir);
+
+    await mirror.close();
+    now += 1_000;
+    vi.useFakeTimers();
+    try {
+      workspace.release();
+      await vi.advanceTimersByTimeAsync(100);
+      expect(existsSync(workspaceRoot)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("schedules cleanup when the first fetch fails before any lease exists", async () => {
+    const mirror = createMirror({
+      retention: {
+        maxBytes: Number.MAX_SAFE_INTEGER,
+        lowWaterBytes: Number.MAX_SAFE_INTEGER - 1,
+        maxIdleMs: 1,
+        accessTouchIntervalMs: 0,
+        capacityGraceMs: 0,
+        initialDelayMs: 1,
+        sweepIntervalMs: 10,
+      },
+    });
+
+    await expect(mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+      onFetchComplete: () => {
+        throw new Error("post-fetch failure");
+      },
+    })).rejects.toThrow("post-fetch failure");
+
+    await vi.waitFor(
+      () => expect(existsSync(repositoryEntryFor(fixture))).toBe(false),
+      { timeout: 2_000, interval: 20 },
+    );
+  });
+
+  it("continues capacity eviction after the oldest repository becomes busy", async () => {
+    const other = createFixture();
+    let now = 20_000;
+    const mirror = createRetentionMirror(() => now, {
+      retention: {
+        maxBytes: 1,
+        lowWaterBytes: 0,
+        maxIdleMs: Number.MAX_SAFE_INTEGER,
+        capacityGraceMs: 0,
+      },
+    });
+    try {
+      const oldest = await mirror.acquireWorkspace({
+        remoteUrl: fixture.remoteUrl,
+        revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+      });
+      const oldestRoot = dirname(oldest.repoDir);
+      oldest.release();
+      now += 1;
+      const next = await mirror.acquireWorkspace({
+        remoteUrl: other.remoteUrl,
+        revision: { remoteRef: "refs/heads/main", expectedSha: other.baseSha },
+      });
+      const nextRoot = dirname(next.repoDir);
+      next.release();
+
+      const oldestKey = repositoryKeyFor(fixture.remoteUrl);
+      const lock = join(
+        fixture.cacheRoot,
+        "repository-store-v1",
+        "locks",
+        `${oldestKey}.lock`,
+      );
+      mkdirSync(lock, { recursive: true });
+      writeFileSync(join(lock, "owner.json"), JSON.stringify({
+        formatVersion: 1,
+        host: hostname(),
+        nonce: "retention-busy-owner",
+        pid: process.pid,
+      }));
+
+      const report = await mirror.maintain();
+
+      expect(report.skippedRepositories).toBeGreaterThan(0);
+      expect(existsSync(oldestRoot)).toBe(true);
+      expect(existsSync(nextRoot)).toBe(false);
+    } finally {
+      rmSync(other.root, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates a corrupt journal and still reclaims another repository", async () => {
+    const other = createFixture();
+    let now = 30_000;
+    const mirror = createRetentionMirror(() => now, {
+      retention: {
+        maxBytes: 1,
+        lowWaterBytes: 0,
+        maxIdleMs: Number.MAX_SAFE_INTEGER,
+        capacityGraceMs: 0,
+      },
+    });
+    try {
+      const corrupt = await mirror.acquireWorkspace({
+        remoteUrl: fixture.remoteUrl,
+        revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+      });
+      corrupt.release();
+      writeFileSync(join(repositoryEntryFor(fixture), "pending.json"), "{\"corrupt\":true}\n");
+      now += 1;
+      const reclaimable = await mirror.acquireWorkspace({
+        remoteUrl: other.remoteUrl,
+        revision: { remoteRef: "refs/heads/main", expectedSha: other.baseSha },
+      });
+      const reclaimableRoot = dirname(reclaimable.repoDir);
+      reclaimable.release();
+
+      const report = await mirror.maintain();
+
+      expect(report.skippedRepositories).toBeGreaterThan(0);
+      expect(existsSync(repositoryEntryFor(fixture))).toBe(true);
+      expect(existsSync(reclaimableRoot)).toBe(false);
+    } finally {
+      rmSync(other.root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not evict healthy cache to compensate for an unknown store entry", async () => {
+    const mirror = createRetentionMirror(() => 40_000, {
+      retention: {
+        maxBytes: 1,
+        lowWaterBytes: 0,
+        maxIdleMs: Number.MAX_SAFE_INTEGER,
+        capacityGraceMs: 0,
+      },
+    });
+    const healthy = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const healthyRoot = dirname(healthy.repoDir);
+    healthy.release();
+    const unknown = join(
+      fixture.cacheRoot,
+      "repository-store-v1",
+      "repositories",
+      "not-owned-by-meridian",
+    );
+    mkdirSync(unknown, { recursive: true });
+    writeFileSync(join(unknown, "unknown.bin"), Buffer.alloc(1024 * 1024));
+
+    const report = await mirror.maintain();
+
+    expect(report).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 0 });
+    expect(existsSync(healthyRoot)).toBe(true);
+    expect(existsSync(unknown)).toBe(true);
+  });
+
+  it("resnapshots after journal recovery before applying capacity pressure", async () => {
+    const seed = createMirror();
+    const healthy = await seed.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const healthyRoot = dirname(healthy.repoDir);
+    healthy.release();
+    await seed.close();
+
+    const storeRoot = join(fixture.cacheRoot, "repository-store-v1");
+    const baselineBytes = await sizeOfPathNoFollow(storeRoot);
+    const repositoryKey = repositoryKeyFor(fixture.remoteUrl);
+    const operationId = "d".repeat(32);
+    const slot = createHash("sha256").update(fixture.headSha).digest("hex").slice(0, 24);
+    const incompleteRoot = join(
+      repositoryEntryFor(fixture),
+      "workspaces",
+      "commits",
+      slot,
+    );
+    mkdirSync(join(incompleteRoot, "repo"), { recursive: true });
+    writeFileSync(join(incompleteRoot, "repo", "orphan.bin"), Buffer.alloc(4 * 1024 * 1024));
+    writeFileSync(join(repositoryEntryFor(fixture), "pending.json"), `${JSON.stringify({
+      formatVersion: 1,
+      incomingCount: 1,
+      kind: "commit-workspace",
+      operationId,
+      repositoryKey,
+      commit: fixture.headSha,
+    })}\n`);
+
+    const mirror = createRetentionMirror(() => Date.now(), {
+      retention: {
+        maxBytes: baselineBytes + 1024 * 1024,
+        lowWaterBytes: baselineBytes + 512 * 1024,
+        maxIdleMs: Number.MAX_SAFE_INTEGER,
+        capacityGraceMs: 0,
+      },
+    });
+    const report = await mirror.maintain();
+
+    expect(report).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 0 });
+    expect(existsSync(healthyRoot)).toBe(true);
+    expect(existsSync(incompleteRoot)).toBe(false);
+    expect(existsSync(join(repositoryEntryFor(fixture), "pending.json"))).toBe(false);
+  });
+
+  it("pins an expired workspace with its active lease and evicts it after release", async () => {
+    let now = 2_000;
+    const mirror = createRetentionMirror(() => now);
+    const held = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const heldRoot = dirname(held.repoDir);
+
+    now = 2_150;
+    const newer = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/pull/41/head", expectedSha: fixture.headSha },
+    });
+    const newerRoot = dirname(newer.repoDir);
+    newer.release();
+
+    now = 2_201;
+    const pinned = await mirror.maintain();
+
+    expect(pinned.evictedWorkspaces).toBe(0);
+    expect(pinned.deferredBytes).toBeGreaterThan(0);
+    expect(existsSync(heldRoot)).toBe(true);
+    expect(existsSync(newerRoot)).toBe(true);
+
+    held.release();
+    const released = await mirror.maintain();
+
+    expect(released).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 1 });
+    expect(existsSync(heldRoot)).toBe(false);
+    expect(existsSync(newerRoot)).toBe(true);
+  });
+
+  it("evicts a released PR head and comparison atomically while newer repository data remains", async () => {
+    let now = 3_000;
+    const mirror = createRetentionMirror(() => now);
+    const prepared = await prepareFixturePullRequest(mirror);
+    const pullRequestRoot = dirname(prepared.head.repoDir);
+    const headDir = prepared.head.repoDir;
+    const comparisonDir = prepared.comparison.repoDir;
+    prepared.release();
+
+    now = 3_150;
+    const newer = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const newerDir = newer.repoDir;
+    newer.release();
+
+    now = 3_201;
+    const report = await mirror.maintain();
+
+    expect(report).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 1 });
+    expect(existsSync(pullRequestRoot)).toBe(false);
+    expect(existsSync(headDir)).toBe(false);
+    expect(existsSync(comparisonDir)).toBe(false);
+    expect(existsSync(newerDir)).toBe(true);
+    expect(git(newerDir, "rev-parse", "HEAD")).toBe(fixture.baseSha);
+    expect(worktreePaths(newerDir)).not.toContain(headDir);
+    expect(worktreePaths(newerDir)).not.toContain(comparisonDir);
+  });
+
+  it("recovers an interrupted workspace-eviction journal and quarantine idempotently", async () => {
+    let now = 4_000;
+    const mirror = createRetentionMirror(() => now);
+    const workspace = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    const workspaceRoot = dirname(workspace.repoDir);
+    const repoDir = workspace.repoDir;
+    workspace.release();
+
+    const repositoryKey = repositoryKeyFor(fixture.remoteUrl);
+    const repositoryEntry = repositoryEntryFor(fixture);
+    const operationId = "e".repeat(32);
+    const quarantine = join(
+      fixture.cacheRoot,
+      "repository-store-v1",
+      "trash",
+      `workspace-${repositoryKey}-${operationId}`,
+    );
+    writeFileSync(join(repositoryEntry, "pending.json"), `${JSON.stringify({
+      formatVersion: 1,
+      incomingCount: 0,
+      kind: "workspace-eviction",
+      operationId,
+      repositoryKey,
+      target: { kind: "commit", commit: fixture.baseSha },
+    })}\n`);
+    mkdirSync(dirname(quarantine), { recursive: true });
+    renameSync(workspaceRoot, quarantine);
+
+    const restarted = createRetentionMirror(() => now);
+    const recovered = await restarted.maintain();
+
+    expect(recovered.evictedWorkspaces).toBe(0);
+    expect(existsSync(join(repositoryEntry, "pending.json"))).toBe(false);
+    expect(existsSync(quarantine)).toBe(false);
+    expect(existsSync(workspaceRoot)).toBe(false);
+    expect(worktreePaths(join(repositoryEntry, "mirror.git"))).not.toContain(repoDir);
+
+    const repeated = await restarted.maintain();
+    expect(repeated).toMatchObject({ evictedRepositories: 0, evictedWorkspaces: 0 });
+    expect(existsSync(join(repositoryEntry, "pending.json"))).toBe(false);
+    expect(existsSync(quarantine)).toBe(false);
+  });
+
+  it("never follows workspace-candidate or quarantine symlinks outside the repository store", async () => {
+    let now = 5_000;
+    const mirror = createRetentionMirror(() => now);
+    const workspace = await mirror.acquireWorkspace({
+      remoteUrl: fixture.remoteUrl,
+      revision: { remoteRef: "refs/heads/main", expectedSha: fixture.baseSha },
+    });
+    workspace.release();
+
+    const outside = join(fixture.root, "outside-retention-sentinel");
+    const sentinel = join(outside, "must-survive");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(sentinel, "outside data");
+    const repositoryEntry = repositoryEntryFor(fixture);
+    const candidateLink = join(
+      repositoryEntry,
+      "workspaces",
+      "commits",
+      "f".repeat(24),
+    );
+    expect(existsSync(candidateLink)).toBe(false);
+    symlinkSync(outside, candidateLink, "dir");
+    const quarantineRoot = join(fixture.cacheRoot, "repository-store-v1", "trash");
+    const quarantineLink = join(
+      quarantineRoot,
+      `workspace-${repositoryKeyFor(fixture.remoteUrl)}-${"a".repeat(32)}`,
+    );
+    mkdirSync(quarantineRoot, { recursive: true });
+    symlinkSync(outside, quarantineLink, "dir");
+
+    now = 5_200;
+    await expect(mirror.maintain()).rejects.toThrow(
+      "repository retention quarantine contains an unknown entry",
+    );
+
+    expect(existsSync(repositoryEntry)).toBe(true);
+    expect(realpathSync(candidateLink)).toBe(realpathSync(outside));
+    expect(realpathSync(quarantineLink)).toBe(realpathSync(outside));
+    expect(readFileSync(sentinel, "utf8")).toBe("outside data");
+  });
+
   it("sweeps crash-left incoming refs and incomplete PR worktrees under the next lock", async () => {
     const gitCalls: string[][] = [];
     const mirror = createMirror({
@@ -969,6 +1404,25 @@ function createMirror(overrides: Partial<ConstructorParameters<typeof WebReposit
   });
   mirrors.push(mirror);
   return mirror;
+}
+
+function createRetentionMirror(
+  now: () => number,
+  overrides: Partial<ConstructorParameters<typeof WebRepositoryMirror>[0]> = {},
+): WebRepositoryMirror {
+  return createMirror({
+    ...overrides,
+    retention: {
+      maxBytes: Number.MAX_SAFE_INTEGER,
+      lowWaterBytes: Number.MAX_SAFE_INTEGER - 1,
+      maxIdleMs: 100,
+      accessTouchIntervalMs: 0,
+      initialDelayMs: 2_000_000_000,
+      sweepIntervalMs: 2_000_000_000,
+      now,
+      ...overrides.retention,
+    },
+  });
 }
 
 function prepareFixturePullRequest(mirror: WebRepositoryMirror): Promise<PreparedPullRequest> {

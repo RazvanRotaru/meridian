@@ -26,6 +26,16 @@ import { basename, dirname, join, resolve, sep } from "node:path";
 import { runGit } from "./git-exec";
 import { canonicalGitRemoteUrl } from "./clone";
 import { isAllowedCloneRef } from "./git-ref";
+import {
+  RepositoryRetentionScheduler,
+  removePathNoFollow,
+  resolveRepositoryRetentionOptions,
+  selectCapacityRetentionCandidates,
+  selectIdleRetentionCandidates,
+  sizeOfPathNoFollow,
+  type RepositoryRetentionCandidate,
+  type RepositoryRetentionOptions,
+} from "./web-repository-retention";
 import { throwIfAborted } from "./web-cancellation";
 import { WebError } from "./web-error";
 
@@ -36,6 +46,8 @@ const SESSION_ID = /^[a-f0-9-]{36}$/;
 const DEFAULT_GIT_TIMEOUT_MS = 10 * 60_000;
 const DEFAULT_STALE_LOCK_MS = 15 * 60_000;
 const LOCK_RETRY_MS = 25;
+const ACCESS_FILE = "access.json";
+const RETENTION_LOCK_KEY = "retention";
 
 type GitObjectFormat = "sha1" | "sha256";
 
@@ -49,6 +61,10 @@ export interface WebRepositoryMirrorOptions {
   allowFileRemotesForTests?: boolean;
   /** Internal test seam for verifying request-scoped Git credentials and command boundaries. */
   git?: typeof runGit;
+  /** Persistent-store retention policy. Production uses bounded conservative defaults. */
+  retention?: Partial<RepositoryRetentionOptions>;
+  /** Background failures are observable without coupling the store to a CLI logger. */
+  onRetentionError?: (error: unknown) => void;
 }
 
 export interface ExpectedRemoteRef {
@@ -101,6 +117,16 @@ export interface RepositoryWorkspaceLease {
   readonly repoDir: string;
   release(): void;
   [Symbol.dispose](): void;
+}
+
+export interface RepositoryRetentionReport {
+  readonly totalBytes: number;
+  readonly sizeComplete: boolean;
+  readonly reclaimedBytes: number;
+  readonly evictedWorkspaces: number;
+  readonly evictedRepositories: number;
+  readonly deferredBytes: number;
+  readonly skippedRepositories: number;
 }
 
 export interface PreparedPullRequest {
@@ -179,6 +205,56 @@ interface PullRequestRecord extends RepositoryRecord {
   comparisonDir: string;
 }
 
+interface WorkspaceRetentionCandidate extends RepositoryRetentionCandidate {
+  readonly kind: "workspace";
+  readonly repository: RepositoryRecord;
+  readonly target: WorkspaceEvictionTarget;
+}
+
+interface RepositoryRetentionCandidateRecord extends RepositoryRetentionCandidate {
+  readonly kind: "repository";
+  readonly repository: RepositoryRecord;
+}
+
+interface RepositoryRetentionSnapshotRecord {
+  readonly repository: RepositoryRecord;
+  readonly sizeBytes: number;
+  readonly lastAccessMs: number;
+  readonly pinned: boolean;
+  readonly needsRecovery: boolean;
+  readonly workspaces: readonly WorkspaceRetentionCandidate[];
+}
+
+interface WorkspaceRetentionControl {
+  readonly target: WorkspaceEvictionTarget;
+  readonly lastAccessMs: number;
+  readonly pinned: boolean;
+}
+
+interface RepositoryRetentionControl {
+  readonly lastAccessMs: number;
+  readonly pinned: boolean;
+  readonly workspaces: readonly WorkspaceRetentionControl[];
+}
+
+type RetentionCandidate = WorkspaceRetentionCandidate | RepositoryRetentionCandidateRecord;
+interface RetentionAction {
+  readonly candidate: RetentionCandidate;
+  readonly reason: "max-idle" | "capacity";
+}
+interface RetentionPlan {
+  readonly ageRepositories: readonly RetentionAction[];
+  readonly ageWorkspaces: readonly RetentionAction[];
+  readonly capacityWorkspaces: readonly RetentionAction[];
+  readonly capacityRepositories: readonly RetentionAction[];
+  readonly ageDeferred: readonly RetentionCandidate[];
+  readonly capacityDeferred: readonly RetentionCandidate[];
+}
+type EvictionOutcome = "evicted" | "busy" | "changed" | "pinned" | "missing";
+type EvictionAttempt =
+  | { readonly outcome: Exclude<EvictionOutcome, "evicted"> }
+  | { readonly outcome: "evicted"; readonly trash: string };
+
 type RepositoryMutation =
   | {
     formatVersion: number;
@@ -195,7 +271,19 @@ type RepositoryMutation =
     operationId: string;
     repositoryKey: string;
     workspaceId: string;
+  }
+  | {
+    formatVersion: number;
+    incomingCount: 0;
+    kind: "workspace-eviction";
+    operationId: string;
+    repositoryKey: string;
+    target:
+      | { kind: "commit"; commit: string }
+      | { kind: "pull-request"; workspaceId: string };
   };
+
+type WorkspaceEvictionTarget = Extract<RepositoryMutation, { kind: "workspace-eviction" }>["target"];
 
 interface LockOwner {
   formatVersion: number;
@@ -213,6 +301,29 @@ interface StoreOwner {
   formatVersion: number;
   host: string;
 }
+
+interface RepositoryAccess {
+  formatVersion: number;
+  kind: "repository-access";
+  repositoryKey: string;
+  accessedAtMs: number;
+}
+
+type WorkspaceAccess =
+  | {
+    formatVersion: number;
+    kind: "commit-workspace-access";
+    repositoryKey: string;
+    commit: string;
+    accessedAtMs: number;
+  }
+  | {
+    formatVersion: number;
+    kind: "pull-request-workspace-access";
+    repositoryKey: string;
+    workspaceId: string;
+    accessedAtMs: number;
+  };
 
 interface LeaseSessionOwner extends StoreOwner {
   kind: "lease-session";
@@ -251,15 +362,19 @@ export class WebRepositoryMirror implements RepositoryMirror {
   readonly #root: string;
   readonly #repositoriesRoot: string;
   readonly #locksRoot: string;
+  readonly #trashRoot: string;
   readonly #gitTimeoutMs: number;
   readonly #lockWaitTimeoutMs: number | undefined;
   readonly #staleLockMs: number;
   readonly #allowFileRemotes: boolean;
   readonly #git: typeof runGit;
+  readonly #retention: RepositoryRetentionOptions;
+  readonly #retentionScheduler: RepositoryRetentionScheduler;
   readonly #jobs = new Map<string, SharedJob<unknown>>();
   readonly #leaseMarkers = new Set<string>();
   readonly #leaseSessionNonce = randomUUID();
   #leaseSessionHeartbeat: NodeJS.Timeout | undefined;
+  #closed = false;
 
   constructor(options: WebRepositoryMirrorOptions) {
     const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
@@ -271,11 +386,22 @@ export class WebRepositoryMirror implements RepositoryMirror {
     this.#root = resolve(options.cacheRoot, `repository-store-v${STORE_FORMAT_VERSION}`);
     this.#repositoriesRoot = join(this.#root, "repositories");
     this.#locksRoot = join(this.#root, "locks");
+    this.#trashRoot = join(this.#root, "trash");
     this.#gitTimeoutMs = gitTimeoutMs;
     this.#lockWaitTimeoutMs = options.lockWaitTimeoutMs;
     this.#staleLockMs = options.staleLockMs ?? DEFAULT_STALE_LOCK_MS;
     this.#allowFileRemotes = options.allowFileRemotesForTests === true;
     this.#git = options.git ?? runGit;
+    this.#retention = resolveRepositoryRetentionOptions(options.retention);
+    this.#retentionScheduler = new RepositoryRetentionScheduler({
+      initialDelayMs: this.#retention.initialDelayMs,
+      sweepIntervalMs: this.#retention.sweepIntervalMs,
+      sweep: async (signal) => { await this.maintain({ signal }); },
+      onError: options.onRetentionError,
+    });
+    // An unref'ed no-op timer also covers a virgin cache whose first preparation fails after Git
+    // materializes data but before any caller can acquire/release a source lease.
+    this.#retentionScheduler.start();
   }
 
   /** Probe only. Never creates the store, initializes a mirror, fetches, repairs, or checks out. */
@@ -448,8 +574,557 @@ export class WebRepositoryMirror implements RepositoryMirror {
     }
   }
 
-  /** Mirrors and released workspaces are intentionally persistent. Retention owns later removal. */
-  async close(): Promise<void> {}
+  /** Stop future maintenance and wait for any cooperative background sweep to leave its lock. */
+  async close(): Promise<void> {
+    this.#closed = true;
+    await this.#retentionScheduler.stop();
+  }
+
+  /**
+   * Run one explicit background retention pass. Candidate discovery is advisory; every mutation
+   * try-locks and revalidates the repository, skipping active request work before an exact rename.
+   */
+  async maintain(inputs: { signal?: AbortSignal } = {}): Promise<RepositoryRetentionReport> {
+    throwIfAborted(inputs.signal);
+    if (this.#closed) return emptyRetentionReport();
+    if (!isPlainDirectory(this.#root)) return emptyRetentionReport();
+    const maintained = await this.#withRepositoryLock(
+      RETENTION_LOCK_KEY,
+      inputs.signal,
+      (signal) => this.#maintainLocked(signal),
+      true,
+    );
+    return maintained ?? {
+      ...emptyRetentionReport(),
+      sizeComplete: false,
+      skippedRepositories: 1,
+    };
+  }
+
+  async #maintainLocked(signal: AbortSignal): Promise<RepositoryRetentionReport> {
+    // Never quarantine more live data while a previous quarantine cannot be removed. Otherwise an
+    // I/O failure could make every later sweep move progressively more useful cache into trash.
+    let reclaimedBytes = await this.#emptyRetentionTrash(signal);
+    let snapshot = await this.#retentionSnapshot(signal);
+    let skippedRepositories = snapshot.skippedRepositories;
+    let recoveredAny = false;
+    for (const { repository, needsRecovery } of snapshot.repositories) {
+      if (!needsRecovery) continue;
+      try {
+        const recovered = await this.#withRepositoryLock(
+          repository.repositoryKey,
+          signal,
+          async (lockSignal) => {
+            if (this.#retentionRepositoryRecord(repository.repositoryKey, repository.entry) === null) return true;
+            await this.#recoverInterruptedMutations(repository, lockSignal);
+            return true;
+          },
+          true,
+        );
+        if (recovered === undefined) skippedRepositories += 1;
+        else recoveredAny = true;
+      } catch (error) {
+        if (signal.aborted) throw error;
+        skippedRepositories += 1;
+      }
+    }
+    if (recoveredAny) {
+      reclaimedBytes = addSafeBytes(reclaimedBytes, await this.#emptyRetentionTrash(signal));
+      snapshot = await this.#retentionSnapshot(signal);
+      skippedRepositories += snapshot.skippedRepositories;
+    }
+    const { repositories, totalBytes } = snapshot;
+    const plan = this.#retentionActions(repositories, totalBytes);
+    let remainingBytes = totalBytes;
+    let evictedWorkspaces = 0;
+    let evictedRepositories = 0;
+    const evictedRepositoryKeys = new Set<string>();
+    const deferredCandidates = new Map<string, RetentionCandidate>();
+    const reclaimedByRepository = new Map<string, number>();
+    const addDeferred = (candidate: RetentionCandidate) => {
+      deferredCandidates.set(candidate.id, candidate);
+    };
+    const execute = async (actions: readonly RetentionAction[], capacity: boolean) => {
+      for (const action of actions) {
+        throwIfAborted(signal);
+        if (capacity && remainingBytes <= this.#retention.lowWaterBytes) break;
+        const candidate = action.candidate;
+        if (evictedRepositoryKeys.has(candidate.repository.repositoryKey)) continue;
+        let attempt: EvictionAttempt;
+        try {
+          attempt = candidate.kind === "workspace"
+            ? await this.#evictWorkspaceCandidate(candidate, action.reason, signal)
+            : await this.#evictRepositoryCandidate(candidate, action.reason, signal);
+        } catch (error) {
+          if (signal.aborted) throw error;
+          if (isPlainDirectory(this.#trashRoot) && readdirSync(this.#trashRoot).length > 0) {
+            throw error;
+          }
+          // Exact journals/quarantines keep this candidate recoverable. A repository-local failure
+          // must not stop independent repositories or prevent capacity continuation.
+          addDeferred(candidate);
+          continue;
+        }
+        if (attempt.outcome === "evicted") {
+          // Count only bytes physically deleted, never a quarantine rename that may still occupy
+          // disk. Any deletion failure aborts this sweep before another live candidate is moved.
+          const removedBytes = await this.#deleteRetentionTrashEntry(attempt.trash, signal);
+          reclaimedBytes = addSafeBytes(reclaimedBytes, removedBytes);
+          remainingBytes = Math.max(0, remainingBytes - removedBytes);
+          const repositoryKey = candidate.repository.repositoryKey;
+          reclaimedByRepository.set(
+            repositoryKey,
+            addSafeBytes(reclaimedByRepository.get(repositoryKey) ?? 0, removedBytes),
+          );
+          if (candidate.kind === "workspace") evictedWorkspaces += 1;
+          else {
+            evictedRepositories += 1;
+            evictedRepositoryKeys.add(candidate.repository.repositoryKey);
+          }
+        } else if (attempt.outcome === "missing") {
+          // Another request may have discarded this immutable generation after the advisory scan.
+          remainingBytes = Math.max(0, remainingBytes - candidate.sizeBytes);
+        } else {
+          addDeferred(candidate);
+          if (attempt.outcome === "busy") skippedRepositories += 1;
+        }
+      }
+    };
+
+    for (const candidate of plan.ageDeferred) addDeferred(candidate);
+    await execute(plan.ageRepositories, false);
+    await execute(plan.ageWorkspaces, false);
+    const capacityPressure = snapshot.sizeComplete && remainingBytes > this.#retention.maxBytes;
+    if (capacityPressure) {
+      for (const candidate of plan.capacityDeferred) addDeferred(candidate);
+      await execute(plan.capacityWorkspaces, true);
+      await execute(plan.capacityRepositories, true);
+      // Report actual pressure left above the target without double-counting nested repository and
+      // workspace candidates in the advisory deferral list.
+    }
+    reclaimedBytes = addSafeBytes(reclaimedBytes, await this.#emptyRetentionTrash(signal));
+    const deferredBytes = Math.max(
+      retentionDeferredBytes([...deferredCandidates.values()], reclaimedByRepository),
+      capacityPressure ? Math.max(0, remainingBytes - this.#retention.lowWaterBytes) : 0,
+    );
+    return {
+      totalBytes,
+      sizeComplete: snapshot.sizeComplete,
+      reclaimedBytes,
+      evictedWorkspaces,
+      evictedRepositories,
+      deferredBytes,
+      skippedRepositories,
+    };
+  }
+
+  async #retentionSnapshot(signal: AbortSignal): Promise<{
+    repositories: RepositoryRetentionSnapshotRecord[];
+    totalBytes: number;
+    skippedRepositories: number;
+    sizeComplete: boolean;
+  }> {
+    const repositories: RepositoryRetentionSnapshotRecord[] = [];
+    let totalBytes = 0;
+    let skippedRepositories = 0;
+    let sizeComplete = true;
+    if (!isPlainDirectory(this.#root)) {
+      return { repositories, totalBytes, skippedRepositories, sizeComplete };
+    }
+
+    for (const entry of readdirSync(this.#root, { withFileTypes: true })) {
+      throwIfAborted(signal);
+      if (entry.name === "repositories" && entry.isDirectory() && !entry.isSymbolicLink()) continue;
+      try {
+        totalBytes = addSafeBytes(totalBytes, await sizeOfPathNoFollow(join(this.#root, entry.name), signal));
+      } catch {
+        sizeComplete = false;
+      }
+    }
+    if (!isPlainDirectory(this.#repositoriesRoot)) {
+      return { repositories, totalBytes, skippedRepositories, sizeComplete };
+    }
+
+    for (const entry of readdirSync(this.#repositoriesRoot, { withFileTypes: true })) {
+      throwIfAborted(signal);
+      const path = join(this.#repositoriesRoot, entry.name);
+      const repository = this.#retentionRepositoryRecord(entry.name, path);
+      if (repository === null || !entry.isDirectory() || entry.isSymbolicLink()) {
+        // Unknown/corrupt bytes are measured for diagnostics but never allowed to drive eviction of
+        // healthy cache. Repair stays fail-closed instead of guessing ownership from a pathname.
+        sizeComplete = false;
+        try {
+          totalBytes = addSafeBytes(totalBytes, await sizeOfPathNoFollow(path, signal));
+        } catch {
+          skippedRepositories += 1;
+        }
+        continue;
+      }
+      let control: RepositoryRetentionControl;
+      try {
+        // Discovery is advisory and lock-free. Atomic metadata reads plus exact under-lock
+        // revalidation make this safe without ever putting a request behind a background scan.
+        control = this.#retentionControl(repository);
+      } catch {
+        skippedRepositories += 1;
+        try {
+          totalBytes = addSafeBytes(totalBytes, await sizeOfPathNoFollow(path, signal));
+        } catch {
+          // Unknown bytes fail closed for this repository; other independent entries still sweep.
+          sizeComplete = false;
+        }
+        continue;
+      }
+      let repositorySize: number;
+      try {
+        repositorySize = await sizeOfPathNoFollow(path, signal);
+      } catch {
+        skippedRepositories += 1;
+        sizeComplete = false;
+        continue;
+      }
+      totalBytes = addSafeBytes(totalBytes, repositorySize);
+      const workspaces: WorkspaceRetentionCandidate[] = [];
+      for (const workspace of control.workspaces) {
+        const workspacePath = this.#workspaceEvictionTarget(repository, workspace.target);
+        try {
+          workspaces.push({
+            id: retentionWorkspaceId(repository.repositoryKey, workspace.target),
+            kind: "workspace",
+            repository,
+            target: workspace.target,
+            sizeBytes: await sizeOfPathNoFollow(workspacePath, signal),
+            lastAccessMs: workspace.lastAccessMs,
+            pinned: workspace.pinned,
+          });
+        } catch {
+          // A single concurrently changing or unreadable generation does not hide its repository
+          // or abort retention for unrelated repositories.
+        }
+      }
+      repositories.push({
+        repository,
+        sizeBytes: repositorySize,
+        lastAccessMs: control.lastAccessMs,
+        pinned: control.pinned,
+        needsRecovery: existsSync(join(repository.entry, "pending.json")),
+        workspaces,
+      });
+    }
+    return { repositories, totalBytes, skippedRepositories, sizeComplete };
+  }
+
+  #retentionRepositoryRecord(repositoryKey: string, entry: string): RepositoryRecord | null {
+    if (!/^[a-f0-9]{24}$/.test(repositoryKey) || !isPlainDirectory(entry)) return null;
+    const metadata = readMetadata<MirrorMetadata>(join(entry, "metadata.json"));
+    if (
+      metadata?.formatVersion !== STORE_FORMAT_VERSION
+      || metadata.repositoryKey !== repositoryKey
+      || typeof metadata.remoteUrl !== "string"
+      || (metadata.objectFormat !== "sha1" && metadata.objectFormat !== "sha256")
+      || !isHistoryMode(metadata.historyMode)
+    ) return null;
+    let remoteUrl: string;
+    try {
+      remoteUrl = this.#canonicalRemote(metadata.remoteUrl);
+    } catch {
+      return null;
+    }
+    if (remoteUrl !== metadata.remoteUrl || repositoryKeyFor(remoteUrl) !== repositoryKey) return null;
+    return this.#repositoryRecord(remoteUrl, repositoryKey, metadata.objectFormat);
+  }
+
+  #retentionControl(repository: RepositoryRecord): RepositoryRetentionControl {
+    const now = this.#retention.now?.() ?? Date.now();
+    const lastAccessMs = this.#repositoryAccessTime(repository, now);
+    const workspaces: WorkspaceRetentionControl[] = [];
+    const commitRoot = join(repository.entry, "workspaces", "commits");
+    if (isPlainDirectory(commitRoot)) {
+      for (const entry of readdirSync(commitRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || !/^[a-f0-9]{24}$/.test(entry.name)) continue;
+        const root = join(commitRoot, entry.name);
+        const metadata = readMetadata<CommitWorkspaceMetadata>(join(root, "metadata.json"));
+        if (!validCommitWorkspaceMetadata(metadata, repository, entry.name)) continue;
+        const target: WorkspaceEvictionTarget = { kind: "commit", commit: metadata.commit };
+        workspaces.push({
+          target,
+          lastAccessMs: this.#workspaceAccessTime(repository, target, now),
+          pinned: this.#hasLeasesWithin(root),
+        });
+      }
+    }
+    const pullRequestRoot = join(repository.entry, "workspaces", "pull-requests");
+    if (isPlainDirectory(pullRequestRoot)) {
+      for (const entry of readdirSync(pullRequestRoot, { withFileTypes: true })) {
+        if (!entry.isDirectory() || entry.isSymbolicLink() || !WORKSPACE_ID.test(entry.name)) continue;
+        const root = join(pullRequestRoot, entry.name);
+        const metadata = readMetadata<PullRequestWorkspaceMetadata>(join(root, "metadata.json"));
+        if (!validPullRequestWorkspaceMetadata(metadata, repository, entry.name)) continue;
+        const target: WorkspaceEvictionTarget = { kind: "pull-request", workspaceId: entry.name };
+        workspaces.push({
+          target,
+          lastAccessMs: this.#workspaceAccessTime(repository, target, now),
+          pinned: this.#hasLeasesWithin(root),
+        });
+      }
+    }
+    return {
+      lastAccessMs,
+      pinned: this.#hasLeasesWithin(join(repository.entry, "workspaces")),
+      workspaces,
+    };
+  }
+
+  #repositoryAccessTime(repository: RepositoryRecord, now: number): number {
+    const path = join(repository.entry, ACCESS_FILE);
+    const current = readMetadata<RepositoryAccess>(path);
+    if (validRepositoryAccess(current, repository.repositoryKey)) return current.accessedAtMs;
+    return stableMtimeMs(join(repository.entry, "metadata.json"), now);
+  }
+
+  #workspaceAccessTime(
+    repository: RepositoryRecord,
+    target: WorkspaceEvictionTarget,
+    now: number,
+  ): number {
+    const path = join(this.#workspaceEvictionTarget(repository, target), ACCESS_FILE);
+    const current = readMetadata<WorkspaceAccess>(path);
+    if (validWorkspaceAccess(current, repository.repositoryKey, target)) return current.accessedAtMs;
+    return stableMtimeMs(
+      join(this.#workspaceEvictionTarget(repository, target), "metadata.json"),
+      now,
+    );
+  }
+
+  #initializeRepositoryAccess(repository: RepositoryRecord): void {
+    writePrivateJson(join(repository.entry, ACCESS_FILE), {
+      formatVersion: STORE_FORMAT_VERSION,
+      kind: "repository-access",
+      repositoryKey: repository.repositoryKey,
+      accessedAtMs: this.#retention.now?.() ?? Date.now(),
+    } satisfies RepositoryAccess);
+  }
+
+  #initializeWorkspaceAccess(
+    repository: RepositoryRecord,
+    target: WorkspaceEvictionTarget,
+  ): void {
+    const accessedAtMs = this.#retention.now?.() ?? Date.now();
+    const access: WorkspaceAccess = target.kind === "commit"
+      ? {
+        formatVersion: STORE_FORMAT_VERSION,
+        kind: "commit-workspace-access",
+        repositoryKey: repository.repositoryKey,
+        commit: target.commit,
+        accessedAtMs,
+      }
+      : {
+        formatVersion: STORE_FORMAT_VERSION,
+        kind: "pull-request-workspace-access",
+        repositoryKey: repository.repositoryKey,
+        workspaceId: target.workspaceId,
+        accessedAtMs,
+      };
+    writePrivateJson(join(this.#workspaceEvictionTarget(repository, target), ACCESS_FILE), access);
+  }
+
+  #retentionActions(
+    repositories: readonly RepositoryRetentionSnapshotRecord[],
+    totalBytes: number,
+  ): RetentionPlan {
+    const now = this.#retention.now?.() ?? Date.now();
+    const repositoryCandidates: RepositoryRetentionCandidateRecord[] = repositories.map((entry) => ({
+      id: `repository:${entry.repository.repositoryKey}`,
+      kind: "repository",
+      repository: entry.repository,
+      sizeBytes: entry.sizeBytes,
+      lastAccessMs: entry.lastAccessMs,
+      pinned: entry.pinned,
+    }));
+    const ageRepositories = selectIdleRetentionCandidates(
+      { totalBytes, candidates: repositoryCandidates },
+      this.#retention.maxIdleMs,
+      now,
+    );
+    const workspaceCandidates = repositories.flatMap(({ workspaces }) => workspaces);
+    const ageWorkspaces = selectIdleRetentionCandidates(
+      { totalBytes, candidates: workspaceCandidates },
+      this.#retention.maxIdleMs,
+      now,
+    );
+    const selectedRepositoryIds = new Set(
+      ageRepositories.selected.map(({ candidate }) => candidate.id),
+    );
+    const selectedWorkspaceIds = new Set(ageWorkspaces.selected.map(({ candidate }) => candidate.id));
+    const capacityWorkspaces = selectCapacityRetentionCandidates({
+      totalBytes,
+      candidates: workspaceCandidates.filter(({ id }) => !selectedWorkspaceIds.has(id)),
+    }, {
+      targetBytes: 0,
+      minimumAccessAgeMs: this.#retention.capacityGraceMs,
+      now,
+    });
+    const capacityRepositories = selectCapacityRetentionCandidates(
+      {
+        totalBytes,
+        candidates: repositoryCandidates.filter(({ id }) => !selectedRepositoryIds.has(id)),
+      },
+      {
+        targetBytes: 0,
+        minimumAccessAgeMs: this.#retention.capacityGraceMs,
+        now,
+      },
+    );
+    return {
+      ageRepositories: ageRepositories.selected,
+      ageWorkspaces: ageWorkspaces.selected,
+      capacityWorkspaces: capacityWorkspaces.selected,
+      capacityRepositories: capacityRepositories.selected,
+      ageDeferred: [...ageRepositories.deferred, ...ageWorkspaces.deferred].map(({ candidate }) => candidate),
+      capacityDeferred: [...capacityWorkspaces.deferred, ...capacityRepositories.deferred]
+        .map(({ candidate }) => candidate),
+    };
+  }
+
+  async #evictWorkspaceCandidate(
+    candidate: WorkspaceRetentionCandidate,
+    reason: RetentionAction["reason"],
+    signal: AbortSignal,
+  ): Promise<EvictionAttempt> {
+    const result = await this.#withRepositoryLock(
+      candidate.repository.repositoryKey,
+      signal,
+      async (lockSignal) => {
+        if (this.#retentionRepositoryRecord(
+          candidate.repository.repositoryKey,
+          candidate.repository.entry,
+        ) === null) {
+          return { outcome: existsSync(candidate.repository.entry) ? "changed" : "missing" } as const;
+        }
+        await this.#recoverInterruptedMutations(candidate.repository, lockSignal);
+        const root = this.#workspaceEvictionTarget(candidate.repository, candidate.target);
+        if (!isPlainDirectory(root)) {
+          return { outcome: existsSync(root) ? "changed" : "missing" } as const;
+        }
+        const current = readMetadata<WorkspaceAccess>(join(root, ACCESS_FILE));
+        if (!validWorkspaceAccess(current, candidate.repository.repositoryKey, candidate.target)) {
+          this.#initializeWorkspaceAccess(candidate.repository, candidate.target);
+          return { outcome: "changed" } as const;
+        }
+        const now = this.#retention.now?.() ?? Date.now();
+        if (current.accessedAtMs !== candidate.lastAccessMs) return { outcome: "changed" } as const;
+        if (reason === "capacity" && now - current.accessedAtMs < this.#retention.capacityGraceMs) {
+          return { outcome: "changed" } as const;
+        }
+        if (this.#hasLeasesWithin(root)) return { outcome: "pinned" } as const;
+        const mutation: Extract<RepositoryMutation, { kind: "workspace-eviction" }> = {
+          formatVersion: STORE_FORMAT_VERSION,
+          incomingCount: 0,
+          kind: "workspace-eviction",
+          operationId: randomBytes(16).toString("hex"),
+          repositoryKey: candidate.repository.repositoryKey,
+          target: candidate.target,
+        };
+        this.#beginMutation(candidate.repository, mutation);
+        await this.#resumeWorkspaceEviction(candidate.repository, mutation, lockSignal);
+        this.#finishMutation(candidate.repository, mutation);
+        return { outcome: "evicted", trash: this.#workspaceEvictionTrash(mutation) } as const;
+      },
+      true,
+    );
+    return result ?? { outcome: "busy" };
+  }
+
+  async #evictRepositoryCandidate(
+    candidate: RepositoryRetentionCandidateRecord,
+    reason: RetentionAction["reason"],
+    signal: AbortSignal,
+  ): Promise<EvictionAttempt> {
+    const result = await this.#withRepositoryLock(
+      candidate.repository.repositoryKey,
+      signal,
+      async (lockSignal) => {
+        if (this.#retentionRepositoryRecord(
+          candidate.repository.repositoryKey,
+          candidate.repository.entry,
+        ) === null) {
+          return { outcome: existsSync(candidate.repository.entry) ? "changed" : "missing" } as const;
+        }
+        await this.#recoverInterruptedMutations(candidate.repository, lockSignal);
+        if (this.#readMutation(candidate.repository) !== null) return { outcome: "changed" } as const;
+        const current = readMetadata<RepositoryAccess>(join(candidate.repository.entry, ACCESS_FILE));
+        if (!validRepositoryAccess(current, candidate.repository.repositoryKey)) {
+          this.#initializeRepositoryAccess(candidate.repository);
+          return { outcome: "changed" } as const;
+        }
+        const now = this.#retention.now?.() ?? Date.now();
+        if (current.accessedAtMs !== candidate.lastAccessMs) return { outcome: "changed" } as const;
+        if (reason === "capacity" && now - current.accessedAtMs < this.#retention.capacityGraceMs) {
+          return { outcome: "changed" } as const;
+        }
+        if (this.#hasLeasesWithin(join(candidate.repository.entry, "workspaces"))) {
+          return { outcome: "pinned" } as const;
+        }
+        const operationId = randomBytes(16).toString("hex");
+        const trash = join(
+          this.#trashRoot,
+          `repository-${candidate.repository.repositoryKey}-${operationId}`,
+        );
+        this.#ensureRetentionTrashRoot();
+        renameSync(candidate.repository.entry, trash);
+        return { outcome: "evicted", trash } as const;
+      },
+      true,
+    );
+    return result ?? { outcome: "busy" };
+  }
+
+  async #emptyRetentionTrash(signal: AbortSignal): Promise<number> {
+    if (!existsSync(this.#trashRoot)) return 0;
+    if (!isPlainDirectory(this.#trashRoot)) {
+      throw new WebError(422, "repository retention quarantine is invalid");
+    }
+    const entries = readdirSync(this.#trashRoot, { withFileTypes: true });
+    for (const entry of entries) {
+      if (
+        !entry.isDirectory()
+        || entry.isSymbolicLink()
+        || !isRetentionTrashName(entry.name)
+      ) {
+        throw new WebError(422, "repository retention quarantine contains an unknown entry");
+      }
+    }
+    let removedBytes = 0;
+    for (const entry of entries) {
+      throwIfAborted(signal);
+      removedBytes = addSafeBytes(
+        removedBytes,
+        await this.#deleteRetentionTrashEntry(join(this.#trashRoot, entry.name), signal),
+      );
+    }
+    return removedBytes;
+  }
+
+  async #deleteRetentionTrashEntry(path: string, signal: AbortSignal): Promise<number> {
+    if (dirname(path) !== this.#trashRoot || !isRetentionTrashName(basename(path))) {
+      throw new WebError(422, "repository retention quarantine path is invalid");
+    }
+    if (!existsSync(path)) return 0;
+    if (!isPlainDirectory(path)) {
+      throw new WebError(422, "repository retention quarantine entry is invalid");
+    }
+    return removePathNoFollow(path, signal);
+  }
+
+  #ensureRetentionTrashRoot(): void {
+    if (existsSync(this.#trashRoot) && !isPlainDirectory(this.#trashRoot)) {
+      throw new WebError(422, "repository retention quarantine is invalid");
+    }
+    mkdirPrivate(this.#trashRoot);
+    if (!isPlainDirectory(this.#trashRoot)) {
+      throw new WebError(422, "repository retention quarantine is invalid");
+    }
+  }
 
   async #prepareCommitWorkspace(
     remoteUrl: string,
@@ -507,6 +1182,10 @@ export class WebRepositoryMirror implements RepositoryMirror {
           remoteUrl,
           commit: revision.expectedSha,
         } satisfies CommitWorkspaceMetadata);
+        // Close the publication-to-lease gap for background retention. The caller still acquires
+        // its own durable marker after singleflight, while this access stamp gives that handoff a
+        // full retention grace period without sharing a lease between waiters.
+        this.#touchRepositoryAccess(cached, { kind: "commit", commit: revision.expectedSha });
         this.#finishMutation(preparedRepository, mutation);
         return { cache: "miss", workspace: cached };
       } catch (error) {
@@ -584,6 +1263,12 @@ export class WebRepositoryMirror implements RepositoryMirror {
         repositoryKey,
         remoteUrl,
       } satisfies MirrorMetadata);
+      writePrivateJson(join(stage, ACCESS_FILE), {
+        formatVersion: STORE_FORMAT_VERSION,
+        kind: "repository-access",
+        repositoryKey,
+        accessedAtMs: this.#retention.now?.() ?? Date.now(),
+      } satisfies RepositoryAccess);
       renameSync(stage, repository.entry);
       if (!(await this.#validRepository(repository, signal))) {
         throw new WebError(422, "repository mirror failed verification");
@@ -752,6 +1437,11 @@ export class WebRepositoryMirror implements RepositoryMirror {
     const mutation = this.#readMutation(repository);
     if (mutation === null) return;
     await this.#deleteInternalRefs(repository, incomingRefs(mutation), signal);
+    if (mutation.kind === "workspace-eviction") {
+      await this.#resumeWorkspaceEviction(repository, mutation, signal);
+      this.#finishMutation(repository, mutation);
+      return;
+    }
     if (mutation.kind === "commit-workspace") {
       const workspace = this.#commitWorkspaceRecord(repository, mutation.commit);
       // Exact-SHA commit workspaces are durable cache publications. A crash after metadata was
@@ -796,7 +1486,17 @@ export class WebRepositoryMirror implements RepositoryMirror {
       && typeof mutation.workspaceId === "string"
       && WORKSPACE_ID.test(mutation.workspaceId)
       && mutation.workspaceId === mutation.operationId;
-    if (!validCommit && !validPullRequest) {
+    const target = mutation !== null && "target" in mutation ? mutation.target : undefined;
+    const validEvictionTarget = target?.kind === "commit"
+      ? typeof target.commit === "string" && COMMIT.test(target.commit)
+      : target?.kind === "pull-request"
+        && typeof target.workspaceId === "string"
+        && WORKSPACE_ID.test(target.workspaceId);
+    const validEviction = common
+      && mutation.kind === "workspace-eviction"
+      && mutation.incomingCount === 0
+      && validEvictionTarget;
+    if (!validCommit && !validPullRequest && !validEviction) {
       throw new WebError(422, "repository mutation journal is invalid");
     }
     return mutation as RepositoryMutation;
@@ -818,6 +1518,10 @@ export class WebRepositoryMirror implements RepositoryMirror {
     if (mutation.kind === "commit-workspace") {
       return this.#hasLeasesWithin(dirname(this.#commitWorkspaceRecord(repository, mutation.commit).repoDir));
     }
+    if (mutation.kind === "workspace-eviction") {
+      return this.#hasLeasesWithin(this.#workspaceEvictionTarget(repository, mutation.target))
+        || this.#hasLeasesWithin(this.#workspaceEvictionTrash(mutation));
+    }
     return this.#hasLeasesWithin(
       join(repository.entry, "workspaces", "pull-requests", mutation.workspaceId),
     );
@@ -828,6 +1532,9 @@ export class WebRepositoryMirror implements RepositoryMirror {
     mutation: RepositoryMutation,
     ownershipSignal?: AbortSignal,
   ): Promise<boolean> {
+    if (mutation.kind === "workspace-eviction") {
+      throw new Error("workspace eviction is resumed, never rolled back");
+    }
     let refsCleaned = true;
     try {
       await this.#deleteInternalRefs(repository, incomingRefs(mutation), ownershipSignal);
@@ -854,6 +1561,29 @@ export class WebRepositoryMirror implements RepositoryMirror {
       ownershipSignal,
     );
     return refsCleaned && worktreeCleaned;
+  }
+
+  async #resumeWorkspaceEviction(
+    repository: RepositoryRecord,
+    mutation: Extract<RepositoryMutation, { kind: "workspace-eviction" }>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const target = this.#workspaceEvictionTarget(repository, mutation.target);
+    const trash = this.#workspaceEvictionTrash(mutation);
+    if (this.#hasLeasesWithin(target) || this.#hasLeasesWithin(trash)) {
+      throw new WebError(409, "repository workspace selected for eviction is still in use");
+    }
+    if (existsSync(target)) {
+      if (!isPlainDirectory(target)) {
+        throw new WebError(422, "repository workspace selected for eviction is invalid");
+      }
+      if (existsSync(trash)) {
+        throw new WebError(422, "repository eviction quarantine already exists");
+      }
+      this.#ensureRetentionTrashRoot();
+      renameSync(target, trash);
+    }
+    await this.#pruneWorktrees(repository, signal);
   }
 
   async #deleteInternalRefs(
@@ -1034,7 +1764,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
     try {
       lease = await this.#withRepositoryLock(workspace.repositoryKey, signal, async (lockSignal) => {
         if (!(await this.#validCommitWorkspace(workspace, lockSignal))) return null;
-        return this.#lease(workspace, cache);
+        return this.#lease(workspace, cache, { kind: "commit", commit: workspace.commit });
       });
       throwIfAborted(signal);
       return lease;
@@ -1045,10 +1775,15 @@ export class WebRepositoryMirror implements RepositoryMirror {
   }
 
   #prepared(record: PullRequestRecord, cache: "hit" | "miss"): PreparedPullRequest {
-    const head = this.#lease({ ...record, commit: record.headSha, repoDir: record.headDir }, cache);
+    const target: WorkspaceEvictionTarget = { kind: "pull-request", workspaceId: record.workspaceId };
+    const head = this.#lease({ ...record, commit: record.headSha, repoDir: record.headDir }, cache, target);
     let comparison: RepositoryWorkspaceLease;
     try {
-      comparison = this.#lease({ ...record, commit: record.mergeBaseSha, repoDir: record.comparisonDir }, cache);
+      comparison = this.#lease(
+        { ...record, commit: record.mergeBaseSha, repoDir: record.comparisonDir },
+        cache,
+        target,
+      );
     } catch (error) {
       head.release();
       throw error;
@@ -1174,7 +1909,11 @@ export class WebRepositoryMirror implements RepositoryMirror {
     });
   }
 
-  #lease(workspace: WorkspaceRecord, cache: "hit" | "miss"): RepositoryWorkspaceLease {
+  #lease(
+    workspace: WorkspaceRecord,
+    cache: "hit" | "miss",
+    target: WorkspaceEvictionTarget,
+  ): RepositoryWorkspaceLease {
     // The marker makes leases visible to every service process sharing this host-local cache. All
     // creation happens under the repository lock, so repair cannot pass a no-lease check while a
     // reader is acquiring the path.
@@ -1192,11 +1931,13 @@ export class WebRepositoryMirror implements RepositoryMirror {
     this.#startLeaseHeartbeat();
     try {
       writePrivateJson(marker, owner);
+      this.#touchRepositoryAccess(workspace, target);
     } catch (error) {
       this.#stopLeaseHeartbeatIfIdle();
       throw error;
     }
     this.#leaseMarkers.add(marker);
+    this.#scheduleRetention();
     let released = false;
     const release = () => {
       if (released) return;
@@ -1204,6 +1945,9 @@ export class WebRepositoryMirror implements RepositoryMirror {
       this.#leaseMarkers.delete(marker);
       rmSync(marker, { force: true });
       this.#stopLeaseHeartbeatIfIdle();
+      // Retention is scheduled separately from request work. Releasing a lease only changes
+      // eligibility; it never scans or deletes repository state on this call stack.
+      this.#scheduleRetention();
     };
     return {
       cache,
@@ -1214,6 +1958,63 @@ export class WebRepositoryMirror implements RepositoryMirror {
       release,
       [Symbol.dispose]: release,
     };
+  }
+
+  #touchRepositoryAccess(workspace: WorkspaceRecord, target: WorkspaceEvictionTarget): void {
+    const now = this.#retention.now?.() ?? Date.now();
+    try {
+      const repositoryPath = join(workspace.entry, ACCESS_FILE);
+      const currentRepository = readMetadata<RepositoryAccess>(repositoryPath);
+      const repositoryAccessedAt = validRepositoryAccess(currentRepository, workspace.repositoryKey)
+        ? currentRepository.accessedAtMs
+        : undefined;
+      this.#writeAccessIfDue(repositoryPath, repositoryAccessedAt, now, {
+        formatVersion: STORE_FORMAT_VERSION,
+        kind: "repository-access",
+        repositoryKey: workspace.repositoryKey,
+      });
+
+      const workspacePath = join(this.#workspaceEvictionTarget(workspace, target), ACCESS_FILE);
+      const currentWorkspace = readMetadata<WorkspaceAccess>(workspacePath);
+      const workspaceAccessedAt = validWorkspaceAccess(currentWorkspace, workspace.repositoryKey, target)
+        ? currentWorkspace.accessedAtMs
+        : undefined;
+      const identity = target.kind === "commit"
+        ? {
+          formatVersion: STORE_FORMAT_VERSION,
+          kind: "commit-workspace-access" as const,
+          repositoryKey: workspace.repositoryKey,
+          commit: target.commit,
+        }
+        : {
+          formatVersion: STORE_FORMAT_VERSION,
+          kind: "pull-request-workspace-access" as const,
+          repositoryKey: workspace.repositoryKey,
+          workspaceId: target.workspaceId,
+        };
+      this.#writeAccessIfDue(workspacePath, workspaceAccessedAt, now, identity);
+    } catch {
+      // Access bookkeeping must never make a valid immutable workspace unavailable. A later sweep
+      // initializes missing/corrupt sidecars to the current time before considering eviction.
+    }
+  }
+
+  #writeAccessIfDue(
+    path: string,
+    previous: number | undefined,
+    now: number,
+    identity: Omit<RepositoryAccess, "accessedAtMs"> | Omit<WorkspaceAccess, "accessedAtMs">,
+  ): void {
+    const accessedAtMs = Math.max(previous ?? now, now);
+    if (previous !== undefined && accessedAtMs - previous < this.#retention.accessTouchIntervalMs) return;
+    writePrivateJson(path, { ...identity, accessedAtMs });
+  }
+
+  #scheduleRetention(): void {
+    // Starting a timer is the only request-path work. Candidate enumeration and size accounting
+    // begin after the configured delay in the background.
+    if (this.#closed) return;
+    this.#retentionScheduler.start();
   }
 
   #hasLeasesWithin(root: string): boolean {
@@ -1324,11 +2125,43 @@ export class WebRepositoryMirror implements RepositoryMirror {
     };
   }
 
+  #workspaceEvictionTarget(
+    repository: Pick<RepositoryRecord, "entry">,
+    target: WorkspaceEvictionTarget,
+  ): string {
+    if (target.kind === "commit") {
+      const slot = createHash("sha256").update(target.commit).digest("hex").slice(0, 24);
+      return join(repository.entry, "workspaces", "commits", slot);
+    }
+    return join(repository.entry, "workspaces", "pull-requests", target.workspaceId);
+  }
+
+  #workspaceEvictionTrash(
+    mutation: Pick<
+      Extract<RepositoryMutation, { kind: "workspace-eviction" }>,
+      "operationId" | "repositoryKey"
+    >,
+  ): string {
+    return join(this.#trashRoot, `workspace-${mutation.repositoryKey}-${mutation.operationId}`);
+  }
+
   async #withRepositoryLock<Result>(
     repositoryKey: string,
     sourceSignal: AbortSignal | undefined,
     work: (signal: AbortSignal) => Promise<Result>,
-  ): Promise<Result> {
+  ): Promise<Result>;
+  async #withRepositoryLock<Result>(
+    repositoryKey: string,
+    sourceSignal: AbortSignal | undefined,
+    work: (signal: AbortSignal) => Promise<Result>,
+    skipIfBusy: true,
+  ): Promise<Result | undefined>;
+  async #withRepositoryLock<Result>(
+    repositoryKey: string,
+    sourceSignal: AbortSignal | undefined,
+    work: (signal: AbortSignal) => Promise<Result>,
+    skipIfBusy = false,
+  ): Promise<Result | undefined> {
     throwIfAborted(sourceSignal);
     await this.#assertHostLocalStore(sourceSignal);
     mkdirPrivate(this.#locksRoot);
@@ -1354,9 +2187,6 @@ export class WebRepositoryMirror implements RepositoryMirror {
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
         const recovery = this.#lockRecoveryState(lockDir);
-        if (recovery === "live-owner") {
-          throw new WebError(503, "repository mirror owner is unresponsive; retry the request");
-        }
         if (recovery === "recoverable") {
           const stale = join(this.#locksRoot, `.stale-${repositoryKey}-${randomUUID()}`);
           try {
@@ -1366,6 +2196,10 @@ export class WebRepositoryMirror implements RepositoryMirror {
           } catch {
             // Another process recovered or released it first. Retry the normal acquisition path.
           }
+        }
+        if (skipIfBusy) return undefined;
+        if (recovery === "live-owner") {
+          throw new WebError(503, "repository mirror owner is unresponsive; retry the request");
         }
         if (this.#lockWaitTimeoutMs !== undefined && Date.now() - started >= this.#lockWaitTimeoutMs) {
           throw new WebError(503, "repository mirror is busy; retry the request");
@@ -1583,6 +2417,135 @@ function matchingObjectFormat(first: string, ...rest: string[]): GitObjectFormat
 
 function isHistoryMode(value: unknown): value is MirrorMetadata["historyMode"] {
   return value === "tip" || value === "promoting" || value === "complete";
+}
+
+function validRepositoryAccess(
+  value: Partial<RepositoryAccess> | null,
+  repositoryKey: string,
+): value is RepositoryAccess {
+  return value?.formatVersion === STORE_FORMAT_VERSION
+    && value.kind === "repository-access"
+    && value.repositoryKey === repositoryKey
+    && Number.isSafeInteger(value.accessedAtMs)
+    && value.accessedAtMs! >= 0;
+}
+
+function validWorkspaceAccess(
+  value: Partial<WorkspaceAccess> | null,
+  repositoryKey: string,
+  target: WorkspaceEvictionTarget,
+): value is WorkspaceAccess {
+  if (
+    value?.formatVersion !== STORE_FORMAT_VERSION
+    || value.repositoryKey !== repositoryKey
+    || !Number.isSafeInteger(value.accessedAtMs)
+    || value.accessedAtMs! < 0
+  ) return false;
+  return target.kind === "commit"
+    ? value.kind === "commit-workspace-access" && value.commit === target.commit
+    : value.kind === "pull-request-workspace-access" && value.workspaceId === target.workspaceId;
+}
+
+function validCommitWorkspaceMetadata(
+  value: Partial<CommitWorkspaceMetadata> | null,
+  repository: RepositoryRecord,
+  slot: string,
+): value is CommitWorkspaceMetadata {
+  return value?.formatVersion === STORE_FORMAT_VERSION
+    && value.objectFormat === repository.objectFormat
+    && value.kind === "commit"
+    && value.repositoryKey === repository.repositoryKey
+    && value.remoteUrl === repository.remoteUrl
+    && typeof value.commit === "string"
+    && COMMIT.test(value.commit)
+    && createHash("sha256").update(value.commit).digest("hex").slice(0, 24) === slot;
+}
+
+function validPullRequestWorkspaceMetadata(
+  value: Partial<PullRequestWorkspaceMetadata> | null,
+  repository: RepositoryRecord,
+  workspaceId: string,
+): value is PullRequestWorkspaceMetadata {
+  return value?.formatVersion === STORE_FORMAT_VERSION
+    && value.objectFormat === repository.objectFormat
+    && value.kind === "pull-request"
+    && value.repositoryKey === repository.repositoryKey
+    && value.remoteUrl === repository.remoteUrl
+    && value.workspaceId === workspaceId
+    && typeof value.baseSha === "string"
+    && COMMIT.test(value.baseSha)
+    && typeof value.headSha === "string"
+    && COMMIT.test(value.headSha)
+    && typeof value.mergeBaseSha === "string"
+    && COMMIT.test(value.mergeBaseSha);
+}
+
+function retentionWorkspaceId(repositoryKey: string, target: WorkspaceEvictionTarget): string {
+  return target.kind === "pull-request"
+    ? `workspace:0:${repositoryKey}:${target.workspaceId}`
+    : `workspace:1:${repositoryKey}:${target.commit}`;
+}
+
+function isRetentionTrashName(value: string): boolean {
+  return /^(?:workspace|repository)-[a-f0-9]{24}-[a-f0-9]{32}$/.test(value);
+}
+
+function stableMtimeMs(path: string, fallback: number): number {
+  try {
+    const mtimeMs = Math.floor(statSync(path).mtimeMs);
+    return Number.isSafeInteger(mtimeMs) && mtimeMs >= 0 ? mtimeMs : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function retentionDeferredBytes(
+  candidates: readonly RetentionCandidate[],
+  reclaimedByRepository: ReadonlyMap<string, number>,
+): number {
+  const repositoryCandidates = new Map<string, RepositoryRetentionCandidateRecord>();
+  const workspaceBytes = new Map<string, number>();
+  for (const candidate of candidates) {
+    const repositoryKey = candidate.repository.repositoryKey;
+    if (candidate.kind === "repository") {
+      repositoryCandidates.set(repositoryKey, candidate);
+    } else {
+      workspaceBytes.set(
+        repositoryKey,
+        addSafeBytes(workspaceBytes.get(repositoryKey) ?? 0, candidate.sizeBytes),
+      );
+    }
+  }
+  let total = 0;
+  const keys = new Set([...repositoryCandidates.keys(), ...workspaceBytes.keys()]);
+  for (const repositoryKey of keys) {
+    const repository = repositoryCandidates.get(repositoryKey);
+    const bytes = repository === undefined
+      ? workspaceBytes.get(repositoryKey) ?? 0
+      : Math.max(0, repository.sizeBytes - (reclaimedByRepository.get(repositoryKey) ?? 0));
+    total = addSafeBytes(total, bytes);
+  }
+  return total;
+}
+
+function addSafeBytes(left: number, right: number): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new RangeError("repository retention byte accounting exceeded the supported range");
+  }
+  return result;
+}
+
+function emptyRetentionReport(): RepositoryRetentionReport {
+  return {
+    totalBytes: 0,
+    sizeComplete: true,
+    reclaimedBytes: 0,
+    evictedWorkspaces: 0,
+    evictedRepositories: 0,
+    deferredBytes: 0,
+    skippedRepositories: 0,
+  };
 }
 
 function requireWorkspaceId(value: string): string {
