@@ -10,6 +10,7 @@ import {
 import { generatorVersion } from "../version";
 import { resolveExtractionSubdir, sourceLabel } from "./clone";
 import type { GenerateRequest } from "./web-request";
+import type { PhaseAdmission } from "./web-analysis-coordinator";
 import { checkoutFor } from "./web-cache-checkout";
 import type { CachedCheckout } from "./web-cache-checkout";
 import { throwIfAborted } from "./web-cancellation";
@@ -108,8 +109,6 @@ interface BranchArtifactCachePointer {
 
 type RepositoryAnalysisRunner = typeof runRepositoryAnalysisChild;
 type RepositoryArtifactRestampRunner = typeof runRepositoryArtifactRestampChild;
-type AnalysisAdmission = <T>(work: () => Promise<T>) => Promise<T>;
-
 export async function cachedRemoteGraph(inputs: {
   cacheRoot: string;
   request: GenerateRequest;
@@ -118,7 +117,8 @@ export async function cachedRemoteGraph(inputs: {
   onClone(): void | Promise<void>;
   onExtract(): void | Promise<void>;
   signal?: AbortSignal;
-  runAnalysis?: AnalysisAdmission;
+  runPreparation: PhaseAdmission;
+  runAnalysis: PhaseAdmission;
   repositoryAnalysis?: RepositoryAnalysisRunner;
   repositoryArtifactRestamp?: RepositoryArtifactRestampRunner;
 }): Promise<CachedGraph> {
@@ -128,6 +128,7 @@ export async function cachedRemoteGraph(inputs: {
     inputs.cacheRoot,
     inputs.request,
     inputs.cwd,
+    inputs.runPreparation,
     inputs.token,
     inputs.onClone,
     inputs.signal,
@@ -135,7 +136,7 @@ export async function cachedRemoteGraph(inputs: {
   const sourceDir = resolveExtractionSubdir(checkout.repoDir, inputs.request.subdir);
   const analysisKey = webAnalysisKey(inputs.request);
   const artifactEntry = join(inputs.cacheRoot, "artifacts", checkout.repositoryKey, checkout.commit, analysisKey);
-  const runAnalysis = inputs.runAnalysis ?? ((work) => work());
+  const runAnalysis = inputs.runAnalysis;
   const repositoryArtifactRestamp = inputs.repositoryArtifactRestamp ?? runRepositoryArtifactRestampChild;
   const cached = inputs.request.refresh
     ? null
@@ -159,27 +160,44 @@ export async function cachedRemoteGraph(inputs: {
   throwIfAborted(inputs.signal);
   const target = sourceLabel(inputs.request.value, inputs.request.subdir);
   const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
-  const primaryStage = createStageDirectory(dirname(artifactEntry));
-  const primaryOutputPath = join(primaryStage, "artifact.json");
   const branch = checkout.branch;
-  const branchStage = branch === undefined
-    ? undefined
-    : createStageDirectory(join(artifactEntry, "branches"));
-  const branchOutputPath = branchStage === undefined ? undefined : join(branchStage, "artifact.json");
+  let ownedPrimaryStage: string | undefined;
+  let ownedBranchStage: string | undefined;
   try {
-    const result = await runAnalysis(() => repositoryAnalysis({
-      absoluteRoot: sourceDir,
-      cwd: sourceDir,
-      targetName: target,
-      vcs: { repository: checkout.remoteUrl, commit: checkout.commit },
-    }, {
-      artifactOutputPath: primaryOutputPath,
-      ...(branch === undefined || branchOutputPath === undefined ? {} : {
-        branchVariant: { artifactOutputPath: branchOutputPath, branch },
-      }),
-      token: inputs.token,
-      signal: inputs.signal,
-    }));
+    const analyzed = await runAnalysis(async () => {
+      const primaryStage = createStageDirectory(dirname(artifactEntry));
+      // Admission can discard a late success after cancellation, so ownership must escape now.
+      ownedPrimaryStage = primaryStage;
+      const primaryOutputPath = join(primaryStage, "artifact.json");
+      const branchStage = branch === undefined
+        ? undefined
+        : createStageDirectory(join(artifactEntry, "branches"));
+      ownedBranchStage = branchStage;
+      const branchOutputPath = branchStage === undefined ? undefined : join(branchStage, "artifact.json");
+      try {
+        const result = await repositoryAnalysis({
+          absoluteRoot: sourceDir,
+          cwd: sourceDir,
+          targetName: target,
+          vcs: { repository: checkout.remoteUrl, commit: checkout.commit },
+        }, {
+          artifactOutputPath: primaryOutputPath,
+          ...(branch === undefined || branchOutputPath === undefined ? {} : {
+            branchVariant: { artifactOutputPath: branchOutputPath, branch },
+          }),
+          token: inputs.token,
+          signal: inputs.signal,
+        });
+        return { branchStage, primaryStage, result };
+      } catch (error) {
+        removeEntry(primaryStage);
+        if (branchStage !== undefined) removeEntry(branchStage);
+        ownedPrimaryStage = undefined;
+        ownedBranchStage = undefined;
+        throw error;
+      }
+    });
+    const { branchStage, primaryStage, result } = analyzed;
     throwIfAborted(inputs.signal);
     requireNeutralFacts(result, checkout);
     const published = publishArtifact(artifactEntry, primaryStage, result, checkout, analysisKey);
@@ -201,8 +219,8 @@ export async function cachedRemoteGraph(inputs: {
     );
     return graphResult(prepared, "miss", checkout, sourceDir, analysisKey, inputs.request, published);
   } catch (error) {
-    removeEntry(primaryStage);
-    if (branchStage !== undefined) removeEntry(branchStage);
+    if (ownedPrimaryStage !== undefined) removeEntry(ownedPrimaryStage);
+    if (ownedBranchStage !== undefined) removeEntry(ownedBranchStage);
     throw error;
   }
 }
@@ -363,7 +381,7 @@ async function resultFor(
   analysisKey: string,
   entry: string,
   request: GenerateRequest,
-  runAnalysis: AnalysisAdmission,
+  runAnalysis: PhaseAdmission,
   repositoryArtifactRestamp: RepositoryArtifactRestampRunner,
   signal?: AbortSignal,
 ): Promise<CachedGraph> {
@@ -397,7 +415,7 @@ async function artifactForCheckout(
   checkout: CachedCheckout,
   analysisKey: string,
   entry: string,
-  runAnalysis: AnalysisAdmission,
+  runAnalysis: PhaseAdmission,
   repositoryArtifactRestamp: RepositoryArtifactRestampRunner,
   signal?: AbortSignal,
 ): Promise<PreparedArtifact> {
@@ -406,21 +424,34 @@ async function artifactForCheckout(
   const existing = await readCachedBranchArtifact(entry, cached, checkout, analysisKey, branch, signal);
   if (existing !== null) return existing;
 
-  const stage = createStageDirectory(join(entry, "branches"));
+  let ownedStage: string | undefined;
   try {
-    const result = await runAnalysis(() => repositoryArtifactRestamp({
-      inputArtifactPath: cached.material.path,
-      expectedInputDigest: cached.material.byteDigest,
-      branch,
-    }, {
-      artifactOutputPath: join(stage, "artifact.json"),
-      signal,
-    }));
+    const analyzed = await runAnalysis(async () => {
+      const stage = createStageDirectory(join(entry, "branches"));
+      // Admission can discard a late success after cancellation, so ownership must escape now.
+      ownedStage = stage;
+      try {
+        const result = await repositoryArtifactRestamp({
+          inputArtifactPath: cached.material.path,
+          expectedInputDigest: cached.material.byteDigest,
+          branch,
+        }, {
+          artifactOutputPath: join(stage, "artifact.json"),
+          signal,
+        });
+        return { result, stage };
+      } catch (error) {
+        removeEntry(stage);
+        ownedStage = undefined;
+        throw error;
+      }
+    });
+    const { result, stage } = analyzed;
     throwIfAborted(signal);
     requireRestampResult(result, cached, branch);
     return publishBranchArtifact(entry, stage, result, cached, checkout, analysisKey, branch);
   } catch (error) {
-    removeEntry(stage);
+    if (ownedStage !== undefined) removeEntry(ownedStage);
     throw error;
   }
 }

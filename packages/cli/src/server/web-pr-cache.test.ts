@@ -232,6 +232,8 @@ function generate(refresh = false) {
     cwd: cacheRoot,
     refresh,
     onStage: () => {},
+    runPreparation: (work) => work(),
+    runAnalysis: (work) => work(),
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
   });
 }

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SCHEMA_VERSION } from "@meridian/core";
@@ -126,6 +126,38 @@ describe("web graph generation publication", () => {
     expect(graphStore.descriptor(changed.id)?.synthetic.sourceFingerprint).toBe("changed-fingerprint");
   });
 
+  it("reclaims local staging and publishes nothing after a non-cooperative late cancellation", async () => {
+    const ctx = context();
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const publish = vi.spyOn(graphStore, "publish");
+    ctx.repositoryAnalysis = async (request, options) => {
+      started.resolve();
+      await release.promise;
+      return runRepositoryAnalysisChildInProcess(request, { ...options, signal: undefined });
+    };
+    const controller = new AbortController();
+    const pending = generateGraph(
+      ctx,
+      { kind: "path", value: root },
+      undefined,
+      undefined,
+      controller.signal,
+    );
+    await started.promise;
+
+    controller.abort(new Error("request disconnected"));
+    await expect(pending).rejects.toThrow("request disconnected");
+    release.resolve();
+    await analysisCoordinator.close();
+
+    const stageRoot = join(graphStore.rootPath, "analysis");
+    expect(existsSync(stageRoot)
+      ? readdirSync(stageRoot).filter((entry) => entry.startsWith(".stage-"))
+      : []).toEqual([]);
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it("publishes prepared cached materials under branch-specific remote ids", async () => {
     const ctx = context();
     const main = remoteFixture("main");
@@ -240,4 +272,12 @@ function artifact(name: string, generatedAt: string, branch?: string): GraphArti
     nodes: [],
     edges: [],
   };
+}
+
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

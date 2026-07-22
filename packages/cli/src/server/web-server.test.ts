@@ -18,6 +18,7 @@ import type { GraphArtifact } from "@meridian/core";
 import { createWebServer, handleSyntheticExecution } from "./web-server";
 import type { Context } from "./web-server";
 import { WebGraphStore } from "./web-graph-store";
+import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -104,6 +105,88 @@ describe("createWebServer landing + errors", () => {
 
     const missing = await post("/api/generate", { kind: "path" });
     expect(missing.status).toBe(400);
+  });
+
+  it("maps one-shot and streamed analysis overload without starting more work", async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "meridian-overload-source-"));
+    const firstSource = join(sourceRoot, "first");
+    const secondSource = join(sourceRoot, "second");
+    mkdirSync(firstSource);
+    mkdirSync(secondSource);
+    writeFileSync(join(firstSource, "index.ts"), "export const first = true;\n");
+    writeFileSync(join(secondSource, "index.ts"), "export const second = true;\n");
+    const started = deferred<void>();
+    const release = deferred<void>();
+    let analysisCalls = 0;
+    const isolated = createWebServer({
+      rendererRoot,
+      webUiPath: WEB_UI,
+      cwd: REPO_ROOT,
+      maxConcurrentAnalyses: 1,
+      maxQueuedAnalyses: 0,
+      repositoryAnalysis: async (request, options) => {
+        analysisCalls += 1;
+        started.resolve();
+        await release.promise;
+        return runRepositoryAnalysisChildInProcess(request, options);
+      },
+    });
+    try {
+      const isolatedBase = await listenEphemeral(isolated);
+      const first = fetch(`${isolatedBase}/api/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "path", value: firstSource }),
+      });
+      await started.promise;
+
+      const overloaded = await fetch(`${isolatedBase}/api/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "path", value: secondSource }),
+      });
+      expect(overloaded.status).toBe(503);
+      expect(overloaded.headers.get("retry-after")).toBe("5");
+      expect(overloaded.headers.get("cache-control")).toBe("no-store");
+      expect(await overloaded.json()).toEqual({
+        error: "repository analysis capacity is full; try again shortly",
+      });
+      expect(analysisCalls).toBe(1);
+
+      const streamed = await fetch(`${isolatedBase}/api/generate`, {
+        method: "POST",
+        headers: {
+          accept: "application/x-ndjson",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ kind: "path", value: secondSource }),
+      });
+      expect(streamed.status).toBe(200);
+      expect(streamed.headers.get("content-type")).toContain("application/x-ndjson");
+      expect(streamed.headers.get("retry-after")).toBeNull();
+      const lines = (await streamed.text()).trim().split("\n").map((line) => JSON.parse(line) as {
+        stage: string;
+        message?: string;
+        retryAfterSeconds?: number;
+      });
+      expect(lines).toEqual([
+        { stage: "source" },
+        { stage: "extract" },
+        {
+          stage: "error",
+          message: "repository analysis capacity is full; try again shortly",
+          retryAfterSeconds: 5,
+        },
+      ]);
+      expect(analysisCalls).toBe(1);
+
+      release.resolve();
+      expect((await first).status).toBe(200);
+    } finally {
+      release.resolve();
+      if (isolated.listening) await closeListeningServer(isolated);
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
   });
 
   it("routes branch discovery and rejects a non-exact repository before touching GitHub", async () => {
@@ -523,4 +606,12 @@ function closeListeningServer(target: Server): Promise<void> {
   return new Promise((resolveClose, reject) => {
     target.close((error) => error ? reject(error) : resolveClose());
   });
+}
+
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
 }

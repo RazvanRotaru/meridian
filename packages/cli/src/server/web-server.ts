@@ -43,6 +43,7 @@ import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import { responseCanWrite } from "./web-cancellation";
+import { sendOverloadJson } from "./web-overload";
 import { WebGraphStore } from "./web-graph-store";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
 import { SyntheticExecutionError } from "./synthetic-error";
@@ -85,6 +86,10 @@ export interface WebServerConfig {
   allowSyntheticPrExecution?: boolean;
   /** Internal upper bound for memory-heavy analysis concurrency; never bypasses the memory budget. */
   maxConcurrentAnalyses?: number;
+  /** Internal bounds for deterministic admission/load tests; production uses conservative defaults. */
+  maxConcurrentPreparations?: number;
+  maxQueuedPreparations?: number;
+  maxQueuedAnalyses?: number;
   /** Internal analysis boundary override used by deterministic server tests. */
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
   /** Internal artifact-restamp boundary override used by deterministic server tests. */
@@ -126,10 +131,14 @@ export function createWebServer(config: WebServerConfig): Server {
   const analysisMemory = repositoryAnalysisMemoryPolicy({
     maxConcurrentAnalyses: config.maxConcurrentAnalyses,
   });
-  const graphStore = new WebGraphStore();
   const analysisCoordinator = new AnalysisCoordinator({
     maxConcurrentAnalyses: analysisMemory.maxConcurrentAnalyses,
+    maxConcurrentPreparations: config.maxConcurrentPreparations,
+    maxQueuedPreparations: config.maxQueuedPreparations,
+    maxQueuedAnalyses: config.maxQueuedAnalyses,
   });
+  // Validate every admission bound before allocating the graph store's private temporary root.
+  const graphStore = new WebGraphStore();
   let ctx: Context;
   try {
     ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory);
@@ -457,6 +466,9 @@ function sendError(response: ServerResponse, error: unknown): void {
   }
   if (response.headersSent) {
     response.end();
+    return;
+  }
+  if (sendOverloadJson(response, error)) {
     return;
   }
   if (error instanceof SyntheticExecutionError || error instanceof WebError) {

@@ -2,12 +2,14 @@
  * Process-local coordination for repository preparation and expensive graph analysis.
  *
  * Equal in-flight keys share one job, but jobs themselves start immediately: cache reads and Git
- * preparation must not wait behind CPU-heavy extraction. Callers explicitly enter the bounded
- * heavy-analysis pool through `context.runAnalysis` only around the memory-intensive phase.
+ * preparation must not wait behind CPU-heavy extraction. Callers explicitly enter independent,
+ * bounded preparation and analysis pools around only the resource-owning phases. Cache probes stay
+ * outside both pools, so warm requests are never queued behind cold work.
  */
 
 export type AnalysisProgressListener<Progress> = (progress: Progress) => void | Promise<void>;
 export type AnalysisWork<Result> = (signal: AbortSignal) => Result | Promise<Result>;
+export type PhaseAdmission = <Result>(work: () => Promise<Result>) => Promise<Result>;
 
 export interface AnalysisWaiterOptions<Progress> {
   signal?: AbortSignal;
@@ -17,12 +19,20 @@ export interface AnalysisWaiterOptions<Progress> {
 export interface AnalysisJobContext<Progress> {
   readonly signal: AbortSignal;
   report(progress: Progress): void;
+  runPreparation<Result>(work: AnalysisWork<Result>): Promise<Result>;
   runAnalysis<Result>(work: AnalysisWork<Result>): Promise<Result>;
 }
 
 export interface AnalysisCoordinatorOptions {
   maxConcurrentAnalyses: number;
+  maxConcurrentPreparations?: number;
+  maxQueuedAnalyses?: number;
+  maxQueuedPreparations?: number;
 }
+
+export type AnalysisAdmissionPhase = "preparation" | "analysis";
+
+const DEFAULT_MAX_CONCURRENT_PREPARATIONS = 2;
 
 export class AnalysisCoordinatorClosedError extends Error {
   constructor() {
@@ -35,6 +45,17 @@ export class AnalysisCoordinatorAbortError extends Error {
   constructor(message = "analysis request was aborted") {
     super(message);
     this.name = "AbortError";
+  }
+}
+
+/** A safe, retryable refusal raised before work enters a full bounded queue. */
+export class AnalysisCoordinatorOverloadedError extends Error {
+  readonly phase: AnalysisAdmissionPhase;
+
+  constructor(phase: AnalysisAdmissionPhase) {
+    super(`repository ${phase} capacity is full; try again shortly`);
+    this.name = "AnalysisCoordinatorOverloadedError";
+    this.phase = phase;
   }
 }
 
@@ -54,7 +75,7 @@ interface Waiter<Result, Progress> {
 type JobState = "running" | "abandoned" | "settled";
 
 interface JobEntry<Result, Progress> {
-  analysisActive: boolean;
+  activePhase?: AnalysisAdmissionPhase;
   controller: AbortController;
   done: Promise<void>;
   hasLatestProgress: boolean;
@@ -65,29 +86,33 @@ interface JobEntry<Result, Progress> {
   waiters: Set<Waiter<Result, Progress>>;
 }
 
-type AnalysisTaskState = "queued" | "running" | "settled";
+type AdmissionTaskState = "queued" | "running" | "settled";
 
-interface AnalysisTask<Result> {
+interface AdmissionTask<Result> {
   controller: AbortController;
   reject(error: unknown): void;
   resolve(result: Result): void;
   sourceListener: () => void;
   sourceSignal: AbortSignal;
-  state: AnalysisTaskState;
+  state: AdmissionTaskState;
   work?: AnalysisWork<Result>;
 }
 
-/** FIFO admission for only the explicitly marked heavy section of a coordinated job. */
-class AnalysisAdmission {
+/** FIFO admission for one explicitly marked resource-owning phase of a coordinated job. */
+class BoundedAdmission {
   readonly #limit: number;
-  readonly #queue: Array<AnalysisTask<unknown>> = [];
-  readonly #running = new Set<AnalysisTask<unknown>>();
+  readonly #maxQueued: number;
+  readonly #phase: AnalysisAdmissionPhase;
+  readonly #queue: Array<AdmissionTask<unknown>> = [];
+  readonly #running = new Set<AdmissionTask<unknown>>();
   #closedReason: AnalysisCoordinatorClosedError | undefined;
   #closePromise: Promise<void> | undefined;
   #resolveClose: (() => void) | undefined;
 
-  constructor(limit: number) {
+  constructor(phase: AnalysisAdmissionPhase, limit: number, maxQueued: number) {
+    this.#phase = phase;
     this.#limit = limit;
+    this.#maxQueued = maxQueued;
   }
 
   run<Result>(sourceSignal: AbortSignal, work: AnalysisWork<Result>): Promise<Result> {
@@ -97,10 +122,13 @@ class AnalysisAdmission {
     if (sourceSignal.aborted) {
       return Promise.reject(signalAbortReason(sourceSignal));
     }
+    if (this.#running.size >= this.#limit && this.#queue.length >= this.#maxQueued) {
+      return Promise.reject(new AnalysisCoordinatorOverloadedError(this.#phase));
+    }
 
     return new Promise<Result>((resolve, reject) => {
       const controller = new AbortController();
-      const task: AnalysisTask<Result> = {
+      const task: AdmissionTask<Result> = {
         controller,
         reject,
         resolve,
@@ -118,7 +146,7 @@ class AnalysisAdmission {
         work,
       };
       sourceSignal.addEventListener("abort", task.sourceListener, { once: true });
-      this.#queue.push(task as AnalysisTask<unknown>);
+      this.#queue.push(task as AdmissionTask<unknown>);
       this.#drain();
     });
   }
@@ -147,17 +175,17 @@ class AnalysisAdmission {
     return this.#closePromise;
   }
 
-  #cancelQueued<Result>(task: AnalysisTask<Result>, error: unknown): void {
+  #cancelQueued<Result>(task: AdmissionTask<Result>, error: unknown): void {
     if (task.state !== "queued") {
       return;
     }
     task.state = "settled";
     task.work = undefined;
-    const index = this.#queue.indexOf(task as AnalysisTask<unknown>);
+    const index = this.#queue.indexOf(task as AdmissionTask<unknown>);
     if (index >= 0) {
       this.#queue.splice(index, 1);
     }
-    removeAnalysisSourceListener(task);
+    removeAdmissionSourceListener(task);
     task.reject(error);
     this.#drain();
   }
@@ -179,10 +207,10 @@ class AnalysisAdmission {
     }
   }
 
-  #start(task: AnalysisTask<unknown>): void {
+  #start(task: AdmissionTask<unknown>): void {
     const work = task.work;
     if (!work) {
-      throw new Error("queued analysis has no work factory");
+      throw new Error(`queued ${this.#phase} has no work factory`);
     }
     task.work = undefined;
     task.state = "running";
@@ -196,6 +224,8 @@ class AnalysisAdmission {
         return work(task.controller.signal);
       })
       .then(
+        // A last-waiter abort wins even when non-cooperative work resolves. Resource-owning callers
+        // therefore register cleanup handles as soon as admitted work allocates them.
         (result) => this.#settle(task, task.controller.signal.aborted
           ? { error: signalAbortReason(task.controller.signal) }
           : { result }),
@@ -206,15 +236,15 @@ class AnalysisAdmission {
   }
 
   #settle<Result>(
-    task: AnalysisTask<Result>,
+    task: AdmissionTask<Result>,
     outcome: { result: Result } | { error: unknown },
   ): void {
     if (task.state !== "running") {
       return;
     }
     task.state = "settled";
-    this.#running.delete(task as AnalysisTask<unknown>);
-    removeAnalysisSourceListener(task);
+    this.#running.delete(task as AdmissionTask<unknown>);
+    removeAdmissionSourceListener(task);
     if ("error" in outcome) {
       task.reject(outcome.error);
     } else {
@@ -233,14 +263,15 @@ class AnalysisAdmission {
 }
 
 /**
- * Waiter-aware keyed singleflight with a distinct, bounded heavy-analysis admission pool.
+ * Waiter-aware keyed singleflight with independent bounded preparation and analysis pools.
  *
  * A key is a caller-owned semantic identity: callers that reuse it promise that the first work
  * factory is valid for every joined waiter. Completed results are never cached here; after a job
  * settles, the next call for the same key starts new work (normally after the durable cache check).
  */
 export class AnalysisCoordinator {
-  readonly #admission: AnalysisAdmission;
+  readonly #analysisAdmission: BoundedAdmission;
+  readonly #preparationAdmission: BoundedAdmission;
   readonly #jobs = new Map<string, JobEntry<unknown, unknown>>();
   readonly #activeJobs = new Set<JobEntry<unknown, unknown>>();
   readonly #activeWaiters = new Set<Waiter<unknown, unknown>>();
@@ -248,11 +279,24 @@ export class AnalysisCoordinator {
   #closePromise: Promise<void> | undefined;
 
   constructor(options: AnalysisCoordinatorOptions) {
-    const { maxConcurrentAnalyses } = options;
-    if (!Number.isInteger(maxConcurrentAnalyses) || maxConcurrentAnalyses < 1) {
-      throw new RangeError("maxConcurrentAnalyses must be a positive integer");
-    }
-    this.#admission = new AnalysisAdmission(maxConcurrentAnalyses);
+    const maxConcurrentPreparations = options.maxConcurrentPreparations
+      ?? DEFAULT_MAX_CONCURRENT_PREPARATIONS;
+    const maxQueuedAnalyses = options.maxQueuedAnalyses ?? options.maxConcurrentAnalyses * 2;
+    const maxQueuedPreparations = options.maxQueuedPreparations ?? maxConcurrentPreparations * 2;
+    requirePositiveInteger(options.maxConcurrentAnalyses, "maxConcurrentAnalyses");
+    requirePositiveInteger(maxConcurrentPreparations, "maxConcurrentPreparations");
+    requireNonNegativeInteger(maxQueuedAnalyses, "maxQueuedAnalyses");
+    requireNonNegativeInteger(maxQueuedPreparations, "maxQueuedPreparations");
+    this.#analysisAdmission = new BoundedAdmission(
+      "analysis",
+      options.maxConcurrentAnalyses,
+      maxQueuedAnalyses,
+    );
+    this.#preparationAdmission = new BoundedAdmission(
+      "preparation",
+      maxConcurrentPreparations,
+      maxQueuedPreparations,
+    );
   }
 
   run<Result, Progress = never>(
@@ -282,8 +326,8 @@ export class AnalysisCoordinator {
   }
 
   /**
-   * Stop new jobs and analysis admission, reject every waiter, abort active work, and wait for both
-   * coordinated jobs and heavy-analysis workers to settle. Repeated calls return the same promise.
+   * Stop new jobs and both admissions, reject every waiter, abort active work, and wait for every
+   * coordinated job and admitted phase to settle. Repeated calls return the same promise.
    */
   close(): Promise<void> {
     if (this.#closePromise) {
@@ -298,7 +342,10 @@ export class AnalysisCoordinator {
 
     const error = new AnalysisCoordinatorClosedError();
     const jobSettlements = [...this.#activeJobs].map((entry) => entry.done);
-    const admissionSettlement = this.#admission.close(error);
+    const admissionSettlements = [
+      this.#preparationAdmission.close(error),
+      this.#analysisAdmission.close(error),
+    ];
 
     // A job may already have settled while an asynchronous progress callback is still draining.
     // Track waiters independently so close also prevents that request from publishing afterwards.
@@ -311,7 +358,7 @@ export class AnalysisCoordinator {
       }
     }
 
-    void Promise.allSettled([...jobSettlements, admissionSettlement]).then(() => resolveClose?.());
+    void Promise.allSettled([...jobSettlements, ...admissionSettlements]).then(() => resolveClose?.());
     return this.#closePromise;
   }
 
@@ -401,7 +448,7 @@ export class AnalysisCoordinator {
     entry.latestProgress = undefined;
     if (!entry.controller.signal.aborted) {
       entry.controller.abort(
-        abortReason ?? new AnalysisCoordinatorAbortError("analysis job has no remaining waiters"),
+        abortReason ?? new AnalysisCoordinatorAbortError("coordinated job has no remaining waiters"),
       );
     }
   }
@@ -414,24 +461,8 @@ export class AnalysisCoordinator {
     const context: AnalysisJobContext<Progress> = {
       signal: entry.controller.signal,
       report: (progress) => this.#report(entry, progress),
-      runAnalysis: (analysis) => {
-        if (this.#closed) {
-          return Promise.reject(new AnalysisCoordinatorClosedError());
-        }
-        if (entry.controller.signal.aborted) {
-          return Promise.reject(signalAbortReason(entry.controller.signal));
-        }
-        if (entry.state !== "running") {
-          return Promise.reject(new AnalysisCoordinatorAbortError("analysis job is no longer active"));
-        }
-        if (entry.analysisActive) {
-          return Promise.reject(new Error("one coordinated job cannot run overlapping analysis phases"));
-        }
-        entry.analysisActive = true;
-        return this.#admission.run(entry.controller.signal, analysis).finally(() => {
-          entry.analysisActive = false;
-        });
-      },
+      runPreparation: (preparation) => this.#runPhase(entry, "preparation", preparation),
+      runAnalysis: (analysis) => this.#runPhase(entry, "analysis", analysis),
     };
 
     void Promise.resolve()
@@ -445,6 +476,30 @@ export class AnalysisCoordinator {
         (result) => this.#settle(entry, { result }),
         (error: unknown) => this.#settle(entry, { error }),
       );
+  }
+
+  #runPhase<Result, Progress>(
+    entry: JobEntry<unknown, Progress>,
+    phase: AnalysisAdmissionPhase,
+    work: AnalysisWork<Result>,
+  ): Promise<Result> {
+    if (this.#closed) {
+      return Promise.reject(new AnalysisCoordinatorClosedError());
+    }
+    if (entry.controller.signal.aborted) {
+      return Promise.reject(signalAbortReason(entry.controller.signal));
+    }
+    if (entry.state !== "running") {
+      return Promise.reject(new AnalysisCoordinatorAbortError("coordinated job is no longer active"));
+    }
+    if (entry.activePhase) {
+      return Promise.reject(new Error("one coordinated job cannot run overlapping admitted phases"));
+    }
+    entry.activePhase = phase;
+    const admission = phase === "preparation" ? this.#preparationAdmission : this.#analysisAdmission;
+    return admission.run(entry.controller.signal, work).finally(() => {
+      entry.activePhase = undefined;
+    });
   }
 
   #settle<Result, Progress>(
@@ -496,7 +551,6 @@ function createJobEntry<Result, Progress>(key: string): JobEntry<Result, Progres
     resolveDone = resolve;
   });
   return {
-    analysisActive: false,
     controller: new AbortController(),
     done,
     hasLatestProgress: false,
@@ -507,8 +561,20 @@ function createJobEntry<Result, Progress>(key: string): JobEntry<Result, Progres
   };
 }
 
-function removeAnalysisSourceListener<Result>(task: AnalysisTask<Result>): void {
+function removeAdmissionSourceListener<Result>(task: AdmissionTask<Result>): void {
   task.sourceSignal.removeEventListener("abort", task.sourceListener);
+}
+
+function requirePositiveInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw new RangeError(`${label} must be a positive integer`);
+  }
+}
+
+function requireNonNegativeInteger(value: number, label: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError(`${label} must be a non-negative integer`);
+  }
 }
 
 function removeSignalListener<Result, Progress>(waiter: Waiter<Result, Progress>): void {

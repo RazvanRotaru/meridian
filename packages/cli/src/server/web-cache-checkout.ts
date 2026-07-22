@@ -5,6 +5,7 @@ import type { GenerateRequest } from "./web-request";
 import { runGit, runGitClone } from "./git-exec";
 import { isOperationCancelled, throwIfAborted } from "./web-cancellation";
 import { WebError } from "./web-error";
+import type { PhaseAdmission } from "./web-analysis-coordinator";
 import {
   createStageDirectory,
   isDirectory,
@@ -37,6 +38,7 @@ export async function checkoutFor(
   cacheRoot: string,
   request: GenerateRequest,
   cwd: string,
+  runPreparation: PhaseAdmission,
   token?: string,
   onClone: () => void | Promise<void> = () => {},
   signal?: AbortSignal,
@@ -47,11 +49,18 @@ export async function checkoutFor(
   if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl, signal)) {
     return { ...advertised, cache: "hit", repoDir: join(advertisedEntry, "repo"), repositoryKey, remoteUrl };
   }
-  throwIfAborted(signal);
-  removeEntry(advertisedEntry);
-  await onClone();
-  throwIfAborted(signal);
-  return cloneCheckout(parent, repositoryKey, remoteUrl, request.ref, advertised.branch, token, signal);
+  return runPreparation(async () => {
+    // Another semantic key can resolve to the same immutable commit while this request waits for a
+    // preparation slot. Recheck under admission so it reuses the winner instead of cloning twice.
+    if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl, signal)) {
+      return { ...advertised, cache: "hit", repoDir: join(advertisedEntry, "repo"), repositoryKey, remoteUrl };
+    }
+    throwIfAborted(signal);
+    removeEntry(advertisedEntry);
+    await onClone();
+    throwIfAborted(signal);
+    return cloneCheckout(parent, repositoryKey, remoteUrl, request.ref, advertised.branch, token, signal);
+  });
 }
 
 export async function probeCheckout(
