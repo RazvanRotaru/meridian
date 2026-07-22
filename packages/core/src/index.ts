@@ -23,6 +23,7 @@ export * from "./coverage";
 export * from "./ports";
 export * from "./link";
 export * from "./review";
+export * from "./review-fingerprints";
 export * from "./affected-nodes";
 export * from "./affected-flows";
 export * from "./causal-flow";

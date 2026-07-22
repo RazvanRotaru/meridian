@@ -89,6 +89,7 @@ function reviewedStore(files: Array<{ path: string }>, extra?: Partial<StoreDepe
     prCommentsUrl: "/api/prs/comments?id=artifact-1",
     prChecksUrl: "/api/prs/checks?id=artifact-1",
     prReviewUrl: "/api/prs/review?id=artifact-1",
+    prSessionSource: { repository: "o/r", subdir: "" },
     ...extra,
   });
   store.setState({

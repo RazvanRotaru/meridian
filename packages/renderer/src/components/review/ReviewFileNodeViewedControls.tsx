@@ -11,6 +11,7 @@ import {
   checkStateOf,
   filesViewState,
   fileViewState,
+  tickForUnit,
   unitsViewState,
   type CheckState,
   type ReviewFileRow,
@@ -371,7 +372,7 @@ function viewStateFor(
   }
   return target.kind === "file"
     ? fileViewState(target.file, unitTicks, fileTicks)
-    : checkStateOf(target.unit.fingerprint, unitTicks[target.unit.nodeId]);
+    : checkStateOf(target.unit.fingerprint, tickForUnit(target.unit, unitTicks), target.unit.address);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {

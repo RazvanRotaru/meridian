@@ -28,6 +28,7 @@ import {
 } from "./repository-analysis-worker-job";
 import { verifiedArtifactFile } from "./web-graph-store";
 import { WebError } from "./web-error";
+import { withReviewFingerprints } from "./review-fingerprints";
 
 export async function runRepositoryAnalysisChildInProcess(
   input: SerializableRepositoryAnalysisRequest,
@@ -35,7 +36,11 @@ export async function runRepositoryAnalysisChildInProcess(
 ): Promise<RepositoryAnalysisChildResult> {
   throwIfTestAborted(options.signal);
   const request = analysisRequest(input, options.token);
-  const { artifact, extractors, warnings } = await analyzeRepository(request);
+  const analyzed = await analyzeRepository(request);
+  const artifact = options.reviewFingerprints !== undefined
+    ? withReviewFingerprints(analyzed.artifact, request.absoluteRoot, options.reviewFingerprints)
+    : analyzed.artifact;
+  const { extractors, warnings } = analyzed;
   throwIfTestAborted(options.signal);
   const changed = changedMetadataForWorker(artifact, request.changedSince);
   // Older focused tests mocked the pre-worker return shape and omitted `extractors`. Production

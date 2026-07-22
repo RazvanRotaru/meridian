@@ -40,9 +40,8 @@ export interface PrReviewContextArgs {
   headRef: string | null;
   /** The PR's target branch (display only — the provenance line's base label); null when unknown. */
   baseRef: string | null;
-  /** A stable per-repo string that scopes the persisted review ticks in localStorage (the PR-files
-   * URL carries the artifact id, so distinct repos never share a scope). */
-  scopeId: string;
+  /** Canonical repository/subdirectory/PR browser-profile scope. */
+  reviewKey: string;
   files: readonly PrChangedFile[];
 }
 
@@ -56,7 +55,7 @@ export function reviewContextFromPrFiles(args: PrReviewContextArgs, options: { b
     // The base commit is never fetched, so it stays null — as `meridian review --changed` leaves it.
     baseSha: null,
     headRef: args.headRef,
-    reviewKey: `${args.scopeId}|pr-${args.prNumber}`,
+    reviewKey: args.reviewKey,
     warnings: [],
   };
 }

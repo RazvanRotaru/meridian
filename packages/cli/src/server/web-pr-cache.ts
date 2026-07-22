@@ -8,6 +8,7 @@ import {
 import type { RepositoryAnalysisRequest } from "../repository-analysis-contract";
 import { generatorVersion } from "../version";
 import { SCHEMA_VERSION } from "@meridian/core";
+import type { ChangedFileManifestEntry } from "@meridian/core";
 import { parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { base64Auth, runGit, runGitClone } from "./git-exec";
 import {
@@ -39,7 +40,7 @@ import type { ArtifactSource } from "./web-source";
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage = "clone" | "checkout" | "extract";
 
-const FORMAT_VERSION = 8;
+const FORMAT_VERSION = 9;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SNAPSHOT_ID = /^[a-f0-9]{16}$/;
@@ -176,6 +177,8 @@ async function createCachedGraph(
           comparisonArtifactPath,
           inputs.token,
           inputs.signal,
+          undefined,
+          null,
         );
         throwIfAborted(inputs.signal);
         headResult = await extractPrHead(
@@ -219,6 +222,7 @@ async function createCachedGraph(
           inputs.token,
           inputs.signal,
           comparisonRoot.materialized ? emptySideAnalysis(headResult) : undefined,
+          comparisonFingerprintFiles(headResult.changedFiles),
         );
       }
       throwIfAborted(inputs.signal);
@@ -728,7 +732,7 @@ async function extractPrHead(
       vcs: { repository: remoteUrl, commit: revisions.headSha, branch: body.headRef },
       ...analysis,
     },
-    { artifactOutputPath, token, signal },
+    { artifactOutputPath, token, signal, reviewFingerprints: { mode: "changed" } },
   );
 }
 
@@ -742,6 +746,7 @@ async function extractPrComparison(
   token?: string,
   signal?: AbortSignal,
   analysis?: EmptySideAnalysis,
+  reviewFiles: string[] | null = null,
 ): Promise<RepositoryAnalysisChildResult> {
   throwIfAborted(signal);
   return repositoryAnalysis(
@@ -752,8 +757,19 @@ async function extractPrComparison(
       vcs: { repository: remoteUrl, commit: mergeBaseSha },
       ...analysis,
     },
-    { artifactOutputPath, token, signal },
+    {
+      artifactOutputPath,
+      token,
+      signal,
+      reviewFingerprints: reviewFiles === null ? { mode: "all" } : { mode: "files", files: reviewFiles },
+    },
   );
+}
+
+function comparisonFingerprintFiles(files: readonly ChangedFileManifestEntry[]): string[] {
+  return [...new Set(files
+    .filter((file) => file.status !== "added")
+    .map((file) => file.previousPath ?? file.path))].sort();
 }
 
 type EmptySideAnalysis = Pick<RepositoryAnalysisRequest, "hintedFiles" | "allowEmpty"> & { allowEmpty: true };

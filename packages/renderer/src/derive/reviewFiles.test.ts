@@ -16,6 +16,7 @@ import {
   filesViewState,
   fileViewState,
   isReviewTestPath,
+  tickForUnit,
 } from "./reviewFiles";
 
 function node(id: string, kind: string, file: string, start: number, end: number, parentId: string | null): GraphNode {
@@ -46,7 +47,29 @@ const NODES: GraphNode[] = [
   node("ts:src/a.ts#helper", "function", "src/a.ts", 70, 90, "ts:src/a.ts"),
 ];
 
-const ARTIFACT = { nodes: NODES, edges: [] } as unknown as GraphArtifact;
+function fingerprintExtension(nodes: readonly GraphNode[], fileDigests: Record<string, string> = {}): GraphArtifact["extensions"] {
+  return {
+    reviewFingerprints: {
+      version: 1,
+      algorithm: "sha256-source-bytes",
+      complete: true,
+      units: Object.fromEntries(nodes.filter((entry) => entry.kind !== "module").map((entry) => [entry.id, {
+        address: `unit:v1\0${entry.location.file}\0${entry.kind}\0${entry.qualifiedName}`,
+        digest: "a".repeat(64),
+      }])),
+      files: Object.fromEntries(Object.keys(fileDigests).map((path) => [path, {
+        address: `file:v1\0${path}`,
+        digest: fileDigests[path],
+      }])),
+    },
+  } as GraphArtifact["extensions"];
+}
+
+const ARTIFACT = {
+  nodes: NODES,
+  edges: [],
+  extensions: fingerprintExtension(NODES, { "src/a.ts": "b".repeat(64), "docs/readme.md": "c".repeat(64) }),
+} as unknown as GraphArtifact;
 const INDEX = buildGraphIndex(ARTIFACT);
 
 function contextOf(changedFiles: ReviewContext["changedFiles"]): ReviewContext {
@@ -238,6 +261,54 @@ describe("view state + tick transitions", () => {
     expect(fileViewState(a, { [a.units[0].nodeId]: tick }, {})).toBe("stale");
   });
 
+  it("keeps a viewed declaration done when only absolute line geometry moves", () => {
+    const original = a.units[0];
+    const tick = applyUnitTick({}, original, "t");
+    const shifted = { ...original, startLine: original.startLine + 20, endLine: original.endLine + 20 };
+    expect(checkStateOf(shifted.fingerprint, tickForUnit(shifted, tick), shifted.address)).toBe("done");
+  });
+
+  it("marks identical hunk geometry stale when the worker source digest changes", () => {
+    const original = a.units[0];
+    const tick = applyUnitTick({}, original, "t");
+    const changed = { ...original, fingerprint: "d".repeat(64) };
+    expect(checkStateOf(changed.fingerprint, tickForUnit(changed, tick), changed.address)).toBe("stale");
+  });
+
+  it("reconciles H1 to H2 as unchanged A done, changed B stale, and new C todo", () => {
+    const [unitA, unitB] = a.units;
+    let ticks = applyUnitTick({}, unitA, "t1");
+    ticks = applyUnitTick(ticks, unitB, "t1");
+    const h2A = { ...unitA, startLine: unitA.startLine + 10, endLine: unitA.endLine + 10 };
+    const h2B = { ...unitB, fingerprint: "e".repeat(64) };
+    const h2C = {
+      ...unitB,
+      nodeId: "ts:src/a.ts#new",
+      displayName: "new",
+      address: "unit:v1\0src/a.ts\0function\0new",
+      fingerprint: "f".repeat(64),
+    };
+    expect([
+      checkStateOf(h2A.fingerprint, tickForUnit(h2A, ticks), h2A.address),
+      checkStateOf(h2B.fingerprint, tickForUnit(h2B, ticks), h2B.address),
+      checkStateOf(h2C.fingerprint, tickForUnit(h2C, ticks), h2C.address),
+    ]).toEqual(["done", "stale", "todo"]);
+    expect(filesViewState([{ ...a, units: [h2A, h2B, h2C] }, docs], ticks, {})).toBe("stale");
+  });
+
+  it("accepts only one exact previous-path rename address and fails closed on ambiguity", () => {
+    const current = {
+      ...a.units[0],
+      nodeId: "ts:src/new.ts#Repo.save",
+      address: "unit:v1\0src/new.ts\0method\0Repo.save",
+      previousAddress: "unit:v1\0src/old.ts\0method\0Repo.save",
+    };
+    const oldTick = { at: "t", fingerprint: current.fingerprint, address: current.previousAddress };
+    expect(checkStateOf(current.fingerprint, tickForUnit(current, { old: oldTick }), current.address)).toBe("done");
+    expect(tickForUnit(current, { old: oldTick, duplicate: { ...oldTick } })).toBeUndefined();
+    expect(applyUnitTick({ old: oldTick }, current, "t2")).toEqual({});
+  });
+
   it("cascades the file toggle over its units, both on and off", () => {
     const on = applyFileToggle(a, {}, {}, "t");
     expect(a.units.every((unit) => checkStateOf(unit.fingerprint, on.unitTicks[unit.nodeId]) === "done")).toBe(true);
@@ -255,7 +326,7 @@ describe("view state + tick transitions", () => {
   it("uses the explicit file tick for a unit-less file, with hunk-digest staleness", () => {
     expect(fileViewState(docs, {}, {})).toBe("todo");
     const on = applyFileToggle(docs, {}, {}, "t");
-    expect(on.fileTicks[docs.path]).toEqual({ at: "t", fingerprint: docs.fingerprint });
+    expect(on.fileTicks[docs.path]).toEqual({ at: "t", fingerprint: docs.fingerprint, address: docs.address });
     expect(fileViewState(docs, {}, on.fileTicks)).toBe("done");
     expect(fileViewState(docs, {}, { [docs.path]: { at: "t", fingerprint: "other" } })).toBe("stale");
     const off = applyFileToggle(docs, {}, on.fileTicks, "t");

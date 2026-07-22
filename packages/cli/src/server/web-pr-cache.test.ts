@@ -113,8 +113,8 @@ describe("persistent PR graph artifact paths", () => {
     expect(second.comparisonMaterial.path).toBe(firstComparisonPath);
     expect(existsSync(second.artifactMaterial.path)).toBe(true);
     expect(existsSync(second.comparisonMaterial.path)).toBe(true);
-    expect(JSON.parse(readFileSync(second.artifactMaterial.path, "utf8"))).toEqual(HEAD_ARTIFACT);
-    expect(JSON.parse(readFileSync(second.comparisonMaterial.path, "utf8"))).toEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(JSON.parse(readFileSync(second.artifactMaterial.path, "utf8")), HEAD_ARTIFACT);
+    expectWithoutReviewFingerprints(JSON.parse(readFileSync(second.comparisonMaterial.path, "utf8")), COMPARISON_ARTIFACT);
     expect(first.artifactMaterial.byteDigest).toBe(createHash("sha256").update(readFileSync(firstArtifactPath)).digest("hex"));
     expect(first.comparisonMaterial.byteDigest).toBe(createHash("sha256")
       .update(readFileSync(firstComparisonPath))
@@ -168,8 +168,8 @@ describe("persistent PR graph artifact paths", () => {
 
     expect(readFileSync(join(original.sourceDir, "head-source.ts"), "utf8")).toBe(originalHead);
     expect(readFileSync(join(original.comparisonSourceDir, "base-source.ts"), "utf8")).toBe(originalBase);
-    expect(JSON.parse(readFileSync(original.artifactMaterial.path, "utf8"))).toEqual(HEAD_ARTIFACT);
-    expect(JSON.parse(readFileSync(original.comparisonMaterial.path, "utf8"))).toEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(JSON.parse(readFileSync(original.artifactMaterial.path, "utf8")), HEAD_ARTIFACT);
+    expectWithoutReviewFingerprints(JSON.parse(readFileSync(original.comparisonMaterial.path, "utf8")), COMPARISON_ARTIFACT);
 
     const recovered = await generate();
     expect(recovered.cache).toBe("hit");
@@ -304,4 +304,15 @@ function snapshotDigest(metadata: Record<string, unknown>): string {
     comparisonFacts: metadata.comparisonFacts,
     warnings: metadata.warnings,
   })).digest("hex");
+}
+
+function expectWithoutReviewFingerprints(actual: GraphArtifact, expected: GraphArtifact): void {
+  expect(actual.extensions?.reviewFingerprints).toMatchObject({
+    version: 1,
+    algorithm: "sha256-source-bytes",
+    complete: expect.any(Boolean),
+  });
+  const { reviewFingerprints: _fingerprints, ...extensions } = actual.extensions ?? {};
+  expect({ ...actual, ...(Object.keys(extensions).length > 0 ? { extensions } : { extensions: undefined }) })
+    .toEqual({ ...expected, ...(expected.extensions ? {} : { extensions: undefined }) });
 }

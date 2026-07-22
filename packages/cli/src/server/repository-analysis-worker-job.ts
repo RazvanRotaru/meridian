@@ -56,9 +56,16 @@ export interface RepositoryAnalysisWorkerRequestMessage {
   artifactOutputPath: string;
   /** Optional cold-cache derivative written from the same in-memory validated artifact. */
   branchVariant: { artifactOutputPath: string; branch: string } | null;
+  /** PR-only bounded semantic/source fingerprints. Ordinary repository graphs omit the sidecar. */
+  reviewFingerprints: ReviewFingerprintSelection | null;
   /** Ephemeral credential: private IPC only, never argv, environment, or disk. */
   token?: string;
 }
+
+export type ReviewFingerprintSelection =
+  | { mode: "changed" }
+  | { mode: "files"; files: string[] }
+  | { mode: "all" };
 
 export interface RepositoryArtifactRestampWorkerRequestMessage {
   type: "restamp";
@@ -161,11 +168,12 @@ export function isRepositoryAnalysisWorkerRequest(
     || !isAbsolute(asString(value.artifactOutputPath))) return false;
   if (value.type === "analyze") {
     const keys = value.token === undefined
-      ? ["artifactOutputPath", "branchVariant", "id", "request", "type"]
-      : ["artifactOutputPath", "branchVariant", "id", "request", "token", "type"];
+      ? ["artifactOutputPath", "branchVariant", "id", "request", "reviewFingerprints", "type"]
+      : ["artifactOutputPath", "branchVariant", "id", "request", "reviewFingerprints", "token", "type"];
     return hasExactKeys(value, keys)
       && isNormalizedAnalysisRequest(value.request)
       && isBranchVariantRequest(value.branchVariant, value.artifactOutputPath)
+      && isReviewFingerprintSelection(value.reviewFingerprints)
       && (value.token === undefined || isBoundedNonEmptyString(value.token));
   }
   return value.type === "restamp"
@@ -181,6 +189,16 @@ export function isRepositoryAnalysisWorkerRequest(
     && typeof value.expectedInputDigest === "string"
     && SHA256.test(value.expectedInputDigest)
     && (value.branch === null || isBoundedNonEmptyString(value.branch));
+}
+
+function isReviewFingerprintSelection(value: unknown): value is ReviewFingerprintSelection | null {
+  if (value === null) return true;
+  if (!isRecord(value)) return false;
+  if (value.mode === "changed" || value.mode === "all") return hasExactKeys(value, ["mode"]);
+  return value.mode === "files"
+    && hasExactKeys(value, ["files", "mode"])
+    && Array.isArray(value.files)
+    && isBoundedPaths(value.files, MAX_REPOSITORY_WORKER_CHANGED_FILES, MAX_CHANGED_PATH_BYTES_TOTAL);
 }
 
 export function isRepositoryAnalysisWorkerResponse(

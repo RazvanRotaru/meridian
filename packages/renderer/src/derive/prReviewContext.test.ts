@@ -1,13 +1,28 @@
 import { describe, expect, it } from "vitest";
 import { reviewContextFromPrFiles } from "./prReviewContext";
+import { canonicalPrReviewScope } from "./prReviewScope";
 
 describe("reviewContextFromPrFiles", () => {
+  it("keeps one review key when only the generated graph id changes", () => {
+    const common = {
+      prNumber: 17,
+      headRef: "feature",
+      baseRef: "main",
+      files: [],
+    };
+    const reviewKey = canonicalPrReviewScope({ repository: "Acme/Shop", subdir: "packages/app" }, 17)!;
+    const first = reviewContextFromPrFiles({ ...common, reviewKey });
+    const regenerated = reviewContextFromPrFiles({ ...common, reviewKey });
+
+    expect(regenerated.reviewKey).toBe(first.reviewKey);
+  });
+
   it("fails closed to whole-file matching when GitHub marks a patch incomplete", () => {
     const context = reviewContextFromPrFiles({
       prNumber: 17,
       headRef: "feature",
       baseRef: "main",
-      scopeId: "repo",
+      reviewKey: "repo",
       files: [{
         path: "src/truncated.ts",
         status: "modified",
@@ -38,14 +53,14 @@ describe("reviewContextFromPrFiles", () => {
       prNumber: 18,
       headRef: "feature",
       baseRef: "main",
-      scopeId: "repo",
+      reviewKey: "repo",
       files,
     });
     const head = reviewContextFromPrFiles({
       prNumber: 18,
       headRef: "feature",
       baseRef: "main",
-      scopeId: "repo",
+      reviewKey: "repo",
       files,
     }, { baseSide: false });
 

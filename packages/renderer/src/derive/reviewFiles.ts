@@ -4,13 +4,14 @@
  * model projected onto the graph. Units are exactly `computeAffectedNodes`' blocks (hunks ∩ node
  * ranges), so a checked unit corresponds 1:1 with an amber-ringed card on the review graph.
  *
- * Each unit and each unit-less file carries a FINGERPRINT (its source span + the hunks that hit it);
- * a persisted tick whose fingerprint no longer matches renders "stale", so a new push after a tick
- * never leaves a silently-green row (same contract as flow ticks in reviewData.ts).
+ * Each unit and unit-less file carries a worker-proven semantic address plus exact-source digest.
+ * A persisted tick whose identity/content no longer matches renders "stale", so line motion does
+ * not erase progress and same-shaped changed text never stays silently green.
  */
 
-import { computeAffectedNodes, isTestPath, NON_BLOCK_KINDS, rangesOverlap } from "@meridian/core";
-import type { ChangeStatus, GraphArtifact, GraphEdge, LineRange, ReviewContext } from "@meridian/core";
+import { computeAffectedNodes, isTestPath, NON_BLOCK_KINDS } from "@meridian/core";
+import { reviewFingerprintsFromArtifact } from "@meridian/core";
+import type { ChangeStatus, GraphArtifact, GraphEdge, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import type { ReviewTick } from "../state/reviewTicksPref";
 import { buildInboundByTarget } from "./inboundEdges";
@@ -32,8 +33,12 @@ export interface ReviewUnitRow {
   /** Nesting depth below the file container (0 = top-level unit) — pure indentation. */
   depth: number;
   isTest: boolean;
-  /** Span + overlapping hunks; a mismatch with a stored tick marks it stale. */
+  /** Exact declaration-source digest; a mismatch with a stored tick marks it stale. */
   fingerprint: string;
+  /** Worker-proven logical identity. Null means persistence must fail closed. */
+  address?: string | null;
+  /** Exact old-path identity accepted only for a unique Git rename mapping. */
+  previousAddress?: string | null;
 }
 
 export interface CallerRef {
@@ -61,8 +66,10 @@ export interface ReviewFileRow {
   isTest: boolean;
   /** Touched code units, ordered by start line. Empty ⇒ the change mapped to no extracted block. */
   units: ReviewUnitRow[];
-  /** File-level fingerprint (hunks digest) — staleness for the unit-less viewed tick. */
+  /** Exact file/blob digest — staleness for the unit-less viewed tick. */
   fingerprint: string;
+  address?: string | null;
+  previousAddress?: string | null;
   /** Distinct unchanged files with a direct, resolved execution edge into a changed unit. */
   blastRadius: number;
   /** Surviving direct callers into deleted code, resolved from the deletion-source graph. */
@@ -97,6 +104,7 @@ export function deriveReviewFiles(
   options: { baseIndex: GraphIndex | null },
 ): ReviewFileRow[] {
   const affected = computeAffectedNodes(artifact.nodes, context.changedFiles);
+  const fingerprints = reviewFingerprintsFromArtifact(artifact);
   const unitsByFile = new Map<string, ReviewUnitRow[]>();
   for (const node of affected) {
     // A hunk-less file's affected set is its MODULE node (core's honest fallback) — the file row
@@ -104,7 +112,7 @@ export function deriveReviewFiles(
     if (NON_BLOCK_KINDS.has(index.nodesById.get(node.nodeId)?.kind ?? "")) {
       continue;
     }
-    const row = toUnitRow(node.nodeId, node.file, context, index);
+    const row = toUnitRow(node.nodeId, node.file, context, index, fingerprints?.units ?? null);
     if (row) {
       const bucket = unitsByFile.get(node.file);
       bucket ? bucket.push(row) : unitsByFile.set(node.file, [row]);
@@ -139,7 +147,11 @@ export function deriveReviewFiles(
         moduleId,
         isTest: isReviewTestPath(file.path, index, options.baseIndex),
         units,
-        fingerprint: hunksFingerprint(file.hunks),
+        fingerprint: fingerprints?.files[normalizeReviewPath(file.path)]?.digest ?? "unverified",
+        address: fingerprints?.files[normalizeReviewPath(file.path)]?.address ?? null,
+        previousAddress: file.status === "renamed" && file.previousPath
+          ? `file:v1\0${normalizeReviewPath(file.previousPath)}`
+          : null,
         blastRadius: blastRadiusOf(units, changedPaths, index, activeInbound),
         deletedImpact: file.status === "deleted"
           ? deletionImpactOf(deletionTargetsByPath.get(file.path), changedPaths, deletionIndex, deletionInbound)
@@ -219,14 +231,43 @@ function byGraphThenPath(a: ReviewFileRow, b: ReviewFileRow): number {
   return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
 }
 
-/** todo = never ticked; done = tick's fingerprint still matches; stale = the code moved since. */
+/** todo = never ticked; done = semantic address + digest match; stale = reviewed content changed. */
 export type CheckState = "todo" | "done" | "stale";
 
-export function checkStateOf(fingerprint: string, tick: ReviewTick | undefined): CheckState {
+export function checkStateOf(
+  fingerprint: string,
+  tick: ReviewTick | undefined,
+  address?: string | null,
+): CheckState {
   if (!tick) {
     return "todo";
   }
+  if (address === null || (address !== undefined && tick.address !== address)) return "stale";
   return tick.fingerprint === fingerprint ? "done" : "stale";
+}
+
+export function tickForUnit(unit: ReviewUnitRow, ticks: Record<string, ReviewTick>): ReviewTick | undefined {
+  const direct = ticks[unit.nodeId];
+  if (direct !== undefined) {
+    return direct.address === unit.previousAddress && unit.address ? { ...direct, address: unit.address } : direct;
+  }
+  const addresses = [unit.address, unit.previousAddress].filter((value): value is string => typeof value === "string");
+  const matches = Object.values(ticks).filter((tick) => tick.address !== undefined && addresses.includes(tick.address));
+  if (matches.length !== 1) return undefined;
+  const match = matches[0];
+  return match.address === unit.previousAddress && unit.address ? { ...match, address: unit.address } : match;
+}
+
+export function tickForFile(file: ReviewFileRow, ticks: Record<string, ReviewTick>): ReviewTick | undefined {
+  const direct = ticks[file.path];
+  if (direct !== undefined) {
+    return direct.address === file.previousAddress && file.address ? { ...direct, address: file.address } : direct;
+  }
+  const addresses = [file.address, file.previousAddress].filter((value): value is string => typeof value === "string");
+  const matches = Object.values(ticks).filter((tick) => tick.address !== undefined && addresses.includes(tick.address));
+  if (matches.length !== 1) return undefined;
+  const match = matches[0];
+  return match.address === file.previousAddress && file.address ? { ...match, address: file.address } : match;
 }
 
 /**
@@ -240,7 +281,7 @@ export function fileViewState(
   fileTicks: Record<string, ReviewTick>,
 ): CheckState {
   if (file.units.length === 0) {
-    return checkStateOf(file.fingerprint, fileTicks[file.path]);
+    return checkStateOf(file.fingerprint, tickForFile(file, fileTicks), file.address);
   }
   return unitsViewState(file.units, unitTicks);
 }
@@ -250,7 +291,7 @@ export function unitsViewState(
   units: readonly ReviewUnitRow[],
   unitTicks: Record<string, ReviewTick>,
 ): CheckState {
-  const states = units.map((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]));
+  const states = units.map((unit) => checkStateOf(unit.fingerprint, tickForUnit(unit, unitTicks), unit.address));
   if (states.some((state) => state === "stale")) {
     return "stale";
   }
@@ -288,11 +329,12 @@ export function applyUnitTick(
   at: string,
 ): Record<string, ReviewTick> {
   const next = { ...ticks };
-  if (checkStateOf(unit.fingerprint, ticks[unit.nodeId]) === "done") {
-    delete next[unit.nodeId];
+  if (checkStateOf(unit.fingerprint, tickForUnit(unit, ticks), unit.address) === "done") {
+    removeUnitTick(next, unit);
     return next;
   }
-  next[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+  removeUnitTick(next, unit);
+  next[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
   return next;
 }
 
@@ -306,9 +348,10 @@ export function applyUnitsToggle(
   const next = { ...ticks };
   for (const unit of units) {
     if (markViewed) {
-      next[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+      removeUnitTick(next, unit);
+      next[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
     } else {
-      delete next[unit.nodeId];
+      removeUnitTick(next, unit);
     }
   }
   return next;
@@ -329,21 +372,41 @@ export function applyFileToggle(
   if (file.units.length === 0) {
     const nextFiles = { ...fileTicks };
     if (state === "done") {
-      delete nextFiles[file.path];
+      removeFileTick(nextFiles, file);
     } else {
-      nextFiles[file.path] = { at, fingerprint: file.fingerprint };
+      removeFileTick(nextFiles, file);
+      nextFiles[file.path] = { at, fingerprint: file.fingerprint, ...(file.address ? { address: file.address } : {}) };
     }
     return { unitTicks, fileTicks: nextFiles };
   }
   const nextUnits = { ...unitTicks };
   for (const unit of file.units) {
     if (state === "done") {
-      delete nextUnits[unit.nodeId];
+      removeUnitTick(nextUnits, unit);
     } else {
-      nextUnits[unit.nodeId] = { at, fingerprint: unit.fingerprint };
+      removeUnitTick(nextUnits, unit);
+      nextUnits[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
     }
   }
   return { unitTicks: nextUnits, fileTicks };
+}
+
+function removeUnitTick(ticks: Record<string, ReviewTick>, unit: ReviewUnitRow): void {
+  delete ticks[unit.nodeId];
+  removeUniqueAddressTick(ticks, [unit.address, unit.previousAddress]);
+}
+
+function removeFileTick(ticks: Record<string, ReviewTick>, file: ReviewFileRow): void {
+  delete ticks[file.path];
+  removeUniqueAddressTick(ticks, [file.address, file.previousAddress]);
+}
+
+function removeUniqueAddressTick(ticks: Record<string, ReviewTick>, candidates: readonly (string | null | undefined)[]): void {
+  const addresses = candidates.filter((value): value is string => typeof value === "string");
+  const keys = Object.entries(ticks)
+    .filter(([, tick]) => tick.address !== undefined && addresses.includes(tick.address))
+    .map(([key]) => key);
+  if (keys.length === 1) delete ticks[keys[0]];
 }
 
 /** Folder-level bulk toggle. A partially viewed folder completes only its unfinished/stale files;
@@ -376,14 +439,16 @@ function toUnitRow(
   file: string,
   context: ReviewContext,
   index: GraphIndex,
+  fingerprints: Record<string, { address: string; digest: string }> | null,
 ): ReviewUnitRow | null {
   const node = index.nodesById.get(nodeId);
   if (!node) {
     return null;
   }
-  const hunks = context.changedFiles.find((changed) => changed.path === file)?.hunks;
   const start = node.location.startLine;
   const end = node.location.endLine ?? start;
+  const identity = fingerprints?.[nodeId];
+  const changed = context.changedFiles.find((entry) => normalizeReviewPath(entry.path) === normalizeReviewPath(file));
   return {
     nodeId,
     displayName: node.displayName,
@@ -393,8 +458,24 @@ function toUnitRow(
     sourceSide: "head",
     depth: unitDepth(nodeId, index),
     isTest: index.testIds.has(nodeId),
-    fingerprint: `${start}:${end}|${hunksFingerprint(overlapping(hunks, start, end))}`,
+    fingerprint: identity?.digest ?? "unverified",
+    address: identity?.address ?? null,
+    previousAddress: changed?.status === "renamed" && changed.previousPath
+      ? semanticAddressAtPath(identity?.address, normalizeReviewPath(changed.previousPath))
+      : null,
   };
+}
+
+function semanticAddressAtPath(address: string | undefined, path: string): string | null {
+  if (!address?.startsWith("unit:v1\0")) return null;
+  const parts = address.split("\0");
+  if (parts.length !== 4) return null;
+  parts[1] = path;
+  return parts.join("\0");
+}
+
+function normalizeReviewPath(path: string): string {
+  return path.replaceAll("\\", "/").replace(/^\.\//, "");
 }
 
 /** Containment steps below the file/package containers (core's NON_BLOCK_KINDS): a method inside a
@@ -403,16 +484,4 @@ function unitDepth(nodeId: string, index: GraphIndex): number {
   return index
     .ancestorsOf(nodeId)
     .filter((ancestor) => ancestor.id !== nodeId && !NON_BLOCK_KINDS.has(ancestor.kind)).length;
-}
-
-function overlapping(hunks: readonly LineRange[] | undefined, start: number, end: number): LineRange[] {
-  return (hunks ?? []).filter((hunk) => rangesOverlap(start, end, hunk));
-}
-
-/** Stable digest of hunk ranges; "whole-file" when the diff carried none (add/untracked/unparsed). */
-function hunksFingerprint(hunks: readonly LineRange[] | undefined): string {
-  if (!hunks || hunks.length === 0) {
-    return "whole-file";
-  }
-  return hunks.map((hunk) => `${hunk.start}-${hunk.end}`).join(",");
 }

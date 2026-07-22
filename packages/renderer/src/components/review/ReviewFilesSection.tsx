@@ -11,7 +11,7 @@
 
 import { memo, useEffect, useMemo, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { checkStateOf, fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
+import { checkStateOf, fileViewState, tickForUnit, type ReviewFileRow } from "../../derive/reviewFiles";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
@@ -223,7 +223,8 @@ function FileRow(props: {
     (comment) => !canvasComments.includes(comment),
   );
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
-  const doneUnits = file.units.filter((unit) => checkStateOf(unit.fingerprint, unitTicks[unit.nodeId]) === "done").length;
+  const doneUnits = file.units.filter((unit) =>
+    checkStateOf(unit.fingerprint, tickForUnit(unit, unitTicks), unit.address) === "done").length;
   const hasBody = file.units.length > 0 || fileDrafts.length > 0 || (commentsVisible && existingComments.length > 0) || file.deletedImpact !== null;
   return (
     <div style={FILE_BLOCK}>
@@ -322,7 +323,7 @@ function FileRow(props: {
             </div>
           ) : null}
           {file.units.map((unit) => (
-            <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={unitTicks[unit.nodeId]} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
+            <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={tickForUnit(unit, unitTicks)} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
           ))}
           <CommentList comments={fileDrafts} />
           {composerHere && (
