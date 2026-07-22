@@ -18,7 +18,7 @@ import {
   changedLineStatsFromExtensions,
   computeAffectedNodes,
   NON_BLOCK_KINDS,
-  rangesOverlap,
+  reviewFingerprintsFromArtifact,
 } from "@meridian/core";
 import type {
   AffectedNode,
@@ -59,6 +59,8 @@ export interface DeletedReviewFileProjection {
   diffLines: readonly ChangedDiffLine[];
   /** True when removal status, rather than a complete patch body, proves the whole pre-image gone. */
   wholeFileDeleted: boolean;
+  fingerprint: string;
+  address: string | null;
 }
 
 export interface DeletedNodeProjection {
@@ -118,6 +120,7 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
   const rawByPath = new Map(args.prFiles.map((file) => [normalizePath(file.path), file]));
   const canonicalDiffLines = changedDiffLinesFromExtensions(args.headArtifact.extensions);
   const canonicalStats = changedLineStatsFromExtensions(args.headArtifact.extensions);
+  const baseFingerprints = reviewFingerprintsFromArtifact(args.baseArtifact);
   const plans: FilePlan[] = [];
   const counterparts: Counterparts = { byBaseId: new Map(), uncertainBaseIds: new Set() };
 
@@ -293,7 +296,7 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
       .sort(compareAffected);
     const units = direct
       .filter((node) => !NON_BLOCK_KINDS.has(node.kind))
-      .map((node) => toDeletedUnit(node, plan, args.baseIndex))
+      .map((node) => toDeletedUnit(node, plan, args.baseIndex, baseFingerprints?.units ?? null))
       .sort((left, right) => left.startLine - right.startLine || left.nodeId.localeCompare(right.nodeId));
     allAffected.push(...affected);
     files.push({
@@ -304,6 +307,10 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
       units,
       diffLines: plan.diffLines,
       wholeFileDeleted: plan.removed && !plan.exactDiff,
+      fingerprint: baseFingerprints?.files[plan.basePath]?.digest
+        ? `${baseFingerprints.files[plan.basePath]!.digest}:deleted`
+        : "unverified",
+      address: baseFingerprints?.files[plan.basePath]?.address ?? null,
     });
   }
 
@@ -524,13 +531,15 @@ function uniqueBySignature(nodes: ReadonlySet<GraphNode>): Map<string, GraphNode
   return unique;
 }
 
-function toDeletedUnit(node: GraphNode, plan: FilePlan, baseIndex: GraphIndex): DeletedReviewUnit {
+function toDeletedUnit(
+  node: GraphNode,
+  plan: FilePlan,
+  baseIndex: GraphIndex,
+  fingerprints: Record<string, { address: string; digest: string }> | null,
+): DeletedReviewUnit {
   const start = node.location.startLine;
   const end = node.location.endLine ?? start;
-  const ranges = plan.deletedRanges.filter((range) => rangesOverlap(start, end, range));
-  const digest = ranges.length > 0
-    ? ranges.map((range) => `${range.start}-${range.end}`).join(",")
-    : "whole-file";
+  const identity = fingerprints?.[node.id];
   return {
     nodeId: node.id,
     displayName: node.displayName,
@@ -541,7 +550,8 @@ function toDeletedUnit(node: GraphNode, plan: FilePlan, baseIndex: GraphIndex): 
       .ancestorsOf(node.id)
       .filter((ancestor) => ancestor.id !== node.id && !NON_BLOCK_KINDS.has(ancestor.kind)).length,
     isTest: baseIndex.testIds.has(node.id),
-    fingerprint: `${start}:${end}|base:${digest}`,
+    fingerprint: identity ? `${identity.digest}:deleted` : "unverified",
+    address: identity?.address ?? null,
     sourceSide: "base",
     basePath: plan.basePath,
     reviewPath: plan.path,

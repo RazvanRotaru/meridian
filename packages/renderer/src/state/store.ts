@@ -181,6 +181,7 @@ import {
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
+import { canonicalPrReviewScope } from "../derive/prReviewScope";
 import {
   applyFilesToggle,
   applyFileToggle,
@@ -7361,12 +7362,18 @@ function applyPrReviewToMap(
     ? prFilesTotal
     : Math.max(prFilesTotal, reviewPrFiles.length + prFilesOutside);
   const summary = selectedPrSummary(get());
+  const prSessionSource = get().prSessionSource;
+  const reviewKey = prSessionSource === null ? null : canonicalPrReviewScope(prSessionSource, prSelected);
+  if (reviewKey === null) {
+    set({ prReviewBlocked: { number: prSelected, reason: "This PR session has no stable GitHub repository scope" } });
+    return false;
+  }
   const context = reviewContextFromPrFiles(
     {
       prNumber: prSelected,
       headRef: summary?.headRef ?? null,
       baseRef: summary?.baseRef ?? null,
-      scopeId: prFilesUrl,
+      reviewKey,
       files: reviewPrFiles,
     },
     // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
@@ -7581,7 +7588,9 @@ function applyPrReviewToMap(
       for (const locFile of binding.aliases) reviewRemovedTruncatedByFile[locFile] = true;
     }
   }
-  const progress = liveProgress ?? readReviewProgress(context.reviewKey);
+  const progress = liveProgress ?? readReviewProgress(context.reviewKey, {
+    legacyKeys: [`${prFilesUrl}|pr-${prSelected}`],
+  });
   const currentSelection = get();
   const loadedRevision = options.reprojecting
     ? currentSelection.prReviewRevision
@@ -7803,6 +7812,11 @@ function mergeDeletedReviewFiles(
       isTest: moduleId === null ? file.isTest : index.testIds.has(moduleId),
       units: [...units.values()].sort((left, right) =>
         left.startLine - right.startLine || left.nodeId.localeCompare(right.nodeId)),
+      ...(deleted ? {
+        fingerprint: deleted.fingerprint,
+        address: deleted.address,
+        previousAddress: null,
+      } : {}),
     };
   });
 }
@@ -8689,7 +8703,7 @@ function persistReviewProgress(
     return;
   }
   const progress: ReviewProgress = {
-    version: 2,
+    version: 3,
     ticks: state.reviewTicks,
     unitTicks: state.reviewUnitTicks,
     fileTicks: state.reviewFileTicks,

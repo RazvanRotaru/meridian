@@ -31,7 +31,7 @@ describe("readReviewProgress", () => {
   it("migrates a v1 record forward, keeping its flow ticks", () => {
     stubStorage({ "meridian.review.scope": JSON.stringify({ version: 1, ticks: { flow: { at: "t", fingerprint: "f" } } }) });
     expect(readReviewProgress("scope")).toEqual({
-      version: 2,
+      version: 3,
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: {},
       fileTicks: {},
@@ -39,10 +39,10 @@ describe("readReviewProgress", () => {
     });
   });
 
-  it("round-trips a v2 record whole", () => {
+  it("round-trips a v3 record whole", () => {
     stubStorage();
     const progress: ReviewProgress = {
-      version: 2,
+      version: 3,
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: { unit: { at: "t", fingerprint: "u" } },
       fileTicks: { "a.ts": { at: "t", fingerprint: "h" } },
@@ -56,9 +56,25 @@ describe("readReviewProgress", () => {
     stubStorage({ "meridian.review.scope": "not json" });
     expect(readReviewProgress("scope").ticks).toEqual({});
     stubStorage({ "meridian.review.scope": JSON.stringify({ version: 9, ticks: {} }) });
-    expect(readReviewProgress("scope")).toEqual({ version: 2, ticks: {}, unitTicks: {}, fileTicks: {}, comments: [] });
+    expect(readReviewProgress("scope")).toEqual({ version: 3, ticks: {}, unitTicks: {}, fileTicks: {}, comments: [] });
     vi.unstubAllGlobals();
     expect(readReviewProgress("scope").comments).toEqual([]);
+  });
+
+  it("merges a graph-url legacy scope once, persists canonically, and deletes the obsolete key", () => {
+    const legacy = "/api/prs/files?id=graph-a|pr-17";
+    const data = stubStorage({
+      [`meridian.review.${legacy}`]: JSON.stringify({
+        version: 2,
+        ticks: {},
+        unitTicks: { A: { at: "t", fingerprint: "a" } },
+        fileTicks: {},
+        comments: [],
+      }),
+    });
+    expect(readReviewProgress("canonical", { legacyKeys: [legacy] }).unitTicks).toHaveProperty("A");
+    expect(data[`meridian.review.${legacy}`]).toBeUndefined();
+    expect(JSON.parse(data["meridian.review.canonical"]!).version).toBe(3);
   });
 
   it("drops malformed comment elements so one corrupt draft cannot poison the submission", () => {

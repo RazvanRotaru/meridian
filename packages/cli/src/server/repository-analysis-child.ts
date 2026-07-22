@@ -18,6 +18,7 @@ import {
   type RepositoryAnalysisWorkerBranchVariantResult,
   type RepositoryAnalysisWorkerFileResult,
   type RepositoryAnalysisWorkerRequest,
+  type ReviewFingerprintSelection,
   type RepositoryAnalysisWorkerResponse,
   type SerializableRepositoryAnalysisRequest,
 } from "./repository-analysis-worker-job";
@@ -65,6 +66,8 @@ export interface RepositoryAnalysisChildOptions {
   token?: string;
   /** Cold-cache branch derivative streamed from the same validated in-child graph. */
   branchVariant?: { artifactOutputPath: string; branch: string };
+  /** Produce a bounded PR-review fingerprint sidecar inside the disposable worker. */
+  reviewFingerprints?: ReviewFingerprintSelection;
   signal?: AbortSignal;
   /** Test/dev override; production resolves the colocated built worker. */
   workerEntry?: string | URL;
@@ -86,6 +89,7 @@ export async function runRepositoryAnalysisChild(
     request: normalizeRepositoryAnalysisRequest(request),
     artifactOutputPath: options.artifactOutputPath,
     branchVariant: options.branchVariant ?? null,
+    reviewFingerprints: options.reviewFingerprints ?? null,
     ...(options.token ? { token: options.token } : {}),
   };
   return publicResult(await runRepositoryWorkerProcess(message, options), options.artifactOutputPath);

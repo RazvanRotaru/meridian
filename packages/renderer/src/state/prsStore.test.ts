@@ -75,6 +75,10 @@ const ARTIFACT: GraphArtifact = {
     node(METHOD_ID, "method", "src/a.ts", CLASS_ID, { start: 10, end: 12 }),
   ],
   edges: [],
+  extensions: reviewFingerprintFixture([
+    [CLASS_ID, "class", CLASS_ID],
+    [METHOD_ID, "method", METHOD_ID],
+  ], ["src/a.ts"]),
 };
 
 const REVIEW_WITH_TESTS_ARTIFACT: GraphArtifact = {
@@ -88,12 +92,34 @@ const REVIEW_WITH_TESTS_ARTIFACT: GraphArtifact = {
     { id: "test-calls-run", source: TEST_METHOD_ID, target: METHOD_ID, kind: "calls", resolution: "resolved" },
   ],
   extensions: {
+    ...ARTIFACT.extensions,
     logicFlow: {
       [METHOD_ID]: [],
       [TEST_METHOD_ID]: [{ kind: "call", label: "run", target: METHOD_ID, resolution: "resolved" }],
     },
   },
 };
+
+function reviewFingerprintFixture(
+  units: Array<[string, string, string]>,
+  files: string[],
+): GraphArtifact["extensions"] {
+  return {
+    reviewFingerprints: {
+      version: 1,
+      algorithm: "sha256-source-bytes",
+      complete: true,
+      units: Object.fromEntries(units.map(([id, kind, qualifiedName]) => [id, {
+        address: `unit:v1\0${id.includes("a.test.ts") ? "src/a.test.ts" : "src/a.ts"}\0${kind}\0${qualifiedName}`,
+        digest: "a".repeat(64),
+      }])),
+      files: Object.fromEntries(files.map((path) => [path, {
+        address: `file:v1\0${path}`,
+        digest: "b".repeat(64),
+      }])),
+    },
+  } as GraphArtifact["extensions"];
+}
 
 const ARTIFACT_REVIEW_WITH_TESTS: GraphArtifact = {
   ...REVIEW_WITH_TESTS_ARTIFACT,
@@ -223,6 +249,35 @@ afterEach(() => {
 });
 
 describe("PR store slice", () => {
+  it("restores one progress record across fresh stores with different generated graph ids", async () => {
+    stubReviewStorage();
+    const open = async (graphId: string) => {
+      const store = freshStore({
+        prFilesUrl: `/api/prs/files?id=${graphId}`,
+        prSessionSource: { repository: "O/R", subdir: "packages/app" },
+      });
+      store.setState({
+        viewMode: "prs",
+        prSelected: 7,
+        prsList: { open: [pr(7)], closed: null },
+        prFiles: [{ path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] }],
+      });
+      await store.getState().reviewPrInGraph();
+      return store;
+    };
+
+    const first = await open("graph-a");
+    first.getState().toggleReviewUnitTick(METHOD_ID);
+    first.getState().addReviewComment("src/a.ts", METHOD_ID, "Keep this draft");
+    const regenerated = await open("graph-b");
+
+    expect(regenerated.getState().reviewUnitTicks[METHOD_ID]).toEqual(first.getState().reviewUnitTicks[METHOD_ID]);
+    expect(regenerated.getState().reviewComments.map((comment) => comment.body)).toEqual(["Keep this draft"]);
+    regenerated.getState().resetReviewTicks();
+    expect(regenerated.getState().reviewUnitTicks).toEqual({});
+    expect(regenerated.getState().reviewComments.map((comment) => comment.body)).toEqual(["Keep this draft"]);
+  });
+
   it("counts raw PR test files only on PR/review surfaces and deduplicates graph matches", () => {
     const addedTest = { path: "repo/src/new.test.ts", status: "added" as const, additions: 1, deletions: 0 };
     const plainStore = freshStore();

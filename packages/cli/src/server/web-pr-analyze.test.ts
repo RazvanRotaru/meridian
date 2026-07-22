@@ -163,8 +163,8 @@ describe("handlePrAnalyze", () => {
     expect(done.warnings).toEqual(["w1", "base warning"]);
 
     const sourceDir = graphDescriptor(ctx, done.graphId as string).sourceRoot;
-    expect(ctx.graphStore.loadArtifact(done.graphId as string)).toStrictEqual(ARTIFACT);
-    expect(ctx.graphStore.loadArtifact(done.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(done.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(done.comparisonGraphId as string), COMPARISON_ARTIFACT);
     expect(sourceDir).toContain(cacheRoot);
     expect(graphDescriptor(ctx, done.comparisonGraphId as string).sourceRoot).toContain(cacheRoot);
     expect(graphDescriptor(ctx, done.graphId as string).source).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
@@ -365,8 +365,8 @@ describe("handlePrAnalyze", () => {
       mode: "sandboxed-pr",
       provenance: { repository: "org/repo", headSha: HEAD_SHA },
     });
-    expect(ctx.graphStore.loadArtifact(first.graphId as string)).toStrictEqual(ARTIFACT);
-    expect(ctx.graphStore.loadArtifact(second.graphId as string)).toStrictEqual(ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(first.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(second.graphId as string), ARTIFACT);
   });
 
   it("keeps the PR graph reviewable and leaks no details when its synthetic manifest is malformed", async () => {
@@ -382,7 +382,7 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     const done = lines.at(-1)!;
     const graphId = done.graphId as string;
-    expect(ctx.graphStore.loadArtifact(graphId)).toStrictEqual(ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(graphId), ARTIFACT);
     expect(graphDescriptor(ctx, graphId).synthetic).toEqual({
       scenarios: [],
       sourceFingerprint: null,
@@ -447,7 +447,7 @@ describe("handlePrAnalyze", () => {
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.graphId as string).sourceRoot)).toBe(true);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.comparisonGraphId as string).sourceRoot)).toBe(true);
-    expect(restarted.graphStore.loadArtifact(second.at(-1)?.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(second.at(-1)?.comparisonGraphId as string), COMPARISON_ARTIFACT);
   });
 
   it("publishes refreshed PR snapshots under new ids without rebinding the open review", async () => {
@@ -497,8 +497,8 @@ describe("handlePrAnalyze", () => {
     const failed = (await invoke(ctx, BODY)).lines();
 
     expect(failed.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
-    expect(ctx.graphStore.loadArtifact(headId)).toStrictEqual(ARTIFACT);
-    expect(ctx.graphStore.loadArtifact(comparisonId)).toStrictEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(headId), ARTIFACT);
+    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(comparisonId), COMPARISON_ARTIFACT);
     expect(existsSync(headRoot)).toBe(true);
     expect(existsSync(comparisonRoot)).toBe(true);
   });
@@ -528,8 +528,8 @@ describe("handlePrAnalyze", () => {
     expect(secondDone.comparisonGraphId).toBe(firstDone.comparisonGraphId);
     expect(secondDone.headSha).toBe(HEAD_SHA);
     expect(secondDone.mergeBaseSha).toBe(MERGE_BASE_SHA);
-    expect(restarted.graphStore.loadArtifact(secondDone.graphId as string)).toStrictEqual(ARTIFACT);
-    expect(restarted.graphStore.loadArtifact(secondDone.comparisonGraphId as string)).toStrictEqual(COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.comparisonGraphId as string), COMPARISON_ARTIFACT);
     expect(runGitClone).toHaveBeenCalledTimes(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
@@ -1103,4 +1103,16 @@ async function waitFor(predicate: () => boolean): Promise<void> {
     await new Promise<void>((resolve) => setImmediate(resolve));
   }
   throw new Error("condition was not reached");
+}
+
+function expectWithoutReviewFingerprints(actual: GraphArtifact | undefined, expected: GraphArtifact): void {
+  expect(actual).toBeDefined();
+  if (actual === undefined) throw new Error("expected stored graph artifact");
+  expect(actual.extensions?.reviewFingerprints).toMatchObject({
+    version: 1,
+    algorithm: "sha256-source-bytes",
+    complete: expect.any(Boolean),
+  });
+  const { reviewFingerprints: _fingerprints, ...extensions } = actual.extensions ?? {};
+  expect({ ...actual, extensions }).toStrictEqual({ ...expected, extensions: expected.extensions ?? {} });
 }

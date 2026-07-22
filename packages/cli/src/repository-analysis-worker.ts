@@ -19,6 +19,7 @@ import {
   type RepositoryAnalysisWorkerResponse,
 } from "./server/repository-analysis-worker-job";
 import { WebError } from "./server/web-error";
+import { withReviewFingerprints } from "./server/review-fingerprints";
 
 let finished = false;
 
@@ -59,7 +60,11 @@ async function analyzeToFile(
   message: Extract<RepositoryAnalysisWorkerRequest, { type: "analyze" }>,
 ): Promise<RepositoryAnalysisWorkerFileResult> {
   const request = analysisRequest(message);
-  const { artifact, extractors, warnings } = await analyzeRepository(request);
+  const analyzed = await analyzeRepository(request);
+  const artifact = message.reviewFingerprints !== null
+    ? withReviewFingerprints(analyzed.artifact, request.absoluteRoot, message.reviewFingerprints)
+    : analyzed.artifact;
+  const { extractors, warnings } = analyzed;
   const changed = changedMetadataForWorker(artifact, request.changedSince);
   const emptySideHints = emptySideHintsForWorker(artifact, changed.changedFiles, extractors);
   const sourceFiles = syntheticSourceFilesForWorker(artifact);

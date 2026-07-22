@@ -528,6 +528,12 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // 4g — URL-backed reload restores the review; the checked unit remains in localStorage.
     const storedTick = await storedUnitTicks(page);
     expect(Object.keys(storedTick.unitTicks)).toHaveLength(1);
+    expect(storedTick.key).toContain("github-pr:v1");
+    expect(storedTick.key).not.toContain("id=");
+    expect(Object.values(storedTick.unitTicks)[0]).toMatchObject({
+      address: expect.stringContaining("unit:v1"),
+      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("rev") === "1");
     expect(new URL(page.url()).searchParams.get("rev")).toBe("1");
     await page.reload({ waitUntil: "networkidle" });
