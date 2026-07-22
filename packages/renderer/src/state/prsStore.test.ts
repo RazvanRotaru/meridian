@@ -3586,6 +3586,70 @@ describe("PR review artifact swap and restore", () => {
     expect(new URL(headSourceCall[0].toString()).searchParams.get("id")).toBe("pr-head-1");
   });
 
+  it("keeps nested base-map disclosures live after soft-closing a prepared review", async () => {
+    const appId = "ts:app";
+    const srcId = `${appId}/src`;
+    const frameworkId = `${srcId}/framework`;
+    const baseFileId = `${frameworkId}/base.ts`;
+    const headFileId = `${frameworkId}/head.ts`;
+    const baseArtifact: GraphArtifact = {
+      ...ARTIFACT,
+      generatedAt: "2026-07-08T01:00:00.000Z",
+      nodes: [
+        { ...node(appId, "package", "app"), tags: ["npm-package"] },
+        node(srcId, "package", "app/src", appId),
+        node(frameworkId, "package", "app/src/framework", srcId),
+        node(baseFileId, "module", "app/src/framework/base.ts", frameworkId),
+      ],
+      edges: [],
+    };
+    const headArtifact: GraphArtifact = {
+      ...baseArtifact,
+      generatedAt: "2026-07-08T02:00:00.000Z",
+      nodes: [
+        ...baseArtifact.nodes,
+        node(headFileId, "module", "app/src/framework/head.ts", frameworkId),
+      ],
+    };
+    const store = freshStoreForArtifact(baseArtifact);
+    const baseIndex = store.getState().index;
+    swapToPreparedArtifact(store.getState, store.setState, headArtifact, () => undefined);
+    store.setState({
+      viewMode: "modules",
+      prReviewed: 4414,
+      review: {
+        context: {
+          changedFiles: [{ path: "app/src/framework/head.ts", status: "added" }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "prepared-nested-disclosure",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      minimalSeedIds: [headFileId],
+      minimalMemberIds: [headFileId],
+    });
+
+    store.getState().closeMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().moduleLayoutStatus).toBe("ready"));
+
+    expect(store.getState().artifact).toBe(baseArtifact);
+    expect(store.getState().index).toBe(baseIndex);
+    for (const id of [appId, srcId, frameworkId]) {
+      store.getState().toggleModuleExpand(id);
+      await vi.waitFor(() => {
+        expect(store.getState().moduleLayoutStatus).toBe("ready");
+        expect(store.getState().moduleRfNodes.find((candidate) => candidate.id === id)?.data)
+          .toMatchObject({ isExpanded: true });
+      });
+    }
+    expect(store.getState().moduleRfNodes).toContainEqual(expect.objectContaining({ id: baseFileId }));
+    expect(store.getState().moduleExpanded).toEqual(new Set([appId, srcId, frameworkId]));
+  });
+
   it("keeps a failed resume retryable and succeeds on the next attempt", async () => {
     const { store } = await swappedReviewStore();
     store.getState().closeMinimalGraph();

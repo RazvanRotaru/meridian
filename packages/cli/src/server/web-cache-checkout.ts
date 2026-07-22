@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { buildCloneArgs, parseGitHubSource } from "./clone";
 import type { GenerateRequest } from "./web-request";
 import { runGit, runGitClone } from "./git-exec";
+import { isOperationCancelled, throwIfAborted } from "./web-cancellation";
 import { WebError } from "./web-error";
 import {
   createStageDirectory,
@@ -38,15 +39,19 @@ export async function checkoutFor(
   cwd: string,
   token?: string,
   onClone: () => void | Promise<void> = () => {},
+  signal?: AbortSignal,
 ): Promise<CachedCheckout> {
-  const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token);
+  throwIfAborted(signal);
+  const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token, signal);
   const advertisedEntry = join(parent, advertised.commit);
-  if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl)) {
+  if (await validCheckout(advertisedEntry, repositoryKey, advertised.commit, remoteUrl, signal)) {
     return { ...advertised, cache: "hit", repoDir: join(advertisedEntry, "repo"), repositoryKey, remoteUrl };
   }
+  throwIfAborted(signal);
   removeEntry(advertisedEntry);
   await onClone();
-  return cloneCheckout(parent, repositoryKey, remoteUrl, request.ref, advertised.branch, token);
+  throwIfAborted(signal);
+  return cloneCheckout(parent, repositoryKey, remoteUrl, request.ref, advertised.branch, token, signal);
 }
 
 export async function probeCheckout(
@@ -54,10 +59,12 @@ export async function probeCheckout(
   request: GenerateRequest,
   cwd: string,
   token?: string,
+  signal?: AbortSignal,
 ): Promise<CachedCheckout | null> {
-  const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token);
+  throwIfAborted(signal);
+  const { advertised, parent, remoteUrl, repositoryKey } = await checkoutIdentity(cacheRoot, request, cwd, token, signal);
   const entry = join(parent, advertised.commit);
-  if (!(await validCheckout(entry, repositoryKey, advertised.commit, remoteUrl))) {
+  if (!(await validCheckout(entry, repositoryKey, advertised.commit, remoteUrl, signal))) {
     return null;
   }
   return { ...advertised, cache: "hit", repoDir: join(entry, "repo"), repositoryKey, remoteUrl };
@@ -68,11 +75,12 @@ async function checkoutIdentity(
   request: GenerateRequest,
   cwd: string,
   token?: string,
+  signal?: AbortSignal,
 ): Promise<{ advertised: { branch?: string; commit: string }; parent: string; remoteUrl: string; repositoryKey: string }> {
   const remoteUrl = parseGitHubSource(request.value);
   const repositoryKey = repositoryCacheKey(remoteUrl);
   return {
-    advertised: await remoteCommit(remoteUrl, request.ref, cwd, token),
+    advertised: await remoteCommit(remoteUrl, request.ref, cwd, token, signal),
     parent: join(cacheRoot, "repositories", repositoryKey),
     remoteUrl,
     repositoryKey,
@@ -86,12 +94,14 @@ async function cloneCheckout(
   ref: string | undefined,
   branch: string | undefined,
   token: string | undefined,
+  signal?: AbortSignal,
 ): Promise<CachedCheckout> {
   const stage = createStageDirectory(parent);
   const stagedRepo = join(stage, "repo");
   try {
-    await runGitClone(buildCloneArgs(remoteUrl, stagedRepo, { ref, token }), token);
-    const commit = requireCommit((await runGit(["rev-parse", "HEAD"], { cwd: stagedRepo })).trim());
+    await runGitClone(buildCloneArgs(remoteUrl, stagedRepo, { ref, token }), token, { signal });
+    const commit = requireCommit((await runGit(["rev-parse", "HEAD"], { cwd: stagedRepo, signal })).trim());
+    throwIfAborted(signal);
     const metadata: CheckoutMetadata = {
       formatVersion: CACHE_FORMAT_VERSION,
       repositoryKey,
@@ -101,7 +111,7 @@ async function cloneCheckout(
     writePrivateJson(join(stage, "metadata.json"), metadata);
     const destination = join(parent, commit);
     publishImmutable(stage, destination);
-    if (!(await validCheckout(destination, repositoryKey, commit, remoteUrl))) {
+    if (!(await validCheckout(destination, repositoryKey, commit, remoteUrl, signal))) {
       throw new WebError(422, "cached checkout failed verification");
     }
     return { branch, cache: "miss", commit, repoDir: join(destination, "repo"), repositoryKey, remoteUrl };
@@ -116,6 +126,7 @@ async function validCheckout(
   repositoryKey: string,
   commit: string,
   remoteUrl: string,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const repoDir = join(entry, "repo");
   if (!isDirectory(repoDir)) {
@@ -131,8 +142,9 @@ async function validCheckout(
     ) {
       return false;
     }
-    return requireCommit((await runGit(["rev-parse", "HEAD"], { cwd: repoDir })).trim()) === commit;
-  } catch {
+    return requireCommit((await runGit(["rev-parse", "HEAD"], { cwd: repoDir, signal })).trim()) === commit;
+  } catch (error) {
+    if (isOperationCancelled(error)) throw error;
     return false;
   }
 }
@@ -142,9 +154,10 @@ async function remoteCommit(
   ref: string | undefined,
   cwd: string,
   token?: string,
+  signal?: AbortSignal,
 ): Promise<{ branch?: string; commit: string }> {
   const patterns = ref ? [`refs/heads/${ref}`, `refs/tags/${ref}`, `refs/tags/${ref}^{}`] : ["HEAD"];
-  const output = await runGit(["ls-remote", "--exit-code", url, ...patterns], { cwd, token });
+  const output = await runGit(["ls-remote", "--exit-code", url, ...patterns], { cwd, token, signal });
   const rows = output.trim().split("\n").map((line) => line.trim().split(/\s+/, 2));
   const preferred = ref
     ? [`refs/heads/${ref}`, `refs/tags/${ref}^{}`, `refs/tags/${ref}`]

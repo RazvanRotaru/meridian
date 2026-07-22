@@ -42,7 +42,11 @@ import { compileInstrumentedProject } from "./synthetic-project";
 
 export { SyntheticExecutionError } from "./synthetic-error";
 export type { SyntheticExecutionErrorCode } from "./synthetic-error";
-export { syntheticSourceFingerprint } from "./synthetic-fingerprint";
+export {
+  syntheticSourceFiles,
+  syntheticSourceFingerprint,
+  syntheticSourceFingerprintForFiles,
+} from "./synthetic-fingerprint";
 export { runSyntheticScenarioInOci, syntheticPrSandboxRuntimeSupported } from "./synthetic-oci";
 export type { RunSyntheticScenarioInOciRequest } from "./synthetic-oci";
 

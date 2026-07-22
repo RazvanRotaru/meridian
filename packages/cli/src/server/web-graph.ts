@@ -4,10 +4,15 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { CliError } from "../errors";
 import { sendHtml, sendJson, sendJsonFile } from "./http-response";
 import { telemetrySourceDescriptors } from "./overlay-source";
-import { SyntheticExecutionError } from "./synthetic-execution";
+import { SyntheticExecutionError } from "./synthetic-error";
 import { githubTokenFor } from "./web-auth";
 import { injectViewBoot, syntheticExecutionBootCapability } from "./web-boot";
 import { WebError } from "./web-error";
+import {
+  isOperationCancelled,
+  requestCancellation,
+  responseCanWrite,
+} from "./web-cancellation";
 import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
@@ -17,23 +22,39 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
     await handleGenerateStream(ctx, request, response);
     return;
   }
-  const parsed = parseGenerateRequest(await readJsonBody(request));
-  const result = await generateGraph(ctx, parsed, githubTokenFor(ctx, request, parsed.token));
-  sendJson(response, 200, result);
+  const cancellation = requestCancellation(request, response);
+  try {
+    const parsed = parseGenerateRequest(await readJsonBody(request));
+    const result = await generateGraph(
+      ctx,
+      parsed,
+      githubTokenFor(ctx, request, parsed.token),
+      undefined,
+      cancellation.signal,
+    );
+    if (responseCanWrite(response)) sendJson(response, 200, result);
+  } finally {
+    cancellation.dispose();
+  }
 }
 
 async function handleGenerateStream(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const cancellation = requestCancellation(request, response);
   beginNdjson(response);
   try {
     const parsed = parseGenerateRequest(await readJsonBody(request));
     const result = await generateGraph(ctx, parsed, githubTokenFor(ctx, request, parsed.token), (stage) =>
       writeLine(response, { stage }),
+      cancellation.signal,
     );
     await writeLine(response, { stage: "done", ...result });
   } catch (error) {
-    await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
+    if (!isOperationCancelled(error) && responseCanWrite(response)) {
+      await writeLine(response, { stage: "error", message: safeGenerateMessage(error) });
+    }
   } finally {
-    response.end();
+    cancellation.dispose();
+    if (responseCanWrite(response)) response.end();
   }
 }
 
@@ -51,6 +72,7 @@ function beginNdjson(response: ServerResponse): void {
 
 /** Resolve once Node has handed the line off, yielding before CPU-heavy extraction begins. */
 function writeLine(response: ServerResponse, line: Record<string, unknown>): Promise<void> {
+  if (!responseCanWrite(response)) return Promise.resolve();
   return new Promise((resolve, reject) => {
     response.write(`${JSON.stringify(line)}\n`, (error) => {
       if (error) {

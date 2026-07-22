@@ -24,6 +24,26 @@ const READ_BUFFER_BYTES = 64 * 1024;
  * while this guard detects source/config replacement between advertisement and execution.
  */
 export function syntheticSourceFingerprint(sourceRoot: string, artifact: GraphArtifact): string {
+  return syntheticSourceFingerprintForFiles(sourceRoot, syntheticSourceFiles(artifact));
+}
+
+/**
+ * Compact source inventory needed by the fingerprint boundary. Repository analysis workers can
+ * return this list without returning the graph itself, so the long-lived web process never has to
+ * hydrate a whole artifact merely to advertise an opt-in synthetic scenario.
+ */
+export function syntheticSourceFiles(artifact: GraphArtifact): string[] {
+  return [...new Set(artifact.nodes
+    .filter((node) => !NON_SOURCE_KINDS.has(node.kind))
+    .map((node) => normalizeLogicalPath(node.location.file))
+    .filter((file): file is string => file !== null))].sort();
+}
+
+/** Hash the same source/config set from a compact, worker-produced file inventory. */
+export function syntheticSourceFingerprintForFiles(
+  sourceRoot: string,
+  sourceFiles: readonly string[],
+): string {
   const root = canonicalRoot(sourceRoot);
   const hash = createHash("sha256");
   hash.update("meridian-synthetic-source-v1\0");
@@ -47,9 +67,7 @@ export function syntheticSourceFingerprint(sourceRoot: string, artifact: GraphAr
     if (path !== null) addFile(hash, `config:${name}`, path);
   }
 
-  const logicalFiles = [...new Set(artifact.nodes
-    .filter((node) => !NON_SOURCE_KINDS.has(node.kind))
-    .map((node) => normalizeLogicalPath(node.location.file))
+  const logicalFiles = [...new Set(sourceFiles.map(normalizeLogicalPath)
     .filter((file): file is string => file !== null))].sort();
   for (const logicalFile of logicalFiles) {
     const path = canonicalFile(root, logicalFile, false);

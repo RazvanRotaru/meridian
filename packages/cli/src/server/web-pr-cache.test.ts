@@ -10,6 +10,7 @@ import { validateOrThrow } from "../validation";
 import { runGit, runGitClone } from "./git-exec";
 import { materializeValidatedArtifact } from "./web-graph-store";
 import { cachedPrGraph } from "./web-pr-cache";
+import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -74,29 +75,28 @@ describe("persistent PR graph artifact paths", () => {
     const first = await generate();
 
     expect(first.cache).toBe("miss");
-    expect(first.artifact).toBe(HEAD_ARTIFACT);
+    expect(first.artifactFacts).toMatchObject({
+      target: HEAD_ARTIFACT.target,
+      changedSinceBaseRef: MERGE_BASE_SHA,
+    });
     expect(first).not.toHaveProperty("comparisonArtifact");
-    expect(materializeValidatedArtifact).toHaveBeenCalledTimes(2);
+    expect(materializeValidatedArtifact).not.toHaveBeenCalled();
     expect(validateOrThrow).not.toHaveBeenCalled();
 
     const second = await generate();
     expect(second.cache).toBe("hit");
     expect(second).not.toHaveProperty("comparisonArtifact");
-    expect(second.artifact.extensions?.changedSince).toMatchObject({
-      baseRef: MERGE_BASE_SHA,
-      manifest: expect.arrayContaining([
+    expect(second.artifactFacts).toMatchObject({
+      changedSinceBaseRef: MERGE_BASE_SHA,
+      changedFiles: expect.arrayContaining([
         { path: "src/added.ts", status: "added" },
         { path: "src/changed.ts", status: "modified" },
         { path: "src/deleted.ts", status: "deleted" },
         { path: "src/renamed.ts", status: "renamed", previousPath: "src/old.ts" },
       ]),
     });
-    expect(materializeValidatedArtifact).toHaveBeenCalledTimes(2);
-    expect(validateOrThrow).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(validateOrThrow).mock.calls.map(([, label]) => label)).toEqual([
-      "cached PR comparison artifact",
-      "cached PR artifact",
-    ]);
+    expect(materializeValidatedArtifact).not.toHaveBeenCalled();
+    expect(validateOrThrow).not.toHaveBeenCalled();
   });
 
   it("returns the exact immutable HEAD and merge-base JSON paths on misses and hits", async () => {
@@ -146,7 +146,7 @@ describe("persistent PR graph artifact paths", () => {
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects a digest-consistent cache snapshot whose HEAD diff is bound to another base", async () => {
+  it("rejects a digest-consistent cache snapshot whose compact HEAD facts are bound to another base", async () => {
     const first = await generate();
     rewriteCachedBaseRef(first.artifactMaterial.path, BASE_SHA);
 
@@ -154,7 +154,7 @@ describe("persistent PR graph artifact paths", () => {
 
     expect(replacement.cache).toBe("miss");
     expect(replacement.artifactMaterial.path).not.toBe(first.artifactMaterial.path);
-    expect(replacement.artifact.extensions?.changedSince).toMatchObject({ baseRef: MERGE_BASE_SHA });
+    expect(replacement.artifactFacts.changedSinceBaseRef).toBe(MERGE_BASE_SHA);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
   });
 
@@ -232,6 +232,7 @@ function generate(refresh = false) {
     cwd: cacheRoot,
     refresh,
     onStage: () => {},
+    repositoryAnalysis: runRepositoryAnalysisChildInProcess,
   });
 }
 
@@ -274,15 +275,9 @@ function artifact(commit: string, branch?: string): GraphArtifact {
 
 function rewriteCachedBaseRef(artifactPath: string, baseRef: string): void {
   const snapshot = dirname(artifactPath);
-  const artifact = JSON.parse(readFileSync(artifactPath, "utf8")) as GraphArtifact;
-  const changedSince = artifact.extensions?.changedSince as Record<string, unknown>;
-  changedSince.baseRef = baseRef;
-  const artifactBytes = Buffer.from(`${JSON.stringify(artifact)}\n`, "utf8");
-  writeFileSync(artifactPath, artifactBytes);
-
   const metadataPath = join(snapshot, "metadata.json");
   const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
-  metadata.artifactDigest = createHash("sha256").update(artifactBytes).digest("hex");
+  (metadata.artifactFacts as Record<string, unknown>).changedSinceBaseRef = baseRef;
   metadata.snapshotDigest = snapshotDigest(metadata);
   writeFileSync(metadataPath, `${JSON.stringify(metadata, null, 2)}\n`);
 
@@ -302,7 +297,11 @@ function snapshotDigest(metadata: Record<string, unknown>): string {
     mergeBaseSha: metadata.mergeBaseSha,
     analysisKey: metadata.analysisKey,
     artifactDigest: metadata.artifactDigest,
+    artifactBytes: metadata.artifactBytes,
+    artifactFacts: metadata.artifactFacts,
     comparisonArtifactDigest: metadata.comparisonArtifactDigest,
+    comparisonArtifactBytes: metadata.comparisonArtifactBytes,
+    comparisonFacts: metadata.comparisonFacts,
     warnings: metadata.warnings,
   })).digest("hex");
 }

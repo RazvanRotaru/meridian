@@ -8,6 +8,10 @@ import { analyzeRepository } from "../repository-analysis";
 import { runGit, runGitClone } from "./git-exec";
 import { ANALYSIS_VERSION, cachedRemoteGraph, webAnalysisKey } from "./web-cache";
 import { probeRemoteGraph } from "./web-cache-probe";
+import {
+  runRepositoryAnalysisChildInProcess,
+  runRepositoryArtifactRestampChildInProcess,
+} from "./repository-analysis-child-test-adapter";
 import { remoteArtifactId, type GenerateRequest } from "./web-request";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
@@ -102,7 +106,7 @@ describe("persistent web graph cache", () => {
     // a realistic cache root instead of consuming it with the independent 64-char content digest.
     expect(relative(cacheRoot, first.material.path).length).toBeLessThanOrEqual(165);
     expect(second.material.path).toBe(first.material.path);
-    expect(JSON.parse(readFileSync(second.material.path, "utf8"))).toEqual(second.artifact);
+    expect(artifactFromMaterial(second.material)).toEqual(artifactFor("owner/repo", FIRST_COMMIT));
     expect(second.material.byteDigest).toBe(first.material.byteDigest);
     expect(first.snapshotDigest).toBe(first.material.byteDigest);
     expect(second.snapshotDigest).toBe(first.snapshotDigest);
@@ -121,10 +125,10 @@ describe("persistent web graph cache", () => {
     const metadata = JSON.parse(readFileSync(
       join(dirname(verifiedPath(first)), "metadata.json"),
       "utf8",
-    )) as { warnings?: string[] };
+    )) as { facts?: { warnings?: string[] } };
 
     expect(first.warnings).toEqual(warnings);
-    expect(metadata.warnings).toEqual(warnings);
+    expect(metadata.facts?.warnings).toEqual(warnings);
     expect(second.cache).toBe("hit");
     expect(second.warnings).toEqual(warnings);
   });
@@ -181,7 +185,7 @@ describe("persistent web graph cache", () => {
     expect(verifiedPath(regenerated)).not.toBe(verifiedPath(first));
     expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
     expect(currentMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
-    expect(JSON.parse(readFileSync(verifiedPath(first), "utf8"))).toEqual(first.artifact);
+    expect(artifactFromMaterial(first.material)).toEqual(artifactFor("owner/repo", FIRST_COMMIT));
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
@@ -209,12 +213,12 @@ describe("persistent web graph cache", () => {
     });
 
     expect(fromHead.checkout.repositoryKey).toBe(fromMain.checkout.repositoryKey);
-    expect(fromHead.artifact.target.vcs?.branch).toBeUndefined();
-    expect(fromMain.artifact.target.vcs?.branch).toBe("main");
-    expect(fromRelease.artifact.target.vcs?.branch).toBe("release");
+    expect(fromHead.facts.target.vcs?.branch).toBeUndefined();
+    expect(fromMain.facts.target.vcs?.branch).toBe("main");
+    expect(fromRelease.facts.target.vcs?.branch).toBe("release");
     expect(fromHead.material.kind).toBe("verified-file");
-    expect(fromMain.material.kind).toBe("serialized");
-    expect(fromRelease.material.kind).toBe("serialized");
+    expect(fromMain.material.kind).toBe("verified-file");
+    expect(fromRelease.material.kind).toBe("verified-file");
     expect(fromHeadAgain.material.kind).toBe("verified-file");
     expect(fromMain.material.byteDigest).not.toBe(fromHead.material.byteDigest);
     expect(fromRelease.material.byteDigest).not.toBe(fromMain.material.byteDigest);
@@ -229,6 +233,39 @@ describe("persistent web graph cache", () => {
     expect(releaseProbe.id).toBe(idFor(fromRelease, { ...REQUEST, ref: "release" }));
     expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(1);
+  });
+
+  it("persists a cold branch variant from one extraction without a restamp", async () => {
+    const analysis = vi.fn(runRepositoryAnalysisChildInProcess);
+    const restamp = vi.fn(runRepositoryArtifactRestampChildInProcess);
+    const request = { ...REQUEST, ref: "main" };
+
+    const first = await generate(request, undefined, [], { analysis, restamp });
+    const second = await generate(request, undefined, [], { analysis, restamp });
+
+    expect(analysis).toHaveBeenCalledTimes(1);
+    expect(restamp).not.toHaveBeenCalled();
+    expect(second.cache).toBe("hit");
+    expect(second.material.path).toBe(first.material.path);
+    expect(first.material.path).toContain(join(first.analysisKey, "branches"));
+    expect(artifactFromMaterial(first.material).target.vcs?.branch).toBe("main");
+  });
+
+  it("restamps one warm unseen branch once and reuses its immutable derivative", async () => {
+    const analysis = vi.fn(runRepositoryAnalysisChildInProcess);
+    const restamp = vi.fn(runRepositoryArtifactRestampChildInProcess);
+    const runners = { analysis, restamp };
+    const head = await generate(REQUEST, undefined, [], runners);
+    const firstMain = await generate({ ...REQUEST, ref: "main" }, undefined, [], runners);
+    const secondMain = await generate({ ...REQUEST, ref: "main" }, undefined, [], runners);
+
+    expect(analysis).toHaveBeenCalledTimes(1);
+    expect(restamp).toHaveBeenCalledTimes(1);
+    expect(firstMain.cache).toBe("hit");
+    expect(secondMain.material.path).toBe(firstMain.material.path);
+    expect(firstMain.material.path).not.toBe(head.material.path);
+    expect(firstMain.snapshotDigest).toBe(head.snapshotDigest);
+    expect(artifactFromMaterial(firstMain.material).target.vcs?.branch).toBe("main");
   });
 
   it("keeps HEAD, main, and release identities and served provenance stable for every warm-up order", async () => {
@@ -262,7 +299,7 @@ describe("persistent web graph cache", () => {
           const id = idFor(graph, request);
 
           expect(probe).toEqual({ status: "hit", commit: FIRST_COMMIT, id });
-          expect(graph.artifact.target.vcs?.branch).toBe(ref);
+          expect(graph.facts.target.vcs?.branch).toBe(ref);
           expect(served.target.vcs?.branch).toBe(ref);
           expect(graph.snapshotDigest).toBe(generated.get("HEAD")?.snapshotDigest);
           const previous = expectedIds.get(refKey(ref));
@@ -280,7 +317,7 @@ describe("persistent web graph cache", () => {
     const first = await generate({ ...REQUEST, ref: "main" });
     vi.mocked(analyzeRepository).mockResolvedValueOnce({
       artifact: {
-        ...artifactFor("owner/repo", FIRST_COMMIT, "main"),
+        ...artifactFor("owner/repo", FIRST_COMMIT),
         generatedAt: "2026-07-20T00:00:01.000Z",
       },
       warnings: [],
@@ -308,7 +345,7 @@ describe("persistent web graph cache", () => {
     expect(second.cache).toBe("miss");
     expect(verifiedPath(second)).not.toBe(artifactPath);
     expect(readFileSync(artifactPath, "utf8")).toBe("{broken");
-    expect(JSON.parse(readFileSync(verifiedPath(second), "utf8"))).toEqual(second.artifact);
+    expect(artifactFromMaterial(second.material)).toEqual(artifactFor("owner/repo", FIRST_COMMIT));
     const current = await generate(REQUEST);
     expect(current.cache).toBe("hit");
     expect(verifiedPath(current)).toBe(verifiedPath(second));
@@ -358,14 +395,14 @@ describe("persistent web graph cache", () => {
     releaseB.resolve();
     const refreshedB = await pendingB;
     expect(readFileSync(originalPath)).toEqual(originalBytes);
-    expect(JSON.parse(readFileSync(verifiedPath(refreshedB), "utf8"))).toEqual(refreshedB.artifact);
+    expect(artifactFromMaterial(refreshedB.material).generatedAt).toBe("2026-07-20T00:00:02.000Z");
 
     releaseA.resolve();
     const refreshedA = await pendingA;
     expect(new Set([originalPath, verifiedPath(refreshedA), verifiedPath(refreshedB)]).size).toBe(3);
     expect(readFileSync(originalPath)).toEqual(originalBytes);
-    expect(JSON.parse(readFileSync(verifiedPath(refreshedA), "utf8"))).toEqual(refreshedA.artifact);
-    expect(JSON.parse(readFileSync(verifiedPath(refreshedB), "utf8"))).toEqual(refreshedB.artifact);
+    expect(artifactFromMaterial(refreshedA.material).generatedAt).toBe("2026-07-20T00:00:01.000Z");
+    expect(artifactFromMaterial(refreshedB.material).generatedAt).toBe("2026-07-20T00:00:02.000Z");
 
     const current = await generate(REQUEST);
     expect(current.cache).toBe("hit");
@@ -384,7 +421,18 @@ describe("persistent web graph cache", () => {
   });
 });
 
-function generate(request: GenerateRequest, token?: string, stages: string[] = []) {
+function generate(
+  request: GenerateRequest,
+  token?: string,
+  stages: string[] = [],
+  runners: {
+    analysis: typeof runRepositoryAnalysisChildInProcess;
+    restamp: typeof runRepositoryArtifactRestampChildInProcess;
+  } = {
+    analysis: runRepositoryAnalysisChildInProcess,
+    restamp: runRepositoryArtifactRestampChildInProcess,
+  },
+) {
   return cachedRemoteGraph({
     cacheRoot,
     request,
@@ -392,6 +440,8 @@ function generate(request: GenerateRequest, token?: string, stages: string[] = [
     token,
     onClone: () => { stages.push("source"); },
     onExtract: () => { stages.push("extract"); },
+    repositoryAnalysis: runners.analysis,
+    repositoryArtifactRestamp: runners.restamp,
   });
 }
 
@@ -434,8 +484,7 @@ function refKey(ref: string | undefined): string {
 }
 
 function artifactFromMaterial(material: Awaited<ReturnType<typeof generate>>["material"]): GraphArtifact {
-  const bytes = material.kind === "serialized" ? material.bytes : readFileSync(material.path);
-  return JSON.parse(bytes.toString("utf8")) as GraphArtifact;
+  return JSON.parse(readFileSync(material.path, "utf8")) as GraphArtifact;
 }
 
 function verifiedPath(graph: Awaited<ReturnType<typeof generate>>): string {

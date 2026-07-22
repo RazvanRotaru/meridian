@@ -9,6 +9,7 @@
 
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { OperationCancelledError } from "./web-cancellation";
 import { WebError } from "./web-error";
 
 const CLONE_TIMEOUT_MS = 90_000;
@@ -26,8 +27,16 @@ function authArgs(token?: string): string[] {
   return token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
 }
 
-export function runGitClone(args: string[], token?: string, opts: { timeoutMs?: number } = {}): Promise<void> {
-  return spawnGit(args, { token, timeoutMs: opts.timeoutMs ?? CLONE_TIMEOUT_MS }).then(() => undefined);
+export function runGitClone(
+  args: string[],
+  token?: string,
+  opts: { timeoutMs?: number; signal?: AbortSignal } = {},
+): Promise<void> {
+  return spawnGit(args, {
+    token,
+    timeoutMs: opts.timeoutMs ?? CLONE_TIMEOUT_MS,
+    signal: opts.signal,
+  }).then(() => undefined);
 }
 
 /**
@@ -35,11 +44,15 @@ export function runGitClone(args: string[], token?: string, opts: { timeoutMs?: 
  * its stdout. The token is injected the same way `runGitClone` does — a `-c http.extraHeader`
  * before the subcommand — so it never lands in an argv URL, a log, or an error message.
  */
-export function runGit(args: string[], opts: { cwd: string; token?: string; timeoutMs?: number }): Promise<string> {
+export function runGit(
+  args: string[],
+  opts: { cwd: string; token?: string; timeoutMs?: number; signal?: AbortSignal },
+): Promise<string> {
   return spawnGit([...authArgs(opts.token), ...args], {
     cwd: opts.cwd,
     token: opts.token,
     timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
+    signal: opts.signal,
   });
 }
 
@@ -47,10 +60,14 @@ interface SpawnOptions {
   cwd?: string;
   token?: string;
   timeoutMs: number;
+  signal?: AbortSignal;
 }
 
 /** The one place `git` is spawned: pipes stdout, caps buffers, time-boxes, and scrubs the token. */
 function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
+  if (opts.signal?.aborted) {
+    return Promise.reject(new OperationCancelledError("git operation was cancelled"));
+  }
   const redact = redactor(opts.token);
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn("git", args, { cwd: opts.cwd, stdio: ["ignore", "pipe", "pipe"] });
@@ -59,10 +76,44 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
     let stdoutBytes = 0;
     let stdoutOverflowed = false;
     let stderr = "";
-    const timer = setTimeout(() => {
+    let settled = false;
+    let killed = false;
+    let terminationError: Error | undefined;
+    const kill = () => {
+      if (killed) return;
+      killed = true;
       child.kill("SIGKILL");
-      rejectRun(new WebError(422, `git timed out after ${Math.round(opts.timeoutMs / 1000)}s`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+    };
+    const rejectOnce = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectRun(error);
+    };
+    const resolveOnce = (value: string) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolveRun(value);
+    };
+    const onAbort = () => {
+      if (settled || terminationError) return;
+      terminationError = new OperationCancelledError("git operation was cancelled");
+      clearTimeout(timer);
+      opts.signal?.removeEventListener("abort", onAbort);
+      kill();
+    };
+    const timer = setTimeout(() => {
+      if (settled || terminationError) return;
+      terminationError = new WebError(422, `git timed out after ${Math.round(opts.timeoutMs / 1000)}s`);
+      opts.signal?.removeEventListener("abort", onAbort);
+      kill();
     }, opts.timeoutMs);
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout?.on("data", (chunk: Buffer) => {
       stdoutBytes += chunk.byteLength;
       if (stdoutBytes > MAX_STDOUT_BYTES) {
@@ -75,19 +126,19 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
       stderr = (stderr + chunk.toString("utf8")).slice(-MAX_STDERR_BYTES);
     });
     child.on("error", (error) => {
-      clearTimeout(timer);
-      rejectRun(new WebError(500, `could not run git: ${redact(error.message)}`));
+      rejectOnce(terminationError ?? new WebError(500, `could not run git: ${redact(error.message)}`));
     });
     child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        rejectRun(new WebError(422, gitFailureMessage(redact(stderr))));
+      if (terminationError) {
+        rejectOnce(terminationError);
+      } else if (code !== 0) {
+        rejectOnce(new WebError(422, gitFailureMessage(redact(stderr))));
       } else if (stdoutOverflowed) {
         // Never hand a syntactically plausible prefix to a parser: name-status output can happen
         // to end on a NUL and a patch can end after a complete hunk even when later files vanished.
-        rejectRun(new WebError(422, "git output exceeded 32MB; refusing truncated output"));
+        rejectOnce(new WebError(422, "git output exceeded 32MB; refusing truncated output"));
       } else {
-        resolveRun(stdout + stdoutDecoder.end());
+        resolveOnce(stdout + stdoutDecoder.end());
       }
     });
   });

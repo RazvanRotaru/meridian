@@ -7,15 +7,11 @@
 
 import { Command, InvalidArgumentError } from "commander";
 import { readCliVersion } from "./version";
-import { runGenerate } from "./commands/generate";
 import type { GenerateOptions } from "./commands/generate";
-import { runMock } from "./commands/mock";
 import type { MockOptions } from "./commands/mock";
-import { parseFailUnder, runCoverage } from "./commands/coverage";
+import { parseFailUnder } from "./commands/coverage-options";
 import type { CoverageOptions } from "./commands/coverage";
-import { runLink } from "./commands/link";
 import type { LinkOptions } from "./commands/link";
-import { runWeb } from "./commands/web";
 import type { WebOptions } from "./commands/web";
 
 export function buildProgram(): Command {
@@ -45,7 +41,10 @@ function registerGenerate(program: Command): void {
     .option("-o, --out <file>", "artifact output path", "meridian.graph.json")
     .option("--changed-since <ref>", "tag nodes changed since the merge-base with <ref> (a PR's diff) 'changed'")
     .option("--test-coverage <coverage-final.json>", "attach aggregate Istanbul coverage-map JSON (Meridian does not run tests)")
-    .action((path, _options, command) => runGenerate(path ?? ".", command.optsWithGlobals() as GenerateOptions));
+    .action(async (path, _options, command) => {
+      const { runGenerate } = await import("./commands/generate");
+      return runGenerate(path ?? ".", command.optsWithGlobals() as GenerateOptions);
+    });
 }
 
 function registerMock(program: Command): void {
@@ -56,9 +55,10 @@ function registerMock(program: Command): void {
     .requiredOption("--env <env>", "environment to synthesize (required; never defaults)")
     .option("-o, --out <file>", "overlay output path (default meridian.overlay.<env>.json)")
     .option("--seed <seed>", "deterministic seed", "")
-    .action((graph, _options, command) =>
-      runMock(graph ?? "meridian.graph.json", command.optsWithGlobals() as MockOptions),
-    );
+    .action(async (graph, _options, command) => {
+      const { runMock } = await import("./commands/mock");
+      return runMock(graph ?? "meridian.graph.json", command.optsWithGlobals() as MockOptions);
+    });
 }
 
 function registerWeb(program: Command): void {
@@ -79,7 +79,10 @@ function registerWeb(program: Command): void {
       "--allow-synthetic-pr-execution",
       "allow consent-gated synthetic-flow runs for prepared PR heads in an available OCI sandbox",
     )
-    .action((source, _options, command) => runWeb(source, command.optsWithGlobals() as WebOptions));
+    .action(async (source, _options, command) => {
+      const { runWeb } = await import("./commands/web");
+      return runWeb(source, command.optsWithGlobals() as WebOptions);
+    });
 }
 
 function registerCoverage(program: Command): void {
@@ -87,9 +90,10 @@ function registerCoverage(program: Command): void {
     .command("coverage [graph]")
     .description("Report static test coverage derived from the graph's call reachability")
     .option("--fail-under <percent>", "exit non-zero when coverage is below this percentage", parseFailUnder)
-    .action((graph, _options, command) =>
-      runCoverage(graph ?? "meridian.graph.json", command.optsWithGlobals() as CoverageOptions),
-    );
+    .action(async (graph, _options, command) => {
+      const { runCoverage } = await import("./commands/coverage");
+      return runCoverage(graph ?? "meridian.graph.json", command.optsWithGlobals() as CoverageOptions);
+    });
 }
 
 function registerLink(program: Command): void {
@@ -98,7 +102,10 @@ function registerLink(program: Command): void {
     .description("Join two or more graph artifacts into one system graph via their IPC channel keys")
     .option("-o, --out <file>", "linked artifact output path", "meridian.system.json")
     .option("--name <name>", "display name for the linked system (default: the joined source names)")
-    .action((graphs, _options, command) => runLink(graphs, command.optsWithGlobals() as LinkOptions));
+    .action(async (graphs, _options, command) => {
+      const { runLink } = await import("./commands/link");
+      return runLink(graphs, command.optsWithGlobals() as LinkOptions);
+    });
 }
 
 function parsePort(value: string): number {
