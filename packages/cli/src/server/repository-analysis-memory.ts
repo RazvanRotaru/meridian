@@ -99,15 +99,14 @@ function effectiveMemoryBytes(memory: RepositoryAnalysisMemorySnapshot): number 
     throw new RangeError("total memory must be a positive safe integer");
   }
   const constrained = memory.constrainedBytes;
-  if (constrained === undefined || constrained === 0) return memory.totalBytes;
-  if (!validMemoryBytes(constrained)) {
-    throw new RangeError("constrained memory must be zero or a positive safe integer");
-  }
-  return Math.min(memory.totalBytes, constrained);
+  // libuv uses platform-specific sentinel values when no process limit can be determined.
+  return validMemoryBytes(constrained)
+    ? Math.min(memory.totalBytes, constrained)
+    : memory.totalBytes;
 }
 
-function validMemoryBytes(value: number): boolean {
-  return Number.isSafeInteger(value) && value > 0;
+function validMemoryBytes(value: number | undefined): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
 function validHeapMb(value: number): boolean {

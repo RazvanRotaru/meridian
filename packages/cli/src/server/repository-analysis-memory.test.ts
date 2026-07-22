@@ -62,9 +62,15 @@ describe("repository analysis admission", () => {
     })).toBe(1);
   });
 
-  it("treats a zero process constraint as absent", () => {
+  it("treats unrecognized process constraints as absent", () => {
     expect(limitFor({
       memory: { totalBytes: gibibytes(48), constrainedBytes: 0 },
+    })).toBe(2);
+    expect(limitFor({
+      memory: { totalBytes: gibibytes(48), constrainedBytes: -1 },
+    })).toBe(2);
+    expect(limitFor({
+      memory: { totalBytes: gibibytes(48), constrainedBytes: Number.MAX_VALUE },
     })).toBe(2);
   });
 
@@ -93,9 +99,6 @@ describe("repository analysis admission", () => {
     expect(() => repositoryAnalysisMemoryPolicy({
       memory: { totalBytes: Number.NaN },
     })).toThrow("total memory must be a positive safe integer");
-    expect(() => repositoryAnalysisMemoryPolicy({
-      memory: { totalBytes: gibibytes(16), constrainedBytes: -1 },
-    })).toThrow("constrained memory must be zero or a positive safe integer");
   });
 
   it("returns the worker reservation used to derive the limit", () => {
