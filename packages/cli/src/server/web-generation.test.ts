@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { analyzeRepository } from "../repository-analysis";
 import { cachedRemoteGraph } from "./web-cache";
 import { generateGraph } from "./web-generation";
+import { AnalysisCoordinator } from "./web-analysis-coordinator";
+import {
+  runRepositoryAnalysisChildInProcess,
+  runRepositoryArtifactRestampChildInProcess,
+} from "./repository-analysis-child-test-adapter";
 import {
   materializeValidatedArtifact,
   verifiedArtifactFile,
@@ -16,8 +21,8 @@ import type { Context } from "./web-server";
 import {
   loadSyntheticScenarios,
   syntheticExecutionRuntimeSupported,
-  syntheticSourceFingerprint,
 } from "./synthetic-execution";
+import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -33,8 +38,11 @@ vi.mock("./synthetic-execution", async (importOriginal) => {
     ...actual,
     loadSyntheticScenarios: vi.fn(),
     syntheticExecutionRuntimeSupported: vi.fn(),
-    syntheticSourceFingerprint: vi.fn(),
   };
+});
+vi.mock("./synthetic-fingerprint", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./synthetic-fingerprint")>();
+  return { ...actual, syntheticSourceFingerprintForFiles: vi.fn() };
 });
 
 const COMMIT = "a".repeat(40);
@@ -48,17 +56,20 @@ const SCENARIO: SyntheticScenarioDescriptor = {
 
 let root: string;
 let graphStore: WebGraphStore;
+let analysisCoordinator: AnalysisCoordinator;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "meridian-generation-store-test-"));
   graphStore = new WebGraphStore();
+  analysisCoordinator = new AnalysisCoordinator();
   vi.mocked(analyzeRepository).mockResolvedValue({ artifact: LOCAL_ARTIFACT, warnings: [] } as never);
   vi.mocked(syntheticExecutionRuntimeSupported).mockReturnValue(false);
   vi.mocked(loadSyntheticScenarios).mockReturnValue([]);
-  vi.mocked(syntheticSourceFingerprint).mockReturnValue("fixture-fingerprint");
+  vi.mocked(syntheticSourceFingerprintForFiles).mockReturnValue("fixture-fingerprint");
 });
 
-afterEach(() => {
+afterEach(async () => {
+  await analysisCoordinator.close();
   graphStore.dispose();
   rmSync(root, { recursive: true, force: true });
   vi.clearAllMocks();
@@ -103,10 +114,10 @@ describe("web graph generation publication", () => {
       sourceFingerprint: "fixture-fingerprint",
       trust: { mode: "local" },
     });
-    expect(syntheticSourceFingerprint).toHaveBeenCalledWith(root, LOCAL_ARTIFACT);
+    expect(syntheticSourceFingerprintForFiles).toHaveBeenCalledWith(root, []);
 
     vi.mocked(loadSyntheticScenarios).mockReturnValue([{ ...SCENARIO, label: "Place order safely" }]);
-    vi.mocked(syntheticSourceFingerprint).mockReturnValue("changed-fingerprint");
+    vi.mocked(syntheticSourceFingerprintForFiles).mockReturnValue("changed-fingerprint");
     const changed = await generateGraph(ctx, { kind: "path", value: root }, undefined);
 
     expect(changed.id).not.toBe(generated.id);
@@ -136,7 +147,6 @@ describe("web graph generation publication", () => {
       sourceRoot: root,
       source: { kind: "github", owner: "org", repo: "repo" },
     });
-    expect(ctx.cacheJobs.size).toBe(0);
   });
 
   it("publishes a refreshed artifact as a new remote identity in the same server", async () => {
@@ -160,11 +170,13 @@ describe("web graph generation publication", () => {
 function context(): Context {
   return {
     graphStore,
+    analysisCoordinator,
     cwd: root,
     cacheRoot: root,
-    cacheJobs: new Map(),
     refreshCache: false,
     allowSyntheticExecution: false,
+    repositoryAnalysis: runRepositoryAnalysisChildInProcess,
+    repositoryArtifactRestamp: runRepositoryArtifactRestampChildInProcess,
   } as unknown as Context;
 }
 
@@ -185,7 +197,15 @@ function remoteFixture(
     path: fileMaterial.path,
     cached: {
       analysisKey: "analysis-key",
-      artifact: remoteArtifact,
+      facts: {
+        summary: material.summary,
+        target: remoteArtifact.target,
+        changedFiles: [],
+        emptySideHints: [],
+        sourceFiles: [],
+        changedSinceBaseRef: null,
+        warnings: [],
+      },
       material: fileMaterial,
       snapshotDigest,
       cache: "hit" as const,

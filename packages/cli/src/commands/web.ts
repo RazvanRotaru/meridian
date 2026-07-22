@@ -2,7 +2,7 @@
  * `web`: the single app launcher for repository analysis and existing graph artifacts.
  *
  * Repository extraction always runs in Node (ts-morph never touches a browser); the page only
- * POSTs a source and loads the renderer against the resulting in-memory graph. A file source uses
+ * POSTs a source and loads the renderer against the resulting disk-backed graph. A file source uses
  * the existing-artifact server through the same public command.
  */
 
@@ -16,7 +16,6 @@ import { createGitHubClient, resolveGitHubClientId } from "../server/github";
 import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
 import { serve } from "../server/serve";
-import { runView } from "./view";
 import { CliError, EXIT } from "../errors";
 import { isLoopbackHost } from "../server/web-guards";
 
@@ -44,7 +43,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
   }
   const cwd = resolveCwd(options.cwd);
   if (source && isFile(resolveAgainst(cwd, source))) {
-    return runView(source, options);
+    return (await import("./view")).runView(source, options);
   }
   const reporter = new Reporter(options);
   const githubClientId = resolveGitHubClientId(options.githubClientId, process.env.MERIDIAN_GITHUB_CLIENT_ID);

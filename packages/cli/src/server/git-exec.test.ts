@@ -83,8 +83,54 @@ describe("runGit", () => {
     const child = nextChild();
     const pending = runGit(["fetch", "origin", "main"], { cwd: "/clone", timeoutMs: 5_000 });
     vi.advanceTimersByTime(5_000);
-    await expect(pending).rejects.toThrow("git timed out after 5s");
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    let settled = false;
+    void pending.catch(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGKILL");
+    await expect(pending).rejects.toThrow("git timed out after 5s");
+  });
+
+  it("rejects an already-aborted run without spawning git", async () => {
+    const controller = new AbortController();
+    controller.abort();
+
+    await expect(runGit(["fetch", "origin", "main"], {
+      cwd: "/clone",
+      signal: controller.signal,
+    })).rejects.toThrow("git operation was cancelled");
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("kills and settles a running git child exactly once when aborted", async () => {
+    const child = nextChild();
+    const controller = new AbortController();
+    const pending = runGit(["fetch", "origin", "main"], {
+      cwd: "/clone",
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    controller.abort();
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+
+    child.stderr.emit("data", Buffer.from("fatal: late failure"));
+    child.emit("close", 128);
+    await expect(pending).rejects.toThrow("git operation was cancelled");
+    expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not kill a completed child when the signal aborts later", async () => {
+    const child = nextChild();
+    const controller = new AbortController();
+    const pending = runGit(["status"], { cwd: "/clone", signal: controller.signal });
+    child.emit("close", 0);
+    await expect(pending).resolves.toBe("");
+
+    controller.abort();
+    expect(child.kill).not.toHaveBeenCalled();
   });
 
   it("rejects stdout overflow instead of returning a plausible truncated prefix", async () => {
@@ -119,8 +165,24 @@ describe("runGitClone", () => {
       timeoutMs: 600_000,
     });
     vi.advanceTimersByTime(600_000);
-    await expect(pending).rejects.toThrow("git timed out after 600s");
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    child.emit("close", null, "SIGKILL");
+    await expect(pending).rejects.toThrow("git timed out after 600s");
+  });
+
+  it("passes cancellation through clone runs", async () => {
+    const child = nextChild();
+    const controller = new AbortController();
+    const pending = runGitClone(
+      ["clone", "--", "https://github.com/o/r.git", "/tmp/x"],
+      undefined,
+      { signal: controller.signal },
+    );
+    controller.abort();
+
+    child.emit("close", null, "SIGKILL");
+    await expect(pending).rejects.toThrow("git operation was cancelled");
+    expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
   it("flags auth-like clone failures with the token scrubbed", async () => {

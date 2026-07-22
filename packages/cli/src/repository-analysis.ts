@@ -7,43 +7,18 @@
  * by deliberately passing neither `project` nor `include` to the extractor.
  */
 
-import type { GraphArtifact } from "@meridian/core";
 import { extractToArtifact } from "./extract-pipeline";
 import type { PipelineResult } from "./extract-pipeline";
-import type { GitDiffExecutor } from "./git-diff";
+import {
+  REPOSITORY_ANALYSIS_POLICY,
+  type RepositoryAnalysisRequest,
+} from "./repository-analysis-contract";
 
-/**
- * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
- * Version 8 includes resolved module dependencies from literal runtime `import()` expressions.
- */
-export const REPOSITORY_ANALYSIS_VERSION = 8;
-
-export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
-  scope: "workspace",
-  depth: "function",
-  includeExternal: true,
-  includeUnresolved: false,
-  excludeTests: false,
-  valueRefs: true,
-  materializeBoundary: true,
-} as const);
-
-export interface RepositoryAnalysisRequest {
-  absoluteRoot: string;
-  cwd: string;
-  /** Display name for the artifact; remote callers use the repository label, not a checkout dir. */
-  targetName?: string;
-  /** Source revision supplied by a caller that resolved the Git checkout. */
-  vcs?: GraphArtifact["target"]["vcs"];
-  /** Optional review context; it changes annotations, not the fixed extraction profile. */
-  changedSince?: string;
-  changedSinceTimeoutMs?: number;
-  changedSinceGitExecutor?: GitDiffExecutor;
-  /** Internal extractor-selection hints for an intentionally empty immutable PR side. */
-  hintedFiles?: readonly string[];
-  /** Allow a deliberately empty immutable PR side to produce a valid zero-node artifact. */
-  allowEmpty?: boolean;
-}
+export {
+  REPOSITORY_ANALYSIS_POLICY,
+  REPOSITORY_ANALYSIS_VERSION,
+} from "./repository-analysis-contract";
+export type { RepositoryAnalysisRequest } from "./repository-analysis-contract";
 
 /** Analyze a repository with the fixed product profile and workspace auto-discovery. */
 export function analyzeRepository(request: RepositoryAnalysisRequest): Promise<PipelineResult> {

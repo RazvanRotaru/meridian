@@ -10,9 +10,14 @@ import { join } from "node:path";
 import type { GraphArtifact } from "@meridian/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildProgram } from "../program";
+import { AnalysisCoordinator } from "../server/web-analysis-coordinator";
 import { generateGraph } from "../server/web-generation";
 import { WebGraphStore } from "../server/web-graph-store";
 import type { Context } from "../server/web-server";
+import {
+  runRepositoryAnalysisChild,
+  runRepositoryArtifactRestampChild,
+} from "../server/repository-analysis-child";
 import { runGenerate, type GenerateOptions } from "./generate";
 
 describe("generate canonical repository analysis", () => {
@@ -57,9 +62,13 @@ describe("generate canonical repository analysis", () => {
     );
 
     const graphStore = new WebGraphStore();
+    const analysisCoordinator = new AnalysisCoordinator();
     const context = {
       cwd: root,
       graphStore,
+      analysisCoordinator,
+      repositoryAnalysis: runRepositoryAnalysisChild,
+      repositoryArtifactRestamp: runRepositoryArtifactRestampChild,
       allowSyntheticExecution: false,
     } as unknown as Context;
     let webArtifact: GraphArtifact | undefined;
@@ -67,6 +76,7 @@ describe("generate canonical repository analysis", () => {
       const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
       webArtifact = graphStore.loadArtifact(generated.id);
     } finally {
+      await analysisCoordinator.close();
       graphStore.dispose();
     }
     const cliArtifact = readArtifact(discoveredOut);

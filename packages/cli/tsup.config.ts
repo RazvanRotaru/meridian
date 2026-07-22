@@ -2,10 +2,11 @@ import { defineConfig } from "tsup";
 
 export default defineConfig([
   {
-    entry: ["src/bin.ts"],
+    entry: ["src/bin.ts", "src/repository-analysis-worker.ts"],
     format: ["esm"],
     dts: false,
     clean: true,
+    splitting: true,
     sourcemap: true,
     target: "es2022",
     banner: { js: "#!/usr/bin/env node" },

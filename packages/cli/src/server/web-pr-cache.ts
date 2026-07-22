@@ -1,26 +1,28 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { changedFileManifestFromExtensions, SCHEMA_VERSION } from "@meridian/core";
-import type { GraphArtifact } from "@meridian/core";
 import {
-  analyzeRepository,
   REPOSITORY_ANALYSIS_POLICY,
   REPOSITORY_ANALYSIS_VERSION,
-} from "../repository-analysis";
-import type { RepositoryAnalysisRequest } from "../repository-analysis";
-import { validateOrThrow } from "../validation";
+} from "../repository-analysis-contract";
+import type { RepositoryAnalysisRequest } from "../repository-analysis-contract";
 import { generatorVersion } from "../version";
+import { SCHEMA_VERSION } from "@meridian/core";
 import { parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { base64Auth, runGit, runGitClone } from "./git-exec";
+import {
+  isRepositoryAnalysisFacts,
+  runRepositoryAnalysisChild,
+  verifyRepositoryArtifactFile,
+  type RepositoryAnalysisChildResult,
+  type RepositoryAnalysisFacts,
+} from "./repository-analysis-child";
+import { isOperationCancelled, throwIfAborted } from "./web-cancellation";
 import { prepareWebCache } from "./web-cache";
 import { repositoryCacheKey } from "./web-cache-checkout";
 import {
-  artifactSummary,
-  materializeValidatedArtifact,
   verifiedArtifactFile,
   type VerifiedFileArtifactMaterial,
-  type WebGraphArtifactSummary,
 } from "./web-graph-store";
 import {
   createStageDirectory,
@@ -37,7 +39,7 @@ import type { ArtifactSource } from "./web-source";
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage = "clone" | "checkout" | "extract";
 
-const FORMAT_VERSION = 7;
+const FORMAT_VERSION = 8;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
 const SHA256 = /^[a-f0-9]{64}$/;
 const SNAPSHOT_ID = /^[a-f0-9]{16}$/;
@@ -53,7 +55,11 @@ interface PrSnapshotMetadata {
   mergeBaseSha: string;
   analysisKey: string;
   artifactDigest: string;
+  artifactBytes: number;
+  artifactFacts: RepositoryAnalysisFacts;
   comparisonArtifactDigest: string;
+  comparisonArtifactBytes: number;
+  comparisonFacts: RepositoryAnalysisFacts;
   snapshotDigest: string;
   snapshotId: string;
   warnings: string[];
@@ -75,11 +81,12 @@ interface PrSnapshotPointer {
 }
 
 export interface CachedPrGraph {
-  artifact: GraphArtifact;
+  artifactFacts: RepositoryAnalysisFacts;
   artifactMaterial: VerifiedFileArtifactMaterial;
   baseSha: string;
   cache: "hit" | "miss";
   comparisonMaterial: VerifiedFileArtifactMaterial;
+  comparisonFacts: RepositoryAnalysisFacts;
   comparisonSourceDir: string;
   headSha: string;
   mergeBaseSha: string;
@@ -95,10 +102,14 @@ export async function cachedPrGraph(inputs: {
   token?: string;
   refresh?: boolean;
   onStage(stage: PrStage): void | Promise<void>;
+  signal?: AbortSignal;
+  runAnalysis?<T>(work: () => Promise<T>): Promise<T>;
+  repositoryAnalysis?: typeof runRepositoryAnalysisChild;
 }): Promise<CachedPrGraph> {
   prepareWebCache(inputs.cacheRoot);
+  throwIfAborted(inputs.signal);
   const remoteUrl = parseGitHubSource(`${inputs.source.owner}/${inputs.source.repo}`);
-  const revisions = await remoteRevisions(remoteUrl, inputs.body, inputs.cwd, inputs.token);
+  const revisions = await remoteRevisions(remoteUrl, inputs.body, inputs.cwd, inputs.token, inputs.signal);
   const repositoryKey = repositoryCacheKey(remoteUrl);
   const analysisKey = prAnalysisKey(inputs.source, inputs.body);
   const entry = join(
@@ -106,7 +117,16 @@ export async function cachedPrGraph(inputs: {
     "pr-artifacts",
     prCacheSlotKey(repositoryKey, revisions, analysisKey),
   );
-  const cached = inputs.refresh ? null : await readCached(entry, repositoryKey, revisions, analysisKey, inputs.source);
+  const cached = inputs.refresh ? null : await readCached(
+    entry,
+    repositoryKey,
+    revisions,
+    analysisKey,
+    inputs.source,
+    inputs.body,
+    remoteUrl,
+    inputs.signal,
+  );
   if (cached) {
     return { ...cached, cache: "hit" };
   }
@@ -125,60 +145,101 @@ async function createCachedGraph(
   const repoDir = join(stage, "repo");
   try {
     await inputs.onStage("clone");
-    await cloneFullHistory(remoteUrl, repoDir, inputs.token);
+    throwIfAborted(inputs.signal);
+    await cloneFullHistory(remoteUrl, repoDir, inputs.token, inputs.signal);
     await inputs.onStage("checkout");
-    await checkoutPrHead(repoDir, inputs.body, inputs.token);
-    await verifyRevisions(repoDir, inputs.body.baseRef, revisions);
-    const mergeBaseSha = await resolveMergeBase(repoDir, inputs.body.baseRef);
+    throwIfAborted(inputs.signal);
+    await checkoutPrHead(repoDir, inputs.body, inputs.token, inputs.signal);
+    await verifyRevisions(repoDir, inputs.body.baseRef, revisions, inputs.signal);
+    const mergeBaseSha = await resolveMergeBase(repoDir, inputs.body.baseRef, inputs.signal);
     const comparisonRepoDir = join(stage, "comparison-repo");
-    await checkoutComparison(repoDir, comparisonRepoDir, mergeBaseSha, inputs.token);
+    await checkoutComparison(repoDir, comparisonRepoDir, mergeBaseSha, inputs.token, inputs.signal);
     await inputs.onStage("extract");
-    const roots = extractionRoots(repoDir, comparisonRepoDir, inputs.source.subdir);
-    let head: Awaited<ReturnType<typeof extractPrHead>>;
-    let comparison: Awaited<ReturnType<typeof extractPrComparison>>;
-    if (roots.headMaterialized) {
-      // A whole-subtree deletion has no HEAD files to detect. Analyze the populated comparison
-      // first, then use all of its source paths to select every applicable empty-side extractor.
-      comparison = await extractPrComparison(roots.comparison, inputs.source, remoteUrl, mergeBaseSha);
-      head = await extractPrHead(
-        roots.head,
-        inputs.source,
-        inputs.body,
-        remoteUrl,
-        revisions,
-        mergeBaseSha,
-        inputs.token,
-        emptySideAnalysis(comparison.artifact),
-      );
-    } else {
-      head = await extractPrHead(
-        roots.head,
-        inputs.source,
-        inputs.body,
-        remoteUrl,
-        revisions,
-        mergeBaseSha,
-        inputs.token,
-      );
-      const comparisonRoot = resolveOrMaterializeComparisonRoot(comparisonRepoDir, inputs.source.subdir);
-      // Normal two-sided analysis remains independently auto-detected. Only a materialized empty
-      // comparison (a whole-subtree addition) inherits language hints from the populated HEAD.
-      comparison = await extractPrComparison(
-        comparisonRoot.root,
-        inputs.source,
-        remoteUrl,
-        mergeBaseSha,
-        comparisonRoot.materialized ? emptySideAnalysis(head.artifact) : undefined,
-      );
-    }
-    const warnings = uniqueWarnings(head.warnings, comparison.warnings);
-    requireExactArtifactCoordinates(head.artifact, comparison.artifact, revisions, mergeBaseSha);
-    const artifactPath = join(stage, "artifact.json");
-    const comparisonArtifactPath = join(stage, "comparison-artifact.json");
-    const artifactMaterial = writeValidatedArtifact(artifactPath, head.artifact);
-    const comparisonMaterial = writeValidatedArtifact(comparisonArtifactPath, comparison.artifact);
-    const artifactDigest = artifactMaterial.byteDigest;
-    const comparisonArtifactDigest = comparisonMaterial.byteDigest;
+    throwIfAborted(inputs.signal);
+    const runAnalysis = inputs.runAnalysis ?? ((work) => work());
+    const { head, comparison } = await runAnalysis(async () => {
+      const roots = extractionRoots(repoDir, comparisonRepoDir, inputs.source.subdir);
+      const artifactPath = join(stage, "artifact.json");
+      const comparisonArtifactPath = join(stage, "comparison-artifact.json");
+      const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
+      let headResult: RepositoryAnalysisChildResult;
+      let comparisonResult: RepositoryAnalysisChildResult;
+      if (roots.headMaterialized) {
+        // A whole-subtree deletion has no HEAD files to detect. Analyze the populated comparison
+        // first, then use its bounded per-extractor hints to select every applicable empty side.
+        comparisonResult = await extractPrComparison(
+          repositoryAnalysis,
+          roots.comparison,
+          inputs.source,
+          remoteUrl,
+          mergeBaseSha,
+          comparisonArtifactPath,
+          inputs.token,
+          inputs.signal,
+        );
+        throwIfAborted(inputs.signal);
+        headResult = await extractPrHead(
+          repositoryAnalysis,
+          roots.head,
+          inputs.source,
+          inputs.body,
+          remoteUrl,
+          revisions,
+          mergeBaseSha,
+          artifactPath,
+          inputs.token,
+          emptySideAnalysis(comparisonResult),
+          inputs.signal,
+        );
+      } else {
+        headResult = await extractPrHead(
+          repositoryAnalysis,
+          roots.head,
+          inputs.source,
+          inputs.body,
+          remoteUrl,
+          revisions,
+          mergeBaseSha,
+          artifactPath,
+          inputs.token,
+          undefined,
+          inputs.signal,
+        );
+        throwIfAborted(inputs.signal);
+        const comparisonRoot = resolveOrMaterializeComparisonRoot(comparisonRepoDir, inputs.source.subdir);
+        // Normal two-sided analysis remains independently auto-detected. Only a materialized empty
+        // comparison (a whole-subtree addition) inherits language hints from the populated HEAD.
+        comparisonResult = await extractPrComparison(
+          repositoryAnalysis,
+          comparisonRoot.root,
+          inputs.source,
+          remoteUrl,
+          mergeBaseSha,
+          comparisonArtifactPath,
+          inputs.token,
+          inputs.signal,
+          comparisonRoot.materialized ? emptySideAnalysis(headResult) : undefined,
+        );
+      }
+      throwIfAborted(inputs.signal);
+      return { head: headResult, comparison: comparisonResult };
+    });
+    throwIfAborted(inputs.signal);
+    const artifactFacts = analysisFacts(head);
+    const comparisonFacts = analysisFacts(comparison);
+    const warnings = uniqueWarnings(artifactFacts.warnings, comparisonFacts.warnings);
+    requireExactArtifactCoordinates(
+      artifactFacts,
+      comparisonFacts,
+      revisions,
+      mergeBaseSha,
+      inputs.body.headRef,
+      remoteUrl,
+      `${inputs.source.owner}/${inputs.source.repo}`,
+    );
+    throwIfAborted(inputs.signal);
+    const artifactDigest = head.material.byteDigest;
+    const comparisonArtifactDigest = comparison.material.byteDigest;
     const snapshotDigest = prSnapshotDigest({
       formatVersion: FORMAT_VERSION,
       analysisVersion: REPOSITORY_ANALYSIS_VERSION,
@@ -187,7 +248,11 @@ async function createCachedGraph(
       mergeBaseSha,
       analysisKey,
       artifactDigest,
+      artifactBytes: head.byteLength,
+      artifactFacts,
       comparisonArtifactDigest,
+      comparisonArtifactBytes: comparison.byteLength,
+      comparisonFacts,
       warnings,
     });
     // A digest alone is insufficient as a generation key: a corrupt/poisoned old checkout can
@@ -202,20 +267,24 @@ async function createCachedGraph(
       mergeBaseSha,
       analysisKey,
       artifactDigest,
+      artifactBytes: head.byteLength,
+      artifactFacts,
       comparisonArtifactDigest,
+      comparisonArtifactBytes: comparison.byteLength,
+      comparisonFacts,
       snapshotDigest,
       snapshotId,
       warnings,
     } satisfies PrSnapshotMetadata);
+    throwIfAborted(inputs.signal);
     const destination = join(entry, "snapshots", snapshotId);
     const wonPublication = publishImmutable(stage, destination);
     const published = wonPublication
       ? publishedGeneratedSnapshot(
           destination,
-          head.artifact,
-          artifactMaterial.summary,
+          artifactFacts,
           artifactDigest,
-          comparisonMaterial.summary,
+          comparisonFacts,
           comparisonArtifactDigest,
           revisions,
           mergeBaseSha,
@@ -230,8 +299,12 @@ async function createCachedGraph(
           snapshotId,
           snapshotDigest,
           inputs.source,
+          inputs.body,
+          remoteUrl,
+          inputs.signal,
         );
     if (!published) throw new WebError(422, "cached PR analysis failed verification");
+    throwIfAborted(inputs.signal);
     writeCurrentPointer(entry, {
       formatVersion: FORMAT_VERSION,
       repositoryKey,
@@ -253,6 +326,9 @@ async function readCached(
   revisions: { headSha: string; baseSha: string },
   analysisKey: string,
   source: GitHubSource,
+  body: PrAnalyzeRequest,
+  remoteUrl: string,
+  signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
   try {
     const pointer = readJson(join(entry, "metadata.json")) as Partial<PrSnapshotPointer>;
@@ -265,10 +341,14 @@ async function readCached(
       pointer.snapshotId,
       pointer.snapshotDigest,
       source,
+      body,
+      remoteUrl,
+      signal,
     );
     if (!cached) return null;
     return cached;
-  } catch {
+  } catch (error) {
+    if (isOperationCancelled(error)) throw error;
     return null;
   }
 }
@@ -281,6 +361,9 @@ async function readSnapshot(
   snapshotId: string,
   snapshotDigest: string,
   source: GitHubSource,
+  body: PrAnalyzeRequest,
+  remoteUrl: string,
+  signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
   const repoDir = join(snapshot, "repo");
   if (!isDirectory(repoDir)) return null;
@@ -294,57 +377,66 @@ async function readSnapshot(
       snapshotId,
       snapshotDigest,
     )) return null;
-    const actualHead = requireCommit((await runGit(["rev-parse", "HEAD"], { cwd: repoDir, timeoutMs: GIT_TIMEOUT_MS })).trim());
+    throwIfAborted(signal);
+    const actualHead = requireCommit((await runGit(["rev-parse", "HEAD"], {
+      cwd: repoDir,
+      timeoutMs: GIT_TIMEOUT_MS,
+      signal,
+    })).trim());
     if (actualHead !== revisions.headSha) return null;
     const artifactPath = join(snapshot, "artifact.json");
     const comparisonArtifactPath = join(snapshot, "comparison-artifact.json");
-    // Validate and summarize the comparison inside its own stack frame. Its full object graph is
-    // unreachable before HEAD bytes are read, bounding a hit to one materialized graph at a time.
-    const comparison = readValidatedComparisonArtifact(
-      comparisonArtifactPath,
-      metadata.comparisonArtifactDigest,
+    requireExactArtifactCoordinates(
+      metadata.artifactFacts,
+      metadata.comparisonFacts,
+      revisions,
       metadata.mergeBaseSha,
+      body.headRef,
+      remoteUrl,
+      `${source.owner}/${source.repo}`,
     );
-    if (comparison === null) return null;
-    const head = readValidatedArtifact(
+    // Hash each immutable file as a stream. A cache hit never parses either graph in this process.
+    const comparisonMaterial = await verifyRepositoryArtifactFile(
+      comparisonArtifactPath,
+      metadata.comparisonArtifactBytes,
+      metadata.comparisonArtifactDigest,
+      metadata.comparisonFacts.summary,
+      signal,
+    );
+    if (comparisonMaterial === null) return null;
+    throwIfAborted(signal);
+    const artifactMaterial = await verifyRepositoryArtifactFile(
       artifactPath,
+      metadata.artifactBytes,
       metadata.artifactDigest,
-      "cached PR artifact",
+      metadata.artifactFacts.summary,
+      signal,
     );
-    if (head === null || !exactHeadArtifactCoordinates(head.artifact, revisions, metadata.mergeBaseSha)) {
-      return null;
-    }
+    if (artifactMaterial === null) return null;
     const comparisonSourceDir = resolveExtractionSubdir(join(snapshot, "comparison-repo"), source.subdir);
+    throwIfAborted(signal);
     return {
-      artifact: head.artifact,
-      artifactMaterial: head.material,
-      comparisonMaterial: comparison.material,
+      artifactFacts: metadata.artifactFacts,
+      artifactMaterial,
+      comparisonFacts: metadata.comparisonFacts,
+      comparisonMaterial,
       comparisonSourceDir,
       ...revisions,
       mergeBaseSha: metadata.mergeBaseSha,
       sourceDir: resolveExtractionSubdir(repoDir, source.subdir),
-      warnings: metadata.warnings.length > 0 ? metadata.warnings : uniqueWarnings(head.warnings, comparison.warnings),
+      warnings: metadata.warnings,
     };
-  } catch {
+  } catch (error) {
+    if (isOperationCancelled(error)) throw error;
     return null;
   }
 }
 
-function writeValidatedArtifact(
-  path: string,
-  artifact: GraphArtifact,
-): { byteDigest: string; summary: WebGraphArtifactSummary } {
-  const material = materializeValidatedArtifact(artifact);
-  writeFileSync(path, material.bytes, { flag: "wx", mode: 0o600 });
-  return { byteDigest: material.byteDigest, summary: material.summary };
-}
-
 function publishedGeneratedSnapshot(
   snapshot: string,
-  artifact: GraphArtifact,
-  artifactSummaryValue: WebGraphArtifactSummary,
+  artifactFacts: RepositoryAnalysisFacts,
   artifactDigest: string,
-  comparisonSummary: WebGraphArtifactSummary,
+  comparisonFacts: RepositoryAnalysisFacts,
   comparisonArtifactDigest: string,
   revisions: { headSha: string; baseSha: string },
   mergeBaseSha: string,
@@ -355,12 +447,13 @@ function publishedGeneratedSnapshot(
   const comparisonArtifactPath = join(snapshot, "comparison-artifact.json");
   const repoDir = join(snapshot, "repo");
   return {
-    artifact,
-    artifactMaterial: verifiedArtifactFile(artifactPath, artifactDigest, artifactSummaryValue),
+    artifactFacts,
+    artifactMaterial: verifiedArtifactFile(artifactPath, artifactDigest, artifactFacts.summary),
+    comparisonFacts,
     comparisonMaterial: verifiedArtifactFile(
       comparisonArtifactPath,
       comparisonArtifactDigest,
-      comparisonSummary,
+      comparisonFacts.summary,
     ),
     comparisonSourceDir: resolveExtractionSubdir(join(snapshot, "comparison-repo"), source.subdir),
     ...revisions,
@@ -370,57 +463,71 @@ function publishedGeneratedSnapshot(
   };
 }
 
-function readValidatedArtifact(
-  path: string,
-  expectedDigest: string,
-  label: string,
-): { artifact: GraphArtifact; material: VerifiedFileArtifactMaterial; warnings: string[] } | null {
-  const bytes = readFileSync(path);
-  if (sha256(bytes) !== expectedDigest) return null;
-  const { artifact, warnings } = validateOrThrow(JSON.parse(bytes.toString("utf8")), label);
-  return {
-    artifact,
-    material: verifiedArtifactFile(path, expectedDigest, artifactSummary(artifact)),
-    warnings,
-  };
-}
-
-function readValidatedComparisonArtifact(
-  path: string,
-  expectedDigest: string,
-  mergeBaseSha: string,
-): { material: VerifiedFileArtifactMaterial; warnings: string[] } | null {
-  const validated = readValidatedArtifact(path, expectedDigest, "cached PR comparison artifact");
-  if (validated === null || validated.artifact.target.vcs?.commit !== mergeBaseSha) return null;
-  return { material: validated.material, warnings: validated.warnings };
-}
-
 function requireExactArtifactCoordinates(
-  artifact: GraphArtifact,
-  comparisonArtifact: GraphArtifact,
+  artifact: RepositoryAnalysisFacts,
+  comparisonArtifact: RepositoryAnalysisFacts,
   revisions: { headSha: string; baseSha: string },
   mergeBaseSha: string,
+  headRef: string,
+  remoteUrl: string,
+  targetName: string,
 ): void {
   if (
-    !exactHeadArtifactCoordinates(artifact, revisions, mergeBaseSha)
-    || comparisonArtifact.target.vcs?.commit !== mergeBaseSha
+    !exactHeadArtifactCoordinates(artifact, revisions, mergeBaseSha, headRef, remoteUrl, targetName)
+    || comparisonArtifact.target.name !== targetName
+    || comparisonArtifact.target.root !== "."
+    || !exactVcsCoordinates(comparisonArtifact.target.vcs, {
+      repository: remoteUrl,
+      commit: mergeBaseSha,
+    })
+    || comparisonArtifact.changedSinceBaseRef !== null
+    || comparisonArtifact.changedFiles.length !== 0
   ) {
     throw new WebError(422, "PR analysis did not match its exact HEAD and merge-base coordinates");
   }
 }
 
 function exactHeadArtifactCoordinates(
-  artifact: GraphArtifact,
+  artifact: RepositoryAnalysisFacts,
   revisions: { headSha: string; baseSha: string },
   mergeBaseSha: string,
+  headRef: string,
+  remoteUrl: string,
+  targetName: string,
 ): boolean {
-  const changedSince = artifact.extensions?.changedSince;
-  return artifact.target.vcs?.commit === revisions.headSha
-    && changedSince !== null
-    && typeof changedSince === "object"
-    && !Array.isArray(changedSince)
-    && (changedSince as Record<string, unknown>).baseRef === mergeBaseSha
-    && changedFileManifestFromExtensions(artifact.extensions) !== null;
+  return artifact.target.name === targetName
+    && artifact.target.root === "."
+    && exactVcsCoordinates(artifact.target.vcs, {
+      repository: remoteUrl,
+      commit: revisions.headSha,
+      branch: headRef,
+    })
+    && artifact.changedSinceBaseRef === mergeBaseSha;
+}
+
+function exactVcsCoordinates(
+  actual: RepositoryAnalysisFacts["target"]["vcs"],
+  expected: { repository: string; commit: string; branch?: string },
+): boolean {
+  if (actual === undefined) return false;
+  const actualKeys = Object.keys(actual).sort();
+  const expectedKeys = Object.keys(expected).sort();
+  return sameStringArray(actualKeys, expectedKeys)
+    && actual.repository === expected.repository
+    && actual.commit === expected.commit
+    && actual.branch === expected.branch;
+}
+
+function analysisFacts(result: RepositoryAnalysisChildResult): RepositoryAnalysisFacts {
+  return {
+    summary: result.summary,
+    target: result.target,
+    changedFiles: result.changedFiles,
+    emptySideHints: result.emptySideHints,
+    sourceFiles: result.sourceFiles,
+    changedSinceBaseRef: result.changedSinceBaseRef,
+    warnings: result.warnings,
+  };
 }
 
 function validPointer(
@@ -451,18 +558,22 @@ function validSnapshotMetadata(
     || typeof value.mergeBaseSha !== "string" || !COMMIT.test(value.mergeBaseSha)
     || value.analysisKey !== analysisKey || !Array.isArray(value.warnings)
     || typeof value.artifactDigest !== "string" || !SHA256.test(value.artifactDigest)
+    || !Number.isSafeInteger(value.artifactBytes) || (value.artifactBytes ?? 0) <= 0
+    || !isRepositoryAnalysisFacts(value.artifactFacts)
     || typeof value.comparisonArtifactDigest !== "string" || !SHA256.test(value.comparisonArtifactDigest)
+    || !Number.isSafeInteger(value.comparisonArtifactBytes) || (value.comparisonArtifactBytes ?? 0) <= 0
+    || !isRepositoryAnalysisFacts(value.comparisonFacts)
     || value.snapshotId !== snapshotId || value.snapshotDigest !== snapshotDigest
     || !SNAPSHOT_ID.test(value.snapshotId) || !SHA256.test(value.snapshotDigest)
     || !value.warnings.every((warning) => typeof warning === "string")
+    || !sameStringArray(
+      value.warnings,
+      uniqueWarnings(value.artifactFacts?.warnings ?? [], value.comparisonFacts?.warnings ?? []),
+    )
   ) {
     return false;
   }
   return prSnapshotDigest(value as PrSnapshotMetadata) === snapshotDigest;
-}
-
-function sha256(bytes: Buffer): string {
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 function prSnapshotDigest(value: Omit<PrSnapshotMetadata, "snapshotDigest" | "snapshotId">): string {
@@ -475,9 +586,17 @@ function prSnapshotDigest(value: Omit<PrSnapshotMetadata, "snapshotDigest" | "sn
     mergeBaseSha: value.mergeBaseSha,
     analysisKey: value.analysisKey,
     artifactDigest: value.artifactDigest,
+    artifactBytes: value.artifactBytes,
+    artifactFacts: value.artifactFacts,
     comparisonArtifactDigest: value.comparisonArtifactDigest,
+    comparisonArtifactBytes: value.comparisonArtifactBytes,
+    comparisonFacts: value.comparisonFacts,
     warnings: value.warnings,
   })).digest("hex");
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
 /** Atomic pointer replacement with a per-writer temporary, safe for overlapping refreshes. */
@@ -494,10 +613,21 @@ function writeCurrentPointer(entry: string, pointer: PrSnapshotPointer): void {
   }
 }
 
-async function remoteRevisions(url: string, body: PrAnalyzeRequest, cwd: string, token?: string) {
+async function remoteRevisions(
+  url: string,
+  body: PrAnalyzeRequest,
+  cwd: string,
+  token?: string,
+  signal?: AbortSignal,
+) {
   const baseRef = `refs/heads/${body.baseRef}`;
   const headRef = `refs/pull/${body.prNumber}/head`;
-  const output = await runGit(["ls-remote", "--exit-code", url, baseRef, headRef], { cwd, token, timeoutMs: GIT_TIMEOUT_MS });
+  const output = await runGit(["ls-remote", "--exit-code", url, baseRef, headRef], {
+    cwd,
+    token,
+    timeoutMs: GIT_TIMEOUT_MS,
+    signal,
+  });
   const rows = new Map(output.trim().split("\n").map((line) => {
     const [sha, ref] = line.trim().split(/\s+/, 2);
     return [ref, sha] as const;
@@ -508,72 +638,122 @@ async function remoteRevisions(url: string, body: PrAnalyzeRequest, cwd: string,
   return { baseSha: requireCommit(baseSha), headSha: requireCommit(headSha) };
 }
 
-async function cloneFullHistory(url: string, dir: string, token?: string): Promise<void> {
+async function cloneFullHistory(
+  url: string,
+  dir: string,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const auth = token ? ["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(token)}`] : [];
-  await runGitClone([...auth, "-c", "core.longpaths=true", "clone", "--no-tags", "--filter=blob:none", "--", url, dir], token, { timeoutMs: CLONE_TIMEOUT_MS });
+  await runGitClone(
+    [...auth, "-c", "core.longpaths=true", "clone", "--no-tags", "--filter=blob:none", "--", url, dir],
+    token,
+    { timeoutMs: CLONE_TIMEOUT_MS, signal },
+  );
 }
 
-async function checkoutPrHead(cwd: string, body: PrAnalyzeRequest, token?: string): Promise<void> {
-  await runGit(["fetch", "origin", `+refs/heads/${body.baseRef}:refs/remotes/origin/${body.baseRef}`], { cwd, token, timeoutMs: GIT_TIMEOUT_MS });
-  await runGit(["fetch", "origin", `pull/${body.prNumber}/head`], { cwd, token, timeoutMs: GIT_TIMEOUT_MS });
-  await runGit(["checkout", "--detach", "FETCH_HEAD"], { cwd, token, timeoutMs: GIT_TIMEOUT_MS });
+async function checkoutPrHead(
+  cwd: string,
+  body: PrAnalyzeRequest,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  const options = { cwd, token, timeoutMs: GIT_TIMEOUT_MS, signal };
+  await runGit(["fetch", "origin", `+refs/heads/${body.baseRef}:refs/remotes/origin/${body.baseRef}`], options);
+  await runGit(["fetch", "origin", `pull/${body.prNumber}/head`], options);
+  await runGit(["checkout", "--detach", "FETCH_HEAD"], options);
 }
 
-async function verifyRevisions(cwd: string, baseRef: string, expected: { headSha: string; baseSha: string }): Promise<void> {
-  const headSha = requireCommit((await runGit(["rev-parse", "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS })).trim());
-  const baseSha = requireCommit((await runGit(["rev-parse", `origin/${baseRef}`], { cwd, timeoutMs: GIT_TIMEOUT_MS })).trim());
+async function verifyRevisions(
+  cwd: string,
+  baseRef: string,
+  expected: { headSha: string; baseSha: string },
+  signal?: AbortSignal,
+): Promise<void> {
+  const options = { cwd, timeoutMs: GIT_TIMEOUT_MS, signal };
+  const headSha = requireCommit((await runGit(["rev-parse", "HEAD"], options)).trim());
+  const baseSha = requireCommit((await runGit(["rev-parse", `origin/${baseRef}`], options)).trim());
   if (headSha !== expected.headSha || baseSha !== expected.baseSha) throw new WebError(409, "pull request changed during analysis; retry");
 }
 
-async function resolveMergeBase(cwd: string, baseRef: string): Promise<string> {
+async function resolveMergeBase(cwd: string, baseRef: string, signal?: AbortSignal): Promise<string> {
   // GitHub compares base...head, and multiple best bases in a criss-cross history make argument
   // order observable. Resolve once in that exact order, then use this SHA for both source sides.
-  const output = await runGit(["merge-base", `origin/${baseRef}`, "HEAD"], { cwd, timeoutMs: GIT_TIMEOUT_MS });
+  const output = await runGit(["merge-base", `origin/${baseRef}`, "HEAD"], {
+    cwd,
+    timeoutMs: GIT_TIMEOUT_MS,
+    signal,
+  });
   return requireCommit(output.trim());
 }
 
-async function checkoutComparison(cwd: string, comparisonDir: string, mergeBaseSha: string, token?: string): Promise<void> {
-  await runGit(["worktree", "add", "--detach", comparisonDir, mergeBaseSha], { cwd, token, timeoutMs: GIT_TIMEOUT_MS });
+async function checkoutComparison(
+  cwd: string,
+  comparisonDir: string,
+  mergeBaseSha: string,
+  token?: string,
+  signal?: AbortSignal,
+): Promise<void> {
+  await runGit(["worktree", "add", "--detach", comparisonDir, mergeBaseSha], {
+    cwd,
+    token,
+    timeoutMs: GIT_TIMEOUT_MS,
+    signal,
+  });
 }
 
 async function extractPrHead(
+  repositoryAnalysis: typeof runRepositoryAnalysisChild,
   root: string,
   source: GitHubSource,
   body: PrAnalyzeRequest,
   remoteUrl: string,
   revisions: { headSha: string; baseSha: string },
   mergeBaseSha: string,
+  artifactOutputPath: string,
   token?: string,
   analysis?: EmptySideAnalysis,
-) {
-  return analyzeRepository({
-    absoluteRoot: root,
-    cwd: root,
-    targetName: `${source.owner}/${source.repo}`,
-    // Pin the exact base used by comparison source. `--merge-base <sha>` remains deterministic
-    // because this SHA is already an ancestor of HEAD, even for histories with several best bases.
-    changedSince: mergeBaseSha,
-    changedSinceTimeoutMs: GIT_TIMEOUT_MS,
-    changedSinceGitExecutor: (absoluteRoot, args, timeoutMs) => runGit(args, { cwd: absoluteRoot, token, timeoutMs }),
-    vcs: { repository: remoteUrl, commit: revisions.headSha, branch: body.headRef },
-    ...analysis,
-  });
+  signal?: AbortSignal,
+): Promise<RepositoryAnalysisChildResult> {
+  throwIfAborted(signal);
+  return repositoryAnalysis(
+    {
+      absoluteRoot: root,
+      cwd: root,
+      targetName: `${source.owner}/${source.repo}`,
+      // Pin the exact base used by comparison source. `--merge-base <sha>` remains deterministic
+      // because this SHA is already an ancestor of HEAD, even for histories with several best bases.
+      changedSince: mergeBaseSha,
+      changedSinceTimeoutMs: GIT_TIMEOUT_MS,
+      vcs: { repository: remoteUrl, commit: revisions.headSha, branch: body.headRef },
+      ...analysis,
+    },
+    { artifactOutputPath, token, signal },
+  );
 }
 
 async function extractPrComparison(
+  repositoryAnalysis: typeof runRepositoryAnalysisChild,
   root: string,
   source: GitHubSource,
   remoteUrl: string,
   mergeBaseSha: string,
+  artifactOutputPath: string,
+  token?: string,
+  signal?: AbortSignal,
   analysis?: EmptySideAnalysis,
-) {
-  return analyzeRepository({
-    absoluteRoot: root,
-    cwd: root,
-    targetName: `${source.owner}/${source.repo}`,
-    vcs: { repository: remoteUrl, commit: mergeBaseSha },
-    ...analysis,
-  });
+): Promise<RepositoryAnalysisChildResult> {
+  throwIfAborted(signal);
+  return repositoryAnalysis(
+    {
+      absoluteRoot: root,
+      cwd: root,
+      targetName: `${source.owner}/${source.repo}`,
+      vcs: { repository: remoteUrl, commit: mergeBaseSha },
+      ...analysis,
+    },
+    { artifactOutputPath, token, signal },
+  );
 }
 
 type EmptySideAnalysis = Pick<RepositoryAnalysisRequest, "hintedFiles" | "allowEmpty"> & { allowEmpty: true };
@@ -628,15 +808,11 @@ function resolveOrMaterializeComparisonRoot(
     : { root: materializeEmptyExtractionRoot(comparisonRepo, subdir), materialized: true };
 }
 
-/** File extensions from nodes plus the exact Git manifest preserve every populated-side language. */
-function emptySideAnalysis(artifact: GraphArtifact): EmptySideAnalysis {
-  const manifest = changedFileManifestFromExtensions(artifact.extensions) ?? [];
+/** One representative source path per selected extractor preserves every populated-side language. */
+function emptySideAnalysis(facts: Pick<RepositoryAnalysisFacts, "emptySideHints">): EmptySideAnalysis {
   return {
     allowEmpty: true,
-    hintedFiles: [...new Set([
-      ...artifact.nodes.map((node) => node.location.file),
-      ...manifest.map((file) => file.path),
-    ])].sort(),
+    hintedFiles: facts.emptySideHints,
   };
 }
 

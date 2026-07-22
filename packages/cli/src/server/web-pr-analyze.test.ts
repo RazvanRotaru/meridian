@@ -18,6 +18,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { EventEmitter } from "node:events";
 import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { SCHEMA_VERSION } from "@meridian/core";
@@ -32,10 +33,13 @@ import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
+import { AnalysisCoordinator } from "./web-analysis-coordinator";
+import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
 import {
   loadSyntheticScenarios,
-  syntheticSourceFingerprint,
+  runSyntheticScenarioInOci,
 } from "./synthetic-execution";
+import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -50,8 +54,11 @@ vi.mock("./synthetic-execution", async (importOriginal) => {
   return {
     ...actual,
     loadSyntheticScenarios: vi.fn(() => []),
-    syntheticSourceFingerprint: vi.fn(() => "fixture-fingerprint"),
   };
+});
+vi.mock("./synthetic-fingerprint", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./synthetic-fingerprint")>();
+  return { ...actual, syntheticSourceFingerprintForFiles: vi.fn(() => "fixture-fingerprint") };
 });
 
 const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x" };
@@ -98,11 +105,13 @@ const COMPARISON_ARTIFACT = {
 } as unknown as GraphArtifact;
 let cacheRoot: string;
 let activeGraphStores: WebGraphStore[];
+let activeCoordinators: AnalysisCoordinator[];
 
 describe("handlePrAnalyze", () => {
   beforeEach(() => {
     cacheRoot = mkdtempSync(join(tmpdir(), "meridian-pr-cache-test-"));
     activeGraphStores = [];
+    activeCoordinators = [];
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
     vi.mocked(runGitClone).mockImplementation(async (args) => {
@@ -117,10 +126,11 @@ describe("handlePrAnalyze", () => {
       } as never;
     });
     vi.mocked(loadSyntheticScenarios).mockReturnValue([]);
-    vi.mocked(syntheticSourceFingerprint).mockReturnValue("fixture-fingerprint");
+    vi.mocked(syntheticSourceFingerprintForFiles).mockReturnValue("fixture-fingerprint");
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all(activeCoordinators.map((coordinator) => coordinator.close()));
     for (const store of activeGraphStores) store.dispose();
     rmSync(cacheRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
@@ -171,6 +181,97 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(sourceDir)).toBe(true);
   });
 
+  it("runs two distinct two-sided PR analyses concurrently within the default memory bound", async () => {
+    const ctx = githubCtx();
+    const release = deferred<void>();
+    const twoAnalysesStarted = deferred<void>();
+    let active = 0;
+    let maximumActive = 0;
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      if (active === 2) twoAnalysesStarted.resolve();
+      await release.promise;
+      active -= 1;
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const first = invoke(ctx, BODY);
+    const second = invoke(ctx, { ...BODY, prNumber: 42, headRef: "feat/y" });
+    await twoAnalysesStarted.promise;
+    expect(active).toBe(2);
+    release.resolve();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(secondResult.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(firstResult.lines().at(-1)?.graphId).not.toBe(secondResult.lines().at(-1)?.graphId);
+    expect(maximumActive).toBe(2);
+    expect(runGitClone).toHaveBeenCalledTimes(2);
+    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+  });
+
+  it("singleflights identical PR requests while preserving each response stream", async () => {
+    const ctx = githubCtx();
+    const firstAnalysisStarted = deferred<void>();
+    const release = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      firstAnalysisStarted.resolve();
+      await release.promise;
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const first = beginInvoke(ctx, BODY);
+    await firstAnalysisStarted.promise;
+    const follower = beginInvoke(ctx, BODY);
+    await waitFor(() => follower.captured.body().includes('"stage":"extract"'));
+    release.resolve();
+    await Promise.all([first.completion, follower.completion]);
+
+    expect(first.captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(follower.captured.lines().map((line) => line.stage)).toEqual(["extract", "done"]);
+    expect(follower.captured.lines().at(-1)?.graphId).toBe(first.captured.lines().at(-1)?.graphId);
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
+  });
+
+  it("detaches an aborted waiter without cancelling its identical surviving request", async () => {
+    const ctx = githubCtx();
+    const firstAnalysisStarted = deferred<void>();
+    const release = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      firstAnalysisStarted.resolve();
+      await release.promise;
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const abandoned = beginInvoke(ctx, BODY);
+    await firstAnalysisStarted.promise;
+    const survivor = beginInvoke(ctx, BODY);
+    await waitFor(() => survivor.captured.body().includes('"stage":"extract"'));
+    abandoned.request.emit("aborted");
+    await abandoned.completion;
+    release.resolve();
+    await survivor.completion;
+
+    expect(abandoned.captured.lines().some((line) => line.stage === "error" || line.stage === "done")).toBe(false);
+    expect(survivor.captured.lines().at(-1)?.stage).toBe("done");
+    expect(runGitClone).toHaveBeenCalledTimes(1);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed instead of downgrading changed files to modified when the canonical manifest is absent", async () => {
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
       const template = request.changedSince ? {
@@ -191,7 +292,7 @@ describe("handlePrAnalyze", () => {
     const lines = (await invoke(githubCtx(), BODY)).lines();
 
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
-    expect(lines.at(-1)?.message).toBe("PR analysis did not match its exact HEAD and merge-base coordinates");
+    expect(lines.at(-1)?.message).toBe("internal error while analyzing the pull request");
     expect(lines.some((line) => line.stage === "done")).toBe(false);
   });
 
@@ -219,7 +320,7 @@ describe("handlePrAnalyze", () => {
       },
     });
     expect(loadSyntheticScenarios).toHaveBeenCalledWith(descriptor.sourceRoot);
-    expect(syntheticSourceFingerprint).toHaveBeenCalledWith(descriptor.sourceRoot, ARTIFACT);
+    expect(syntheticSourceFingerprintForFiles).toHaveBeenCalledWith(descriptor.sourceRoot, []);
   });
 
   it("retains sandbox provenance when enabled even when the PR has no authored scenarios", async () => {
@@ -465,10 +566,13 @@ describe("handlePrAnalyze", () => {
     expect(comparisonRoot.endsWith(subdir)).toBe(true);
     expect(readdirSync(comparisonRoot)).toEqual([]);
     expect(vi.mocked(analyzeRepository).mock.calls.map(([request]) => request.absoluteRoot.endsWith(subdir))).toEqual([true, true]);
-    expect(vi.mocked(analyzeRepository).mock.calls[0][0]).not.toHaveProperty("allowEmpty");
+    expect(vi.mocked(analyzeRepository).mock.calls[0][0]).toMatchObject({
+      allowEmpty: false,
+      hintedFiles: [],
+    });
     expect(vi.mocked(analyzeRepository).mock.calls[1][0]).toMatchObject({
       allowEmpty: true,
-      hintedFiles: ["assets/logo.png", "src/a.ts", "src/gone.ts", "src/new.ts"],
+      hintedFiles: ["src/a.ts"],
     });
 
     const restarted = githubCtx(source);
@@ -527,7 +631,10 @@ describe("handlePrAnalyze", () => {
     expect(comparisonRoot.endsWith(subdir)).toBe(true);
     expect(readdirSync(headRoot)).toEqual([]);
     expect(vi.mocked(analyzeRepository).mock.calls.map(([request]) => request.absoluteRoot.endsWith(subdir))).toEqual([true, true]);
-    expect(vi.mocked(analyzeRepository).mock.calls[0][0]).not.toHaveProperty("allowEmpty");
+    expect(vi.mocked(analyzeRepository).mock.calls[0][0]).toMatchObject({
+      allowEmpty: false,
+      hintedFiles: [],
+    });
     expect(vi.mocked(analyzeRepository).mock.calls[0][0]).not.toHaveProperty("changedSince");
     expect(vi.mocked(analyzeRepository).mock.calls[1][0]).toMatchObject({
       allowEmpty: true,
@@ -725,30 +832,38 @@ describe("handlePrAnalyze", () => {
     expect(cloneArgs).not.toContain("--depth");
     expect(cloneArgs).not.toContain("--single-branch");
     const tmpDir = clonedDir();
-    expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({ timeoutMs: 600_000 });
+    expect(vi.mocked(runGitClone).mock.calls[0][2]).toEqual({
+      timeoutMs: 600_000,
+      signal: expect.any(AbortSignal),
+    });
     expect(runGit).toHaveBeenCalledWith(
       ["ls-remote", "--exit-code", "https://github.com/org/repo.git", "refs/heads/main", "refs/pull/41/head"],
-      { cwd: "", token: "", timeoutMs: 300_000 },
+      { cwd: "", token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
     );
     expect(runGit).toHaveBeenCalledWith(
       ["fetch", "origin", "+refs/heads/main:refs/remotes/origin/main"],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000 },
+      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
     );
-    expect(runGit).toHaveBeenCalledWith(["fetch", "origin", "pull/41/head"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
-    expect(runGit).toHaveBeenCalledWith(["checkout", "--detach", "FETCH_HEAD"], { cwd: tmpDir, token: "", timeoutMs: 300_000 });
+    expect(runGit).toHaveBeenCalledWith(
+      ["fetch", "origin", "pull/41/head"],
+      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
+    );
+    expect(runGit).toHaveBeenCalledWith(
+      ["checkout", "--detach", "FETCH_HEAD"],
+      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
+    );
     expect(runGit).toHaveBeenCalledWith(
       ["merge-base", "origin/main", "HEAD"],
-      { cwd: tmpDir, timeoutMs: 300_000 },
+      { cwd: tmpDir, timeoutMs: 300_000, signal: expect.any(AbortSignal) },
     );
     expect(runGit).toHaveBeenCalledWith(
       ["worktree", "add", "--detach", expect.stringContaining("comparison-repo"), MERGE_BASE_SHA],
-      { cwd: tmpDir, token: "", timeoutMs: 300_000 },
+      { cwd: tmpDir, token: "", timeoutMs: 300_000, signal: expect.any(AbortSignal) },
     );
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledWith(
       expect.objectContaining({
         changedSince: MERGE_BASE_SHA,
         changedSinceTimeoutMs: 300_000,
-        changedSinceGitExecutor: expect.any(Function),
       }),
     );
     expect(vi.mocked(analyzeRepository).mock.calls[1][0]).toEqual(expect.objectContaining({
@@ -851,7 +966,7 @@ function mockGitRevisions(headSha = HEAD_SHA, baseRef = "main", baseSha = BASE_S
 
 function gitOutput(args: string[], headSha: string, baseRef: string, baseSha = BASE_SHA): string {
   if (args[0] === "ls-remote") {
-    return `${baseSha}\trefs/heads/${baseRef}\n${headSha}\trefs/pull/41/head\n`;
+    return `${baseSha}\trefs/heads/${baseRef}\n${headSha}\t${args.at(-1)}\n`;
   }
   if (args[0] === "rev-parse") {
     return `${args[1] === "HEAD" ? headSha : baseSha}\n`;
@@ -863,21 +978,32 @@ function gitOutput(args: string[], headSha: string, baseRef: string, baseSha = B
 }
 
 async function invoke(ctx: Context, body: unknown) {
+  const running = beginInvoke(ctx, body);
+  await running.completion;
+  return running.captured;
+}
+
+function beginInvoke(ctx: Context, body: unknown) {
   const captured = capturedResponse();
-  try {
-    await handlePrAnalyze(ctx, requestWith(body), captured.response);
-  } catch (error) {
-    if (!(error instanceof WebError)) {
-      throw error;
+  const request = requestWith(body);
+  const completion = (async () => {
+    try {
+      await handlePrAnalyze(ctx, request, captured.response);
+    } catch (error) {
+      if (!(error instanceof WebError)) {
+        throw error;
+      }
+      sendJson(captured.response, error.status, { error: error.message });
     }
-    sendJson(captured.response, error.status, { error: error.message });
-  }
-  return captured;
+  })();
+  return { captured, completion, request };
 }
 
 function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo: "repo" }): Context {
   const graphStore = new WebGraphStore();
+  const analysisCoordinator = new AnalysisCoordinator();
   activeGraphStores.push(graphStore);
+  activeCoordinators.push(analysisCoordinator);
   graphStore.publish({
     id: "artifact",
     material: materializeValidatedArtifact(ARTIFACT),
@@ -889,6 +1015,8 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
   });
   return {
     graphStore,
+    analysisCoordinator,
+    repositoryAnalysis: runRepositoryAnalysisChildInProcess,
     prFilesCache: new Map(),
     rendererIndex: "",
     landingHtml: "",
@@ -897,11 +1025,11 @@ function githubCtx(source: ArtifactSource = { kind: "github", owner: "org", repo
     sessions: new SessionStore(),
     github: createGitHubClient({ clientId: "Iv1.test" }),
     cacheRoot,
-    cacheJobs: new Map(),
     refreshCache: false,
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: false,
     syntheticPrSandboxRuntimeSupported: () => false,
+    runSyntheticScenarioInOci,
   } as Context;
 }
 
@@ -919,25 +1047,60 @@ function capturedResponse() {
   let status = 0;
   let contentType = "";
   let body = "";
-  const response = {
+  let writableEnded = false;
+  const events = new EventEmitter();
+  const response = Object.assign(events, {
+    destroyed: false,
+    get writableEnded() {
+      return writableEnded;
+    },
     writeHead(code: number, headers?: Record<string, string>) {
       status = code;
       contentType = headers?.["content-type"] ?? "";
       return response;
     },
-    write(chunk: unknown) {
+    write(
+      chunk: unknown,
+      encodingOrCallback?: BufferEncoding | ((error?: Error | null) => void),
+      callback?: (error?: Error | null) => void,
+    ) {
       body += String(chunk);
+      const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+      done?.();
       return true;
     },
-    end(chunk?: unknown) {
+    end(chunk?: unknown, callback?: () => void) {
       body += typeof chunk === "string" ? chunk : "";
+      writableEnded = true;
+      callback?.();
+      events.emit("finish");
+      events.emit("close");
+      return response;
     },
-  } as unknown as ServerResponse;
+  }) as unknown as ServerResponse;
   return {
     response,
     status: () => status,
     contentType: () => contentType,
     body: () => body,
-    lines: () => body.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>),
+    lines: () => body.trim() === ""
+      ? []
+      : body.trim().split("\n").map((line) => JSON.parse(line) as Record<string, unknown>),
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (predicate()) return;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+  throw new Error("condition was not reached");
 }

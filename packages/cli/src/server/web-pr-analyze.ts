@@ -12,30 +12,39 @@
 
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { changedFileManifestFromExtensions } from "@meridian/core";
-import type { ChangedFileManifestEntry, GraphArtifact } from "@meridian/core";
+import type { SyntheticScenarioDescriptor } from "@meridian/core";
 import { readJsonBody } from "./web-request";
 import { parsePrAnalyzeRequest } from "./web-pr-request";
 import type { PrAnalyzeRequest } from "./web-pr-request";
 import { githubTokenFor } from "./web-auth";
 import { WebError } from "./web-error";
+import {
+  isOperationCancelled,
+  requestCancellation,
+  responseCanWrite,
+  throwIfAborted,
+} from "./web-cancellation";
 import type { ArtifactSource } from "./web-source";
 import type { Context } from "./web-server";
 import { cachedPrGraph } from "./web-pr-cache";
 import type { VerifiedFileArtifactMaterial } from "./web-graph-store";
-import {
-  loadSyntheticScenarios,
-  syntheticSourceFingerprint,
-} from "./synthetic-execution";
+import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
+import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
+type PrAnalysisStage = "clone" | "checkout" | "extract";
 
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const body = parsePrAnalyzeRequest(await readJsonBody(request));
-  const source = requireGitHubSource(ctx, body.id);
-  const token = githubTokenFor(ctx, request);
-  beginNdjson(response);
-  await streamAnalysis(ctx, response, source, token, body);
+  const cancellation = requestCancellation(request, response);
+  try {
+    const body = parsePrAnalyzeRequest(await readJsonBody(request));
+    const source = requireGitHubSource(ctx, body.id);
+    const token = githubTokenFor(ctx, request);
+    beginNdjson(response);
+    await streamAnalysis(ctx, response, source, token, body, cancellation.signal);
+  } finally {
+    cancellation.dispose();
+  }
 }
 
 /**
@@ -49,20 +58,35 @@ async function streamAnalysis(
   source: GitHubSource,
   token: string | undefined,
   body: PrAnalyzeRequest,
+  signal: AbortSignal,
 ): Promise<void> {
   try {
-    const cached = await cachedPrGraph({
-      cacheRoot: ctx.cacheRoot,
-      source,
-      body,
-      cwd: ctx.cwd,
-      token,
-      refresh: ctx.refreshCache,
-      onStage: (stage) => writeLine(response, { stage }),
-    });
-    const stored = storeArtifact(
+    const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
+    const cached = await ctx.analysisCoordinator.run<
+      Awaited<ReturnType<typeof cachedPrGraph>>,
+      PrAnalysisStage
+    >(
+      prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache),
+      ({ signal: jobSignal, report, runAnalysis }) => cachedPrGraph({
+        cacheRoot: ctx.cacheRoot,
+        source,
+        body,
+        cwd: ctx.cwd,
+        token,
+        refresh: ctx.refreshCache,
+        signal: jobSignal,
+        onStage: report,
+        // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
+        // consume exactly one memory admission slot together.
+        runAnalysis: (work) => runAnalysis(() => work()),
+        repositoryAnalysis: ctx.repositoryAnalysis,
+      }),
+      { signal, onProgress: (stage) => writeLine(response, { stage }) },
+    );
+    throwIfAborted(signal);
+    const stored = await storeArtifact(
       ctx,
-      cached.artifact,
+      cached.artifactFacts,
       source,
       cached.sourceDir,
       body,
@@ -78,42 +102,66 @@ async function streamAnalysis(
       cached.mergeBaseSha,
       cached.comparisonMaterial,
     );
-    writeLine(response, doneLine(
+    await writeLine(response, doneLine(
       stored.graphId,
       comparisonGraphId,
       cached.headSha,
       cached.mergeBaseSha,
-      cached.artifact,
+      cached.artifactFacts,
       [...cached.warnings, ...stored.syntheticWarnings],
       cached.cache,
     ));
   } catch (error) {
-    writeLine(response, { stage: "error", message: safeMessage(error) });
+    if (!isOperationCancelled(error) && responseCanWrite(response)) {
+      await writeLine(response, { stage: "error", message: safeMessage(error) });
+    }
   } finally {
-    response.end();
+    if (responseCanWrite(response)) response.end();
   }
 }
 
-function storeArtifact(
+/** Request coordinates plus credential scope identify work that is safe for independent waiters
+ * to share. Moving refs are resolved inside the job; completed results are never retained here. */
+function prAnalysisJobKey(
+  source: GitHubSource,
+  body: PrAnalyzeRequest,
+  credentialKey: string,
+  refresh: boolean,
+): string {
+  const digest = createHash("sha256").update(JSON.stringify({
+    owner: source.owner,
+    repo: source.repo,
+    subdir: source.subdir ?? "",
+    prNumber: body.prNumber,
+    baseRef: body.baseRef,
+    headRef: body.headRef,
+    credentialKey,
+    refresh,
+  })).digest("hex");
+  return `pr:${digest}`;
+}
+
+async function storeArtifact(
   ctx: Context,
-  artifact: GraphArtifact,
+  artifact: RepositoryAnalysisFacts,
   source: GitHubSource,
   sourceDir: string,
   body: PrAnalyzeRequest,
   headSha: string,
   baseSha: string,
   material: VerifiedFileArtifactMaterial,
-): { graphId: string; syntheticWarnings: string[] } {
+): Promise<{ graphId: string; syntheticWarnings: string[] }> {
   const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
-  let syntheticScenarios = [] as ReturnType<typeof loadSyntheticScenarios>;
+  let syntheticScenarios: SyntheticScenarioDescriptor[] = [];
   let syntheticFingerprint: string | null = null;
   let syntheticTrustReady = sandboxAdmission;
   const syntheticWarnings: string[] = [];
   if (sandboxAdmission) {
     try {
+      const { loadSyntheticScenarios } = await import("./synthetic-execution");
       syntheticScenarios = loadSyntheticScenarios(sourceDir);
       if (syntheticScenarios.length > 0) {
-        syntheticFingerprint = syntheticSourceFingerprint(sourceDir, artifact);
+        syntheticFingerprint = syntheticSourceFingerprintForFiles(sourceDir, artifact.sourceFiles);
       } else {
         syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
       }
@@ -180,7 +228,7 @@ function doneLine(
   comparisonGraphId: string,
   headSha: string,
   mergeBaseSha: string,
-  artifact: GraphArtifact,
+  artifact: RepositoryAnalysisFacts,
   warnings: string[],
   cache: "hit" | "miss",
 ): Record<string, unknown> {
@@ -190,20 +238,11 @@ function doneLine(
     comparisonGraphId,
     headSha,
     mergeBaseSha,
-    counts: { nodes: artifact.nodes.length, edges: artifact.edges.length },
-    changedFiles: changedFilesOf(artifact),
+    counts: { nodes: artifact.summary.nodeCount, edges: artifact.summary.edgeCount },
+    changedFiles: artifact.changedFiles,
     warnings,
     cache,
   };
-}
-
-/** Exact status-rich file inventory from the canonical local Git analysis. */
-function changedFilesOf(artifact: GraphArtifact): ChangedFileManifestEntry[] {
-  const manifest = changedFileManifestFromExtensions(artifact.extensions);
-  if (manifest === null) {
-    throw new WebError(422, "pull request analysis did not produce a canonical changed-file manifest");
-  }
-  return [...manifest].sort((left, right) => left.path.localeCompare(right.path));
 }
 
 /** Immutable snapshot id: neither a force-push nor an explicit cache refresh can rebind a client. */
@@ -255,8 +294,11 @@ function beginNdjson(response: ServerResponse): void {
   response.writeHead(200, { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-cache" });
 }
 
-function writeLine(response: ServerResponse, line: Record<string, unknown>): void {
-  response.write(`${JSON.stringify(line)}\n`);
+function writeLine(response: ServerResponse, line: Record<string, unknown>): Promise<void> {
+  if (!responseCanWrite(response)) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    response.write(`${JSON.stringify(line)}\n`, (error) => error ? reject(error) : resolve());
+  });
 }
 
 /** Never echo an unknown error's text (it could carry a path or secret); a WebError is pre-vetted. */

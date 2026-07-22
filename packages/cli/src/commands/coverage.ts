@@ -6,7 +6,6 @@
 
 import { computeCoverage } from "@meridian/core";
 import type { CoverageReport, GraphArtifact, GraphNode } from "@meridian/core";
-import { InvalidArgumentError } from "commander";
 import { CliError, EXIT } from "../errors";
 import { resolveAgainst, resolveCwd } from "../paths";
 import { readJsonFile } from "../json-io";
@@ -29,13 +28,7 @@ export function runCoverage(graph: string, options: CoverageOptions): void {
   enforceThreshold(report, options.failUnder);
 }
 
-export function parseFailUnder(value: string): number {
-  const threshold = Number(value);
-  if (!Number.isFinite(threshold) || threshold < 0 || threshold > 100) {
-    throw new InvalidArgumentError("--fail-under must be a number in 0..100");
-  }
-  return threshold;
-}
+export { parseFailUnder } from "./coverage-options";
 
 function print(reporter: Reporter, artifact: GraphArtifact, report: CoverageReport): void {
   const { summary } = report;

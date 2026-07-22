@@ -12,7 +12,9 @@ import {
   runSyntheticScenario,
   syntheticExecutionRuntimeSupported,
   syntheticSandboxCompilationRuntimeSupported,
+  syntheticSourceFiles,
   syntheticSourceFingerprint,
+  syntheticSourceFingerprintForFiles,
   SyntheticExecutionError,
 } from "./synthetic-execution";
 
@@ -65,6 +67,7 @@ describe("synthetic execution manifest", () => {
     artifact.nodes.push({ ...artifact.nodes[0]!, id: "ts:src/index.ts#root~1" });
     const first = syntheticSourceFingerprint(root, artifact);
     expect(syntheticSourceFingerprint(root, artifact)).toBe(first);
+    expect(syntheticSourceFingerprintForFiles(root, syntheticSourceFiles(artifact))).toBe(first);
 
     writeFileSync(join(root, "package.json"), "{\"type\":\"module\"}\n", "utf8");
     const withPackage = syntheticSourceFingerprint(root, artifact);

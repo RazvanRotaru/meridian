@@ -39,17 +39,21 @@ import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import { handleRepoPullRequests } from "./web-repo-pulls";
 import { sendSource } from "./source-serve";
-import type { CachedGraph } from "./web-cache";
 import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
+import { AnalysisCoordinator } from "./web-analysis-coordinator";
+import { responseCanWrite } from "./web-cancellation";
 import { WebGraphStore } from "./web-graph-store";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
+import { SyntheticExecutionError } from "./synthetic-error";
 import {
-  runSyntheticScenario,
   runSyntheticScenarioInOci,
-  SyntheticExecutionError,
   syntheticPrSandboxRuntimeSupported,
-} from "./synthetic-execution";
+} from "./synthetic-oci";
+import {
+  runRepositoryAnalysisChild,
+  runRepositoryArtifactRestampChild,
+} from "./repository-analysis-child";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -75,6 +79,12 @@ export interface WebServerConfig {
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
   allowSyntheticPrExecution?: boolean;
+  /** Bound simultaneous memory-heavy repository analyses; cache and Git preparation stay outside. */
+  maxConcurrentAnalyses?: number;
+  /** Internal analysis boundary override used by deterministic server tests. */
+  repositoryAnalysis?: typeof runRepositoryAnalysisChild;
+  /** Internal artifact-restamp boundary override used by deterministic server tests. */
+  repositoryArtifactRestamp?: typeof runRepositoryArtifactRestampChild;
 }
 
 export interface Context {
@@ -82,8 +92,12 @@ export interface Context {
   graphStore: WebGraphStore;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
-  /** Duplicate remote generations share one clone/extract job within this server process. */
-  cacheJobs: Map<string, Promise<CachedGraph>>;
+  /** Ephemeral waiter-safe singleflight plus bounded admission for memory-heavy extraction. */
+  analysisCoordinator: AnalysisCoordinator;
+  /** Disposable child boundary. The web parent never receives a graph object from it. */
+  repositoryAnalysis: typeof runRepositoryAnalysisChild;
+  /** Disposable child boundary for immutable branch-provenance derivatives. */
+  repositoryArtifactRestamp: typeof runRepositoryArtifactRestampChild;
   cacheRoot: string;
   refreshCache: boolean;
   rendererIndex: string;
@@ -106,21 +120,29 @@ export interface Context {
 
 export function createWebServer(config: WebServerConfig): Server {
   const graphStore = new WebGraphStore();
+  const analysisCoordinator = new AnalysisCoordinator({
+    maxConcurrentAnalyses: config.maxConcurrentAnalyses,
+  });
   let ctx: Context;
   try {
-    ctx = buildContext(config, graphStore);
+    ctx = buildContext(config, graphStore, analysisCoordinator);
   } catch (error) {
+    void analysisCoordinator.close();
     graphStore.dispose();
     throw error;
   }
   const server = createServer((request, response) => {
     handle(ctx, request, response).catch((error) => sendError(response, error));
   });
-  attachGraphStoreLifecycle(server, graphStore);
+  attachServerLifecycle(server, analysisCoordinator, graphStore);
   return server;
 }
 
-function buildContext(config: WebServerConfig, graphStore: WebGraphStore): Context {
+function buildContext(
+  config: WebServerConfig,
+  graphStore: WebGraphStore,
+  analysisCoordinator: AnalysisCoordinator,
+): Context {
   const indexPath = join(config.rendererRoot, "index.html");
   if (!existsSync(indexPath)) {
     throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
@@ -131,7 +153,9 @@ function buildContext(config: WebServerConfig, graphStore: WebGraphStore): Conte
   const ctx: Context = {
     graphStore,
     prFilesCache: new Map(),
-    cacheJobs: new Map(),
+    analysisCoordinator,
+    repositoryAnalysis: config.repositoryAnalysis ?? runRepositoryAnalysisChild,
+    repositoryArtifactRestamp: config.repositoryArtifactRestamp ?? runRepositoryArtifactRestampChild,
     cacheRoot,
     refreshCache: config.refreshCache === true,
     rendererIndex: readFileSync(indexPath, "utf8"),
@@ -153,11 +177,18 @@ function buildContext(config: WebServerConfig, graphStore: WebGraphStore): Conte
 
 /** Dispose after Node's close event, when accepted connections have drained. The process hook
  * captures only the store cleanup and is removed on ordinary server close. */
-function attachGraphStoreLifecycle(server: Server, graphStore: WebGraphStore): void {
+function attachServerLifecycle(
+  server: Server,
+  analysisCoordinator: AnalysisCoordinator,
+  graphStore: WebGraphStore,
+): void {
   let disposed = false;
   const dispose = () => {
     if (disposed) return;
     disposed = true;
+    // Closing first synchronously aborts every waiter/job. No later phase may publish into the
+    // graph store, even when a CPU-bound extractor needs time to cooperatively return.
+    void analysisCoordinator.close();
     graphStore.dispose();
   };
   process.once("exit", dispose);
@@ -295,7 +326,7 @@ export async function handleSyntheticExecution(
   };
   const execution = sandboxedPrAdmission
     ? await ctx.runSyntheticScenarioInOci(executionRequest)
-    : await runSyntheticScenario(executionRequest);
+    : await (await import("./synthetic-execution")).runSyntheticScenario(executionRequest);
   sendJson(response, 200, execution);
 }
 
@@ -404,6 +435,9 @@ function loadTelemetryGraph(ctx: Context, response: ServerResponse, id: string |
 }
 
 function sendError(response: ServerResponse, error: unknown): void {
+  if (!responseCanWrite(response)) {
+    return;
+  }
   if (response.headersSent) {
     response.end();
     return;
