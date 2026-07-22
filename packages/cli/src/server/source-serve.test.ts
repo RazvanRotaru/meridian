@@ -5,14 +5,15 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { ServerResponse } from "node:http";
-import { readSourceSlice, sendSource } from "./source-serve";
+import { isGitAdministrativePath, readSourceSlice, sendSource } from "./source-serve";
 import { WebError } from "./web-error";
 
 let root: string;
+let gitAdministrationSymlinked = false;
 
 beforeAll(() => {
   root = mkdtempSync(join(tmpdir(), "meridian-source-"));
@@ -23,6 +24,16 @@ beforeAll(() => {
   writeFileSync(join(root, "empty.ts"), "");
   writeFileSync(join(root, "one-blank-line.ts"), "\n");
   writeFileSync(join(root, " spaced.ts "), "whitespace path");
+  writeFileSync(join(root, ".git"), "gitdir: /private/cache/repository-store/mirror.git/worktrees/repo\n");
+  mkdirSync(join(root, "nested", ".git"), { recursive: true });
+  writeFileSync(join(root, "nested", ".git", "config"), "private git administration");
+  try {
+    symlinkSync(".git", join(root, "git-admin-link"));
+    symlinkSync(join("nested", ".git", "config"), join(root, "git-config-link"));
+    gitAdministrationSymlinked = true;
+  } catch {
+    gitAdministrationSymlinked = false;
+  }
   writeFileSync(join(root, "oversized.ts"), "x");
   truncateSync(join(root, "oversized.ts"), 32 * 1024 * 1024 + 1);
   writeFileSync(join(root, "capped-boundary.ts"), `${"x".repeat(1_999_999)}\nrest`);
@@ -32,6 +43,14 @@ beforeAll(() => {
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 
 describe("readSourceSlice", () => {
+  it("recognizes Win32 aliases for linked-worktree Git administration without changing POSIX spelling", () => {
+    for (const file of [".git", ".GIT", ".git.", ".git ", ".git::$DATA", "nested/.git...::$DATA/config"]) {
+      expect(isGitAdministrativePath(file, "win32")).toBe(true);
+    }
+    expect(isGitAdministrativePath(".git.", "linux")).toBe(false);
+    expect(isGitAdministrativePath("src/.github/workflows/check.yml", "win32")).toBe(false);
+  });
+
   it("returns the inclusive start..end range", () => {
     expect(readSourceSlice(root, "sample.ts", "2", "4")).toEqual({
       file: "sample.ts",
@@ -130,6 +149,23 @@ describe("readSourceSlice", () => {
       expect.objectContaining({ status: 404 }),
     );
   });
+
+  it("never serves linked-worktree or nested Git administrative files", () => {
+    for (const file of [".git", "nested/.git/config", "nested\\.GIT\\config"]) {
+      expect(() => readSourceSlice(root, file, null, null)).toThrow(
+        expect.objectContaining({ status: 404 }),
+      );
+    }
+  });
+
+  it("never follows an innocent-looking symlink into Git administrative state", () => {
+    if (!gitAdministrationSymlinked) return;
+    for (const file of ["git-admin-link", "git-config-link"]) {
+      expect(() => readSourceSlice(root, file, null, null)).toThrow(
+        expect.objectContaining({ status: 404 }),
+      );
+    }
+  });
 });
 
 // A cloned repo is untrusted: a symlink inside the clone can point at an external file (e.g.
@@ -197,6 +233,8 @@ describe("sendSource", () => {
     expect(statusFor(new URLSearchParams())).toBe(400);
     expect(statusFor(new URLSearchParams({ file: "../secret.ts" }))).toBe(400);
     expect(statusFor(new URLSearchParams({ file: "nope.ts" }))).toBe(404);
+    expect(statusFor(new URLSearchParams({ file: ".git" }))).toBe(404);
+    expect(statusFor(new URLSearchParams({ file: "nested/.git/config" }))).toBe(404);
   });
 });
 

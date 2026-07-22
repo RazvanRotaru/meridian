@@ -1,13 +1,13 @@
 /**
  * Argv-level tests for the shared git runner — no real git, `spawn` is mocked. These pin the
- * security invariants: argv-only spawn, token only via `-c http.extraHeader` (never a URL),
- * token/base64 scrubbed from stderr AND thrown error text, and the per-call timeout kill.
+ * security invariants: argv-only spawn, credential transport outside argv/URLs, token/base64
+ * scrubbed from stderr AND thrown error text, and the per-call timeout kill.
  */
 
 import { describe, expect, it, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
-import { base64Auth, runGit, runGitClone } from "./git-exec";
+import { base64Auth, runGit } from "./git-exec";
 import { WebError } from "./web-error";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
@@ -15,6 +15,7 @@ vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 const TOKEN = "ghp_secret123";
 
 interface FakeChild extends EventEmitter {
+  pid?: number;
   stdout: EventEmitter;
   stderr: EventEmitter;
   kill: ReturnType<typeof vi.fn>;
@@ -22,8 +23,10 @@ interface FakeChild extends EventEmitter {
 
 describe("runGit", () => {
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.mocked(spawn).mockReset();
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("funnels through the shared spawn: argv-only, cwd honored, stdout returned", async () => {
@@ -32,7 +35,10 @@ describe("runGit", () => {
     child.stdout.emit("data", Buffer.from("out-line\n"));
     child.emit("close", 0);
     await expect(pending).resolves.toBe("out-line\n");
-    expect(spawn).toHaveBeenCalledWith("git", ["fetch", "origin", "main"], expect.objectContaining({ cwd: "/clone" }));
+    expect(spawn).toHaveBeenCalledWith("git", ["fetch", "origin", "main"], expect.objectContaining({
+      cwd: "/clone",
+      detached: process.platform !== "win32",
+    }));
   });
 
   it("decodes a UTF-8 character split across stdout chunks without replacement characters", async () => {
@@ -47,15 +53,34 @@ describe("runGit", () => {
     await expect(pending).resolves.toBe("before é after");
   });
 
-  it("injects the token ONLY as a -c http.extraHeader before the subcommand — never raw in argv", async () => {
+  it("injects the token through a dedicated child environment variable — never argv", async () => {
     const child = nextChild();
     const pending = runGit(["fetch", "origin", "main"], { cwd: "/clone", token: TOKEN });
     child.emit("close", 0);
     await pending;
     const argv = vi.mocked(spawn).mock.calls[0][1] as string[];
-    expect(argv.slice(0, 2)).toEqual(["-c", `http.extraHeader=AUTHORIZATION: basic ${base64Auth(TOKEN)}`]);
-    expect(argv.slice(2)).toEqual(["fetch", "origin", "main"]);
+    const options = vi.mocked(spawn).mock.calls[0][2];
+    expect(argv).toEqual([
+      "--config-env=http.extraHeader=MERIDIAN_GIT_HTTP_EXTRA_HEADER",
+      "fetch",
+      "origin",
+      "main",
+    ]);
     expect(argv.join(" ")).not.toContain(TOKEN);
+    expect(argv.join(" ")).not.toContain(base64Auth(TOKEN));
+    expect(options?.env?.MERIDIAN_GIT_HTTP_EXTRA_HEADER)
+      .toBe(`AUTHORIZATION: basic ${base64Auth(TOKEN)}`);
+  });
+
+  it("does not inherit the dedicated credential variable on an anonymous invocation", async () => {
+    vi.stubEnv("MERIDIAN_GIT_HTTP_EXTRA_HEADER", "stale-secret");
+    const child = nextChild();
+    const pending = runGit(["status"], { cwd: "/clone" });
+    child.emit("close", 0);
+    await pending;
+
+    const options = vi.mocked(spawn).mock.calls[0][2];
+    expect(options?.env).not.toHaveProperty("MERIDIAN_GIT_HTTP_EXTRA_HEADER");
   });
 
   it("scrubs the token and its base64 form from git's stderr in the rejection", async () => {
@@ -122,6 +147,51 @@ describe("runGit", () => {
     expect(child.kill).toHaveBeenCalledTimes(1);
   });
 
+  it.skipIf(process.platform === "win32")("kills the complete POSIX Git process group", async () => {
+    const groupKill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    const child = nextChild(4_321);
+    const controller = new AbortController();
+    const pending = runGit(["fetch", "origin", "main"], {
+      cwd: "/clone",
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    expect(groupKill).toHaveBeenCalledWith(-4_321, "SIGKILL");
+    expect(child.kill).not.toHaveBeenCalled();
+
+    let settled = false;
+    void pending.catch(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    child.emit("close", null, "SIGKILL");
+    await expect(pending).rejects.toThrow("git operation was cancelled");
+  });
+
+  it.runIf(process.platform === "win32")("kills the complete Windows Git process tree", async () => {
+    const child = fakeChild(4_321);
+    const killer = fakeChild();
+    vi.mocked(spawn).mockReturnValueOnce(child as never).mockReturnValueOnce(killer as never);
+    const controller = new AbortController();
+    const pending = runGit(["fetch", "origin", "main"], {
+      cwd: "C:\\clone",
+      signal: controller.signal,
+    });
+
+    controller.abort();
+    expect(spawn).toHaveBeenNthCalledWith(2, "taskkill.exe", ["/pid", "4321", "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    child.emit("close", null, "SIGKILL");
+    let settled = false;
+    void pending.catch(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    killer.emit("close", 0);
+    await expect(pending).rejects.toThrow("git operation was cancelled");
+  });
+
   it("does not kill a completed child when the signal aborts later", async () => {
     const child = nextChild();
     const controller = new AbortController();
@@ -142,67 +212,19 @@ describe("runGit", () => {
   });
 });
 
-describe("runGitClone", () => {
-  afterEach(() => {
-    vi.mocked(spawn).mockReset();
-    vi.useRealTimers();
-  });
-
-  it("passes its argv through unchanged and resolves to undefined", async () => {
-    const child = nextChild();
-    const args = ["-c", "core.longpaths=true", "clone", "--", "https://github.com/o/r.git", "/tmp/x"];
-    const pending = runGitClone(args);
-    child.stdout.emit("data", Buffer.from("ignored"));
-    child.emit("close", 0);
-    await expect(pending).resolves.toBeUndefined();
-    expect(spawn).toHaveBeenCalledWith("git", args, expect.anything());
-  });
-
-  it("honors a per-call timeout without changing the shared clone default", async () => {
-    vi.useFakeTimers();
-    const child = nextChild();
-    const pending = runGitClone(["clone", "--", "https://github.com/o/r.git", "/tmp/x"], undefined, {
-      timeoutMs: 600_000,
-    });
-    vi.advanceTimersByTime(600_000);
-    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
-    child.emit("close", null, "SIGKILL");
-    await expect(pending).rejects.toThrow("git timed out after 600s");
-  });
-
-  it("passes cancellation through clone runs", async () => {
-    const child = nextChild();
-    const controller = new AbortController();
-    const pending = runGitClone(
-      ["clone", "--", "https://github.com/o/r.git", "/tmp/x"],
-      undefined,
-      { signal: controller.signal },
-    );
-    controller.abort();
-
-    child.emit("close", null, "SIGKILL");
-    await expect(pending).rejects.toThrow("git operation was cancelled");
-    expect(child.kill).toHaveBeenCalledTimes(1);
-  });
-
-  it("flags auth-like clone failures with the token scrubbed", async () => {
-    const child = nextChild();
-    const pending = runGitClone(["clone", "--", "https://github.com/o/r.git", "/tmp/x"], TOKEN);
-    child.stderr.emit("data", Buffer.from(`Authentication failed for repo (used ${TOKEN})`));
-    child.emit("close", 128);
-    const message = await rejectionMessage(pending);
-    expect(message).toContain("authentication failed");
-    expect(message).not.toContain(TOKEN);
-  });
-});
-
 /** Queue one fake child for the next spawn call; the test drives its streams and exit. */
-function nextChild(): FakeChild {
+function nextChild(pid?: number): FakeChild {
+  const child = fakeChild(pid);
+  vi.mocked(spawn).mockReturnValueOnce(child as never);
+  return child;
+}
+
+function fakeChild(pid?: number): FakeChild {
   const child = new EventEmitter() as FakeChild;
+  child.pid = pid;
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = vi.fn();
-  vi.mocked(spawn).mockReturnValueOnce(child as never);
   return child;
 }
 

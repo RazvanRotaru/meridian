@@ -11,7 +11,7 @@
  */
 
 import { readFileSync, realpathSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { relative, resolve, sep } from "node:path";
 import type { ServerResponse } from "node:http";
 import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
@@ -54,7 +54,23 @@ function requireFile(file: string | null): string {
   if (file === null || file.length === 0) {
     throw new WebError(400, "file query parameter is required");
   }
+  // A linked Git worktree stores `.git` as a regular text file containing the absolute path to
+  // shared administrative state. It is never repository source and must not cross the API boundary.
+  if (isGitAdministrativePath(file)) {
+    throw new WebError(404, "source file not found");
+  }
   return file;
+}
+
+export function isGitAdministrativePath(file: string, platform: NodeJS.Platform = process.platform): boolean {
+  return file.split(/[\\/]/).some((rawComponent) => {
+    let component = rawComponent;
+    if (platform === "win32") {
+      // Win32 aliases trailing dots/spaces and NTFS alternate streams to the same filesystem entry.
+      component = component.split(":", 1)[0]!.replace(/[. ]+$/g, "");
+    }
+    return component.toLowerCase() === ".git";
+  });
 }
 
 /** Read `file` (resolved under `sourceRoot`) and return the inclusive `start..end` line range. */
@@ -64,14 +80,15 @@ export function readSourceSlice(
   start: string | null,
   end: string | null,
 ): SourceSlice {
-  const lines = readSourceLines(resolveWithinRoot(sourceRoot, file));
+  const sourceFile = requireFile(file);
+  const lines = readSourceLines(resolveWithinRoot(sourceRoot, sourceFile));
   if (lines.length === 0) {
-    return { file, startLine: 1, endLine: 0, lineCount: 0, code: "", truncated: false };
+    return { file: sourceFile, startLine: 1, endLine: 0, lineCount: 0, code: "", truncated: false };
   }
   const range = clampRange(start, end, lines.length);
   const requested = lines.slice(range.startLine - 1, range.endLine);
   return {
-    file,
+    file: sourceFile,
     startLine: range.startLine,
     endLine: range.startLine - 1 + requested.length,
     lineCount: requested.length,
@@ -96,6 +113,12 @@ function resolveWithinRoot(sourceRoot: string, file: string): string {
     throw new WebError(404, "source file not found");
   }
   assertWithinRoot(real, root); // canonical gate: a symlink cannot smuggle a file out of the root
+  // The request spelling was checked above, but a repository-controlled symlink can give an
+  // innocuous name to the checkout's `.git` file/directory. Re-check the canonical target relative
+  // to the canonical source root so Git administration never crosses the source API boundary.
+  if (isGitAdministrativePath(relative(root, real))) {
+    throw new WebError(404, "source file not found");
+  }
   const stat = statSync(real);
   if (!stat.isFile()) {
     throw new WebError(404, "source file not found");

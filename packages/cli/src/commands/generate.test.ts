@@ -49,6 +49,8 @@ describe("generate canonical repository analysis", () => {
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
+  // This integration runs the mixed-language repository analysis twice (CLI and worker-backed
+  // web parity). Keep its deadline independent of concurrent test-file process scheduling.
   it("uses workspace discovery even when a root tsconfig exists", async () => {
     const discoveredOut = join(root, "discovered.graph.json");
     await runGenerate(root, generateOptions(discoveredOut));
@@ -88,7 +90,7 @@ describe("generate canonical repository analysis", () => {
     }));
     expect(webArtifact?.nodes).toEqual(cliArtifact.nodes);
     expect(webArtifact?.edges).toEqual(cliArtifact.edges);
-  });
+  }, 30_000);
 
   it("does not expose alternate graph-shaping paths", () => {
     const generate = buildProgram().commands.find((command) => command.name() === "generate");

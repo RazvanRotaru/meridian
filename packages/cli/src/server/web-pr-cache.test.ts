@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,10 +7,11 @@ import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository } from "../repository-analysis";
 import { validateOrThrow } from "../validation";
-import { runGit, runGitClone } from "./git-exec";
+import { runGit } from "./git-exec";
 import { materializeValidatedArtifact } from "./web-graph-store";
 import { cachedPrGraph } from "./web-pr-cache";
 import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
+import { FakePrRepositoryMirror } from "./pr-repository-mirror-test-fake";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -18,7 +19,7 @@ vi.mock("../repository-analysis", async (importOriginal) => {
 });
 vi.mock("./git-exec", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./git-exec")>();
-  return { ...actual, runGit: vi.fn(), runGitClone: vi.fn() };
+  return { ...actual, runGit: vi.fn() };
 });
 vi.mock("../validation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../validation")>();
@@ -38,25 +39,19 @@ const HEAD_ARTIFACT = artifact(HEAD_SHA, BODY.headRef);
 const COMPARISON_ARTIFACT = artifact(MERGE_BASE_SHA);
 
 let cacheRoot: string;
+let repositories: FakePrRepositoryMirror;
 
 beforeEach(() => {
   cacheRoot = mkdtempSync(join(tmpdir(), "meridian-pr-path-test-"));
-  vi.mocked(runGitClone).mockImplementation(async (args) => {
-    const repo = args.at(-1)!;
-    mkdirSync(repo, { recursive: true });
-    writeFileSync(join(repo, "head-source.ts"), "export const head = true;\n");
-  });
+  repositories = new FakePrRepositoryMirror(cacheRoot, MERGE_BASE_SHA);
+  repositories.materialize = (_inputs, workspace) => {
+    writeFileSync(join(workspace.headDir, "head-source.ts"), "export const head = true;\n");
+    writeFileSync(join(workspace.comparisonDir, "base-source.ts"), "export const base = true;\n");
+  };
   vi.mocked(runGit).mockImplementation(async (args) => {
     if (args[0] === "ls-remote") {
       return `${BASE_SHA}\trefs/heads/main\n${HEAD_SHA}\trefs/pull/41/head\n`;
     }
-    if (args[0] === "worktree" && args[1] === "add") {
-      mkdirSync(args[3]!, { recursive: true });
-      writeFileSync(join(args[3]!, "base-source.ts"), "export const base = true;\n");
-      return "";
-    }
-    if (args[0] === "rev-parse") return `${args[1] === "HEAD" ? HEAD_SHA : BASE_SHA}\n`;
-    if (args[0] === "merge-base") return `${MERGE_BASE_SHA}\n`;
     return "";
   });
   vi.mocked(analyzeRepository).mockImplementation(async (request) => ({
@@ -66,6 +61,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  repositories.releaseAllForTest();
   rmSync(cacheRoot, { recursive: true, force: true });
   vi.clearAllMocks();
 });
@@ -97,6 +93,8 @@ describe("persistent PR graph artifact paths", () => {
     });
     expect(materializeValidatedArtifact).not.toHaveBeenCalled();
     expect(validateOrThrow).not.toHaveBeenCalled();
+    expect(repositories.prepareCalls).toHaveLength(1);
+    expect(repositories.acquirePreparedCalls).toHaveLength(1);
   });
 
   it("returns the exact immutable HEAD and merge-base JSON paths on misses and hits", async () => {
@@ -142,7 +140,7 @@ describe("persistent PR graph artifact paths", () => {
       baseSha: BASE_SHA,
       mergeBaseSha: MERGE_BASE_SHA,
     });
-    expect(vi.mocked(runGitClone)).toHaveBeenCalledTimes(1);
+    expect(repositories.prepareCalls).toHaveLength(1);
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(2);
   });
 
@@ -185,15 +183,16 @@ describe("persistent PR graph artifact paths", () => {
     const enteredB = deferred<void>();
     const releaseA = deferred<void>();
     const releaseB = deferred<void>();
-    let refreshClone = 0;
-    vi.mocked(runGitClone).mockImplementation(async (args) => {
-      const generation = ++refreshClone;
-      const repo = args.at(-1)!;
-      mkdirSync(repo, { recursive: true });
-      writeFileSync(join(repo, "head-source.ts"), `export const generation = ${generation};\n`);
+    let refreshGeneration = 0;
+    repositories.beforeFetchComplete = async (_inputs, workspace) => {
+      const generation = ++refreshGeneration;
+      writeFileSync(join(workspace.headDir, "head-source.ts"), `export const generation = ${generation};\n`);
       (generation === 1 ? enteredA : enteredB).resolve();
       await (generation === 1 ? releaseA : releaseB).promise;
-    });
+    };
+    repositories.materialize = (_inputs, workspace) => {
+      writeFileSync(join(workspace.comparisonDir, "base-source.ts"), "export const base = true;\n");
+    };
 
     const pendingA = generate(true);
     await enteredA.promise;
@@ -227,6 +226,7 @@ describe("persistent PR graph artifact paths", () => {
 function generate(refresh = false) {
   return cachedPrGraph({
     cacheRoot,
+    repositories,
     source: SOURCE,
     body: BODY,
     cwd: cacheRoot,
@@ -304,6 +304,7 @@ function snapshotDigest(metadata: Record<string, unknown>): string {
     comparisonArtifactDigest: metadata.comparisonArtifactDigest,
     comparisonArtifactBytes: metadata.comparisonArtifactBytes,
     comparisonFacts: metadata.comparisonFacts,
+    workspaceId: metadata.workspaceId,
     warnings: metadata.warnings,
   })).digest("hex");
 }

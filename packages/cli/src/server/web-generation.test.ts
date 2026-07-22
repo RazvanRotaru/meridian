@@ -23,6 +23,10 @@ import {
   syntheticExecutionRuntimeSupported,
 } from "./synthetic-execution";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
+import {
+  FakeRepositoryMirror,
+  fakeRepositoryLease,
+} from "./web-repository-mirror-test-fake";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -57,11 +61,13 @@ const SCENARIO: SyntheticScenarioDescriptor = {
 let root: string;
 let graphStore: WebGraphStore;
 let analysisCoordinator: AnalysisCoordinator;
+let repositories: FakeRepositoryMirror;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "meridian-generation-store-test-"));
   graphStore = new WebGraphStore();
   analysisCoordinator = new AnalysisCoordinator({ maxConcurrentAnalyses: 2 });
+  repositories = new FakeRepositoryMirror(join(root, "repositories"));
   vi.mocked(analyzeRepository).mockResolvedValue({ artifact: LOCAL_ARTIFACT, warnings: [] } as never);
   vi.mocked(syntheticExecutionRuntimeSupported).mockReturnValue(false);
   vi.mocked(loadSyntheticScenarios).mockReturnValue([]);
@@ -179,6 +185,70 @@ describe("web graph generation publication", () => {
       sourceRoot: root,
       source: { kind: "github", owner: "org", repo: "repo" },
     });
+    expect(main.release).not.toHaveBeenCalled();
+    expect(release.release).not.toHaveBeenCalled();
+    graphStore.dispose();
+    expect(main.release).toHaveBeenCalledTimes(1);
+    expect(release.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("publishes one retained source lease for concurrent identical remote generation waiters", async () => {
+    const ctx = context();
+    const fixture = remoteFixture("main");
+    const entered = deferred<void>();
+    const releaseResult = deferred<void>();
+    vi.mocked(cachedRemoteGraph).mockImplementationOnce(async () => {
+      entered.resolve();
+      await releaseResult.promise;
+      return fixture.cached;
+    });
+    const publish = vi.spyOn(graphStore, "publish");
+    const request = { kind: "github", value: "org/repo", ref: "main" } as const;
+
+    const first = generateGraph(ctx, request, undefined);
+    await entered.promise;
+    const second = generateGraph(ctx, request, undefined);
+    releaseResult.resolve();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(firstResult).toEqual(secondResult);
+    expect(cachedRemoteGraph).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(fixture.release).not.toHaveBeenCalled();
+
+    graphStore.dispose();
+    expect(fixture.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("releases an untransferred remote source lease after late cancellation", async () => {
+    const ctx = context();
+    const fixture = remoteFixture("main");
+    const entered = deferred<void>();
+    const releaseResult = deferred<void>();
+    vi.mocked(cachedRemoteGraph).mockImplementationOnce(async () => {
+      entered.resolve();
+      await releaseResult.promise;
+      return fixture.cached;
+    });
+    const publish = vi.spyOn(graphStore, "publish");
+    const controller = new AbortController();
+    const reason = new Error("remote generation cancelled");
+
+    const pending = generateGraph(
+      ctx,
+      { kind: "github", value: "org/repo", ref: "main" },
+      undefined,
+      undefined,
+      controller.signal,
+    );
+    await entered.promise;
+    controller.abort(reason);
+    releaseResult.resolve();
+
+    await expect(pending).rejects.toThrow(reason.message);
+    await analysisCoordinator.close();
+    expect(publish).not.toHaveBeenCalled();
+    expect(fixture.release).toHaveBeenCalledTimes(1);
   });
 
   it("publishes a refreshed artifact as a new remote identity in the same server", async () => {
@@ -205,6 +275,7 @@ function context(): Context {
     analysisCoordinator,
     cwd: root,
     cacheRoot: root,
+    repositories,
     refreshCache: false,
     allowSyntheticExecution: false,
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
@@ -224,9 +295,18 @@ function remoteFixture(
   const neutralArtifact = artifact("remote", generatedAt);
   const snapshotDigest = materializeValidatedArtifact(neutralArtifact).byteDigest;
   const fileMaterial = verifiedArtifactFile(path, material.byteDigest, material.summary);
+  const release = vi.fn();
+  const sourceLease = fakeRepositoryLease({
+    repositoryKey: "repository-key",
+    remoteUrl: "https://github.com/org/repo.git",
+    commit: COMMIT,
+    repoDir: root,
+    release,
+  });
   return {
     artifact: remoteArtifact,
     path: fileMaterial.path,
+    release,
     cached: {
       analysisKey: "analysis-key",
       facts: {
@@ -248,6 +328,7 @@ function remoteFixture(
         repoDir: root,
         repositoryKey: "repository-key",
         remoteUrl: "https://github.com/org/repo.git",
+        sourceLease,
       },
       sourceDir: root,
       target: "org/repo",

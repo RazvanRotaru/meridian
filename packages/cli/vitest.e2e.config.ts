@@ -1,7 +1,8 @@
 import { defineConfig } from "vitest/config";
 
-// The end-to-end suite drives a real headless browser against `blueprint view`, so it is
-// kept out of the default unit run (`*.e2e.ts`, not `*.test.ts`) and given generous timeouts.
+// End-to-end tests drive either a real browser or real process/filesystem integrations. Keep them
+// out of the highly parallel unit run (`*.e2e.ts`, not `*.test.ts`), serialize their shared host
+// resources, and give OS/browser operations realistic timeouts.
 export default defineConfig({
   test: {
     include: ["e2e/**/*.e2e.ts"],
