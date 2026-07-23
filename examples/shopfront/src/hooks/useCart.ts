@@ -3,7 +3,7 @@ import type { Cart } from "../domain/cart.js";
 import { services } from "../app.js";
 import { log } from "../utils/logger.js";
 
-const DEFAULT_CART = "cart_demo";
+const DEFAULT_CART = "cart_default";
 
 /** Imperative cart operations exposed to components. */
 export interface CartController {

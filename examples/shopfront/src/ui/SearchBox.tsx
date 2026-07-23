@@ -7,7 +7,7 @@ export function SearchBox(): ReactElement {
   return (
     <input
       className="search"
-      placeholder="Search products…"
+      placeholder="Search the catalog…"
       onChange={(event) => catalog.search(event.currentTarget.value)}
     />
   );

@@ -3,7 +3,7 @@ import { useCart } from "../hooks/useCart.js";
 import { CartLine } from "./CartLine.js";
 import { CheckoutBar } from "./CheckoutBar.js";
 
-/** The slide-out basket. Maps CartLine per item and renders the CheckoutBar. */
+/** The slide-out basket panel. Maps CartLine per item and renders the CheckoutBar. */
 export function CartPanel(): ReactElement {
   const cart = useCart();
   return (
