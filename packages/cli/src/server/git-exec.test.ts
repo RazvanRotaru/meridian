@@ -8,6 +8,7 @@ import { describe, expect, it, vi, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { base64Auth, runGit } from "./git-exec";
+import { ServiceShutdownError } from "./service-shutdown";
 import { WebError } from "./web-error";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
@@ -145,6 +146,23 @@ describe("runGit", () => {
     child.emit("close", 128);
     await expect(pending).rejects.toThrow("git operation was cancelled");
     expect(child.kill).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves service shutdown only after the running git child has exited", async () => {
+    const child = nextChild();
+    const controller = new AbortController();
+    const reason = new ServiceShutdownError();
+    const pending = runGit(["status"], { cwd: "/clone", signal: controller.signal });
+
+    controller.abort(reason);
+    expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+    let settled = false;
+    void pending.catch(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    child.emit("close", null, "SIGKILL");
+    await expect(pending).rejects.toBe(reason);
   });
 
   it.skipIf(process.platform === "win32")("kills the complete POSIX Git process group", async () => {

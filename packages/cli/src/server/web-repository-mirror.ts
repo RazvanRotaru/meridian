@@ -37,6 +37,7 @@ import {
   type RepositoryRetentionOptions,
 } from "./web-repository-retention";
 import { throwIfAborted } from "./web-cancellation";
+import { ServiceShutdownError } from "./service-shutdown";
 import { WebError } from "./web-error";
 
 const STORE_FORMAT_VERSION = 1;
@@ -151,6 +152,13 @@ export interface RepositoryMirror {
   preparePullRequest(inputs: PreparePullRequestInput): Promise<PreparedPullRequest>;
   acquirePreparedPullRequest(inputs: AcquirePreparedPullRequestInput): Promise<PreparedPullRequest | null>;
   close(): Promise<void>;
+}
+
+export class RepositoryMirrorClosedError extends ServiceShutdownError {
+  constructor() {
+    super("repository service is shutting down");
+    this.name = "RepositoryMirrorClosedError";
+  }
 }
 
 interface RepositoryIdentityMetadata {
@@ -371,10 +379,12 @@ export class WebRepositoryMirror implements RepositoryMirror {
   readonly #retention: RepositoryRetentionOptions;
   readonly #retentionScheduler: RepositoryRetentionScheduler;
   readonly #jobs = new Map<string, SharedJob<unknown>>();
+  readonly #operations = new Map<Promise<unknown>, AbortController>();
   readonly #leaseMarkers = new Set<string>();
   readonly #leaseSessionNonce = randomUUID();
   #leaseSessionHeartbeat: NodeJS.Timeout | undefined;
   #closed = false;
+  #closePromise: Promise<void> | undefined;
 
   constructor(options: WebRepositoryMirrorOptions) {
     const gitTimeoutMs = options.gitTimeoutMs ?? DEFAULT_GIT_TIMEOUT_MS;
@@ -405,8 +415,15 @@ export class WebRepositoryMirror implements RepositoryMirror {
   }
 
   /** Probe only. Never creates the store, initializes a mirror, fetches, repairs, or checks out. */
-  async acquireCachedWorkspace(inputs: AcquireCachedWorkspaceInput): Promise<RepositoryWorkspaceLease | null> {
-    throwIfAborted(inputs.signal);
+  acquireCachedWorkspace(inputs: AcquireCachedWorkspaceInput): Promise<RepositoryWorkspaceLease | null> {
+    return this.#runOperation(inputs.signal, (signal) => this.#acquireCachedWorkspace(inputs, signal));
+  }
+
+  async #acquireCachedWorkspace(
+    inputs: AcquireCachedWorkspaceInput,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkspaceLease | null> {
+    throwIfAborted(signal);
     const remoteUrl = this.#canonicalRemote(inputs.remoteUrl);
     const commit = requireCommit(inputs.expectedSha);
     const repositoryKey = repositoryKeyFor(remoteUrl);
@@ -414,12 +431,24 @@ export class WebRepositoryMirror implements RepositoryMirror {
     const workspace = this.#commitWorkspaceRecord(repository, commit);
     // Preserve a non-mutating miss probe: only an existing candidate needs the short lease lock.
     if (!isPlainDirectory(workspace.repoDir)) return null;
-    return this.#acquireCommitLease(workspace, "hit", inputs.signal);
+    const lease = await this.#acquireCommitLease(workspace, "hit", signal);
+    if (signal.aborted) {
+      lease?.release();
+      throwIfAborted(signal);
+    }
+    return lease;
   }
 
   /** Admitted miss path: verify one preflighted ref and create/reuse its stable commit workspace. */
-  async acquireWorkspace(inputs: AcquireWorkspaceInput): Promise<RepositoryWorkspaceLease> {
-    throwIfAborted(inputs.signal);
+  acquireWorkspace(inputs: AcquireWorkspaceInput): Promise<RepositoryWorkspaceLease> {
+    return this.#runOperation(inputs.signal, (signal) => this.#acquireWorkspace(inputs, signal));
+  }
+
+  async #acquireWorkspace(
+    inputs: AcquireWorkspaceInput,
+    signal: AbortSignal,
+  ): Promise<RepositoryWorkspaceLease> {
+    throwIfAborted(signal);
     const remoteUrl = this.#canonicalRemote(inputs.remoteUrl);
     const revision = normalizeExpectedRef(inputs.revision);
     const repositoryKey = repositoryKeyFor(remoteUrl);
@@ -431,7 +460,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
     const key = `commit:${repositoryKey}:${revision.expectedSha}:${credentialScope}`;
     const acquired = await this.#shared(
       key,
-      inputs.signal,
+      signal,
       (sharedSignal) => this.#prepareCommitWorkspace(
         remoteUrl,
         repositoryKey,
@@ -442,8 +471,8 @@ export class WebRepositoryMirror implements RepositoryMirror {
         sharedSignal,
       ),
     );
-    throwIfAborted(inputs.signal);
-    const lease = await this.#acquireCommitLease(acquired.workspace, acquired.cache, inputs.signal);
+    throwIfAborted(signal);
+    const lease = await this.#acquireCommitLease(acquired.workspace, acquired.cache, signal);
     if (lease === null) {
       throw new WebError(409, "repository workspace changed before it could be leased; retry");
     }
@@ -454,8 +483,15 @@ export class WebRepositoryMirror implements RepositoryMirror {
    * Fetch and verify the exact base/head pair, resolve their merge base, and create one unique PR
    * generation. No PR generation is shared by physical path, even when its commits are identical.
    */
-  async preparePullRequest(inputs: PreparePullRequestInput): Promise<PreparedPullRequest> {
-    throwIfAborted(inputs.signal);
+  preparePullRequest(inputs: PreparePullRequestInput): Promise<PreparedPullRequest> {
+    return this.#runOperation(inputs.signal, (signal) => this.#preparePullRequest(inputs, signal));
+  }
+
+  async #preparePullRequest(
+    inputs: PreparePullRequestInput,
+    signal: AbortSignal,
+  ): Promise<PreparedPullRequest> {
+    throwIfAborted(signal);
     const remoteUrl = this.#canonicalRemote(inputs.remoteUrl);
     const base = normalizeExpectedRef(inputs.base);
     const head = normalizeExpectedRef(inputs.head);
@@ -464,7 +500,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
     let prepared: PreparedPullRequest | undefined;
     let createdRecord: PullRequestRecord | undefined;
     try {
-      prepared = await this.#withRepositoryLock(repositoryKey, inputs.signal, async (lockSignal) => {
+      prepared = await this.#withRepositoryLock(repositoryKey, signal, async (lockSignal) => {
         const repository = await this.#ensureRepository(remoteUrl, repositoryKey, objectFormat, lockSignal);
         const workspaceId = randomBytes(16).toString("hex");
         const mutation: RepositoryMutation = {
@@ -511,7 +547,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
           throw error;
         }
       });
-      throwIfAborted(inputs.signal);
+      throwIfAborted(signal);
       return prepared;
     } catch (error) {
       if (prepared !== undefined) await Promise.allSettled([prepared.discard()]);
@@ -521,8 +557,15 @@ export class WebRepositoryMirror implements RepositoryMirror {
   }
 
   /** Cache-hit/restart path. It validates and leases an existing generation without any mutation. */
-  async acquirePreparedPullRequest(inputs: AcquirePreparedPullRequestInput): Promise<PreparedPullRequest | null> {
-    throwIfAborted(inputs.signal);
+  acquirePreparedPullRequest(inputs: AcquirePreparedPullRequestInput): Promise<PreparedPullRequest | null> {
+    return this.#runOperation(inputs.signal, (signal) => this.#acquirePreparedPullRequest(inputs, signal));
+  }
+
+  async #acquirePreparedPullRequest(
+    inputs: AcquirePreparedPullRequestInput,
+    signal: AbortSignal,
+  ): Promise<PreparedPullRequest | null> {
+    throwIfAborted(signal);
     const remoteUrl = this.#canonicalRemote(inputs.remoteUrl);
     const repositoryKey = requireRepositoryKey(inputs.repositoryKey);
     if (repositoryKeyFor(remoteUrl) !== repositoryKey) return null;
@@ -561,12 +604,12 @@ export class WebRepositoryMirror implements RepositoryMirror {
     if (!isPlainDirectory(record.headDir) || !isPlainDirectory(record.comparisonDir)) return null;
     let prepared: PreparedPullRequest | undefined;
     try {
-      prepared = await this.#withRepositoryLock(repositoryKey, inputs.signal, async (lockSignal) => {
+      prepared = await this.#withRepositoryLock(repositoryKey, signal, async (lockSignal) => {
         if (this.#readMutation(repository) !== null) return undefined;
         if (!(await this.#validPullRequestWorkspace(record, lockSignal))) return undefined;
         return this.#prepared(record, "hit");
       });
-      throwIfAborted(inputs.signal);
+      throwIfAborted(signal);
       return prepared ?? null;
     } catch (error) {
       prepared?.release();
@@ -574,10 +617,34 @@ export class WebRepositoryMirror implements RepositoryMirror {
     }
   }
 
-  /** Stop future maintenance and wait for any cooperative background sweep to leave its lock. */
-  async close(): Promise<void> {
+  /** Reject new work, abort every operation/job, and wait for rollback plus maintenance cleanup. */
+  close(): Promise<void> {
+    if (this.#closePromise !== undefined) return this.#closePromise;
     this.#closed = true;
-    await this.#retentionScheduler.stop();
+    let resolveClose!: () => void;
+    let rejectClose!: (error: unknown) => void;
+    this.#closePromise = new Promise<void>((resolve, reject) => {
+      resolveClose = resolve;
+      rejectClose = reject;
+    });
+    const reason = new RepositoryMirrorClosedError();
+    const operations = [...this.#operations.entries()];
+    const jobs = [...this.#jobs.values()];
+    for (const [, controller] of operations) {
+      if (!controller.signal.aborted) controller.abort(reason);
+    }
+    for (const job of jobs) {
+      if (!job.controller.signal.aborted) job.controller.abort(reason);
+    }
+    void Promise.allSettled([
+      Promise.resolve().then(() => this.#retentionScheduler.stop()),
+      ...operations.map(([operation]) => operation),
+      ...jobs.map((job) => job.promise),
+    ]).then(([retention]) => {
+      if (retention?.status === "rejected") rejectClose(retention.reason);
+      else resolveClose();
+    });
+    return this.#closePromise;
   }
 
   /**
@@ -2311,6 +2378,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
     signal: AbortSignal | undefined,
     work: (signal: AbortSignal) => Promise<Result>,
   ): Promise<Result> {
+    if (this.#closed) return Promise.reject(new RepositoryMirrorClosedError());
     throwIfAborted(signal);
     let job = this.#jobs.get(key) as SharedJob<Result> | undefined;
     if (!job) {
@@ -2351,6 +2419,37 @@ export class WebRepositoryMirror implements RepositoryMirror {
         (result) => { if (detach()) resolveJob(result); },
         (error: unknown) => { if (detach()) rejectJob(error); },
       );
+    });
+  }
+
+  #runOperation<Result>(
+    sourceSignal: AbortSignal | undefined,
+    work: (signal: AbortSignal) => Promise<Result>,
+  ): Promise<Result> {
+    if (this.#closed) return Promise.reject(new RepositoryMirrorClosedError());
+    try {
+      throwIfAborted(sourceSignal);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const controller = new AbortController();
+    const abort = () => controller.abort(sourceSignal?.reason);
+    sourceSignal?.addEventListener("abort", abort, { once: true });
+    if (sourceSignal?.aborted) abort();
+
+    // Start through the same synchronous prefix as the original public async API. Do not defer the
+    // body to a fresh microtask: that would let an immediately aborted caller skip waiter attachment
+    // and change which cancellation boundary owns the error.
+    let operation: Promise<Result>;
+    try {
+      operation = work(controller.signal);
+    } catch (error) {
+      operation = Promise.reject(error);
+    }
+    this.#operations.set(operation, controller);
+    return operation.finally(() => {
+      sourceSignal?.removeEventListener("abort", abort);
+      this.#operations.delete(operation);
     });
   }
 

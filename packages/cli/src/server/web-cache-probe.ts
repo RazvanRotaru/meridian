@@ -23,12 +23,19 @@ export async function probeRemoteGraph(inputs: {
   request: GenerateRequest;
   cwd: string;
   token?: string;
+  signal?: AbortSignal;
 }): Promise<CacheProbeResult> {
   if (inputs.request.refresh) {
     return { status: "miss" };
   }
   prepareWebCache(inputs.cacheRoot);
-  const checkout = await probeCheckout(inputs.repositories, inputs.request, inputs.cwd, inputs.token);
+  const checkout = await probeCheckout(
+    inputs.repositories,
+    inputs.request,
+    inputs.cwd,
+    inputs.token,
+    inputs.signal,
+  );
   if (!checkout) {
     return { status: "miss" };
   }

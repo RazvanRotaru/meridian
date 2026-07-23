@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
-import { createWebServer } from "../src/server/web-server";
+import { createWebService, type WebService } from "../src/server/web-server";
 import {
   PYTHON_REVIEW_PATH,
   RENDERER_INDEX,
@@ -64,7 +64,7 @@ interface SubmittedReview {
 
 let fixture: PrReviewFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: Server | undefined;
+let webService: WebService | undefined;
 let browser: Browser | undefined;
 let page: Page;
 let viewUrl = "";
@@ -595,7 +595,7 @@ async function setup(): Promise<void> {
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
 
   vi.stubGlobal("fetch", fakeGitHub(fixture, submittedReviews));
-  webServer = createWebServer({
+  webService = createWebService({
     rendererRoot: dirname(RENDERER_INDEX),
     webUiPath: WEB_UI,
     cwd: REPO_ROOT,
@@ -603,7 +603,7 @@ async function setup(): Promise<void> {
     fallbackToken: "meridian-e2e-token",
     fallbackUser: { login: "e2e-reviewer", avatarUrl: null },
   });
-  const baseUrl = await listenServer(webServer);
+  const baseUrl = await listenServer(webService.server);
   const generated = await generateSession(baseUrl);
   viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
 
@@ -613,7 +613,7 @@ async function setup(): Promise<void> {
 
 async function teardown(): Promise<void> {
   await browser?.close();
-  await closeServer(webServer);
+  await webService?.close();
   await closeServer(smartGitServer);
   restoreGitRedirect?.();
   vi.unstubAllGlobals();

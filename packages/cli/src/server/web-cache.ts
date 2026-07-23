@@ -167,7 +167,7 @@ export async function cachedRemoteGraph(inputs: {
     let ownedPrimaryStage: string | undefined;
     let ownedBranchStage: string | undefined;
     try {
-      const analyzed = await runAnalysis(async () => {
+      const analyzed = await runAnalysis(async (phaseSignal) => {
         const primaryStage = createStageDirectory(dirname(artifactEntry));
         // Admission can discard a late success after cancellation, so ownership must escape now.
         ownedPrimaryStage = primaryStage;
@@ -189,7 +189,7 @@ export async function cachedRemoteGraph(inputs: {
               branchVariant: { artifactOutputPath: branchOutputPath, branch },
             }),
             token: inputs.token,
-            signal: inputs.signal,
+            signal: phaseSignal,
           });
           return { branchStage, primaryStage, result };
         } catch (error) {
@@ -433,7 +433,7 @@ async function artifactForCheckout(
 
   let ownedStage: string | undefined;
   try {
-    const analyzed = await runAnalysis(async () => {
+    const analyzed = await runAnalysis(async (phaseSignal) => {
       const stage = createStageDirectory(join(entry, "branches"));
       // Admission can discard a late success after cancellation, so ownership must escape now.
       ownedStage = stage;
@@ -444,7 +444,7 @@ async function artifactForCheckout(
           branch,
         }, {
           artifactOutputPath: join(stage, "artifact.json"),
-          signal,
+          signal: phaseSignal,
         });
         return { result, stage };
       } catch (error) {

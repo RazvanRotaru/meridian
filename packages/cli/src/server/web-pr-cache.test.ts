@@ -232,8 +232,8 @@ function generate(refresh = false) {
     cwd: cacheRoot,
     refresh,
     onStage: () => {},
-    runPreparation: (work) => work(),
-    runAnalysis: (work) => work(),
+    runPreparation: async (work) => work(new AbortController().signal),
+    runAnalysis: async (work) => work(new AbortController().signal),
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
   });
 }

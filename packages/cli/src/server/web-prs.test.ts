@@ -1148,6 +1148,7 @@ function ctxWithSource(source: ArtifactSource, sessions = new SessionStore()): C
   activeGraphStores.push(graphStore);
   publishSource(graphStore, "artifact", source);
   return {
+    shutdownSignal: new AbortController().signal,
     graphStore,
     prFilesCache: new Map(),
     rendererIndex: "",

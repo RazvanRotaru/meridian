@@ -23,8 +23,10 @@ describe("cache-status analysis identity", () => {
 
   it("forwards repository, ref, and subdirectory while ignoring the retired language selector", async () => {
     const repositories = new FakeRepositoryMirror("/repositories");
+    const shutdownSignal = new AbortController().signal;
     await handleCacheStatus(
       {
+        shutdownSignal,
         cacheRoot: "/cache",
         repositories,
         cwd: "/workspace",
@@ -54,6 +56,7 @@ describe("cache-status analysis identity", () => {
         refresh: false,
       },
       token: undefined,
+      signal: shutdownSignal,
     });
   });
 });

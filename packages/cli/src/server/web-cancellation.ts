@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { ServiceShutdownError } from "./service-shutdown";
 import { WebError } from "./web-error";
 
 /** A safe, stable cancellation result. HTTP handlers normally suppress it because the peer left. */
@@ -11,6 +12,10 @@ export class OperationCancelledError extends WebError {
 
 export function throwIfAborted(signal?: AbortSignal): void {
   if (signal?.aborted) {
+    const reason = signal.reason;
+    if (reason instanceof ServiceShutdownError) {
+      throw reason;
+    }
     throw new OperationCancelledError();
   }
 }
@@ -31,20 +36,27 @@ export interface RequestCancellation {
 export function requestCancellation(
   request: IncomingMessage,
   response: ServerResponse,
+  parentSignal?: AbortSignal,
 ): RequestCancellation {
   const controller = new AbortController();
-  const abort = () => controller.abort(new OperationCancelledError());
+  const abortForPeer = () => controller.abort(new OperationCancelledError());
+  const abortForParent = () => controller.abort(
+    parentSignal?.reason instanceof Error ? parentSignal.reason : new OperationCancelledError(),
+  );
   const onResponseClose = () => {
-    if (!response.writableEnded) abort();
+    if (!response.writableEnded) abortForPeer();
   };
-  request.once("aborted", abort);
+  request.once("aborted", abortForPeer);
   response.once("close", onResponseClose);
-  if (request.aborted || response.destroyed) abort();
+  parentSignal?.addEventListener("abort", abortForParent, { once: true });
+  if (parentSignal?.aborted) abortForParent();
+  else if (request.aborted || response.destroyed) abortForPeer();
   return {
     signal: controller.signal,
     dispose() {
-      request.removeListener("aborted", abort);
+      request.removeListener("aborted", abortForPeer);
       response.removeListener("close", onResponseClose);
+      parentSignal?.removeEventListener("abort", abortForParent);
     },
   };
 }

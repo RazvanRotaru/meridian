@@ -167,19 +167,19 @@ async function createCachedGraph(
   let retainWorkspace = false;
   try {
     const runPreparation = inputs.runPreparation;
-    const prepared = await runPreparation(async () => {
+    const prepared = await runPreparation(async (phaseSignal) => {
       const preparedStage = createStageDirectory(join(inputs.cacheRoot, "pr-staging"));
       // Admission can discard a late success after cancellation, so ownership must escape now.
       stage = preparedStage;
       try {
         await inputs.onStage("clone");
-        throwIfAborted(inputs.signal);
+        throwIfAborted(phaseSignal);
         const workspace = await inputs.repositories.preparePullRequest({
           remoteUrl,
           base: revisions.base,
           head: revisions.head,
           token: inputs.token,
-          signal: inputs.signal,
+          signal: phaseSignal,
           onFetchComplete: () => inputs.onStage("checkout"),
         });
         preparedWorkspace = workspace;
@@ -201,7 +201,7 @@ async function createCachedGraph(
     await inputs.onStage("extract");
     throwIfAborted(inputs.signal);
     const runAnalysis = inputs.runAnalysis;
-    const { head, comparison } = await runAnalysis(async () => {
+    const { head, comparison } = await runAnalysis(async (phaseSignal) => {
       const roots = extractionRoots(repoDir, comparisonRepoDir, inputs.source.subdir);
       const artifactPath = join(preparedStage, "artifact.json");
       const comparisonArtifactPath = join(preparedStage, "comparison-artifact.json");
@@ -219,11 +219,11 @@ async function createCachedGraph(
           mergeBaseSha,
           comparisonArtifactPath,
           inputs.token,
-          inputs.signal,
+          phaseSignal,
           undefined,
           null,
         );
-        throwIfAborted(inputs.signal);
+        throwIfAborted(phaseSignal);
         headResult = await extractPrHead(
           repositoryAnalysis,
           roots.head,
@@ -235,7 +235,7 @@ async function createCachedGraph(
           artifactPath,
           inputs.token,
           emptySideAnalysis(comparisonResult),
-          inputs.signal,
+          phaseSignal,
         );
       } else {
         headResult = await extractPrHead(
@@ -249,9 +249,9 @@ async function createCachedGraph(
           artifactPath,
           inputs.token,
           undefined,
-          inputs.signal,
+          phaseSignal,
         );
-        throwIfAborted(inputs.signal);
+        throwIfAborted(phaseSignal);
         const comparisonRoot = resolveOrMaterializeComparisonRoot(comparisonRepoDir, inputs.source.subdir);
         // Normal two-sided analysis remains independently auto-detected. Only a materialized empty
         // comparison (a whole-subtree addition) inherits language hints from the populated HEAD.
@@ -263,12 +263,12 @@ async function createCachedGraph(
           mergeBaseSha,
           comparisonArtifactPath,
           inputs.token,
-          inputs.signal,
+          phaseSignal,
           comparisonRoot.materialized ? emptySideAnalysis(headResult) : undefined,
           comparisonFingerprintFiles(headResult.changedFiles),
         );
       }
-      throwIfAborted(inputs.signal);
+      throwIfAborted(phaseSignal);
       return { head: headResult, comparison: comparisonResult };
     });
     throwIfAborted(inputs.signal);

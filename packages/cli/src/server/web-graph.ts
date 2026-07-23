@@ -18,15 +18,16 @@ import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
 import { streamedOverloadLine } from "./web-overload";
+import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 
 export async function handleGenerate(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   if (acceptsNdjson(request)) {
     await handleGenerateStream(ctx, request, response);
     return;
   }
-  const cancellation = requestCancellation(request, response);
+  const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   try {
-    const parsed = parseGenerateRequest(await readJsonBody(request));
+    const parsed = parseGenerateRequest(await readJsonBody(request, cancellation.signal));
     const result = await generateGraph(
       ctx,
       parsed,
@@ -41,10 +42,10 @@ export async function handleGenerate(ctx: Context, request: IncomingMessage, res
 }
 
 async function handleGenerateStream(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const cancellation = requestCancellation(request, response);
+  const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   beginNdjson(response);
   try {
-    const parsed = parseGenerateRequest(await readJsonBody(request));
+    const parsed = parseGenerateRequest(await readJsonBody(request, cancellation.signal));
     const result = await generateGraph(ctx, parsed, githubTokenFor(ctx, request, parsed.token), (stage) =>
       writeLine(response, { stage }),
       cancellation.signal,
@@ -90,6 +91,7 @@ function writeLine(response: ServerResponse, line: Record<string, unknown>): Pro
 }
 
 function safeGenerateMessage(error: unknown): string {
+  if (isWebServiceShutdown(error)) return WEB_SERVICE_SHUTDOWN_MESSAGE;
   if (error instanceof SyntheticExecutionError || error instanceof WebError || error instanceof CliError) {
     return error.message;
   }

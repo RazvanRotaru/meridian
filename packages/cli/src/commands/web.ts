@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { resolveAgainst, resolveCwd } from "../paths";
 import { Reporter } from "../reporter";
 import type { GlobalOptions } from "../reporter";
-import { createWebServer } from "../server/web-server";
+import { createWebService } from "../server/web-server";
 import { createGitHubClient, resolveGitHubClientId } from "../server/github";
 import type { GitHubUser } from "../server/github-parse";
 import { resolveGhCliToken } from "../server/gh-cli-token";
@@ -59,7 +59,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     const message = error instanceof Error ? error.message : String(error);
     throw new CliError(EXIT.usage, `invalid cache retention configuration: ${message}`);
   }
-  const server = createWebServer({
+  const service = createWebService({
     rendererRoot: rendererRoot(),
     webUiPath: webUiPath(),
     cwd,
@@ -80,7 +80,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
   });
   await serve(
-    server,
+    service,
     { host: options.host, startPort: options.port, openBrowser: options.open, label: "Blueprint web UI" },
     reporter,
   );

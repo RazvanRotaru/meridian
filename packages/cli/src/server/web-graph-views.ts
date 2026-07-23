@@ -16,8 +16,9 @@ export async function handleGraphViewCreate(
   graphStore: WebGraphStore,
   request: IncomingMessage,
   response: ServerResponse,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const selection = parseCreateSelection(await readJsonBody(request));
+  const selection = parseCreateSelection(await readJsonBody(request, signal));
   try {
     const grant = graphStore.createViewLease(selection.baseGraphId, selection.graphIds);
     sendJson(response, 201, {
@@ -37,8 +38,9 @@ export async function handleGraphViewPut(
   request: IncomingMessage,
   response: ServerResponse,
   leaseId: string,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const graphIds = parseSelection(await readJsonBody(request));
+  const graphIds = parseSelection(await readJsonBody(request, signal));
   try {
     const grant = graphStore.renewViewLease(requireLeaseId(leaseId), graphIds);
     sendJson(response, 200, {

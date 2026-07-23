@@ -1,13 +1,12 @@
 /**
  * The pure HTTP server factory for `view`.
  *
- * It returns a configured-but-unbound `http.Server` so route behaviour is unit-testable
+ * It returns a configured-but-unbound owned HTTP service so route behaviour is unit-testable
  * without opening a browser or claiming a port. Binding, the OS opener, and signal handling
  * live in the command; everything request-shaped lives here.
  */
 
-import { createServer } from "node:http";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { GraphArtifact, SyntheticScenarioDescriptor } from "@meridian/core";
@@ -19,8 +18,15 @@ import { sendSource } from "./source-serve";
 import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { sendJson } from "./http-response";
+import {
+  createHttpService,
+  HTTP_SERVICE_SHUTDOWN_MESSAGE,
+  HttpServiceShutdownError,
+  type HttpService,
+} from "./http-service";
 import { assertJsonContentType, assertLoopbackHost, assertSameOrigin } from "./web-guards";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
+import { requestCancellation } from "./web-cancellation";
 import { WebError } from "./web-error";
 import {
   loadSyntheticScenarios,
@@ -41,11 +47,18 @@ export interface ServerConfig {
   allowSyntheticExecution?: boolean;
 }
 
-export function createBlueprintServer(config: ServerConfig): Server {
+export function createBlueprintServer(config: ServerConfig): HttpService {
   const synthetic = syntheticCapability(config);
   const assets = loadAssets(config, synthetic?.scenarios ?? null);
-  return createServer((request, response) => {
-    void route(config, assets, synthetic, request, response).catch((error) => sendRouteError(response, error));
+  return createHttpService({
+    handle: (request, response, signal) => route(config, assets, synthetic, request, response, signal),
+    handleError: (response, error) => sendRouteError(response, error),
+    rejectRequest: (response) => sendJson(
+      response,
+      503,
+      { error: HTTP_SERVICE_SHUTDOWN_MESSAGE },
+      { connection: "close" },
+    ),
   });
 }
 
@@ -96,10 +109,11 @@ async function route(
   synthetic: SyntheticCapability | null,
   request: IncomingMessage,
   response: ServerResponse,
+  shutdownSignal: AbortSignal,
 ): Promise<void> {
   const url = new URL(request.url ?? "/", "http://localhost");
   if (url.pathname === "/api/synthetic-executions") {
-    await handleSyntheticExecution(config, synthetic, request, response);
+    await handleSyntheticExecution(config, synthetic, request, response, shutdownSignal);
     return;
   }
   if (url.pathname === "/api/meta") {
@@ -144,6 +158,7 @@ async function handleSyntheticExecution(
   synthetic: SyntheticCapability | null,
   request: IncomingMessage,
   response: ServerResponse,
+  shutdownSignal: AbortSignal,
 ): Promise<void> {
   assertLoopbackHost(request);
   assertSameOrigin(request);
@@ -156,27 +171,37 @@ async function handleSyntheticExecution(
     sendJson(response, 404, { error: "synthetic execution is not enabled for this local view" });
     return;
   }
-  const body = parseSyntheticExecutionRequest(await readJsonBody(request));
-  const scenario = synthetic.scenarios.find((candidate) => candidate.id === body.scenarioId);
-  if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
-    throw new WebError(409, "selected flow no longer matches the synthetic scenario");
+  const cancellation = requestCancellation(request, response, shutdownSignal);
+  try {
+    const body = parseSyntheticExecutionRequest(await readJsonBody(request, cancellation.signal));
+    const scenario = synthetic.scenarios.find((candidate) => candidate.id === body.scenarioId);
+    if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
+      throw new WebError(409, "selected flow no longer matches the synthetic scenario");
+    }
+    const execution = await runSyntheticScenario({
+      sourceRoot: synthetic.sourceRoot,
+      artifact: config.artifact,
+      scenarioId: body.scenarioId,
+      expectedRootId: body.rootNodeId,
+      expectedSourceFingerprint: synthetic.sourceFingerprint,
+      input: body.input,
+      inputOverrides: body.inputOverrides,
+      watchers: body.watchers,
+      signal: cancellation.signal,
+    });
+    sendJson(response, 200, execution);
+  } finally {
+    cancellation.dispose();
   }
-  const execution = await runSyntheticScenario({
-    sourceRoot: synthetic.sourceRoot,
-    artifact: config.artifact,
-    scenarioId: body.scenarioId,
-    expectedRootId: body.rootNodeId,
-    expectedSourceFingerprint: synthetic.sourceFingerprint,
-    input: body.input,
-    inputOverrides: body.inputOverrides,
-    watchers: body.watchers,
-  });
-  sendJson(response, 200, execution);
 }
 
 function sendRouteError(response: ServerResponse, error: unknown): void {
   if (response.headersSent) {
     response.end();
+    return;
+  }
+  if (error instanceof HttpServiceShutdownError) {
+    sendJson(response, 503, { error: HTTP_SERVICE_SHUTDOWN_MESSAGE }, { connection: "close" });
     return;
   }
   if (error instanceof SyntheticExecutionError || error instanceof WebError) {

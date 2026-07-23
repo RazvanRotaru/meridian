@@ -9,9 +9,13 @@ import type { ServerResponse } from "node:http";
 import { sendJson } from "./http-response";
 import { FolderDialogUnavailable, pickFolder } from "./folder-dialog";
 
-export async function handlePickFolder(response: ServerResponse): Promise<void> {
+export async function handlePickFolder(
+  response: ServerResponse,
+  signal: AbortSignal,
+  picker: typeof pickFolder = pickFolder,
+): Promise<void> {
   try {
-    const path = await pickFolder();
+    const path = await picker({ signal });
     sendJson(response, 200, path ? { path } : { cancelled: true });
   } catch (error) {
     if (error instanceof FolderDialogUnavailable) {

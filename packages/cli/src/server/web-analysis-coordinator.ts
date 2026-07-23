@@ -7,9 +7,11 @@
  * outside both pools, so warm requests are never queued behind cold work.
  */
 
+import { ServiceShutdownError } from "./service-shutdown";
+
 export type AnalysisProgressListener<Progress> = (progress: Progress) => void | Promise<void>;
 export type AnalysisWork<Result> = (signal: AbortSignal) => Result | Promise<Result>;
-export type PhaseAdmission = <Result>(work: () => Promise<Result>) => Promise<Result>;
+export type PhaseAdmission = <Result>(work: AnalysisWork<Result>) => Promise<Result>;
 
 export interface AnalysisWaiterOptions<Progress> {
   signal?: AbortSignal;
@@ -34,7 +36,7 @@ export type AnalysisAdmissionPhase = "preparation" | "analysis";
 
 const DEFAULT_MAX_CONCURRENT_PREPARATIONS = 2;
 
-export class AnalysisCoordinatorClosedError extends Error {
+export class AnalysisCoordinatorClosedError extends ServiceShutdownError {
   constructor() {
     super("analysis coordinator is closed");
     this.name = "AnalysisCoordinatorClosedError";

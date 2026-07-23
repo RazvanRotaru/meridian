@@ -36,15 +36,16 @@ import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 import { streamedOverloadLine } from "./web-overload";
 import type { RepositoryWorkspaceLease } from "./web-repository-mirror";
+import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrAnalysisStage = "clone" | "checkout" | "extract";
 
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
-  const cancellation = requestCancellation(request, response);
+  const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   let sessionRegistration: ReturnType<Context["graphStore"]["acquire"]> = undefined;
   try {
-    const body = parsePrAnalyzeRequest(await readJsonBody(request));
+    const body = parsePrAnalyzeRequest(await readJsonBody(request, cancellation.signal));
     sessionRegistration = ctx.graphStore.acquire(body.id);
     const source = sessionRegistration?.descriptor.source;
     if (source?.kind !== "github") {
@@ -367,6 +368,7 @@ function writeLine(response: ServerResponse, line: Record<string, unknown>): Pro
 
 /** Never echo an unknown error's text (it could carry a path or secret); a WebError is pre-vetted. */
 function safeMessage(error: unknown): string {
+  if (isWebServiceShutdown(error)) return WEB_SERVICE_SHUTDOWN_MESSAGE;
   if (error instanceof WebError) {
     return error.message;
   }

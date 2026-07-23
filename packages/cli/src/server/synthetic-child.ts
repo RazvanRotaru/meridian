@@ -13,6 +13,13 @@ const HEAP_MB = 128;
 
 export type NodePermissionFlag = "--permission" | "--experimental-permission";
 
+export function syntheticAbortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 export function nodePermissionFlag(): NodePermissionFlag | null {
   // Node 20/22's permission model did not gate sockets. Requiring the explicit network grant flag
   // proves this runtime has the newer deny-by-default network boundary; we intentionally never
@@ -27,8 +34,9 @@ export async function executeSyntheticChild(
   permissionFlag: NodePermissionFlag,
   outputRoot: string,
   config: RunnerConfig,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return executeChild(permissionFlag, outputRoot, config);
+  return executeChild(permissionFlag, outputRoot, config, signal);
 }
 
 /** The OCI container is the outer security boundary. This entry point is intentionally separate
@@ -37,15 +45,18 @@ export async function executeSyntheticChild(
 export async function executeSyntheticChildInsideOci(
   outputRoot: string,
   config: RunnerConfig,
+  signal?: AbortSignal,
 ): Promise<unknown> {
-  return executeChild(null, outputRoot, config);
+  return executeChild(null, outputRoot, config, signal);
 }
 
 async function executeChild(
   permissionFlag: NodePermissionFlag | null,
   outputRoot: string,
   config: RunnerConfig,
+  signal?: AbortSignal,
 ): Promise<unknown> {
+  if (signal?.aborted) return Promise.reject(syntheticAbortReason(signal));
   const runnerPath = join(outputRoot, "__meridian_runner.mjs");
   writeFileSync(runnerPath, runnerSource(config), "utf8");
   return new Promise((resolveExecution, rejectExecution) => {
@@ -62,31 +73,37 @@ async function executeChild(
     let stdout = "";
     let stderrBytes = 0;
     let settled = false;
-    const fail = (error: SyntheticExecutionError) => {
-      if (settled) return;
-      settled = true;
+    let terminalReason: unknown;
+    const terminate = (error: unknown) => {
+      if (settled || terminalReason !== undefined) return;
+      terminalReason = error;
       clearTimeout(timer);
       child.kill("SIGKILL");
-      rejectExecution(error);
     };
-    const timer = setTimeout(() => fail(new SyntheticExecutionError(
+    const abort = () => {
+      if (signal !== undefined) terminate(syntheticAbortReason(signal));
+    };
+    const timer = setTimeout(() => terminate(new SyntheticExecutionError(
       "execution-failed",
       422,
       "Synthetic execution exceeded the 10 second time limit.",
     )), TIMEOUT_MS);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) {
-        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much output."));
+        terminate(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much output."));
       }
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stderrBytes += chunk.length;
       if (stderrBytes > MAX_STDERR_BYTES) {
-        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much diagnostic output."));
+        terminate(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution produced too much diagnostic output."));
       }
     });
-    child.on("error", () => fail(new SyntheticExecutionError(
+    child.on("error", () => terminate(terminalReason ?? new SyntheticExecutionError(
       "execution-failed",
       500,
       "Synthetic execution process could not be started.",
@@ -95,12 +112,18 @@ async function executeChild(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (terminalReason !== undefined) {
+        rejectExecution(terminalReason);
+        return;
+      }
       if (code !== 0) {
         rejectExecution(new SyntheticExecutionError("execution-failed", 422, "Synthetic execution failed in the isolated process."));
         return;
       }
       parseResult(stdout, resolveExecution, rejectExecution);
     });
+    if (signal?.aborted) abort();
   });
 }
 

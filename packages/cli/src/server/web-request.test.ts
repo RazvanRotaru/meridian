@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { PassThrough } from "node:stream";
+import type { IncomingMessage } from "node:http";
 import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { materializeValidatedArtifact } from "./web-graph-store";
-import { localArtifactId, parseGenerateRequest, remoteArtifactId } from "./web-request";
+import { localArtifactId, parseGenerateRequest, readJsonBody, remoteArtifactId } from "./web-request";
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: SCHEMA_VERSION,
@@ -65,5 +67,24 @@ describe("web graph identity", () => {
     expect(remoteArtifactId("repository", "a".repeat(40), "analysis", "release", digest)).not.toBe(main);
     expect(remoteArtifactId("repository", "a".repeat(40), "analysis", "main", "c".repeat(64)))
       .not.toBe(main);
+  });
+});
+
+describe("readJsonBody lifecycle", () => {
+  it("aborts an incomplete body and removes every stream listener", async () => {
+    const stream = new PassThrough();
+    const request = stream as unknown as IncomingMessage;
+    const controller = new AbortController();
+    const reason = new Error("owned shutdown");
+    const body = readJsonBody(request, controller.signal);
+    stream.write('{"partial":');
+
+    controller.abort(reason);
+
+    await expect(body).rejects.toBe(reason);
+    expect(request.destroyed).toBe(true);
+    expect(request.listenerCount("data")).toBe(0);
+    expect(request.listenerCount("end")).toBe(0);
+    expect(request.listenerCount("error")).toBe(0);
   });
 });

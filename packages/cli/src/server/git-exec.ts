@@ -9,6 +9,7 @@
 
 import { spawn } from "node:child_process";
 import { StringDecoder } from "node:string_decoder";
+import { ServiceShutdownError } from "./service-shutdown";
 import { OperationCancelledError } from "./web-cancellation";
 import { WebError } from "./web-error";
 
@@ -62,7 +63,7 @@ interface SpawnOptions {
 /** The one place `git` is spawned: pipes stdout, caps buffers, time-boxes, and scrubs the token. */
 function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
   if (opts.signal?.aborted) {
-    return Promise.reject(new OperationCancelledError("git operation was cancelled"));
+    return Promise.reject(gitCancellationError(opts.signal));
   }
   const redact = redactor(opts.token);
   return new Promise((resolveRun, rejectRun) => {
@@ -106,7 +107,7 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
     };
     const onAbort = () => {
       if (settled || terminationError) return;
-      terminationError = new OperationCancelledError("git operation was cancelled");
+      terminationError = gitCancellationError(opts.signal);
       clearTimeout(timer);
       opts.signal?.removeEventListener("abort", onAbort);
       kill();
@@ -151,6 +152,14 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
       }
     });
   });
+}
+
+/** Preserve the owned service's nominal shutdown reason; normalize every caller cancellation. */
+function gitCancellationError(signal?: AbortSignal): Error {
+  const reason = signal?.reason;
+  return reason instanceof ServiceShutdownError
+    ? reason
+    : new OperationCancelledError("git operation was cancelled");
 }
 
 /** Kill Git together with credential/network helpers; the caller still waits for Git's `close`. */

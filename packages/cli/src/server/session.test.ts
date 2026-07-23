@@ -46,6 +46,20 @@ describe("SessionStore", () => {
     expect(store.size).toBeLessThanOrEqual(100);
     expect(store.get(first, 0)).toBeUndefined();
   });
+
+  it("clears every credential-bearing session on service shutdown", () => {
+    const store = new SessionStore();
+    const first = store.create({ deviceCode: "first", intervalSeconds: 5, expiresAt: 10_000 }, 0);
+    const second = store.create({ deviceCode: "second", intervalSeconds: 5, expiresAt: 10_000 }, 0);
+    markAuthorized(first.session, "gho_first", { login: "first", avatarUrl: null }, 0);
+    markAuthorized(second.session, "gho_second", { login: "second", avatarUrl: null }, 0);
+
+    store.clear();
+
+    expect(store.size).toBe(0);
+    expect(store.get(first.id, 0)).toBeUndefined();
+    expect(store.get(second.id, 0)).toBeUndefined();
+  });
 });
 
 describe("poll pacing", () => {
