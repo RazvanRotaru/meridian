@@ -67,20 +67,20 @@ export async function checkoutFor(
 
   let ownedCheckout: CachedCheckout | undefined;
   try {
-    const admitted = await runPreparation(async () => {
+    const admitted = await runPreparation(async (phaseSignal) => {
       // A different selector can publish the same exact commit while this request waits for a
       // preparation slot. Recheck under admission so it never creates a redundant worktree.
-      const winner = await cachedCheckout(repositories, identity, signal);
+      const winner = await cachedCheckout(repositories, identity, phaseSignal);
       if (winner) {
         ownedCheckout = winner;
         return winner;
       }
-      throwIfAborted(signal);
+      throwIfAborted(phaseSignal);
       const sourceLease = await repositories.acquireWorkspace({
         remoteUrl: identity.remoteUrl,
         revision: identity.revision,
         token,
-        signal,
+        signal: phaseSignal,
         onCacheMiss: onClone,
       });
       const prepared = checkoutFromLease(identity, sourceLease, sourceLease.cache);

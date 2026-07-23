@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, mkdirSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -147,6 +147,62 @@ describe("synthetic execution manifest", () => {
 });
 
 describe("isolated TypeScript synthetic runner", () => {
+  it("aborts a running runner and removes its temp root only after the child exits", async () => {
+    const root = temporaryRoot();
+    writeProject(root, "export function root(): never { while (true) {} }\n");
+    writeManifest(root, { module: "src/index.ts", export: "root" }, "abort-runner");
+    const isolatedTmp = join(root, "synthetic-tmp");
+    mkdirSync(isolatedTmp);
+    const originalTmp = process.env.TMPDIR;
+    process.env.TMPDIR = isolatedTmp;
+    const controller = new AbortController();
+    const reason = new Error("synthetic service is shutting down");
+    reason.name = "AbortError";
+    const timer = setTimeout(() => controller.abort(reason), 50);
+    try {
+      await expect(runSyntheticScenario({
+        sourceRoot: root,
+        artifact: artifactFor("ts:src/index.ts#root", 1),
+        scenarioId: "abort-runner",
+        signal: controller.signal,
+      })).rejects.toBe(reason);
+      expect(readdirSync(isolatedTmp)).toEqual([]);
+    } finally {
+      clearTimeout(timer);
+      if (originalTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmp;
+    }
+  }, 20_000);
+
+  it("aborts sandboxed compilation and cleans its temp root after the compiler child exits", async () => {
+    if (!syntheticSandboxCompilationRuntimeSupported()) return;
+    const root = temporaryRoot();
+    writeProject(root, "export function root(input: string): string { return input.toUpperCase(); }\n");
+    writeManifest(root, { module: "src/index.ts", export: "root" }, "abort-compiler");
+    const isolatedTmp = join(root, "synthetic-tmp");
+    mkdirSync(isolatedTmp);
+    const originalTmp = process.env.TMPDIR;
+    process.env.TMPDIR = isolatedTmp;
+    const controller = new AbortController();
+    const reason = new Error("synthetic compilation is shutting down");
+    reason.name = "AbortError";
+    const timer = setTimeout(() => controller.abort(reason), 0);
+    try {
+      await expect(runSyntheticScenario({
+        sourceRoot: root,
+        artifact: artifactFor("ts:src/index.ts#root", 1),
+        scenarioId: "abort-compiler",
+        compilationMode: "sandboxed-child",
+        signal: controller.signal,
+      })).rejects.toBe(reason);
+      expect(readdirSync(isolatedTmp)).toEqual([]);
+    } finally {
+      clearTimeout(timer);
+      if (originalTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = originalTmp;
+    }
+  }, 20_000);
+
   it("can compile in a separate permission-gated child when the packaged worker is present", async () => {
     if (!syntheticSandboxCompilationRuntimeSupported()) return;
     const root = temporaryRoot();

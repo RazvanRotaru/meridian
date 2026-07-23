@@ -5,16 +5,18 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { once } from "node:events";
+import { connect } from "node:net";
 import { cpSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import type { AddressInfo } from "node:net";
-import type { Server } from "node:http";
 import { traceBundleSchema } from "@meridian/core";
 import { buildMockOverlay } from "@meridian/core/mock";
 import type { GraphArtifact, TraceBundle } from "@meridian/core";
 import { createBlueprintServer } from "./server";
+import type { HttpService } from "./http-service";
 
 const artifact: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -48,7 +50,7 @@ const syntheticArtifact: GraphArtifact = {
 };
 
 let rendererRoot: string;
-let server: Server;
+let server: HttpService;
 let base: string;
 
 beforeAll(async () => {
@@ -57,8 +59,8 @@ beforeAll(async () => {
   base = await listenEphemeral(server);
 });
 
-afterAll(() => {
-  server.close();
+afterAll(async () => {
+  await server.close();
   rmSync(rendererRoot, { recursive: true, force: true });
 });
 
@@ -296,6 +298,42 @@ describe("createBlueprintServer", () => {
     }
   });
 
+  it("aborts and drains an incomplete synthetic request body during owned shutdown", async () => {
+    const stalledService = createBlueprintServer({
+      artifact: syntheticArtifact,
+      overlay: { kind: "none" },
+      preselectedEnv: null,
+      rendererRoot,
+      sourceRoot: ORDERS_SOURCE,
+      allowSyntheticExecution: true,
+    });
+    const stalledBase = new URL(await listenEphemeral(stalledService));
+    const socket = connect(Number(stalledBase.port), stalledBase.hostname);
+    await once(socket, "connect");
+    socket.resume();
+    const socketClosed = new Promise<void>((resolve) => {
+      socket.once("error", () => {});
+      socket.once("close", () => resolve());
+    });
+    socket.write([
+      "POST /api/synthetic-executions HTTP/1.1",
+      `Host: ${stalledBase.host}`,
+      "Content-Type: application/json",
+      "Content-Length: 1024",
+      "Connection: keep-alive",
+      "",
+      '{"scenarioId":"place-order-happy",',
+    ].join("\r\n"));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    const first = stalledService.close();
+
+    expect(stalledService.close()).toBe(first);
+    expect(stalledService.signal.aborted).toBe(true);
+    await expect(withTimeout(first, 2_000)).resolves.toBeUndefined();
+    await expect(withTimeout(socketClosed, 2_000)).resolves.toBeUndefined();
+  });
+
   it("serves real assets and falls back to index for unknown routes", async () => {
     const asset = await fetch(`${base}/assets/app.js`);
     expect(asset.headers.get("content-type")).toContain("javascript");
@@ -322,17 +360,26 @@ function writeFakeRenderer(): string {
   return dir;
 }
 
-function listenEphemeral(target: Server): Promise<string> {
+function listenEphemeral(target: HttpService): Promise<string> {
   return new Promise((resolveBase) => {
-    target.listen(0, "127.0.0.1", () => {
-      const port = (target.address() as AddressInfo).port;
+    target.server.listen(0, "127.0.0.1", () => {
+      const port = (target.server.address() as AddressInfo).port;
       resolveBase(`http://127.0.0.1:${port}`);
     });
   });
 }
 
-function closeServer(target: Server): Promise<void> {
-  return new Promise((resolve, reject) => {
-    target.close((error) => error ? reject(error) : resolve());
+function closeServer(target: HttpService): Promise<void> {
+  return target.close();
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${timeoutMs}ms`)), timeoutMs);
+    timer.unref();
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
   });
 }

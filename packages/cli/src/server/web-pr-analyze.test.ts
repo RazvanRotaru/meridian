@@ -1188,6 +1188,7 @@ function githubCtx(
     },
   });
   return {
+    shutdownSignal: new AbortController().signal,
     graphStore,
     analysisCoordinator,
     repositories,
@@ -1206,6 +1207,7 @@ function githubCtx(
     allowSyntheticPrExecution: false,
     syntheticPrSandboxRuntimeSupported: () => false,
     runSyntheticScenarioInOci,
+    folderPicker: async () => null,
   } as Context;
 }
 

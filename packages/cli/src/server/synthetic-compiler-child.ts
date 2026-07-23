@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { GraphArtifact, SyntheticExecutionManifestEntry } from "@meridian/core";
-import type { NodePermissionFlag } from "./synthetic-child";
+import { syntheticAbortReason, type NodePermissionFlag } from "./synthetic-child";
 import { SyntheticExecutionError } from "./synthetic-error";
 import type { CompilationResult } from "./synthetic-project";
 import { parseSyntheticWorkerError } from "./synthetic-worker-job";
@@ -28,7 +28,9 @@ export async function compileInstrumentedProjectInSandbox(
   outputRoot: string,
   artifact: GraphArtifact,
   scenario: SyntheticExecutionManifestEntry,
+  signal?: AbortSignal,
 ): Promise<CompilationResult> {
+  if (signal?.aborted) throw syntheticAbortReason(signal);
   const workerPath = syntheticWorkerBundlePath();
   if (workerPath === null) {
     throw new SyntheticExecutionError("unsupported-runtime", 422, "Synthetic compiler worker is unavailable.");
@@ -39,7 +41,7 @@ export async function compileInstrumentedProjectInSandbox(
   }
   const jobPath = join(outputRoot, "__meridian_compile_job.json");
   writeFileSync(jobPath, job, { encoding: "utf8", mode: 0o600 });
-  const stdout = await runCompilerChild(permissionFlag, sourceRoot, outputRoot, workerPath, jobPath);
+  const stdout = await runCompilerChild(permissionFlag, sourceRoot, outputRoot, workerPath, jobPath, signal);
   return parseCompilationResult(stdout, outputRoot);
 }
 
@@ -65,7 +67,9 @@ function runCompilerChild(
   outputRoot: string,
   workerPath: string,
   jobPath: string,
+  signal?: AbortSignal,
 ): Promise<string> {
+  if (signal?.aborted) return Promise.reject(syntheticAbortReason(signal));
   return new Promise((resolveChild, rejectChild) => {
     const child = spawn(process.execPath, [
       permissionFlag,
@@ -88,31 +92,37 @@ function runCompilerChild(
     let stdout = "";
     let stderrBytes = 0;
     let settled = false;
-    const fail = (error: SyntheticExecutionError) => {
-      if (settled) return;
-      settled = true;
+    let terminalReason: unknown;
+    const terminate = (error: unknown) => {
+      if (settled || terminalReason !== undefined) return;
+      terminalReason = error;
       clearTimeout(timer);
       child.kill("SIGKILL");
-      rejectChild(error);
     };
-    const timer = setTimeout(() => fail(new SyntheticExecutionError(
+    const abort = () => {
+      if (signal !== undefined) terminate(syntheticAbortReason(signal));
+    };
+    const timer = setTimeout(() => terminate(new SyntheticExecutionError(
       "compile-failed",
       422,
       "Synthetic compilation exceeded the 10 second time limit.",
     )), TIMEOUT_MS);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) {
-        fail(new SyntheticExecutionError("compile-failed", 422, "Synthetic compiler produced too much output."));
+        terminate(new SyntheticExecutionError("compile-failed", 422, "Synthetic compiler produced too much output."));
       }
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stderrBytes += chunk.length;
       if (stderrBytes > MAX_STDERR_BYTES) {
-        fail(new SyntheticExecutionError("compile-failed", 422, "Synthetic compiler produced too much diagnostic output."));
+        terminate(new SyntheticExecutionError("compile-failed", 422, "Synthetic compiler produced too much diagnostic output."));
       }
     });
-    child.on("error", () => fail(new SyntheticExecutionError(
+    child.on("error", () => terminate(terminalReason ?? new SyntheticExecutionError(
       "compile-failed",
       500,
       "Synthetic compiler process could not be started.",
@@ -121,6 +131,11 @@ function runCompilerChild(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (terminalReason !== undefined) {
+        rejectChild(terminalReason);
+        return;
+      }
       if (code !== 0) {
         rejectChild(parseSyntheticWorkerError(stdout, "compiler")
           ?? new SyntheticExecutionError("compile-failed", 422, "Synthetic compilation failed in the isolated process."));
@@ -128,6 +143,7 @@ function runCompilerChild(
       }
       resolveChild(stdout);
     });
+    if (signal?.aborted) abort();
   });
 }
 

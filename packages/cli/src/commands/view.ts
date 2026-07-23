@@ -51,7 +51,7 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
         "graph with test coverage",
       ).artifact
     : loadedArtifact;
-  const server = createBlueprintServer({
+  const service = createBlueprintServer({
     artifact,
     overlay,
     preselectedEnv: env,
@@ -59,7 +59,7 @@ export async function runView(graph: string, options: ViewOptions): Promise<void
     sourceRoot,
     allowSyntheticExecution: options.allowSyntheticExecution === true,
   });
-  await serve(server, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
+  await serve(service, { host: options.host, startPort: options.port, openBrowser: options.open }, reporter);
 }
 
 function requireLoopbackForSyntheticExecution(host: string, enabled: boolean): void {

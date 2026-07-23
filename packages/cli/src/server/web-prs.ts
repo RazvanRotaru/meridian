@@ -83,7 +83,7 @@ export async function handleRelatedPullRequests(
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const requested = parseRelatedPaths(await readJsonBody(request), source.subdir);
+  const requested = parseRelatedPaths(await readJsonBody(request, ctx.shutdownSignal), source.subdir);
   if (requested.size === 0) {
     sendJson(response, 200, { results: [], scanned: 0, hasMore: false, skipped: 0 });
     return;
@@ -273,7 +273,7 @@ export async function handlePullRequestCommentMutation(
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const body = parseCommentMutationBody(await readJsonBody(request));
+  const body = parseCommentMutationBody(await readJsonBody(request, ctx.shutdownSignal));
   const token = githubTokenFor(ctx, request);
   if (!token) {
     throw new WebError(401, "editing or replying to a comment requires a GitHub sign-in");
@@ -403,7 +403,7 @@ export async function handleSubmitReview(
     sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
     return;
   }
-  const body = parseSubmitReviewBody(await readJsonBody(request));
+  const body = parseSubmitReviewBody(await readJsonBody(request, ctx.shutdownSignal));
   const token = githubTokenFor(ctx, request);
   if (!token) {
     throw new WebError(401, "submitting a review requires a GitHub sign-in");

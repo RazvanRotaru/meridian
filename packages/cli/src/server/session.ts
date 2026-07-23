@@ -52,6 +52,11 @@ export class SessionStore {
     }
   }
 
+  /** Release every process-local credential when the owning web service shuts down. */
+  clear(): void {
+    this.sessions.clear();
+  }
+
   get size(): number {
     return this.sessions.size;
   }

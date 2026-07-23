@@ -6,6 +6,7 @@ import { probeRemoteGraph } from "./web-cache-probe";
 import type { RepositoryMirror } from "./web-repository-mirror";
 
 interface CacheStatusContext extends AuthContext {
+  shutdownSignal: AbortSignal;
   cacheRoot: string;
   repositories: RepositoryMirror;
   cwd: string;
@@ -27,6 +28,7 @@ export async function handleCacheStatus(
     request: { kind: "github", value: repository, ref, subdir, refresh: ctx.refreshCache },
     cwd: ctx.cwd,
     token: githubTokenFor(ctx, request),
+    signal: ctx.shutdownSignal,
   });
   sendJson(response, 200, result);
 }

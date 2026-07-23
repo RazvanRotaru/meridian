@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { chromium, type Browser, type ElementHandle, type Locator, type Page } from "playwright";
 import { buildNodeId } from "@meridian/core";
-import { createWebServer } from "../src/server/web-server";
+import { createWebService, type WebService } from "../src/server/web-server";
 import {
   RENDERER_INDEX,
   buildPrReviewRollupFixture,
@@ -35,7 +35,7 @@ if (process.env.CI && !HAS_CHROMIUM) {
 
 let fixture: PrReviewFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: Server | undefined;
+let webService: WebService | undefined;
 let browser: Browser | undefined;
 let page: Page | undefined;
 let viewUrl = "";
@@ -140,7 +140,7 @@ async function setup(): Promise<void> {
   await verifySmartHttpRemote(smartGit.repoUrl);
   restoreGitRedirect = installGitRedirect(smartGit.repoUrl);
   vi.stubGlobal("fetch", fakeGitHub(fixture));
-  webServer = createWebServer({
+  webService = createWebService({
     rendererRoot: dirname(RENDERER_INDEX),
     webUiPath: WEB_UI,
     cwd: REPO_ROOT,
@@ -149,7 +149,7 @@ async function setup(): Promise<void> {
     fallbackToken: "meridian-rollup-e2e-token",
     fallbackUser: { login: "rollup-e2e-reviewer", avatarUrl: null },
   });
-  const baseUrl = await listenServer(webServer);
+  const baseUrl = await listenServer(webService.server);
   const generated = await generateSession(baseUrl);
   viewUrl = `${baseUrl}/view?id=${encodeURIComponent(generated.id)}`;
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
@@ -160,7 +160,7 @@ async function teardown(): Promise<void> {
   const errors: unknown[] = [];
   for (const close of [
     () => browser?.close(),
-    () => closeServer(webServer),
+    () => webService?.close(),
     () => closeServer(smartGitServer),
   ]) {
     try {
@@ -178,7 +178,7 @@ async function teardown(): Promise<void> {
   }
   fixture = undefined;
   smartGitServer = undefined;
-  webServer = undefined;
+  webService = undefined;
   browser = undefined;
   page = undefined;
   restoreGitRedirect = undefined;

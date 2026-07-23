@@ -1,5 +1,4 @@
-import { createServer } from "node:http";
-import type { IncomingMessage, Server, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { CliError, EXIT } from "../errors";
@@ -9,6 +8,7 @@ import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces 
 import { WebError } from "./web-error";
 import { injectPrefill } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
+import { createHttpService, type HttpService } from "./http-service";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
 import type { GitHubClient } from "./github";
 import type { GitHubUser } from "./github-parse";
@@ -37,12 +37,13 @@ import {
 } from "./web-prs";
 import { handlePrAnalyze } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
+import { pickFolder } from "./folder-dialog";
 import { handleRepoPullRequests } from "./web-repo-pulls";
 import { sendSource } from "./source-serve";
 import { resolveWebCacheRoot } from "./web-cache-storage";
 import { handleCacheStatus } from "./web-cache-status";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
-import { responseCanWrite } from "./web-cancellation";
+import { requestCancellation, responseCanWrite } from "./web-cancellation";
 import { sendOverloadJson } from "./web-overload";
 import { WebGraphStore } from "./web-graph-store";
 import type { GraphRetentionOptions } from "./web-graph-retention";
@@ -67,6 +68,7 @@ import {
 } from "./repository-analysis-memory";
 import { WebRepositoryMirror, type RepositoryMirror } from "./web-repository-mirror";
 import type { RepositoryRetentionOptions } from "./web-repository-retention";
+import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -104,6 +106,8 @@ export interface WebServerConfig {
   repositoryArtifactRestamp?: typeof runRepositoryArtifactRestampChild;
   /** Internal persistent repository boundary override used by deterministic server tests. */
   repositories?: RepositoryMirror;
+  /** Internal native-picker boundary override used by deterministic lifecycle tests. */
+  folderPicker?: typeof pickFolder;
   /** Persistent repository-store budget override; production resolves environment defaults. */
   repositoryRetention?: Partial<RepositoryRetentionOptions>;
   /** Process-private inactive graph registration budget override. */
@@ -115,6 +119,8 @@ export interface WebServerConfig {
 }
 
 export interface Context {
+  /** Service-wide cancellation boundary, aborted synchronously before resource draining starts. */
+  shutdownSignal: AbortSignal;
   /** Disk-backed immutable graph registrations; request handlers load at most one artifact. */
   graphStore: WebGraphStore;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
@@ -145,9 +151,14 @@ export interface Context {
   syntheticPrSandboxRuntimeSupported: () => boolean;
   /** Injectable OCI executor; never substituted with the host-process runner. */
   runSyntheticScenarioInOci: typeof runSyntheticScenarioInOci;
+  folderPicker: typeof pickFolder;
 }
 
-export function createWebServer(config: WebServerConfig): Server {
+export interface WebService extends HttpService {}
+
+export function createWebService(config: WebServerConfig): WebService {
+  // Validate and read every synchronous boot input before allocating timers or temporary stores.
+  const staticContext = loadStaticContext(config);
   const analysisMemory = repositoryAnalysisMemoryPolicy({
     maxConcurrentAnalyses: config.maxConcurrentAnalyses,
   });
@@ -158,49 +169,70 @@ export function createWebServer(config: WebServerConfig): Server {
     maxQueuedAnalyses: config.maxQueuedAnalyses,
   });
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
-  const repositories = config.repositories ?? new WebRepositoryMirror({
-    cacheRoot,
-    retention: config.repositoryRetention,
-    onRetentionError: config.onRepositoryRetentionError,
-  });
   // Validate every admission bound before allocating the graph store's private temporary root.
   const graphStore = new WebGraphStore(config.graphRetention, {
     onError: config.onGraphRetentionError,
   });
-  let ctx: Context;
+  let repositories: RepositoryMirror;
   try {
-    ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory, repositories, cacheRoot);
+    repositories = config.repositories ?? new WebRepositoryMirror({
+      cacheRoot,
+      retention: config.repositoryRetention,
+      onRetentionError: config.onRepositoryRetentionError,
+    });
   } catch (error) {
     void analysisCoordinator.close();
-    void repositories.close();
     graphStore.dispose();
     throw error;
   }
-  const server = createServer((request, response) => {
-    handle(ctx, request, response).catch((error) => sendError(response, error));
+  let ctx!: Context;
+  const service = createHttpService({
+    handle: (request, response) => handle(ctx, request, response),
+    handleError: (response, error) => sendError(response, error),
+    rejectRequest: (response) => sendJson(
+      response,
+      503,
+      { error: WEB_SERVICE_SHUTDOWN_MESSAGE },
+      { connection: "close" },
+    ),
+    beginShutdown: [
+      () => analysisCoordinator.close(),
+      () => repositories.close(),
+    ],
+    finishShutdown: () => {
+      ctx.prFilesCache.clear();
+      ctx.sessions.clear();
+      graphStore.dispose();
+    },
   });
-  attachServerLifecycle(server, analysisCoordinator, repositories, graphStore);
-  return server;
+  ctx = buildContext(
+    config,
+    staticContext,
+    graphStore,
+    analysisCoordinator,
+    analysisMemory,
+    repositories,
+    cacheRoot,
+    service.signal,
+  );
+  return service;
 }
 
 function buildContext(
   config: WebServerConfig,
+  staticContext: StaticWebContext,
   graphStore: WebGraphStore,
   analysisCoordinator: AnalysisCoordinator,
   analysisMemory: RepositoryAnalysisMemoryPolicy,
   repositories: RepositoryMirror,
   cacheRoot: string,
+  shutdownSignal: AbortSignal,
 ): Context {
-  const indexPath = join(config.rendererRoot, "index.html");
-  if (!existsSync(indexPath)) {
-    throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
-  }
-  const github = createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) });
-  const landing = injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source);
   const repositoryAnalysis = config.repositoryAnalysis ?? runRepositoryAnalysisChild;
   const repositoryArtifactRestamp = config.repositoryArtifactRestamp
     ?? runRepositoryArtifactRestampChild;
   const ctx: Context = {
+    shutdownSignal,
     graphStore,
     prFilesCache: new Map(),
     analysisCoordinator,
@@ -215,46 +247,40 @@ function buildContext(
     }),
     cacheRoot,
     refreshCache: config.refreshCache === true,
-    rendererIndex: readFileSync(indexPath, "utf8"),
-    landingHtml: landing,
+    rendererIndex: staticContext.rendererIndex,
+    landingHtml: staticContext.landingHtml,
     // Stray routes fall back to the front door rather than the renderer shell.
-    staticAssets: { rendererRoot: config.rendererRoot, indexHtml: landing },
+    staticAssets: { rendererRoot: config.rendererRoot, indexHtml: staticContext.landingHtml },
     cwd: config.cwd,
     sessions: new SessionStore(),
-    github,
+    github: staticContext.github,
     fallbackToken: config.fallbackToken,
     fallbackUser: config.fallbackUser,
     allowSyntheticExecution: config.allowSyntheticExecution === true,
     allowSyntheticPrExecution: config.allowSyntheticPrExecution === true,
     syntheticPrSandboxRuntimeSupported,
     runSyntheticScenarioInOci,
+    folderPicker: config.folderPicker ?? pickFolder,
   };
   return ctx;
 }
 
-/** Dispose after Node's close event, when accepted connections have drained. The process hook
- * captures only the store cleanup and is removed on ordinary server close. */
-function attachServerLifecycle(
-  server: Server,
-  analysisCoordinator: AnalysisCoordinator,
-  repositories: RepositoryMirror,
-  graphStore: WebGraphStore,
-): void {
-  let disposed = false;
-  const dispose = () => {
-    if (disposed) return;
-    disposed = true;
-    // Closing first synchronously aborts every waiter/job. No later phase may publish into the
-    // graph store, even when a CPU-bound extractor needs time to cooperatively return.
-    void analysisCoordinator.close();
-    graphStore.dispose();
-    void repositories.close();
+interface StaticWebContext {
+  readonly rendererIndex: string;
+  readonly landingHtml: string;
+  readonly github: GitHubClient;
+}
+
+function loadStaticContext(config: WebServerConfig): StaticWebContext {
+  const indexPath = join(config.rendererRoot, "index.html");
+  if (!existsSync(indexPath)) {
+    throw new CliError(EXIT.io, `renderer bundle not found at ${config.rendererRoot} — run \`pnpm --filter @meridian/cli copy-renderer\``);
+  }
+  return {
+    rendererIndex: readFileSync(indexPath, "utf8"),
+    landingHtml: injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source),
+    github: createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) }),
   };
-  process.once("exit", dispose);
-  server.once("close", () => {
-    process.removeListener("exit", dispose);
-    dispose();
-  });
 }
 
 async function handle(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -286,7 +312,7 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
   const graphViewLeaseId = graphViewLeaseIdFromPath(url.pathname);
   if (request.method === "PUT" && graphViewLeaseId !== null) {
     assertJsonContentType(request);
-    await handleGraphViewPut(ctx.graphStore, request, response, graphViewLeaseId);
+    await handleGraphViewPut(ctx.graphStore, request, response, graphViewLeaseId, ctx.shutdownSignal);
     return;
   }
   if (request.method === "DELETE" && graphViewLeaseId !== null) {
@@ -304,7 +330,7 @@ function graphViewLeaseIdFromPath(pathname: string): string | null {
 async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
   if (pathname === "/api/graph-views") {
-    await handleGraphViewCreate(ctx.graphStore, request, response);
+    await handleGraphViewCreate(ctx.graphStore, request, response, ctx.shutdownSignal);
     return;
   }
   if (pathname === "/api/generate") {
@@ -328,7 +354,12 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     return;
   }
   if (pathname === "/api/pick-folder") {
-    await handlePickFolder(response);
+    const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
+    try {
+      await handlePickFolder(response, cancellation.signal, ctx.folderPicker);
+    } finally {
+      cancellation.dispose();
+    }
     return;
   }
   if (pathname === "/api/prs/review") {
@@ -353,8 +384,10 @@ export async function handleSyntheticExecution(
   id: string | null,
 ): Promise<void> {
   assertLoopbackHost(request);
+  const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   const registration = id ? ctx.graphStore.acquire(id) : undefined;
   if (registration === undefined) {
+    cancellation.dispose();
     sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
     return;
   }
@@ -387,7 +420,7 @@ export async function handleSyntheticExecution(
       sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
       return;
     }
-    const body = parseSyntheticExecutionRequest(await readJsonBody(request));
+    const body = parseSyntheticExecutionRequest(await readJsonBody(request, cancellation.signal));
     const scenario = scenarios.find((candidate) => candidate.id === body.scenarioId);
     if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
       throw new WebError(409, "selected flow no longer matches the synthetic scenario");
@@ -401,6 +434,7 @@ export async function handleSyntheticExecution(
       input: body.input,
       inputOverrides: body.inputOverrides,
       watchers: body.watchers,
+      signal: cancellation.signal,
     };
     const execution = sandboxedPrAdmission
       ? await ctx.runSyntheticScenarioInOci(executionRequest)
@@ -408,6 +442,7 @@ export async function handleSyntheticExecution(
     sendJson(response, 200, execution);
   } finally {
     registration.release();
+    cancellation.dispose();
   }
 }
 
@@ -529,6 +564,10 @@ function sendError(response: ServerResponse, error: unknown): void {
   }
   if (response.headersSent) {
     response.end();
+    return;
+  }
+  if (isWebServiceShutdown(error)) {
+    sendJson(response, 503, { error: WEB_SERVICE_SHUTDOWN_MESSAGE }, { connection: "close" });
     return;
   }
   if (sendOverloadJson(response, error)) {

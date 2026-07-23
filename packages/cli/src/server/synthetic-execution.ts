@@ -33,7 +33,12 @@ import type {
   SyntheticInputOverride,
   SyntheticScenarioDescriptor,
 } from "@meridian/core";
-import { executeSyntheticChild, executeSyntheticChildInsideOci, nodePermissionFlag } from "./synthetic-child";
+import {
+  executeSyntheticChild,
+  executeSyntheticChildInsideOci,
+  nodePermissionFlag,
+  syntheticAbortReason,
+} from "./synthetic-child";
 import { compileInstrumentedProjectInSandbox, syntheticWorkerBundlePath } from "./synthetic-compiler-child";
 import { SyntheticExecutionError } from "./synthetic-error";
 import { syntheticSourceFingerprint } from "./synthetic-fingerprint";
@@ -80,6 +85,8 @@ export interface RunSyntheticScenarioRequest {
   /** A separate permission-gated compiler child for defense in depth. Untrusted PRs must use the
    * OCI API instead; this option never falls back to parent compilation. */
   compilationMode?: "trusted-parent" | "sandboxed-child";
+  /** Cancels compiler/runner subprocesses and resolves only after their process cleanup finishes. */
+  signal?: AbortSignal;
 }
 
 /** Missing configuration is ordinary capability absence; malformed configuration is actionable. */
@@ -103,6 +110,7 @@ async function runSyntheticScenarioWithIsolation(
   request: RunSyntheticScenarioRequest,
   insideOci: boolean,
 ): Promise<SyntheticExecution> {
+  throwIfAborted(request.signal);
   const permissionFlag = nodePermissionFlag();
   if (permissionFlag === null && !insideOci) {
     throw new SyntheticExecutionError(
@@ -136,9 +144,18 @@ async function runSyntheticScenarioWithIsolation(
 
   const tempRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "meridian-synthetic-")));
   try {
+    throwIfAborted(request.signal);
     const compilation = request.compilationMode === "sandboxed-child"
-      ? await compileInstrumentedProjectInSandbox(permissionFlag!, sourceRoot, tempRoot, request.artifact, scenario)
+      ? await compileInstrumentedProjectInSandbox(
+        permissionFlag!,
+        sourceRoot,
+        tempRoot,
+        request.artifact,
+        scenario,
+        request.signal,
+      )
       : compileInstrumentedProject(sourceRoot, tempRoot, request.artifact, scenario);
+    throwIfAborted(request.signal);
     // Recheck immediately before execution so an ordinary editor save during compilation cannot
     // run an artifact assembled from mixed inputs. The OCI worker repeats this check internally.
     assertExpectedSourceFingerprint(request, sourceRoot);
@@ -152,8 +169,8 @@ async function runSyntheticScenarioWithIsolation(
       warnings: compilation.warnings,
     };
     const raw = insideOci
-      ? await executeSyntheticChildInsideOci(tempRoot, runnerConfig)
-      : await executeSyntheticChild(permissionFlag!, tempRoot, runnerConfig);
+      ? await executeSyntheticChildInsideOci(tempRoot, runnerConfig, request.signal)
+      : await executeSyntheticChild(permissionFlag!, tempRoot, runnerConfig, request.signal);
     const parsed = syntheticExecutionSchema.safeParse(raw);
     if (!parsed.success) {
       throw new SyntheticExecutionError("invalid-result", 500, "Synthetic runner returned an invalid execution result.");
@@ -162,6 +179,11 @@ async function runSyntheticScenarioWithIsolation(
   } finally {
     rmSync(tempRoot, { recursive: true, force: true });
   }
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw syntheticAbortReason(signal);
 }
 
 function assertExpectedSourceFingerprint(request: RunSyntheticScenarioRequest, sourceRoot: string): void {

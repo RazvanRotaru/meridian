@@ -11,6 +11,7 @@ import {
   SYNTHETIC_OCI_RESULT_PREFIX,
   syntheticPrSandboxRuntimeSupported,
   syntheticOciContainerUser,
+  verifySyntheticOciContainerRemoved,
 } from "./synthetic-oci";
 import { syntheticSourceFingerprint } from "./synthetic-fingerprint";
 import {
@@ -133,6 +134,61 @@ describe("synthetic OCI boundary", () => {
     )).toBeNull();
   });
 
+  it("removes a container that appears after the first removal attempt and verifies quiescence", async () => {
+    let present = false;
+    let waits = 0;
+    let removals = 0;
+    let removedLateContainer = false;
+    let observations = 0;
+
+    await verifySyntheticOciContainerRemoved("meridian-synthetic-race", {
+      async forceRemove() {
+        removals += 1;
+        if (present) {
+          removedLateContainer = true;
+          present = false;
+        }
+      },
+      async observe() {
+        observations += 1;
+        return present ? "present" : "absent";
+      },
+      async wait() {
+        waits += 1;
+        if (waits === 1) present = true;
+      },
+    });
+
+    expect(removedLateContainer).toBe(true);
+    expect(present).toBe(false);
+    expect(removals).toBe(10);
+    expect(observations).toBe(10);
+    expect(waits).toBe(9);
+  });
+
+  it("fails closed after bounded retries when Docker cannot verify container absence", async () => {
+    let removals = 0;
+    let observations = 0;
+
+    await expect(verifySyntheticOciContainerRemoved("meridian-synthetic-unknown", {
+      async forceRemove() {
+        removals += 1;
+      },
+      async observe() {
+        observations += 1;
+        return "unknown";
+      },
+      async wait() {},
+    })).rejects.toMatchObject({
+      name: "SyntheticExecutionError",
+      code: "execution-failed",
+      status: 500,
+      message: "Synthetic OCI sandbox cleanup could not be verified.",
+    });
+    expect(removals).toBe(10);
+    expect(observations).toBe(10);
+  });
+
   ociIt("runs the real shopfront scenario inside the hardened container", async () => {
     expect(syntheticPrSandboxRuntimeSupported()).toBe(true);
     const { artifact } = await extractToArtifact({
@@ -151,6 +207,32 @@ describe("synthetic OCI boundary", () => {
     expect(result.outcome).toBe("completed");
     expect(result.trace.status).toBe("ok");
     expect(result.output).toMatchObject({ status: 200, body: { id: "synthetic_cart", items: [] } });
+  }, 60_000);
+
+  ociIt("waits for Docker termination and force-removal before rejecting an aborted run", async () => {
+    expect(syntheticPrSandboxRuntimeSupported()).toBe(true);
+    const { artifact } = await extractToArtifact({
+      absoluteRoot: SHOPFRONT,
+      cwd: SHOPFRONT,
+      project: join(SHOPFRONT, "tsconfig.json"),
+      materializeBoundary: true,
+    });
+    const controller = new AbortController();
+    const reason = new Error("synthetic OCI service is shutting down");
+    reason.name = "AbortError";
+    const timer = setTimeout(() => controller.abort(reason), 0);
+    try {
+      await expect(runSyntheticScenarioInOci({
+        sourceRoot: SHOPFRONT,
+        artifact,
+        scenarioId: "shopfront-add-item-unavailable",
+        expectedRootId: "ts:src/api/cartRoutes.ts#CartRoutes.handleAddItem",
+        expectedSourceFingerprint: syntheticSourceFingerprint(SHOPFRONT, artifact),
+        signal: controller.signal,
+      })).rejects.toBe(reason);
+    } finally {
+      clearTimeout(timer);
+    }
   }, 60_000);
 });
 

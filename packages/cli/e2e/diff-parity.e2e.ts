@@ -17,7 +17,7 @@ import {
   type ChangedFileManifestEntry,
   type GraphArtifact,
 } from "@meridian/core";
-import { createWebServer } from "../src/server/web-server";
+import { createWebService, type WebService } from "../src/server/web-server";
 import {
   DIFF_PARITY_CASES,
   buildDiffParityFixture,
@@ -49,7 +49,7 @@ if (process.env.CI && !HAS_CHROMIUM) {
 
 let fixture: DiffParityFixture | undefined;
 let smartGitServer: Server | undefined;
-let webServer: Server | undefined;
+let webService: WebService | undefined;
 let browser: Browser | undefined;
 let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
@@ -109,7 +109,7 @@ async function setup(): Promise<void> {
   if (!statusSpec?.addedFile || !statusSpec.deletedNode) throw new Error("diff parity case PR #34 has no status-specific nodes");
 
   const cold = await startMeridian(cacheRoot);
-  webServer = cold.server;
+  webService = cold.service;
   const coldAnalysis = await analyzePr(cold.baseUrl, cold.sessionId, statusPr);
   expect(coldAnalysis.map((record) => record.stage), "cold PR analysis must stream every real work stage").toEqual([
     "clone",
@@ -126,10 +126,10 @@ async function setup(): Promise<void> {
 
   // The restarted server owns an independent Context and cannot access the first server's graph
   // registrations. It must reconstruct both from the persistent entry without cloning or extracting again.
-  await closeServer(webServer);
-  webServer = undefined;
+  await webService.close();
+  webService = undefined;
   const restarted = await startMeridian(cacheRoot);
-  webServer = restarted.server;
+  webService = restarted.service;
   const warmAnalysis = await analyzePr(restarted.baseUrl, restarted.sessionId, statusPr);
   expect(warmAnalysis.map((record) => record.stage), "restart cache hit must emit only its terminal record").toEqual(["done"]);
   const warmDone = terminalAnalysis(warmAnalysis);
@@ -146,7 +146,7 @@ async function teardown(): Promise<void> {
   const errors: unknown[] = [];
   for (const close of [
     () => browser?.close(),
-    () => closeServer(webServer),
+    () => webService?.close(),
     () => closeServer(smartGitServer),
   ]) {
     try {
@@ -163,7 +163,7 @@ async function teardown(): Promise<void> {
     errors.push(error);
   }
   browser = undefined;
-  webServer = undefined;
+  webService = undefined;
   smartGitServer = undefined;
   restoreGitRedirect = undefined;
   fixture = undefined;
@@ -596,8 +596,8 @@ function expectSameFileParity(
   ).toEqual(file.oracleRows);
 }
 
-async function startMeridian(cacheRoot: string): Promise<{ server: Server; baseUrl: string; sessionId: string }> {
-  const server = createWebServer({
+async function startMeridian(cacheRoot: string): Promise<{ service: WebService; baseUrl: string; sessionId: string }> {
+  const service = createWebService({
     rendererRoot: dirname(RENDERER_INDEX),
     webUiPath: WEB_UI,
     cwd: REPO_ROOT,
@@ -607,11 +607,11 @@ async function startMeridian(cacheRoot: string): Promise<{ server: Server; baseU
     fallbackUser: { login: "diff-e2e-reviewer", avatarUrl: null },
   });
   try {
-    const baseUrl = await listenServer(server);
+    const baseUrl = await listenServer(service.server);
     const generated = await generateSession(baseUrl);
-    return { server, baseUrl, sessionId: generated.id };
+    return { service, baseUrl, sessionId: generated.id };
   } catch (error) {
-    await closeServer(server);
+    await service.close();
     throw error;
   }
 }

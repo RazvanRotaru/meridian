@@ -1,7 +1,7 @@
 /** Host-side OCI boundary for compiling and executing untrusted PR source. */
 
 import { randomUUID } from "node:crypto";
-import { spawn, spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
 import { realpathSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { syntheticExecutionSchema } from "@meridian/core";
@@ -10,6 +10,7 @@ import { SyntheticExecutionError } from "./synthetic-error";
 import type { RunSyntheticScenarioRequest } from "./synthetic-execution";
 import { syntheticSourceFingerprint } from "./synthetic-fingerprint";
 import { syntheticWorkerBundlePath } from "./synthetic-compiler-child";
+import { syntheticAbortReason } from "./synthetic-child";
 import { parseSyntheticWorkerError } from "./synthetic-worker-job";
 
 export const SYNTHETIC_OCI_IMAGE = "node:22";
@@ -18,6 +19,10 @@ const MAX_JOB_BYTES = 16 * 1024 * 1024;
 const MAX_STDOUT_BYTES = 4 * 1024 * 1024;
 const MAX_STDERR_BYTES = 64 * 1024;
 const TIMEOUT_MS = 25_000;
+const CONTAINER_CLEANUP_OBSERVATIONS = 10;
+const CONTAINER_CLEANUP_INTERVAL_MS = 100;
+const CONTAINER_CLEANUP_COMMAND_TIMEOUT_MS = 1_000;
+const REQUIRED_FINAL_ABSENCE_OBSERVATIONS = 2;
 const DOCKER_ENV = { PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin" };
 // Docker's client config can inject proxy variables into every new container, including proxy URLs
 // with embedded credentials. Explicit empty values win over that ambient config. NODE_OPTIONS is
@@ -34,6 +39,42 @@ const SCRUBBED_CONTAINER_ENV = [
 export interface RunSyntheticScenarioInOciRequest extends RunSyntheticScenarioRequest {
   /** Required for PR execution. Both the host and the container recheck it. */
   expectedSourceFingerprint: string;
+}
+
+export interface SyntheticOciContainerCleanupOperations {
+  forceRemove(containerName: string): Promise<void>;
+  observe(containerName: string): Promise<"present" | "absent" | "unknown">;
+  wait(delayMs: number): Promise<void>;
+}
+
+const DOCKER_CONTAINER_CLEANUP: SyntheticOciContainerCleanupOperations = {
+  async forceRemove(containerName) {
+    await runDockerCleanupCommand(["rm", "--force", containerName]);
+  },
+  async observe(containerName) {
+    const observation = await runDockerCleanupCommand(
+      ["container", "ls", "--all", "--quiet", "--filter", `name=^/${containerName}$`],
+    );
+    if (!observation.ok) return "unknown";
+    return observation.stdout.trim() === "" ? "absent" : "present";
+  },
+  wait(delayMs) {
+    return new Promise((resolveWait) => setTimeout(resolveWait, delayMs));
+  },
+};
+
+function runDockerCleanupCommand(args: string[]): Promise<{ ok: boolean; stdout: string }> {
+  return new Promise((resolveCommand) => {
+    execFile("docker", args, {
+      env: DOCKER_ENV,
+      encoding: "utf8",
+      timeout: CONTAINER_CLEANUP_COMMAND_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+      maxBuffer: 16 * 1024,
+    }, (error, stdout) => {
+      resolveCommand({ ok: error === null, stdout });
+    });
+  });
 }
 
 /** True only when the complete OCI boundary is ready. Images are never pulled implicitly. */
@@ -59,6 +100,7 @@ export function syntheticPrSandboxRuntimeSupported(): boolean {
 export async function runSyntheticScenarioInOci(
   request: RunSyntheticScenarioInOciRequest,
 ): Promise<SyntheticExecution> {
+  if (request.signal?.aborted) throw syntheticAbortReason(request.signal);
   const sourceRoot = canonicalDirectory(request.sourceRoot);
   if (syntheticSourceFingerprint(sourceRoot, request.artifact) !== request.expectedSourceFingerprint) {
     throw new SyntheticExecutionError("invalid-request", 409, "Synthetic scenario source changed after it was selected; reload the graph.");
@@ -77,14 +119,14 @@ export async function runSyntheticScenarioInOci(
   if (containerUser === null) {
     throw new SyntheticExecutionError("unsupported-runtime", 422, "PR synthetic execution refuses a root Docker host identity.");
   }
-  const { sourceRoot: _sourceRoot, compilationMode: _compilationMode, ...job } = request;
+  const { sourceRoot: _sourceRoot, compilationMode: _compilationMode, signal, ...job } = request;
   const serialized = JSON.stringify(job);
   if (Buffer.byteLength(serialized, "utf8") > MAX_JOB_BYTES) {
     throw new SyntheticExecutionError("invalid-request", 400, "Synthetic OCI job is too large.");
   }
   const containerName = `meridian-synthetic-${randomUUID()}`;
   const args = buildSyntheticOciDockerArgs(containerName, sourceRoot, workerPath, containerUser);
-  const stdout = await runDockerContainer(containerName, args, serialized);
+  const stdout = await runDockerContainer(containerName, args, serialized, signal);
   return parseSyntheticOciResult(stdout);
 }
 
@@ -131,7 +173,13 @@ export function buildSyntheticOciDockerArgs(
   ];
 }
 
-function runDockerContainer(containerName: string, args: string[], job: string): Promise<string> {
+function runDockerContainer(
+  containerName: string,
+  args: string[],
+  job: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  if (signal?.aborted) return Promise.reject(syntheticAbortReason(signal));
   return new Promise((resolveContainer, rejectContainer) => {
     const child = spawn("docker", args, {
       env: DOCKER_ENV,
@@ -140,47 +188,74 @@ function runDockerContainer(containerName: string, args: string[], job: string):
     let stdout = "";
     let stderrBytes = 0;
     let settled = false;
-    const forceRemove = () => {
-      spawnSync("docker", ["rm", "--force", containerName], {
-        env: DOCKER_ENV,
-        stdio: ["ignore", "ignore", "ignore"],
-        timeout: 2_000,
-      });
-    };
-    const fail = (error: SyntheticExecutionError) => {
-      if (settled) return;
-      settled = true;
+    let terminalReason: unknown;
+    let containerCleanupRequired = child.pid !== undefined;
+    child.once("spawn", () => { containerCleanupRequired = true; });
+    const terminate = (error: unknown) => {
+      if (settled || terminalReason !== undefined) return;
+      terminalReason = error;
       clearTimeout(timer);
       child.kill("SIGKILL");
-      forceRemove();
-      rejectContainer(error);
     };
-    const timer = setTimeout(() => fail(new SyntheticExecutionError(
+    const abort = () => {
+      if (signal !== undefined) terminate(syntheticAbortReason(signal));
+    };
+    const timer = setTimeout(() => terminate(new SyntheticExecutionError(
       "execution-failed",
       422,
       "Synthetic OCI execution exceeded the 25 second time limit.",
     )), TIMEOUT_MS);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stdout += chunk.toString("utf8");
       if (Buffer.byteLength(stdout, "utf8") > MAX_STDOUT_BYTES) {
-        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic OCI execution produced too much output."));
+        terminate(new SyntheticExecutionError("execution-failed", 422, "Synthetic OCI execution produced too much output."));
       }
     });
     child.stderr.on("data", (chunk: Buffer) => {
+      if (terminalReason !== undefined) return;
       stderrBytes += chunk.length;
       if (stderrBytes > MAX_STDERR_BYTES) {
-        fail(new SyntheticExecutionError("execution-failed", 422, "Synthetic OCI execution produced too much diagnostic output."));
+        terminate(new SyntheticExecutionError("execution-failed", 422, "Synthetic OCI execution produced too much diagnostic output."));
       }
     });
-    child.on("error", () => fail(new SyntheticExecutionError(
-      "unsupported-runtime",
-      422,
-      "Docker could not start the synthetic OCI sandbox.",
-    )));
+    // Docker can close its input while an abort or an early container failure races the job write.
+    // The process close event remains the sole owner of the public outcome; consume the stream
+    // error here so EPIPE cannot escape as an uncaught process exception.
+    child.stdin.on("error", () => {});
+    child.on("error", () => {
+      if (child.pid === undefined) containerCleanupRequired = false;
+      if (terminalReason !== undefined) return;
+      // A spawn failure cannot have submitted a container create request. Preserve the established
+      // unsupported-runtime result instead of replacing it with an unverifiable cleanup error.
+      containerCleanupRequired = false;
+      terminate(new SyntheticExecutionError(
+        "unsupported-runtime",
+        422,
+        "Docker could not start the synthetic OCI sandbox.",
+      ));
+    });
     child.on("close", (code) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      if (terminalReason !== undefined) {
+        if (!containerCleanupRequired) {
+          rejectContainer(terminalReason);
+          return;
+        }
+        // Killing the Docker client does not synchronously cancel a daemon-side create request.
+        // Begin cleanup only after the client has exited, then keep removing the exact container
+        // name throughout a bounded quiescence window so a container that appears after the first
+        // `rm` cannot survive cancellation.
+        void verifySyntheticOciContainerRemoved(containerName).then(
+          () => rejectContainer(terminalReason),
+          (cleanupError: unknown) => rejectContainer(cleanupError),
+        );
+        return;
+      }
       if (code !== 0) {
         rejectContainer(parseSyntheticWorkerError(stdout, "OCI")
           ?? new SyntheticExecutionError("execution-failed", 422, "Synthetic execution failed inside the OCI sandbox."));
@@ -189,7 +264,48 @@ function runDockerContainer(containerName: string, args: string[], job: string):
       resolveContainer(stdout);
     });
     child.stdin.end(job, "utf8");
+    if (signal?.aborted) abort();
   });
+}
+
+/** Force-remove a cancelled OCI sandbox and prove it stays absent for a bounded quiescence
+ * window. Exported only so the daemon create/remove race can be covered deterministically. */
+export async function verifySyntheticOciContainerRemoved(
+  containerName: string,
+  operations: SyntheticOciContainerCleanupOperations = DOCKER_CONTAINER_CLEANUP,
+): Promise<void> {
+  let finalAbsenceObservations = 0;
+  for (let attempt = 0; attempt < CONTAINER_CLEANUP_OBSERVATIONS; attempt += 1) {
+    try {
+      await operations.forceRemove(containerName);
+    } catch {
+      // The subsequent daemon-backed observation decides whether cleanup is complete. A failed
+      // removal is retried for the remainder of the bounded window.
+    }
+    let observation: "present" | "absent" | "unknown" = "unknown";
+    try {
+      observation = await operations.observe(containerName);
+    } catch {
+      // Treat an observation failure as unknown rather than mistaking daemon unavailability for
+      // proof that the container is absent.
+    }
+    finalAbsenceObservations = observation === "absent"
+      ? finalAbsenceObservations + 1
+      : 0;
+    if (attempt + 1 < CONTAINER_CLEANUP_OBSERVATIONS) {
+      try {
+        await operations.wait(CONTAINER_CLEANUP_INTERVAL_MS);
+      } catch {
+        break;
+      }
+    }
+  }
+  if (finalAbsenceObservations >= REQUIRED_FINAL_ABSENCE_OBSERVATIONS) return;
+  throw new SyntheticExecutionError(
+    "execution-failed",
+    500,
+    "Synthetic OCI sandbox cleanup could not be verified.",
+  );
 }
 
 /** Match the source checkout owner so a 0700 prepared clone remains private from other host

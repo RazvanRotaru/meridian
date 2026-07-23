@@ -1,11 +1,12 @@
 /**
- * Route behaviour of the pure `createWebServer` factory over a real socket (never a browser).
+ * Route behaviour of the pure `createWebService` factory over a real socket (never a browser).
  *
  * The generate path runs the real extractor against the bundled `examples/` trees — offline and
  * deterministic — so this doubles as the no-network smoke test: path -> id -> graph -> /view.
  */
 
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { EventEmitter } from "node:events";
 import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
@@ -15,8 +16,8 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
 import type { GraphArtifact } from "@meridian/core";
-import { createWebServer, handleSyntheticExecution } from "./web-server";
-import type { Context } from "./web-server";
+import { createWebService, handleSyntheticExecution } from "./web-server";
+import type { Context, WebService } from "./web-server";
 import { WebGraphStore } from "./web-graph-store";
 import { runRepositoryAnalysisChildInProcess } from "./repository-analysis-child-test-adapter";
 
@@ -33,27 +34,29 @@ interface GenerateResult {
 }
 
 let rendererRoot: string;
+let service: WebService;
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
   rendererRoot = writeFakeRenderer();
-  server = createWebServer({
+  service = createWebService({
     rendererRoot,
     webUiPath: WEB_UI,
     cwd: REPO_ROOT,
     source: "sindresorhus/type-fest",
     allowSyntheticExecution: true,
   });
+  server = service.server;
   base = await listenEphemeral(server);
 });
 
 afterAll(async () => {
-  await closeListeningServer(server);
+  await service.close();
   rmSync(rendererRoot, { recursive: true, force: true });
 });
 
-describe("createWebServer landing + errors", () => {
+describe("createWebService landing + errors", () => {
   it("serves the landing page with the injected CLI prefill", async () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain("Read your codebase");
@@ -118,7 +121,7 @@ describe("createWebServer landing + errors", () => {
     const started = deferred<void>();
     const release = deferred<void>();
     let analysisCalls = 0;
-    const isolated = createWebServer({
+    const isolated = createWebService({
       rendererRoot,
       webUiPath: WEB_UI,
       cwd: REPO_ROOT,
@@ -132,7 +135,7 @@ describe("createWebServer landing + errors", () => {
       },
     });
     try {
-      const isolatedBase = await listenEphemeral(isolated);
+      const isolatedBase = await listenEphemeral(isolated.server);
       const first = fetch(`${isolatedBase}/api/generate`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -184,7 +187,7 @@ describe("createWebServer landing + errors", () => {
       expect((await first).status).toBe(200);
     } finally {
       release.resolve();
-      if (isolated.listening) await closeListeningServer(isolated);
+      await isolated.close();
       rmSync(sourceRoot, { recursive: true, force: true });
     }
   });
@@ -219,23 +222,131 @@ describe("createWebServer landing + errors", () => {
     }
   });
 
-  it("disposes its private graph store and removes its exit hook after connections drain", async () => {
+  it("owns one idempotent close promise without installing a process-exit hook", async () => {
     const exitListeners = process.listenerCount("exit");
     const dispose = vi.spyOn(WebGraphStore.prototype, "dispose");
-    const isolated = createWebServer({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
+    const isolated = createWebService({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
     try {
-      await listenEphemeral(isolated);
-      expect(process.listenerCount("exit")).toBe(exitListeners + 1);
-      await closeListeningServer(isolated);
+      await listenEphemeral(isolated.server);
+      expect(process.listenerCount("exit")).toBe(exitListeners);
+
+      const closing = isolated.close();
+      expect(isolated.close()).toBe(closing);
+      await closing;
+
       expect(dispose).toHaveBeenCalledTimes(1);
       const store = dispose.mock.instances[0] as WebGraphStore;
       expect(existsSync(store.rootPath)).toBe(false);
       expect(process.listenerCount("exit")).toBe(exitListeners);
     } finally {
-      if (isolated.listening) await closeListeningServer(isolated);
+      await isolated.close();
       dispose.mockRestore();
     }
   });
+
+  it("aborts active analysis immediately but disposes graphs only after the worker and request drain", async () => {
+    const sourceRoot = mkdtempSync(join(tmpdir(), "meridian-shutdown-source-"));
+    writeFileSync(join(sourceRoot, "index.ts"), "export const active = true;\n");
+    const started = deferred<void>();
+    const releaseWorker = deferred<void>();
+    let workerSignal: AbortSignal | undefined;
+    const dispose = vi.spyOn(WebGraphStore.prototype, "dispose");
+    const isolated = createWebService({
+      rendererRoot,
+      webUiPath: WEB_UI,
+      cwd: REPO_ROOT,
+      maxConcurrentAnalyses: 1,
+      repositoryAnalysis: async (_request, options) => {
+        workerSignal = options.signal;
+        started.resolve();
+        await releaseWorker.promise;
+        throw options.signal?.reason ?? new Error("analysis should be cancelled during shutdown");
+      },
+    });
+    try {
+      const isolatedBase = await listenEphemeral(isolated.server);
+      const response = fetch(`${isolatedBase}/api/generate`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ kind: "path", value: sourceRoot }),
+      });
+      await started.promise;
+
+      const closing = isolated.close();
+      expect(isolated.close()).toBe(closing);
+      expect(workerSignal?.aborted).toBe(true);
+      expect(dispose).not.toHaveBeenCalled();
+      let closed = false;
+      void closing.then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+
+      releaseWorker.resolve();
+      await closing;
+      expect(dispose).toHaveBeenCalledTimes(1);
+      expect((await response).status).toBe(503);
+    } finally {
+      releaseWorker.resolve();
+      await isolated.close();
+      dispose.mockRestore();
+      rmSync(sourceRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("aborts an active folder picker and waits for its cleanup before closing", async () => {
+    const pickerStarted = deferred<void>();
+    const releasePickerCleanup = deferred<void>();
+    let pickerSignal: AbortSignal | undefined;
+    let pickerCleaned = false;
+    const isolated = createWebService({
+      rendererRoot,
+      webUiPath: WEB_UI,
+      cwd: REPO_ROOT,
+      folderPicker: async (options = {}) => {
+        pickerSignal = options.signal;
+        pickerStarted.resolve();
+        if (pickerSignal === undefined) throw new Error("folder picker did not receive the service signal");
+        if (!pickerSignal.aborted) {
+          await new Promise<void>((resolve) => {
+            pickerSignal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        await releasePickerCleanup.promise;
+        pickerCleaned = true;
+        throw pickerSignal.reason;
+      },
+    });
+    try {
+      const isolatedBase = await listenEphemeral(isolated.server);
+      const response = fetch(`${isolatedBase}/api/pick-folder`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+      });
+      await within(pickerStarted.promise, "folder picker did not start");
+
+      const closing = isolated.close();
+      expect(isolated.close()).toBe(closing);
+      expect(pickerSignal?.aborted).toBe(true);
+      expect(pickerCleaned).toBe(false);
+      let closed = false;
+      void closing.then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+
+      releasePickerCleanup.resolve();
+      await within(closing, "web service did not finish closing");
+      expect(pickerCleaned).toBe(true);
+      expect((await within(response, "folder picker response did not finish")).status).toBe(503);
+    } finally {
+      releasePickerCleanup.resolve();
+      await isolated.close();
+    }
+  }, 10_000);
 
   it("wires POST /api/pr/analyze: validates refs, then 404s an unknown session id, before any git", async () => {
     const badRef = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "--evil", headRef: "x" });
@@ -245,7 +356,7 @@ describe("createWebServer landing + errors", () => {
   });
 });
 
-describe("createWebServer generate -> view (offline path source)", () => {
+describe("createWebService generate -> view (offline path source)", () => {
   it("extracts a TypeScript tree and serves a per-id boot contract", async () => {
     const result = (await (await post("/api/generate", { kind: "path", value: TS_EXAMPLE })).json()) as GenerateResult;
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
@@ -443,7 +554,7 @@ describe("createWebServer generate -> view (offline path source)", () => {
   }, 60_000);
 });
 
-describe("createWebServer auth routes (sign-in always available)", () => {
+describe("createWebService auth routes (sign-in always available)", () => {
   it("reports signed-out identity state without a configuration flag", async () => {
     const data = await getJson<{ signedIn: boolean; user: unknown }>(`${base}/api/auth/session`);
     expect(data).toEqual({ signedIn: false, user: null });
@@ -624,7 +735,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
   }))]), { headers }) as unknown as IncomingMessage;
   let status = 0;
   let body = "";
-  const response = {
+  const response = Object.assign(new EventEmitter(), {
     writeHead(code: number) {
       status = code;
       return response;
@@ -632,7 +743,7 @@ async function invokeSynthetic(ctx: Context, id: string, consent: boolean): Prom
     end(chunk?: unknown) {
       body += chunk === undefined ? "" : String(chunk);
     },
-  } as unknown as ServerResponse;
+  }) as unknown as ServerResponse;
 
   await handleSyntheticExecution(ctx, request, response, id);
   return { status, json: JSON.parse(body) as unknown };
@@ -647,16 +758,24 @@ function listenEphemeral(target: Server): Promise<string> {
   });
 }
 
-function closeListeningServer(target: Server): Promise<void> {
-  return new Promise((resolveClose, reject) => {
-    target.close((error) => error ? reject(error) : resolveClose());
-  });
-}
-
 function deferred<Value>() {
   let resolve!: (value: Value | PromiseLike<Value>) => void;
   const promise = new Promise<Value>((resolvePromise) => {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+async function within<Value>(promise: Promise<Value>, message: string): Promise<Value> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), 2_000);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

@@ -20,6 +20,7 @@ import type {
 } from "@meridian/core";
 import type { SourceRequest } from "./clone";
 import type { SyntheticExecutionTrust } from "./web-boot";
+import { OperationCancelledError } from "./web-cancellation";
 import { WebError } from "./web-error";
 
 const MAX_BODY_BYTES = 64_000;
@@ -37,27 +38,54 @@ export interface SyntheticExecutionRequest {
   watchers: SyntheticFieldWatcher[];
 }
 
-export function readJsonBody(request: IncomingMessage): Promise<unknown> {
+export function readJsonBody(request: IncomingMessage, signal?: AbortSignal): Promise<unknown> {
   return new Promise((resolveBody, rejectBody) => {
     let size = 0;
     const chunks: Buffer[] = [];
-    request.on("data", (chunk: Buffer) => {
+    let settled = false;
+    const cleanup = () => {
+      request.removeListener("data", onData);
+      request.removeListener("end", onEnd);
+      request.removeListener("error", onError);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const reject = (error: unknown, destroy = false) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      rejectBody(error);
+      if (destroy) request.destroy();
+    };
+    const onData = (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        rejectBody(new WebError(413, "request body too large"));
-        request.destroy();
+        reject(new WebError(413, "request body too large"), true);
         return;
       }
       chunks.push(chunk);
-    });
-    request.on("end", () => {
+    };
+    const onEnd = () => {
+      if (settled) return;
       try {
-        resolveBody(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}"));
+        const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}");
+        settled = true;
+        cleanup();
+        resolveBody(body);
       } catch {
-        rejectBody(new WebError(400, "request body is not valid JSON"));
+        reject(new WebError(400, "request body is not valid JSON"));
       }
-    });
-    request.on("error", () => rejectBody(new WebError(400, "could not read request body")));
+    };
+    const onError = () => reject(new WebError(400, "could not read request body"));
+    const onAbort = () => reject(
+      signal?.reason instanceof Error ? signal.reason : new OperationCancelledError(),
+      true,
+    );
+    request.on("data", onData);
+    request.once("end", onEnd);
+    request.once("error", onError);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) onAbort();
+    else if (request.aborted || request.destroyed) onError();
   });
 }
 

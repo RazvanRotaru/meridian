@@ -7,6 +7,7 @@ import {
   responseCanWrite,
   throwIfAborted,
 } from "./web-cancellation";
+import { HttpServiceShutdownError } from "./http-service";
 
 describe("requestCancellation", () => {
   it("aborts only the waiter when the incoming request is aborted", () => {
@@ -49,6 +50,19 @@ describe("requestCancellation", () => {
     response.emit("close");
 
     expect(cancellation.signal.aborted).toBe(false);
+  });
+
+  it("preserves the service shutdown reason and removes its parent listener", () => {
+    const { request, response } = fakeExchange();
+    const parent = new AbortController();
+    const reason = new HttpServiceShutdownError();
+    const cancellation = requestCancellation(request, response, parent.signal);
+
+    parent.abort(reason);
+
+    expect(cancellation.signal.reason).toBe(reason);
+    expect(() => throwIfAborted(cancellation.signal)).toThrow(reason);
+    cancellation.dispose();
   });
 });
 

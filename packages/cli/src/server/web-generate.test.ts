@@ -10,7 +10,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createWebServer } from "./web-server";
+import { createWebService, type WebService } from "./web-server";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
@@ -24,17 +24,19 @@ interface GenerateLine {
 }
 
 let rendererRoot: string;
+let service: WebService;
 let server: Server;
 let base: string;
 
 beforeAll(async () => {
   rendererRoot = writeFakeRenderer();
-  server = createWebServer({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
+  service = createWebService({ rendererRoot, webUiPath: WEB_UI, cwd: REPO_ROOT });
+  server = service.server;
   base = await listenEphemeral(server);
 });
 
-afterAll(() => {
-  server.close();
+afterAll(async () => {
+  await service.close();
   rmSync(rendererRoot, { recursive: true, force: true });
 });
 

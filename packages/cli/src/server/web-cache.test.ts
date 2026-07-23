@@ -15,6 +15,7 @@ import {
 import { remoteArtifactId, type GenerateRequest } from "./web-request";
 import { FakeRepositoryMirror } from "./web-repository-mirror-test-fake";
 import { repositoryKeyFor } from "./web-repository-mirror";
+import type { PhaseAdmission } from "./web-analysis-coordinator";
 
 vi.mock("../repository-analysis", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../repository-analysis")>();
@@ -152,13 +153,13 @@ describe("persistent web graph cache", () => {
   it("admits only cold workspace/extraction work and keeps an exact warm hit outside both pools", async () => {
     let preparationCalls = 0;
     let analysisCalls = 0;
-    const runPreparation = <Result>(work: () => Promise<Result>) => {
+    const runPreparation: PhaseAdmission = async (work) => {
       preparationCalls += 1;
-      return work();
+      return work(new AbortController().signal);
     };
-    const runAnalysis = <Result>(work: () => Promise<Result>) => {
+    const runAnalysis: PhaseAdmission = async (work) => {
       analysisCalls += 1;
-      return work();
+      return work(new AbortController().signal);
     };
     const admissions = { preparation: runPreparation, analysis: runAnalysis };
 
@@ -174,8 +175,8 @@ describe("persistent web graph cache", () => {
   });
 
   it("reclaims cold artifact staging when admission discards a completed worker result", async () => {
-    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
-      await work();
+    const discardCompletedResult: PhaseAdmission = async (work) => {
+      await work(new AbortController().signal);
       throw new Error("request aborted after worker completion");
     };
 
@@ -195,8 +196,8 @@ describe("persistent web graph cache", () => {
   });
 
   it("releases a cold workspace when preparation admission discards its completed result", async () => {
-    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
-      await work();
+    const discardCompletedResult: PhaseAdmission = async (work) => {
+      await work(new AbortController().signal);
       throw new Error("request aborted after workspace completion");
     };
 
@@ -215,9 +216,9 @@ describe("persistent web graph cache", () => {
   });
 
   it("releases a warm winner when preparation admission discards its completed recheck", async () => {
-    const discardCompletedWinner = async <Result>(work: () => Promise<Result>): Promise<Result> => {
+    const discardCompletedWinner: PhaseAdmission = async (work) => {
       repositories.seedWorkspace("https://github.com/owner/repo.git", FIRST_COMMIT);
-      await work();
+      await work(new AbortController().signal);
       throw new Error("request aborted after warm workspace recheck");
     };
 
@@ -448,8 +449,8 @@ describe("persistent web graph cache", () => {
     const restamp = vi.fn(runRepositoryArtifactRestampChildInProcess);
     const runners = { analysis, restamp };
     await generate(REQUEST, undefined, [], runners);
-    const discardCompletedResult = async <Result>(work: () => Promise<Result>): Promise<Result> => {
-      await work();
+    const discardCompletedResult: PhaseAdmission = async (work) => {
+      await work(new AbortController().signal);
       throw new Error("request aborted after restamp completion");
     };
 
@@ -640,8 +641,8 @@ function generate(
     restamp: runRepositoryArtifactRestampChildInProcess,
   },
   admissions: {
-    preparation?: <Result>(work: () => Promise<Result>) => Promise<Result>;
-    analysis?: <Result>(work: () => Promise<Result>) => Promise<Result>;
+    preparation?: PhaseAdmission;
+    analysis?: PhaseAdmission;
   } = {},
   signal?: AbortSignal,
 ) {
@@ -661,8 +662,8 @@ function generate(
   });
 }
 
-function immediateAdmission<Result>(work: () => Promise<Result>): Promise<Result> {
-  return work();
+async function immediateAdmission<Result>(work: (signal: AbortSignal) => Result | Promise<Result>): Promise<Result> {
+  return work(new AbortController().signal);
 }
 
 function artifactFor(name: string, commit: string, branch?: string): GraphArtifact {

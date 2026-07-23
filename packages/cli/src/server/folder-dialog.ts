@@ -27,6 +27,11 @@ export interface PickerInvocation {
   cancelExitCodes: number[];
 }
 
+export interface PickFolderOptions {
+  platform?: NodeJS.Platform;
+  signal?: AbortSignal;
+}
+
 /** The ordered picker candidates for a platform — the first whose binary exists is used. Pure and
  * exported so the cross-platform contract can be unit-tested without opening a real dialog. */
 export function pickerInvocations(platform: NodeJS.Platform): PickerInvocation[] {
@@ -55,12 +60,13 @@ export function windowsEncodedScript(): string {
   return Buffer.from(script, "utf16le").toString("base64");
 }
 
-export async function pickFolder(platform: NodeJS.Platform = process.platform): Promise<string | null> {
+export async function pickFolder(options: PickFolderOptions = {}): Promise<string | null> {
+  const platform = options.platform ?? process.platform;
   const candidates = pickerInvocations(platform);
   for (let i = 0; i < candidates.length; i++) {
     const isLast = i === candidates.length - 1;
     try {
-      return await runPicker(candidates[i]);
+      return await runPicker(candidates[i], options.signal);
     } catch (error) {
       // A missing binary just means "try the next candidate"; anything else (or the last one) bubbles.
       if (isLast || !(error instanceof FolderDialogUnavailable && error.missing)) {
@@ -71,31 +77,52 @@ export async function pickFolder(platform: NodeJS.Platform = process.platform): 
   throw new FolderDialogUnavailable("no folder picker is available on this platform");
 }
 
-function runPicker(invocation: PickerInvocation): Promise<string | null> {
+export function runPicker(invocation: PickerInvocation, signal?: AbortSignal): Promise<string | null> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
   const cancelCodes = new Set(invocation.cancelExitCodes);
   return new Promise((resolve, reject) => {
     const child = spawn(invocation.command, invocation.args, { stdio: ["ignore", "pipe", "ignore"] });
     let out = "";
     let settled = false;
-    const timer = setTimeout(() => {
-      child.kill();
-      settle(() => reject(new FolderDialogUnavailable("folder picker timed out")));
-    }, DIALOG_TIMEOUT_MS);
+    let terminalReason: unknown;
+    const cleanup = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+    };
     const settle = (act: () => void) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer);
+      cleanup();
       act();
     };
+    const terminate = (reason: unknown) => {
+      if (settled || terminalReason !== undefined) return;
+      terminalReason = reason;
+      clearTimeout(timer);
+      child.kill("SIGKILL");
+    };
+    const abort = () => {
+      if (signal !== undefined) terminate(abortReason(signal));
+    };
+    const timer = setTimeout(() => terminate(
+      new FolderDialogUnavailable("folder picker timed out"),
+    ), DIALOG_TIMEOUT_MS);
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdout.on("data", (chunk) => {
+      if (terminalReason !== undefined) return;
       out += chunk.toString();
     });
     child.on("error", (error: NodeJS.ErrnoException) => {
       const unavailable = new FolderDialogUnavailable(`could not launch ${invocation.command}`);
       unavailable.missing = error.code === "ENOENT";
-      settle(() => reject(unavailable));
+      if (child.pid === undefined) settle(() => reject(unavailable));
+      else terminate(unavailable);
     });
     child.on("close", (code) => {
+      if (terminalReason !== undefined) {
+        settle(() => reject(terminalReason));
+        return;
+      }
       const path = out.trim();
       if (path) {
         settle(() => resolve(path));
@@ -108,5 +135,13 @@ function runPicker(invocation: PickerInvocation): Promise<string | null> {
       }
       settle(() => reject(new FolderDialogUnavailable(`folder picker exited with code ${code}`)));
     });
+    if (signal?.aborted) abort();
   });
+}
+
+function abortReason(signal: AbortSignal): unknown {
+  if (signal.reason !== undefined) return signal.reason;
+  const error = new Error("The operation was aborted");
+  error.name = "AbortError";
+  return error;
 }

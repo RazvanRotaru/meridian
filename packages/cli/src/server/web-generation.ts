@@ -125,7 +125,7 @@ async function generateLocal(
       report("extract");
       let stage: string | undefined;
       try {
-        const result = await runAnalysis(async () => {
+        const result = await runAnalysis(async (phaseSignal) => {
           const analysisStage = createStageDirectory(join(ctx.graphStore.rootPath, "analysis"));
           // Admission can discard a late success after cancellation, so ownership must escape now.
           stage = analysisStage;
@@ -136,7 +136,7 @@ async function generateLocal(
               targetName: source.target,
             }, {
               artifactOutputPath: join(analysisStage, "artifact.json"),
-              signal: jobSignal,
+              signal: phaseSignal,
             });
           } catch (error) {
             removeEntry(analysisStage);
