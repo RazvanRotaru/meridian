@@ -13,6 +13,7 @@ import {
   requestCancellation,
   responseCanWrite,
 } from "./web-cancellation";
+import { WebGraphViewLeaseError } from "./web-graph-store";
 import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
@@ -96,53 +97,85 @@ function safeGenerateMessage(error: unknown): string {
 }
 
 export async function sendGraph(ctx: Context, response: ServerResponse, id: string | null): Promise<void> {
-  const path = id ? ctx.graphStore.artifactPath(id) : undefined;
-  if (path === undefined) {
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  if (registration === undefined) {
     sendJson(response, 404, { error: "unknown graph id" });
     return;
   }
-  await sendJsonFile(response, path);
+  try {
+    await sendJsonFile(response, registration.artifactPath);
+  } finally {
+    registration.release();
+  }
 }
 
 export function sendMeta(ctx: Context, response: ServerResponse, id: string | null): void {
-  const descriptor = lookup(ctx, id);
-  if (descriptor === undefined) {
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  if (registration === undefined) {
     sendJson(response, 404, { error: "unknown graph id" });
     return;
   }
-  const graphId = id as string;
-  sendJson(response, 200, {
-    schemaVersion: descriptor.summary.schemaVersion,
-    generatedAt: descriptor.summary.generatedAt,
-    nodeCount: descriptor.summary.nodeCount,
-    hasOverlay: false,
-    environments: [],
-    telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
-    ...syntheticExecutionBootCapability(
-      graphId,
-      descriptor.source,
-      descriptor.synthetic.scenarios,
-      descriptor.synthetic.trust,
-    ),
-  });
+  try {
+    const descriptor = registration.descriptor;
+    const graphId = id as string;
+    sendJson(response, 200, {
+      schemaVersion: descriptor.summary.schemaVersion,
+      generatedAt: descriptor.summary.generatedAt,
+      nodeCount: descriptor.summary.nodeCount,
+      hasOverlay: false,
+      environments: [],
+      telemetrySources: telemetrySourceDescriptors({ kind: "none" }),
+      ...syntheticExecutionBootCapability(
+        graphId,
+        descriptor.source,
+        descriptor.synthetic.scenarios,
+        descriptor.synthetic.trust,
+      ),
+    });
+  } finally {
+    registration.release();
+  }
 }
 
 export function sendView(ctx: Context, response: ServerResponse, id: string | null): void {
-  const descriptor = lookup(ctx, id);
-  if (descriptor === undefined) {
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  if (registration === undefined) {
     sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
     return;
   }
-  const graphId = id as string;
-  sendHtml(response, injectViewBoot(
-    ctx.rendererIndex,
-    graphId,
-    descriptor.source,
-    descriptor.synthetic.scenarios,
-    descriptor.synthetic.trust,
-  ));
-}
-
-function lookup(ctx: Context, id: string | null) {
-  return id ? ctx.graphStore.descriptor(id) : undefined;
+  let viewLeaseId: string | null = null;
+  try {
+    const descriptor = registration.descriptor;
+    const graphId = id as string;
+    const grant = ctx.graphStore.createViewLease(graphId);
+    viewLeaseId = grant.leaseId;
+    sendHtml(response, injectViewBoot(
+      ctx.rendererIndex,
+      graphId,
+      descriptor.source,
+      {
+        version: 1,
+        leaseId: grant.leaseId,
+        url: `/api/graph-views/${grant.leaseId}`,
+        createUrl: "/api/graph-views",
+        expiresAtMs: grant.expiresAtMs,
+        heartbeatIntervalMs: grant.heartbeatIntervalMs,
+      },
+      descriptor.synthetic.scenarios,
+      descriptor.synthetic.trust,
+    ), 200, { "cache-control": "no-store" });
+  } catch (error) {
+    if (viewLeaseId !== null) ctx.graphStore.releaseViewLease(viewLeaseId);
+    if (error instanceof WebGraphViewLeaseError && error.code === "capacity") {
+      sendHtml(
+        response,
+        "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Too many active graph views. Close an unused tab and retry.</p>",
+        503,
+      );
+      return;
+    }
+    throw error;
+  } finally {
+    registration.release();
+  }
 }

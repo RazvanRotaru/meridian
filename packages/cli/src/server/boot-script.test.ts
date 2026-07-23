@@ -7,6 +7,10 @@ import { describe, expect, it } from "vitest";
 import { injectBootScript } from "./boot-script";
 
 describe("injectBootScript", () => {
+  it("explicitly marks static artifact sessions as non-leased", () => {
+    expect(injectBootScript("<head></head>", { kind: "none" }, null, null))
+      .toContain('"graphViewLease":null');
+  });
   it("escapes a hostile preselected env so it cannot terminate the script tag", () => {
     const hostile = "</script><script>alert(document.domain)</script>";
     const html = injectBootScript("<head></head>", { kind: "mock" }, hostile, null);

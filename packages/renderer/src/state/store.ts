@@ -73,6 +73,10 @@ import { deriveFocusedRequestFlowPaneLayout, deriveRequestFlowPaneLayout } from 
 import { defaultSyntheticMomentId, syntheticOccurrenceSteps } from "../synthetic/syntheticFlowModel";
 import { requestSyntheticExecution } from "../synthetic/client";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
+import type {
+  GraphViewLeaseController,
+  GraphViewLeaseHandoff,
+} from "../boot/graphViewLease";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
 import { deriveMinimalGraphLayout, reviewDiffVisibleIds } from "./deriveMinimalGraphLayout";
 import { minimalRollupExpansions } from "../derive/minimalRollupExpansion";
@@ -1033,6 +1037,8 @@ export interface StoreDependencies {
   graphUrl?: string;
   /** Meta endpoint paired with graphUrl; prepared PR swaps exchange its id in the same transaction. */
   metaUrl?: string;
+  /** Compact server-registration protection for the boot graph and transactional PR graph swaps. */
+  graphViewLease?: GraphViewLeaseController | null;
   /** POST target for submitting review comments (web sessions only; 404s elsewhere). */
   prReviewUrl: string;
 }
@@ -1756,6 +1762,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // starting a newer run invalidates the prior child-process response without touching telemetry.
   let syntheticExecutionSeq = 0;
   let prAnalyzeCancellation: { sequence: number; resolve: () => void } | null = null;
+  let prGraphHandoff: GraphViewLeaseHandoff | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
@@ -1852,6 +1859,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prFileUrl = dependencies.prFileUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
   const metaUrl = dependencies.metaUrl ?? "";
+  const graphViewLease = dependencies.graphViewLease ?? null;
   // The route alone is not a usable prepare capability: plain `view` still knows the route name,
   // but has no stored graph id for the request. Expose null in that context so every consumer has
   // one truthful capability flag and reviewPrInGraph takes its synchronous path.
@@ -7127,6 +7135,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A direct manual re-run supersedes the prior action just like Retry does through
       // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
       prAnalyzeCancellation?.resolve();
+      const supersededHandoff = prGraphHandoff;
+      prGraphHandoff = null;
+      void supersededHandoff?.release().catch(() => undefined);
       const sequence = ++prAnalyzeSeq;
       let resolveCanceled!: () => void;
       const canceled = new Promise<void>((resolve) => {
@@ -7163,6 +7174,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewBlocked: null,
       });
       let swappedNewArtifact = false;
+      let graphHandoff: GraphViewLeaseHandoff | null = null;
+      const settleGraphHandoff = async (action: "commit" | "release") => {
+        const handoff = graphHandoff;
+        if (handoff === null) return;
+        await handoff[action]();
+        if (graphHandoff === handoff) graphHandoff = null;
+        if (prGraphHandoff === handoff) prGraphHandoff = null;
+      };
       const restorePreviousPrepared = () => {
         if (previousPrepared === null) {
           return false;
@@ -7201,6 +7220,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (!active()) {
             return;
           }
+          // Protect the new pair before either artifact fetch begins. The controller unions it with
+          // the currently mounted pair, so a refresh can still roll back until the new graph commits.
+          graphHandoff = await graphViewLease?.beginPreparedGraphHandoff([
+            analysis.graphId,
+            ...(analysis.comparisonGraphId === null ? [] : [analysis.comparisonGraphId]),
+          ]) ?? null;
+          if (graphHandoff !== null) prGraphHandoff = graphHandoff;
+          if (!active()) {
+            await settleGraphHandoff("release");
+            return;
+          }
           // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
           const [prepared, comparison] = await Promise.all([
@@ -7213,6 +7243,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
           ]);
           if (!active()) {
+            await settleGraphHandoff("release");
             return;
           }
           invalidateSyntheticArtifactBoundary();
@@ -7252,8 +7283,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 prPrepareError: "The refreshed pull request no longer matches this graph.",
               });
             }
+            await settleGraphHandoff("release");
+          } else {
+            await settleGraphHandoff("commit");
           }
         } catch (error) {
+          await settleGraphHandoff("release").catch(() => undefined);
           if (active()) {
             // Derivation after a successful fetch is still part of preparation. If it throws after
             // the swap, put the prior graph back before exposing the retry/fallback state.
@@ -7289,6 +7324,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const cancellation = prAnalyzeCancellation;
       prAnalyzeCancellation = null;
       cancellation?.resolve();
+      const handoff = prGraphHandoff;
+      prGraphHandoff = null;
+      void handoff?.release().catch(() => undefined);
       set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
     },
 

@@ -11,9 +11,12 @@ import { syntheticScenarioDescriptorSchema, telemetrySourceDescriptorSchema } fr
 import type { SyntheticScenarioDescriptor, TelemetrySourceDescriptor } from "@meridian/core";
 import type { PrSessionSource } from "../state/prTypes";
 import type { SyntheticExecutionTrust } from "../state/syntheticExecutionTrust";
+import type { GraphViewLeaseGrant } from "./graphViewLease";
 
 export interface BootConfig {
   graphUrl: string;
+  /** Renewable process-local protection for the boot graph and any prepared PR pair. */
+  graphViewLease: GraphViewLeaseGrant | null;
   metaUrl: string;
   overlayUrl: string;
   /** Request-trace endpoint, separate from the aggregate metrics overlay. */
@@ -61,7 +64,8 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "graphViewLease" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+  graphViewLease: unknown;
   /** Optional so a renderer cached before the trace endpoint shipped still boots safely. */
   traceUrl?: unknown;
   /** Optional for HTML produced before in-app source selection shipped. */
@@ -84,6 +88,7 @@ declare global {
 
 const DEV_FALLBACK: BootConfig = {
   graphUrl: "/sample-graph.json",
+  graphViewLease: null,
   metaUrl: "/api/meta",
   overlayUrl: "/api/overlay",
   traceUrl: "/api/traces",
@@ -151,6 +156,10 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     ? injected.traceUrl as string
     : "/api/traces";
   const telemetrySources = normalizeTelemetrySources(injected.telemetrySources);
+  const graphViewLease = normalizeGraphViewLease(injected.graphViewLease);
+  if (graphViewLease === null && prApiUrlsFromGraphUrl(injected.graphUrl).graphId !== null) {
+    throw new Error("boot contract violation: registered graph views require a graphViewLease");
+  }
   const syntheticExecutionUrl = typeof injected.syntheticExecutionUrl === "string"
     && injected.syntheticExecutionUrl.trim().length > 0
     ? injected.syntheticExecutionUrl
@@ -173,6 +182,7 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
   const preselectedTelemetrySourceId = explicitTelemetrySourceId ?? legacyTelemetrySourceId;
   return {
     ...injected,
+    graphViewLease,
     traceUrl,
     traceAvailable,
     telemetrySources,
@@ -182,6 +192,47 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     syntheticScenarios,
     githubSource,
     defaultEnv: null,
+  };
+}
+
+function normalizeGraphViewLease(value: unknown): GraphViewLeaseGrant | null {
+  if (value === null) return null;
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("boot contract violation: graphViewLease is required");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (
+    keys.length !== 6
+    || keys[0] !== "createUrl"
+    || keys[1] !== "expiresAtMs"
+    || keys[2] !== "heartbeatIntervalMs"
+    || keys[3] !== "leaseId"
+    || keys[4] !== "url"
+    || keys[5] !== "version"
+    || candidate.version !== 1
+    || typeof candidate.leaseId !== "string"
+    || candidate.leaseId.length === 0
+    || typeof candidate.url !== "string"
+    || candidate.url.length === 0
+    || typeof candidate.createUrl !== "string"
+    || candidate.createUrl.length === 0
+    || typeof candidate.expiresAtMs !== "number"
+    || !Number.isFinite(candidate.expiresAtMs)
+    || candidate.expiresAtMs < 0
+    || typeof candidate.heartbeatIntervalMs !== "number"
+    || !Number.isSafeInteger(candidate.heartbeatIntervalMs)
+    || candidate.heartbeatIntervalMs <= 0
+  ) {
+    throw new Error("boot contract violation: graphViewLease is invalid");
+  }
+  return {
+    version: 1,
+    leaseId: candidate.leaseId,
+    url: candidate.url,
+    createUrl: candidate.createUrl,
+    expiresAtMs: candidate.expiresAtMs,
+    heartbeatIntervalMs: candidate.heartbeatIntervalMs,
   };
 }
 

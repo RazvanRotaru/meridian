@@ -27,7 +27,11 @@ import {
 import type { ArtifactSource } from "./web-source";
 import type { Context } from "./web-server";
 import { cachedPrGraph } from "./web-pr-cache";
-import type { VerifiedFileArtifactMaterial } from "./web-graph-store";
+import type {
+  VerifiedFileArtifactMaterial,
+  WebGraphRegistrationHandle,
+  WebGraphRegistration,
+} from "./web-graph-store";
 import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 import { streamedOverloadLine } from "./web-overload";
@@ -38,13 +42,21 @@ type PrAnalysisStage = "clone" | "checkout" | "extract";
 
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const cancellation = requestCancellation(request, response);
+  let sessionRegistration: ReturnType<Context["graphStore"]["acquire"]> = undefined;
   try {
     const body = parsePrAnalyzeRequest(await readJsonBody(request));
-    const source = requireGitHubSource(ctx, body.id);
+    sessionRegistration = ctx.graphStore.acquire(body.id);
+    const source = sessionRegistration?.descriptor.source;
+    if (source?.kind !== "github") {
+      sessionRegistration?.release();
+      sessionRegistration = undefined;
+      throw new WebError(404, "pull request analysis needs a GitHub-sourced session");
+    }
     const token = githubTokenFor(ctx, request);
     beginNdjson(response);
     await streamAnalysis(ctx, response, source, token, body, cancellation.signal);
   } finally {
+    sessionRegistration?.release();
     cancellation.dispose();
   }
 }
@@ -83,14 +95,13 @@ async function streamAnalysis(
           runAnalysis,
           repositoryAnalysis: ctx.repositoryAnalysis,
         });
-        let headHandedOff = false;
-        let comparisonHandedOff = false;
+        let leasesHandedOff = false;
+        const existingPins: WebGraphRegistrationHandle[] = [];
         try {
           throwIfAborted(jobSignal);
           // Publication belongs to the keyed job. Waiters share only this immutable terminal line,
           // never either single-owner source lease.
-          headHandedOff = true;
-          const stored = await storeArtifact(
+          const head = await prepareHeadPublication(
             ctx,
             cached.artifactFacts,
             source,
@@ -101,8 +112,8 @@ async function streamAnalysis(
             cached.baseSha,
             cached.artifactMaterial,
           );
-          comparisonHandedOff = true;
-          const comparisonGraphId = storeComparisonArtifact(
+          if (head.existingPin !== undefined) existingPins.push(head.existingPin);
+          const comparison = prepareComparisonPublication(
             ctx,
             source,
             cached.comparisonSourceDir,
@@ -111,18 +122,28 @@ async function streamAnalysis(
             cached.mergeBaseSha,
             cached.comparisonMaterial,
           );
+          if (comparison.existingPin !== undefined) existingPins.push(comparison.existingPin);
+          throwIfAborted(jobSignal);
+          // The store consumes both workspace leases even when aggregate admission fails. HEAD and
+          // merge-base become visible together or not at all, so a rejected second side cannot
+          // strand an undisclosed HEAD registration that blocks a retry.
+          leasesHandedOff = true;
+          ctx.graphStore.publishBatch([head.registration, comparison.registration]);
           return doneLine(
-            stored.graphId,
-            comparisonGraphId,
+            head.graphId,
+            comparison.graphId,
             cached.headSha,
             cached.mergeBaseSha,
             cached.artifactFacts,
-            [...cached.warnings, ...stored.syntheticWarnings],
+            [...cached.warnings, ...head.syntheticWarnings],
             cached.cache,
           );
         } finally {
-          if (!headHandedOff) cached.sourceLease.release();
-          if (!comparisonHandedOff) cached.comparisonSourceLease.release();
+          for (const pin of existingPins) pin.release();
+          if (!leasesHandedOff) {
+            cached.sourceLease.release();
+            cached.comparisonSourceLease.release();
+          }
         }
       },
       { signal, onProgress: (stage) => writeLine(response, { stage }) },
@@ -162,7 +183,7 @@ function prAnalysisJobKey(
   return `pr:${digest}`;
 }
 
-async function storeArtifact(
+async function prepareHeadPublication(
   ctx: Context,
   artifact: RepositoryAnalysisFacts,
   source: GitHubSource,
@@ -172,60 +193,64 @@ async function storeArtifact(
   headSha: string,
   baseSha: string,
   material: VerifiedFileArtifactMaterial,
-): Promise<{ graphId: string; syntheticWarnings: string[] }> {
-  let handedOff = false;
-  try {
-    const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
-    let syntheticScenarios: SyntheticScenarioDescriptor[] = [];
-    let syntheticFingerprint: string | null = null;
-    let syntheticTrustReady = sandboxAdmission;
-    const syntheticWarnings: string[] = [];
-    if (sandboxAdmission) {
-      try {
-        const { loadSyntheticScenarios } = await import("./synthetic-execution");
-        syntheticScenarios = loadSyntheticScenarios(sourceDir);
-        if (syntheticScenarios.length > 0) {
-          syntheticFingerprint = syntheticSourceFingerprintForFiles(sourceDir, artifact.sourceFiles);
-        } else {
-          syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
-        }
-      } catch {
-        // A PR controls this file. Never leak parser/path details and never let a malformed manifest
-        // prevent review of the graph itself; simply withhold the executable capability.
-        syntheticScenarios = [];
-        syntheticFingerprint = null;
-        syntheticTrustReady = false;
-        syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
+): Promise<{
+  graphId: string;
+  registration: WebGraphRegistration;
+  syntheticWarnings: string[];
+  existingPin?: WebGraphRegistrationHandle;
+}> {
+  const sandboxAdmission = ctx.allowSyntheticPrExecution && ctx.syntheticPrSandboxRuntimeSupported();
+  let syntheticScenarios: SyntheticScenarioDescriptor[] = [];
+  let syntheticFingerprint: string | null = null;
+  let syntheticTrustReady = sandboxAdmission;
+  const syntheticWarnings: string[] = [];
+  if (sandboxAdmission) {
+    try {
+      const { loadSyntheticScenarios } = await import("./synthetic-execution");
+      syntheticScenarios = loadSyntheticScenarios(sourceDir);
+      if (syntheticScenarios.length > 0) {
+        syntheticFingerprint = syntheticSourceFingerprintForFiles(sourceDir, artifact.sourceFiles);
+      } else {
+        syntheticWarnings.push("Synthetic execution needs a valid meridian.synthetic.json scenario manifest.");
       }
+    } catch {
+      // A PR controls this file. Never leak parser/path details and never let a malformed manifest
+      // prevent review of the graph itself; simply withhold the executable capability.
+      syntheticScenarios = [];
+      syntheticFingerprint = null;
+      syntheticTrustReady = false;
+      syntheticWarnings.push("Synthetic execution was disabled because the PR scenario manifest is invalid.");
     }
-    const synthetic = {
-      scenarios: syntheticFingerprint === null ? [] : syntheticScenarios,
-      sourceFingerprint: syntheticFingerprint,
-      trust: syntheticTrustReady
-        ? { mode: "sandboxed-pr" as const, provenance: { repository: `${source.owner}/${source.repo}`, headSha } }
-        : null,
-    };
-    const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
-    const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
-    const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
-    handedOff = true;
-    ctx.graphStore.publish({
-      id: graphId,
-      material,
-      metadata: {
-        sourceRoot,
-        sourceLease,
-        source,
-        synthetic,
-      },
-    });
-    return { graphId, syntheticWarnings };
-  } finally {
-    if (!handedOff) sourceLease.release();
   }
+  const synthetic = {
+    scenarios: syntheticFingerprint === null ? [] : syntheticScenarios,
+    sourceFingerprint: syntheticFingerprint,
+    trust: syntheticTrustReady
+      ? { mode: "sandboxed-pr" as const, provenance: { repository: `${source.owner}/${source.repo}`, headSha } }
+      : null,
+  };
+  const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
+  const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
+  const existingPin = ctx.graphStore.acquire(graphId);
+  const sourceRoot = existingPin?.descriptor.sourceRoot ?? sourceDir;
+  return {
+    graphId,
+    registration: {
+        id: graphId,
+        material,
+        metadata: {
+          sourceRoot,
+          sourceLease,
+          source,
+          synthetic,
+        },
+    },
+    syntheticWarnings,
+    ...(existingPin === undefined ? {} : { existingPin }),
+  };
 }
 
-function storeComparisonArtifact(
+function prepareComparisonPublication(
   ctx: Context,
   source: GitHubSource,
   sourceDir: string,
@@ -233,30 +258,32 @@ function storeComparisonArtifact(
   body: PrAnalyzeRequest,
   mergeBaseSha: string,
   material: VerifiedFileArtifactMaterial,
-): string {
-  let handedOff = false;
-  try {
-    const graphId = prComparisonGraphId(source, body, mergeBaseSha, material.byteDigest);
-    // One merge base can be rediscovered through multiple PR cache entries. Its source contents are
-    // commit-identical, so keep the first published checkout as the immutable source snapshot rather
-    // than rebinding the graph id to a newer filesystem path. Artifact/source mismatches still fail
-    // closed in WebGraphStore.publish.
-    const sourceRoot = ctx.graphStore.descriptor(graphId)?.sourceRoot ?? sourceDir;
-    handedOff = true;
-    ctx.graphStore.publish({
-      id: graphId,
-      material,
-      metadata: {
-        sourceRoot,
-        sourceLease,
-        source,
-        synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
-      },
-    });
-    return graphId;
-  } finally {
-    if (!handedOff) sourceLease.release();
-  }
+): {
+  graphId: string;
+  registration: WebGraphRegistration;
+  existingPin?: WebGraphRegistrationHandle;
+} {
+  const graphId = prComparisonGraphId(source, body, mergeBaseSha, material.byteDigest);
+  // One merge base can be rediscovered through multiple PR cache entries. Its source contents are
+  // commit-identical, so keep the first published checkout as the immutable source snapshot rather
+  // than rebinding the graph id to a newer filesystem path. Artifact/source mismatches still fail
+  // closed in WebGraphStore.publishBatch.
+  const existingPin = ctx.graphStore.acquire(graphId);
+  const sourceRoot = existingPin?.descriptor.sourceRoot ?? sourceDir;
+  return {
+    graphId,
+    registration: {
+        id: graphId,
+        material,
+        metadata: {
+          sourceRoot,
+          sourceLease,
+          source,
+          synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+        },
+    },
+    ...(existingPin === undefined ? {} : { existingPin }),
+  };
 }
 
 /** The terminal `done` line carries immutable ids and commit provenance for both comparison sides. */
@@ -344,12 +371,4 @@ function safeMessage(error: unknown): string {
     return error.message;
   }
   return "internal error while analyzing the pull request";
-}
-
-function requireGitHubSource(ctx: Context, id: string): GitHubSource {
-  const source = ctx.graphStore.descriptor(id)?.source;
-  if (source?.kind !== "github") {
-    throw new WebError(404, "pull request analysis needs a GitHub-sourced session");
-  }
-  return source;
 }

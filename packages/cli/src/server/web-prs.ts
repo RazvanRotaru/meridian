@@ -527,8 +527,13 @@ function isFilledString(value: unknown): value is string {
 }
 
 function githubSource(ctx: Context, id: string | null): Extract<ArtifactSource, { kind: "github" }> | null {
-  const source = id ? ctx.graphStore.descriptor(id)?.source : undefined;
-  return source?.kind === "github" ? source : null;
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  try {
+    const source = registration?.descriptor.source;
+    return source?.kind === "github" ? source : null;
+  } finally {
+    registration?.release();
+  }
 }
 
 function parseState(state: string | null): "open" | "closed" {

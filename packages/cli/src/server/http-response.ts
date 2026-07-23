@@ -22,8 +22,13 @@ export function sendJson(
   response.end(JSON.stringify(body));
 }
 
-export function sendHtml(response: ServerResponse, html: string, status = 200): void {
-  response.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+export function sendHtml(
+  response: ServerResponse,
+  html: string,
+  status = 200,
+  extraHeaders: OutgoingHttpHeaders = {},
+): void {
+  response.writeHead(status, { "content-type": "text/html; charset=utf-8", ...extraHeaders });
   response.end(html);
 }
 
