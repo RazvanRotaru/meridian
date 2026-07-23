@@ -147,7 +147,7 @@ describe("WebGraphStore", () => {
     expect(releaseNewest).not.toHaveBeenCalled();
   });
 
-  it("keeps an active browser view pinned while evicting inactive pressure", () => {
+  it("admits temporary pressure while an active browser view is pinned, then evicts on release", () => {
     const store = createStore({
       maxEntries: 1,
       lowWaterEntries: 0,
@@ -158,14 +158,16 @@ describe("WebGraphStore", () => {
     store.publish(registrationWithLease("base", releaseBase));
     const view = store.createViewLease("base");
 
-    expect(() => store.publish(registrationWithLease("inactive", releaseInactive)))
-      .toThrow(/capacity is currently in use/);
+    store.publish(registrationWithLease("inactive", releaseInactive));
 
-    expect(hasRegistration(store, "base")).toBe(true);
-    expect(hasRegistration(store, "inactive")).toBe(false);
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
     expect(releaseBase).not.toHaveBeenCalled();
-    expect(releaseInactive).toHaveBeenCalledTimes(1);
+    expect(releaseInactive).not.toHaveBeenCalled();
+
     store.releaseViewLease(view.leaseId);
+    expect(store.stats()).toMatchObject({ registrations: 0, sourceLeases: 0 });
+    expect(releaseBase).toHaveBeenCalledTimes(1);
+    expect(releaseInactive).toHaveBeenCalledTimes(1);
   });
 
   it("atomically replaces a view set and preserves the old pins after a failed replacement", () => {
@@ -223,7 +225,7 @@ describe("WebGraphStore", () => {
     store.releaseViewLease(recreated.leaseId);
   });
 
-  it("holds a request pin through capacity pressure and evicts only after the request releases", () => {
+  it("admits temporary pressure while a request is pinned, then evicts on release", () => {
     const store = createStore({
       maxEntries: 1,
       lowWaterEntries: 0,
@@ -234,21 +236,24 @@ describe("WebGraphStore", () => {
     store.publish(registrationWithLease("pinned", releasePinned));
     const request = store.acquire("pinned")!;
 
-    expect(() => store.publish(registrationWithLease("other", releaseOther)))
-      .toThrow(/capacity is currently in use/);
+    store.publish(registrationWithLease("other", releaseOther));
+
     expect(request.loadArtifact()).toEqual(ARTIFACT);
-    expect(hasRegistration(store, "pinned")).toBe(true);
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
     expect(releasePinned).not.toHaveBeenCalled();
+    expect(releaseOther).not.toHaveBeenCalled();
+
+    request.release();
+    request.release();
+    expect(store.stats()).toMatchObject({ registrations: 0, sourceLeases: 0 });
+    expect(releasePinned).toHaveBeenCalledTimes(1);
     expect(releaseOther).toHaveBeenCalledTimes(1);
 
-    request.release();
-    request.release();
     store.publish(registration("replacement"));
-    expect(hasRegistration(store, "pinned")).toBe(false);
-    expect(releasePinned).toHaveBeenCalledTimes(1);
+    expect(store.stats().registrations).toBe(1);
   });
 
-  it("hard-bounds concurrent publication handoffs instead of exceeding configured capacity", () => {
+  it("admits concurrent publication handoffs and evicts after their reservations expire", () => {
     let now = 1_000;
     const store = createStore({
       maxEntries: 1,
@@ -257,21 +262,26 @@ describe("WebGraphStore", () => {
       now: () => now,
     });
     const releaseFirst = vi.fn();
-    const releaseRejected = vi.fn();
+    const releaseSecond = vi.fn();
     store.publish(registrationWithLease("first", releaseFirst));
 
     now += 1;
-    expect(() => store.publish(registrationWithLease("rejected", releaseRejected)))
-      .toThrow(/capacity is currently in use/);
+    store.publish(registrationWithLease("second", releaseSecond));
 
-    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1 });
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
     expect(hasRegistration(store, "first")).toBe(true);
-    expect(hasRegistration(store, "rejected")).toBe(false);
+    expect(hasRegistration(store, "second")).toBe(true);
     expect(releaseFirst).not.toHaveBeenCalled();
-    expect(releaseRejected).toHaveBeenCalledTimes(1);
+    expect(releaseSecond).not.toHaveBeenCalled();
+
+    now += 100;
+    store.sweep();
+    expect(store.stats()).toMatchObject({ registrations: 0, sourceLeases: 0 });
+    expect(releaseFirst).toHaveBeenCalledTimes(1);
+    expect(releaseSecond).toHaveBeenCalledTimes(1);
   });
 
-  it("rejects an impossible batch without evicting unrelated inactive registrations", () => {
+  it("publishes an oversized batch atomically and returns to its retention target on sweep", () => {
     const removePath = vi.fn((path: string) => rmSync(path, { recursive: true, force: true }));
     const store = createStore({
       maxEntries: 2,
@@ -283,23 +293,24 @@ describe("WebGraphStore", () => {
     store.publish(registrationWithLease("first", releaseFirst));
     store.publish(registrationWithLease("second", releaseSecond));
     removePath.mockClear();
-    const rejectedReleases = [vi.fn(), vi.fn(), vi.fn()];
+    const batchReleases = [vi.fn(), vi.fn(), vi.fn()];
 
-    expect(() => store.publishBatch([
-      registrationWithLease("head", rejectedReleases[0]!),
-      registrationWithLease("comparison", rejectedReleases[1]!),
-      registrationWithLease("extra", rejectedReleases[2]!),
-    ])).toThrow(/capacity is currently in use/);
+    const descriptors = store.publishBatch([
+      registrationWithLease("head", batchReleases[0]!),
+      registrationWithLease("comparison", batchReleases[1]!),
+      registrationWithLease("extra", batchReleases[2]!),
+    ]);
 
-    expect(hasRegistration(store, "first")).toBe(true);
-    expect(hasRegistration(store, "second")).toBe(true);
-    expect(hasRegistration(store, "head")).toBe(false);
-    expect(hasRegistration(store, "comparison")).toBe(false);
-    expect(hasRegistration(store, "extra")).toBe(false);
-    expect(releaseFirst).not.toHaveBeenCalled();
-    expect(releaseSecond).not.toHaveBeenCalled();
-    for (const release of rejectedReleases) expect(release).toHaveBeenCalledTimes(1);
-    expect(removePath).not.toHaveBeenCalled();
+    expect(descriptors.map(({ id }) => id)).toEqual(["head", "comparison", "extra"]);
+    expect(store.stats()).toMatchObject({ registrations: 3, sourceLeases: 3 });
+    expect(releaseFirst).toHaveBeenCalledTimes(1);
+    expect(releaseSecond).toHaveBeenCalledTimes(1);
+    for (const release of batchReleases) expect(release).not.toHaveBeenCalled();
+    expect(removePath).toHaveBeenCalled();
+
+    store.sweep();
+    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1 });
+    expect(batchReleases.reduce((total, release) => total + release.mock.calls.length, 0)).toBe(2);
   });
 
   it("publishes a coherent graph pair in one admission transaction", () => {
@@ -320,7 +331,7 @@ describe("WebGraphStore", () => {
     expect(releaseComparison).not.toHaveBeenCalled();
   });
 
-  it("commits the new graph and blocks further growth when victim cleanup fails", () => {
+  it("keeps publishing while victim cleanup is pending and recovers after maintenance succeeds", () => {
     const artifactBytes = materializeValidatedArtifact(ARTIFACT).bytes.length;
     let now = 1_000;
     let failEvictionRemoval = true;
@@ -344,12 +355,12 @@ describe("WebGraphStore", () => {
       now: () => now,
     }, { onError, removePath });
     const releaseFirst = vi.fn();
-    const releaseRejected = vi.fn();
-    const releaseStillBlocked = vi.fn();
+    const releaseReplacement = vi.fn();
+    const releaseAdditional = vi.fn();
     store.publish(registrationWithLease("first", releaseFirst));
     now += 100;
 
-    store.publish(registrationWithLease("replacement", releaseRejected));
+    store.publish(registrationWithLease("replacement", releaseReplacement));
     expect(store.stats()).toMatchObject({
       registrations: 1,
       artifactBytes: artifactBytes * 2,
@@ -359,22 +370,31 @@ describe("WebGraphStore", () => {
     expect(hasRegistration(store, "first")).toBe(false);
     expect(hasRegistration(store, "replacement")).toBe(true);
     expect(releaseFirst).toHaveBeenCalledTimes(1);
-    expect(releaseRejected).not.toHaveBeenCalled();
+    expect(releaseReplacement).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalled();
 
-    expect(() => store.publish(registrationWithLease("still-blocked", releaseStillBlocked)))
-      .toThrow(/capacity is currently in use/);
+    store.publish(registrationWithLease("additional", releaseAdditional));
     expect(store.stats()).toMatchObject({
-      registrations: 1,
-      artifactBytes: artifactBytes * 2,
+      registrations: 2,
+      artifactBytes: artifactBytes * 3,
       trashEntries: 1,
     });
     expect(hasRegistration(store, "replacement")).toBe(true);
-    expect(releaseStillBlocked).toHaveBeenCalledTimes(1);
+    expect(hasRegistration(store, "additional")).toBe(true);
+    expect(releaseAdditional).not.toHaveBeenCalled();
 
     failEvictionRemoval = false;
-    store.sweep();
     now += 100;
+    store.sweep();
+    expect(store.stats()).toMatchObject({
+      registrations: 0,
+      artifactBytes: 0,
+      trashEntries: 0,
+      trashBytes: 0,
+    });
+    expect(releaseReplacement).toHaveBeenCalledTimes(1);
+    expect(releaseAdditional).toHaveBeenCalledTimes(1);
+
     store.publish(registration("recovered"));
     expect(store.stats()).toMatchObject({
       registrations: 1,
@@ -384,7 +404,6 @@ describe("WebGraphStore", () => {
     });
     expect(hasRegistration(store, "replacement")).toBe(false);
     expect(hasRegistration(store, "recovered")).toBe(true);
-    expect(releaseRejected).toHaveBeenCalledTimes(1);
   });
 
   it("restores eviction victims when a later batch destination cannot be committed", () => {

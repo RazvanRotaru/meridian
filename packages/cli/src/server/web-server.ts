@@ -169,7 +169,7 @@ export function createWebService(config: WebServerConfig): WebService {
     maxQueuedAnalyses: config.maxQueuedAnalyses,
   });
   const cacheRoot = resolveWebCacheRoot(config.cacheRoot);
-  // Validate every admission bound before allocating the graph store's private temporary root.
+  // Validate every retention target before allocating the graph store's private temporary root.
   const graphStore = new WebGraphStore(config.graphRetention, {
     onError: config.onGraphRetentionError,
   });

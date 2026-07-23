@@ -97,14 +97,6 @@ export class WebGraphViewLeaseError extends Error {
   }
 }
 
-/** Publication could not reserve bounded registry capacity without evicting an active owner. */
-export class WebGraphStoreCapacityError extends Error {
-  constructor() {
-    super("graph registration capacity is currently in use; retry shortly");
-    this.name = "WebGraphStoreCapacityError";
-  }
-}
-
 export interface WebGraphViewLeaseGrant {
   readonly leaseId: string;
   readonly expiresAtMs: number;
@@ -300,9 +292,10 @@ export class WebGraphStore {
   /**
    * Atomically publish one coherent graph set, such as a PR's HEAD and merge-base pair.
    *
-   * Calling this method transfers every distinct source lease immediately. Capacity is proven for
+   * Calling this method transfers every distinct source lease immediately. Retention is planned for
    * the whole set before an existing registration is evicted, and no new id becomes visible until
-   * every artifact is staged and every destination rename succeeds.
+   * every artifact is staged and every destination rename succeeds. Active owners may temporarily
+   * keep the registry above its retention targets; their release triggers another retention pass.
    */
   publishBatch(registrations: readonly WebGraphRegistration[]): WebGraphDescriptor[] {
     const transferredLeases = new Set<WebGraphSourceLease>();
@@ -367,7 +360,7 @@ export class WebGraphStore {
       });
 
       const now = this.#now();
-      const evictionVictims = this.#planAdmission(prepared.map((item) => ({
+      const evictionVictims = this.#planRetention(prepared.map((item) => ({
         id: item.id,
         artifactBytes: item.artifactBytes,
         sourceLeases: (item.existingState?.sourceLease ?? item.sourceLease) === undefined ? 0 : 1,
@@ -377,9 +370,9 @@ export class WebGraphStore {
         handoffUntilMs: now + this.#options.publicationHandoffTtlMs,
       })));
 
-      // Feasibility is known before any artifact bytes are copied. Record the expected complete
-      // size as soon as a stage directory exists so even a partial write plus failed cleanup stays
-      // inside retained-byte accounting.
+      // Eviction victims are known before any artifact bytes are copied. Record the expected
+      // complete size as soon as a stage directory exists so even a partial write plus failed
+      // cleanup stays inside retained-byte accounting.
       for (const item of prepared) {
         if (item.material === undefined) continue;
         const stagePath = mkdtempSync(join(this.rootPath, ".stage-"));
@@ -454,8 +447,8 @@ export class WebGraphStore {
       // Filesystem deletion is the irreversible side of the transaction. It starts only after
       // every destination rename and registry/source-ownership commit succeeds. A partial cleanup
       // failure therefore cannot corrupt a graph we attempt to roll back: the new publication
-      // remains committed, leftover victim bytes are conservatively accounted, and later
-      // admissions stop until maintenance removes them.
+      // remains committed, leftover victim bytes are conservatively accounted, and later sweeps
+      // keep retrying maintenance while new publications remain available.
       this.#removeCommittedEvictions(reservation);
 
       return prepared.map((item) => item.descriptor);
@@ -716,12 +709,12 @@ export class WebGraphStore {
   }
 
   /**
-   * Reserve hard-bounded capacity for a new or republished registration before it becomes visible.
-   * The proposed candidate is treated as pinned while the deterministic selector evicts eligible
-   * inactive entries. If active/request/handoff owners occupy the budget, publication is rejected
-   * without rebinding an id or consuming its source lease.
+   * Plan retention for a new or republished registration before it becomes visible. The proposed
+   * candidate is treated as pinned while the deterministic selector evicts eligible inactive
+   * entries. Active/request/handoff owners are absolute protections, so they may keep usage above
+   * the soft targets until release or expiry triggers a later sweep.
    */
-  #planAdmission(proposed: readonly GraphRetentionCandidate[]): WebGraphEntryState[] {
+  #planRetention(proposed: readonly GraphRetentionCandidate[]): WebGraphEntryState[] {
     const now = this.#now();
     this.#retryTrashRemoval();
     this.#expireViews(now);
@@ -740,9 +733,6 @@ export class WebGraphStore {
       this.#options,
       this.#trashUsage(),
     );
-    // Prove feasibility before mutating the existing cache. An oversized batch or active-owner
-    // pressure must never evict unrelated registrations and then fail anyway.
-    if (!this.#fits(selection.projected)) throw new WebGraphStoreCapacityError();
     return selection.selected.flatMap(({ candidate }) => {
       if (proposedIds.has(candidate.id)) return [];
       const state = this.#entries.get(candidate.id);
@@ -763,12 +753,6 @@ export class WebGraphStore {
       handoffUntilMs: entry.handoffUntilMs,
       pinned: entry.requestPins > 0 || entry.viewPins > 0,
     };
-  }
-
-  #fits(usage: { entries: number; artifactBytes: number; sourceLeases: number }): boolean {
-    return usage.entries <= this.#options.maxEntries
-      && usage.artifactBytes <= this.#options.maxArtifactBytes
-      && usage.sourceLeases <= this.#options.maxSourceLeases;
   }
 
   #reserveEvictions(victims: readonly WebGraphEntryState[]): ReservedGraphEvictions | null {
