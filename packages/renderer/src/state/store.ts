@@ -6908,6 +6908,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set));
       }
       if (analyzeUrl === null || analyzeGraphId === null) {
+        // A PR review is a complete change inventory, so do not inherit the codebase Map's
+        // production-only default. Readers can still opt out through Review preferences after entry.
+        // This also keeps an E2E/test-only PR from opening as an apparently empty review.
+        if (!get().showTests) {
+          set({ showTests: true });
+        }
         await get().reviewPrOnBaseGraph();
         return;
       }
@@ -7156,6 +7162,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             || (current.prReviewRefreshing && current.viewMode === "modules" && current.minimalSeedIds.length > 0));
       };
       set({
+        // First entry owns the complete PR. Refreshes preserve an explicit review preference.
+        showTests: enteringFromPrs ? true : state.showTests,
         prReviewStatus: "preparing",
         prPrepareStage: "clone",
         prPrepareError: null,

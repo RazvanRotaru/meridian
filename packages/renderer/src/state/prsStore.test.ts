@@ -592,7 +592,7 @@ describe("PR store slice", () => {
     expect(store.getState().minimalView).toBe("codebase");
   });
 
-  it("uses the existing Tests toggle to remove and losslessly restore every PR-review test surface", async () => {
+  it("includes test changes on PR entry and losslessly supports opting out through the Tests toggle", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
@@ -608,20 +608,11 @@ describe("PR store slice", () => {
 
     await store.getState().reviewPrInGraph();
 
-    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().showTests).toBe(true);
     expect(store.getState().review?.context.changedFiles.map((file) => file.path)).toEqual([
       "src/a.ts",
       "src/a.test.ts",
     ]);
-    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
-    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
-    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
-    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
-    expect(store.getState().review?.rows.some((row) => row.flow.flowId === TEST_METHOD_ID)).toBe(false);
-    expect(Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files)).toEqual(["src/a.ts"]);
-
-    store.getState().toggleShowTests();
-
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
       "src/a.test.ts",
       "src/a.ts",
@@ -634,6 +625,18 @@ describe("PR store slice", () => {
       "src/a.test.ts",
       "src/a.ts",
     ]);
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().showTests).toBe(false);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().review?.rows.some((row) => row.flow.flowId === TEST_METHOD_ID)).toBe(false);
+    expect(Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files)).toEqual(["src/a.ts"]);
+
+    store.getState().toggleShowTests();
 
     const testFile = store.getState().reviewFiles.find((file) => file.path.endsWith("a.test.ts"))!;
     store.getState().toggleReviewFileViewed(testFile.path);
@@ -692,17 +695,20 @@ describe("PR store slice", () => {
 
     store.getState().toggleShowTests();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    expect(store.getState().showTests).toBe(true);
+    expect(store.getState().showTests).toBe(false);
     expect(store.getState().minimalSeedIds).toEqual([METHOD_ID]);
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
     expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({ id: METHOD_ID }));
 
     store.getState().backMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    expect(store.getState().showTests).toBe(false);
-    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().showTests).toBe(true);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID, FILE_ID]);
     expect(store.getState().minimalGraphHistory).toHaveLength(0);
-    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+    ]);
   });
 
   it("keeps Back reachable when Tests hides every member in a nested live-PR child", async () => {
@@ -717,7 +723,6 @@ describe("PR store slice", () => {
       ],
     });
     await store.getState().reviewPrInGraph();
-    store.getState().toggleShowTests();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
     store.getState().selectModule(TEST_METHOD_ID);
@@ -787,7 +792,7 @@ describe("PR store slice", () => {
     expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
   });
 
-  it("keeps an all-test review open as an empty workspace until Tests is turned on", async () => {
+  it("opens an all-test PR as a complete review and still supports explicitly excluding tests", async () => {
     const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
     store.setState({
       viewMode: "prs",
@@ -802,27 +807,30 @@ describe("PR store slice", () => {
 
     expect(store.getState().prReviewed).toBe(8);
     expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.test.ts"]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
+    store.getState().resetMinimalGraph();
+    store.getState().rearrangeMinimalGraph();
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalArrange).toBe(true);
+    store.getInitialState = store.getState;
+    const completePanel = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+    expect(completePanel).not.toContain("Test changes are excluded");
+
+    store.getState().toggleShowTests();
+
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
     expect(store.getState().minimalMemberIds).toEqual([]);
     expect(store.getState().reviewFiles).toEqual([]);
     expect(store.getState().reviewAffectedIds).toEqual(new Set());
-    store.getState().resetMinimalGraph();
-    store.getState().rearrangeMinimalGraph();
-    expect(store.getState().minimalMemberIds).toEqual([]);
-    expect(store.getState().minimalArrange).toBe(false);
     store.getInitialState = store.getState;
     const hiddenPanel = renderToStaticMarkup(
       createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
     );
     expect(hiddenPanel).toContain("Test changes are excluded");
-    expect(hiddenPanel).toContain("Open <strong>Review preferences</strong>");
-    expect(hiddenPanel).toContain("turn off <strong>Exclude test changes</strong>");
-
-    store.getState().toggleShowTests();
-
-    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
-    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
-    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.test.ts"]);
-    expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
   });
 
   it("shows the reviewed pull request title and description in the review panel", async () => {

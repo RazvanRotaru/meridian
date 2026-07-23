@@ -678,7 +678,7 @@ describe("PR-review logic-flow selection", () => {
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     store.getState().toggleShowTests();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
-    expect(store.getState().showTests).toBe(true);
+    expect(store.getState().showTests).toBe(false);
 
     store.getState().backMinimalGraph();
     await vi.waitFor(() => {
@@ -687,7 +687,7 @@ describe("PR-review logic-flow selection", () => {
       expect(store.getState().flowPaneRfNodes.length).toBeGreaterThan(0);
     });
     expect(store.getState()).toMatchObject({
-      showTests: false,
+      showTests: true,
       reviewFlowSplitView: "metro",
       reviewOpenFlowSplitOnSelect: false,
       flowSelection: FLOW_SELECTION,
