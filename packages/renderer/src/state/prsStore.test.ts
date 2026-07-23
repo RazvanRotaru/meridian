@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type {
+  GraphViewLeaseController,
+  GraphViewLeaseHandoff,
+} from "../boot/graphViewLease";
 import type { GraphArtifact, GraphNode, SyntheticExecution, SyntheticScenarioDescriptor } from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -2390,6 +2394,30 @@ const ANALYZE_DEPS: Partial<StoreDependencies> = {
   metaUrl: "/api/meta?id=artifact-1",
 };
 
+function graphLeaseMock() {
+  const handoffs: Array<{
+    graphIds: readonly string[];
+    handoff: GraphViewLeaseHandoff;
+    commit: ReturnType<typeof vi.fn>;
+    release: ReturnType<typeof vi.fn>;
+  }> = [];
+  const replacePreparedGraphIds = vi.fn(async () => {});
+  const beginPreparedGraphHandoff = vi.fn(async (graphIds: readonly string[]) => {
+    const commit = vi.fn(async () => {});
+    const release = vi.fn(async () => {});
+    const handoff: GraphViewLeaseHandoff = { commit, release };
+    handoffs.push({ graphIds, handoff, commit, release });
+    return handoff;
+  });
+  const controller: GraphViewLeaseController = {
+    leaseId: "test-view",
+    beginPreparedGraphHandoff,
+    replacePreparedGraphIds,
+    dispose: vi.fn(),
+  };
+  return { controller, handoffs, beginPreparedGraphHandoff, replacePreparedGraphIds };
+}
+
 /**
  * The PR-HEAD-shaped sibling of ARTIFACT: same node ids, but the method MOVED to lines 20-22 (the
  * head branch's coordinates), and the extract pipeline's `changedSince` stamp already on it — the
@@ -2567,7 +2595,7 @@ function headSelectedPrState(number: number) {
 }
 
 /** Complete prepare-first entry; returns the swapped store plus the boot pair for restore asserts. */
-async function swappedReviewStore() {
+async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
   const fetchMock = routedFetch();
   vi.stubGlobal("fetch", fetchMock);
   const store = freshStore({
@@ -2577,6 +2605,7 @@ async function swappedReviewStore() {
     syntheticExecutionUrl: "/api/synthetic-executions?id=artifact-1",
     syntheticExecutionTrust: { mode: "local" },
     syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
+    ...extra,
   });
   const bootIndex = store.getState().index;
   store.setState(headSelectedPrState(7));
@@ -2585,6 +2614,123 @@ async function swappedReviewStore() {
 }
 
 describe("PR head preparation (prepareHeadGraph)", () => {
+  it("commits graph protection only after the prepared review is installed", async () => {
+    const lease = graphLeaseMock();
+    vi.stubGlobal("fetch", routedFetch());
+    const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(lease.beginPreparedGraphHandoff).toHaveBeenCalledWith(["pr-head-1"]);
+    expect(lease.handoffs).toHaveLength(1);
+    expect(lease.handoffs[0]!.commit).toHaveBeenCalledTimes(1);
+    expect(lease.handoffs[0]!.release).not.toHaveBeenCalled();
+    expect(store.getState().viewMode).toBe("modules");
+  });
+
+  it("releases a protected handoff immediately when preparation is canceled during graph fetch", async () => {
+    const lease = graphLeaseMock();
+    let releaseGraph!: (response: Response) => void;
+    const graphResponse = new Promise<Response>((resolve) => { releaseGraph = resolve; });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = input.toString();
+      if (url.includes("/api/pr/analyze")) {
+        return Promise.resolve(ndjsonResponse([{ stage: "done", graphId: "pr-cancel", headSha: "cancel123" }]));
+      }
+      if (url.includes("/api/meta")) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-cancel", "cancel123")));
+      }
+      if (url.includes("/api/graph")) return graphResponse;
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
+    store.setState(headSelectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(lease.handoffs).toHaveLength(1));
+    store.getState().cancelPrReviewPreparation();
+    await vi.waitFor(() => expect(lease.handoffs[0]!.release).toHaveBeenCalledTimes(1));
+    expect(lease.handoffs[0]!.commit).not.toHaveBeenCalled();
+
+    releaseGraph(Response.json(HEAD_ARTIFACT));
+    await review;
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prPreparedGraphId).toBeNull();
+  });
+
+  it("releases a refreshed pair on rollback instead of committing it over the prior review", async () => {
+    const lease = graphLeaseMock();
+    const { store } = await swappedReviewStore({ graphViewLease: lease.controller });
+    expect(lease.handoffs[0]!.commit).toHaveBeenCalledTimes(1);
+    store.setState({ prReviewStale: true });
+    const unmatched: GraphArtifact = {
+      ...REFRESHED_HEAD_ARTIFACT,
+      nodes: [node("ts:other", "package", "other"), node("ts:other/b.ts", "module", "other/b.ts", "ts:other")],
+    };
+    vi.stubGlobal("fetch", preparedRefreshFetch({ graph: unmatched }));
+
+    await store.getState().refreshPrReview();
+
+    expect(lease.handoffs).toHaveLength(2);
+    expect(lease.handoffs[1]!.release).toHaveBeenCalledTimes(1);
+    expect(lease.handoffs[1]!.commit).not.toHaveBeenCalled();
+    expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
+  });
+
+  it("keeps the committed HEAD and merge-base pair while a refresh rolls back", async () => {
+    const lease = graphLeaseMock();
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: "pr-head-pair",
+          comparisonGraphId: "pr-base-pair",
+          headSha: "abc1234def5678900000",
+          mergeBaseSha: "base1234def567890000",
+        }]));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === "pr-base-pair" ? ARTIFACT : HEAD_ARTIFACT,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-pair",
+          "abc1234def5678900000",
+        )));
+      }
+      return Promise.resolve(Response.json({ files: [], truncated: false }));
+    }));
+    const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
+    store.setState(headSelectedPrState(7));
+    await store.getState().reviewPrInGraph();
+
+    expect(lease.beginPreparedGraphHandoff).toHaveBeenNthCalledWith(
+      1,
+      ["pr-head-pair", "pr-base-pair"],
+    );
+    expect(lease.handoffs[0]!.commit).toHaveBeenCalledTimes(1);
+    expect(lease.handoffs[0]!.release).not.toHaveBeenCalled();
+
+    store.setState({ prReviewStale: true });
+    const unmatched: GraphArtifact = {
+      ...REFRESHED_HEAD_ARTIFACT,
+      nodes: [node("ts:other", "package", "other"), node("ts:other/b.ts", "module", "other/b.ts", "ts:other")],
+    };
+    vi.stubGlobal("fetch", preparedRefreshFetch({ graph: unmatched }));
+    await store.getState().refreshPrReview();
+
+    expect(lease.handoffs).toHaveLength(2);
+    expect(lease.handoffs[1]!.release).toHaveBeenCalledTimes(1);
+    expect(lease.handoffs[1]!.commit).not.toHaveBeenCalled();
+    expect(lease.handoffs[0]!.release).not.toHaveBeenCalled();
+    expect(store.getState().prPreparedGraphId).toBe("pr-head-pair");
+    expect(store.getState().prPreparedComparisonGraphId).toBe("pr-base-pair");
+  });
+
   it("keeps the PRs view until the stream and prepared-graph swap complete", async () => {
     const encoder = new TextEncoder();
     let finishAnalyze!: () => void;

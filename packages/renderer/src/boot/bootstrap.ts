@@ -13,6 +13,7 @@ import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootCo
 import { loadArtifact } from "./loadArtifact";
 import { loadEnvironments } from "./loadEnvironments";
 import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
+import { startGraphViewLease } from "./graphViewLease";
 
 export interface BootResult {
   store: BlueprintStore;
@@ -23,15 +24,25 @@ export async function bootstrap(): Promise<BootResult> {
   // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
   // from its first splash frame, including the time before a store exists to say `preparing`.
   const navigationGuard = startPrReviewNavigationGuard();
+  let graphViewLease: ReturnType<typeof startGraphViewLease> | null = null;
   try {
     const boot = readBootConfig();
+    const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
+    if (prApi.graphId !== null && boot.graphViewLease === null) {
+      throw new Error("boot contract violation: registered graph views require a graphViewLease");
+    }
+    if (boot.graphViewLease !== null) {
+      if (prApi.graphId === null) {
+        throw new Error("boot contract violation: graph view lease requires a graph id");
+      }
+      graphViewLease = startGraphViewLease(boot.graphViewLease, prApi.graphId);
+    }
     const artifact = await loadArtifact(boot.graphUrl);
     const index = buildGraphIndex(artifact);
     const telemetrySources = await buildTelemetrySources(boot);
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
       : telemetrySources.find((source) => source.id === boot.preselectedTelemetrySourceId) ?? null;
-    const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
     const store = createBlueprintStore({
       artifact,
       index,
@@ -56,7 +67,22 @@ export async function bootstrap(): Promise<BootResult> {
       prReviewUrl: prApi.prReviewUrl,
       analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
       graphId: boot.githubSource ? prApi.graphId : null,
+      graphViewLease,
     });
+    if (graphViewLease !== null) {
+      const lease = graphViewLease;
+      store.subscribe((state, previous) => {
+        if (
+          state.prPreparedGraphId === previous.prPreparedGraphId
+          && state.prPreparedComparisonGraphId === previous.prPreparedComparisonGraphId
+        ) {
+          return;
+        }
+        const preparedIds = [state.prPreparedGraphId, state.prPreparedComparisonGraphId]
+          .filter((id): id is string => id !== null);
+        void lease.replacePreparedGraphIds(preparedIds).catch(() => undefined);
+      });
+    }
     navigationGuard.bindStore(store);
     // Restore the navigation state carried in the URL (or fall through to defaults) and run the
     // first layout, then start reflecting the store back into the URL for reload/back/forward.
@@ -65,6 +91,7 @@ export async function bootstrap(): Promise<BootResult> {
     startUrlSync(store);
     return { store, boot };
   } catch (error) {
+    graphViewLease?.dispose();
     navigationGuard.dispose();
     throw error;
   }

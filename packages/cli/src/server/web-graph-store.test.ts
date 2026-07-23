@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
@@ -17,8 +18,11 @@ import {
   materializeValidatedArtifact,
   verifiedArtifactFile,
   WebGraphStore,
+  WebGraphViewLeaseError,
   type WebGraphRegistration,
+  type WebGraphStoreMaintenance,
 } from "./web-graph-store";
+import type { GraphRetentionOptions } from "./web-graph-retention";
 
 const NODE_ID = "ts:src/order.ts#placeOrder";
 
@@ -51,19 +55,19 @@ describe("WebGraphStore", () => {
     const id = "../../outside/graph?x=1";
     store.publish(registration(id));
 
-    const path = store.artifactPath(id);
+    const path = registrationPath(store, id);
     expect(path).toBeDefined();
     expect(relative(store.rootPath, path!)).not.toMatch(/^\.\.(?:\/|$)/);
     expect(dirname(path!)).not.toContain("outside");
     expect(readdirSync(store.rootPath)).toHaveLength(1);
-    expect(store.has("")).toBe(false);
-    expect(store.has("../../outside/other")).toBe(false);
+    expect(hasRegistration(store, "")).toBe(false);
+    expect(hasRegistration(store, "../../outside/other")).toBe(false);
   });
 
   it("persists only a bounded descriptor beside the artifact", () => {
     const store = createStore();
     const descriptor = store.publish(registration("graph-1"));
-    const path = store.artifactPath("graph-1")!;
+    const path = registrationPath(store, "graph-1")!;
     const raw = JSON.parse(readFileSync(join(dirname(path), "descriptor.json"), "utf8")) as Record<string, unknown>;
 
     expect(descriptor).toEqual({
@@ -114,6 +118,365 @@ describe("WebGraphStore", () => {
     expect(release).not.toHaveBeenCalled();
     store.dispose();
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("evicts inactive registrations deterministically to the low watermark", () => {
+    let now = 1_000;
+    const store = createStore({
+      maxEntries: 2,
+      lowWaterEntries: 1,
+      publicationHandoffTtlMs: 0,
+      now: () => now,
+    });
+    const releaseFirst = vi.fn();
+    const releaseSecond = vi.fn();
+    const releaseNewest = vi.fn();
+
+    store.publish(registrationWithLease("first", releaseFirst));
+    now += 1;
+    store.publish(registrationWithLease("second", releaseSecond));
+    now += 1;
+    store.publish(registrationWithLease("newest", releaseNewest));
+
+    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1 });
+    expect(hasRegistration(store, "first")).toBe(false);
+    expect(hasRegistration(store, "second")).toBe(false);
+    expect(hasRegistration(store, "newest")).toBe(true);
+    expect(releaseFirst).toHaveBeenCalledTimes(1);
+    expect(releaseSecond).toHaveBeenCalledTimes(1);
+    expect(releaseNewest).not.toHaveBeenCalled();
+  });
+
+  it("keeps an active browser view pinned while evicting inactive pressure", () => {
+    const store = createStore({
+      maxEntries: 1,
+      lowWaterEntries: 0,
+      publicationHandoffTtlMs: 0,
+    });
+    const releaseBase = vi.fn();
+    const releaseInactive = vi.fn();
+    store.publish(registrationWithLease("base", releaseBase));
+    const view = store.createViewLease("base");
+
+    expect(() => store.publish(registrationWithLease("inactive", releaseInactive)))
+      .toThrow(/capacity is currently in use/);
+
+    expect(hasRegistration(store, "base")).toBe(true);
+    expect(hasRegistration(store, "inactive")).toBe(false);
+    expect(releaseBase).not.toHaveBeenCalled();
+    expect(releaseInactive).toHaveBeenCalledTimes(1);
+    store.releaseViewLease(view.leaseId);
+  });
+
+  it("atomically replaces a view set and preserves the old pins after a failed replacement", () => {
+    const store = createStore({ publicationHandoffTtlMs: 0 });
+    store.publish(registration("base"));
+    store.publish(registration("head"));
+    const view = store.createViewLease("base");
+    store.renewViewLease(view.leaseId, ["base", "head"]);
+
+    expect(() => store.renewViewLease(view.leaseId, ["base", "missing"]))
+      .toThrow(WebGraphViewLeaseError);
+    expect(store.stats().viewLeases).toBe(1);
+    expect(hasRegistration(store, "base")).toBe(true);
+    expect(hasRegistration(store, "head")).toBe(true);
+  });
+
+  it("expires abandoned views and releases their newly eligible source workspaces", () => {
+    let now = 100;
+    const store = createStore({
+      maxIdleMs: 10,
+      publicationHandoffTtlMs: 0,
+      viewLeaseTtlMs: 10,
+      now: () => now,
+    });
+    const release = vi.fn();
+    store.publish(registrationWithLease("base", release));
+    store.createViewLease("base");
+
+    now = 110;
+    store.sweep();
+
+    expect(store.stats()).toMatchObject({ registrations: 0, sourceLeases: 0, viewLeases: 0 });
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it("recreates an expired browser view atomically while its inactive graphs remain cached", () => {
+    let now = 100;
+    const store = createStore({
+      maxIdleMs: 1_000,
+      publicationHandoffTtlMs: 0,
+      viewLeaseTtlMs: 10,
+      now: () => now,
+    });
+    store.publish(registration("base"));
+    store.publish(registration("head"));
+    const expired = store.createViewLease("base", ["base", "head"]);
+
+    now = 110;
+    expect(() => store.renewViewLease(expired.leaseId, ["base", "head"]))
+      .toThrow(/lease has expired/);
+    const recreated = store.createViewLease("base", ["base", "head"]);
+
+    expect(recreated.leaseId).not.toBe(expired.leaseId);
+    expect(store.stats()).toMatchObject({ registrations: 2, viewLeases: 1 });
+    store.releaseViewLease(recreated.leaseId);
+  });
+
+  it("holds a request pin through capacity pressure and evicts only after the request releases", () => {
+    const store = createStore({
+      maxEntries: 1,
+      lowWaterEntries: 0,
+      publicationHandoffTtlMs: 0,
+    });
+    const releasePinned = vi.fn();
+    const releaseOther = vi.fn();
+    store.publish(registrationWithLease("pinned", releasePinned));
+    const request = store.acquire("pinned")!;
+
+    expect(() => store.publish(registrationWithLease("other", releaseOther)))
+      .toThrow(/capacity is currently in use/);
+    expect(request.loadArtifact()).toEqual(ARTIFACT);
+    expect(hasRegistration(store, "pinned")).toBe(true);
+    expect(releasePinned).not.toHaveBeenCalled();
+    expect(releaseOther).toHaveBeenCalledTimes(1);
+
+    request.release();
+    request.release();
+    store.publish(registration("replacement"));
+    expect(hasRegistration(store, "pinned")).toBe(false);
+    expect(releasePinned).toHaveBeenCalledTimes(1);
+  });
+
+  it("hard-bounds concurrent publication handoffs instead of exceeding configured capacity", () => {
+    let now = 1_000;
+    const store = createStore({
+      maxEntries: 1,
+      lowWaterEntries: 0,
+      publicationHandoffTtlMs: 100,
+      now: () => now,
+    });
+    const releaseFirst = vi.fn();
+    const releaseRejected = vi.fn();
+    store.publish(registrationWithLease("first", releaseFirst));
+
+    now += 1;
+    expect(() => store.publish(registrationWithLease("rejected", releaseRejected)))
+      .toThrow(/capacity is currently in use/);
+
+    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1 });
+    expect(hasRegistration(store, "first")).toBe(true);
+    expect(hasRegistration(store, "rejected")).toBe(false);
+    expect(releaseFirst).not.toHaveBeenCalled();
+    expect(releaseRejected).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an impossible batch without evicting unrelated inactive registrations", () => {
+    const removePath = vi.fn((path: string) => rmSync(path, { recursive: true, force: true }));
+    const store = createStore({
+      maxEntries: 2,
+      lowWaterEntries: 1,
+      publicationHandoffTtlMs: 0,
+    }, { removePath });
+    const releaseFirst = vi.fn();
+    const releaseSecond = vi.fn();
+    store.publish(registrationWithLease("first", releaseFirst));
+    store.publish(registrationWithLease("second", releaseSecond));
+    removePath.mockClear();
+    const rejectedReleases = [vi.fn(), vi.fn(), vi.fn()];
+
+    expect(() => store.publishBatch([
+      registrationWithLease("head", rejectedReleases[0]!),
+      registrationWithLease("comparison", rejectedReleases[1]!),
+      registrationWithLease("extra", rejectedReleases[2]!),
+    ])).toThrow(/capacity is currently in use/);
+
+    expect(hasRegistration(store, "first")).toBe(true);
+    expect(hasRegistration(store, "second")).toBe(true);
+    expect(hasRegistration(store, "head")).toBe(false);
+    expect(hasRegistration(store, "comparison")).toBe(false);
+    expect(hasRegistration(store, "extra")).toBe(false);
+    expect(releaseFirst).not.toHaveBeenCalled();
+    expect(releaseSecond).not.toHaveBeenCalled();
+    for (const release of rejectedReleases) expect(release).toHaveBeenCalledTimes(1);
+    expect(removePath).not.toHaveBeenCalled();
+  });
+
+  it("publishes a coherent graph pair in one admission transaction", () => {
+    const store = createStore({ maxEntries: 2, lowWaterEntries: 1 });
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+
+    const descriptors = store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ]);
+
+    expect(descriptors.map(({ id }) => id)).toEqual(["head", "comparison"]);
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
+    expect(hasRegistration(store, "head")).toBe(true);
+    expect(hasRegistration(store, "comparison")).toBe(true);
+    expect(releaseHead).not.toHaveBeenCalled();
+    expect(releaseComparison).not.toHaveBeenCalled();
+  });
+
+  it("commits the new graph and blocks further growth when victim cleanup fails", () => {
+    const artifactBytes = materializeValidatedArtifact(ARTIFACT).bytes.length;
+    let now = 1_000;
+    let failEvictionRemoval = true;
+    const onError = vi.fn();
+    const removePath = vi.fn((path: string) => {
+      if (
+        failEvictionRemoval
+        && path.includes(".eviction-")
+        && readdirSync(path).length > 0
+      ) {
+        const partiallyRemovedArtifact = join(path, "0", "artifact.json");
+        if (existsSync(partiallyRemovedArtifact)) unlinkSync(partiallyRemovedArtifact);
+        throw new Error("injected removal failure");
+      }
+      rmSync(path, { recursive: true, force: true });
+    });
+    const store = createStore({
+      maxArtifactBytes: artifactBytes,
+      lowWaterArtifactBytes: 0,
+      publicationHandoffTtlMs: 100,
+      now: () => now,
+    }, { onError, removePath });
+    const releaseFirst = vi.fn();
+    const releaseRejected = vi.fn();
+    const releaseStillBlocked = vi.fn();
+    store.publish(registrationWithLease("first", releaseFirst));
+    now += 100;
+
+    store.publish(registrationWithLease("replacement", releaseRejected));
+    expect(store.stats()).toMatchObject({
+      registrations: 1,
+      artifactBytes: artifactBytes * 2,
+      trashEntries: 1,
+      trashBytes: artifactBytes,
+    });
+    expect(hasRegistration(store, "first")).toBe(false);
+    expect(hasRegistration(store, "replacement")).toBe(true);
+    expect(releaseFirst).toHaveBeenCalledTimes(1);
+    expect(releaseRejected).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+
+    expect(() => store.publish(registrationWithLease("still-blocked", releaseStillBlocked)))
+      .toThrow(/capacity is currently in use/);
+    expect(store.stats()).toMatchObject({
+      registrations: 1,
+      artifactBytes: artifactBytes * 2,
+      trashEntries: 1,
+    });
+    expect(hasRegistration(store, "replacement")).toBe(true);
+    expect(releaseStillBlocked).toHaveBeenCalledTimes(1);
+
+    failEvictionRemoval = false;
+    store.sweep();
+    now += 100;
+    store.publish(registration("recovered"));
+    expect(store.stats()).toMatchObject({
+      registrations: 1,
+      artifactBytes,
+      trashEntries: 0,
+      trashBytes: 0,
+    });
+    expect(hasRegistration(store, "replacement")).toBe(false);
+    expect(hasRegistration(store, "recovered")).toBe(true);
+    expect(releaseRejected).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores eviction victims when a later batch destination cannot be committed", () => {
+    let failComparisonCommit = false;
+    const renamePath = vi.fn((source: string, destination: string) => {
+      if (
+        failComparisonCommit
+        && source.includes(".stage-")
+        && destination.endsWith(createHash("sha256").update("comparison").digest("hex"))
+      ) {
+        throw new Error("injected destination rename failure");
+      }
+      renameSync(source, destination);
+    });
+    const store = createStore({
+      maxEntries: 2,
+      lowWaterEntries: 1,
+      publicationHandoffTtlMs: 0,
+    }, { renamePath });
+    const releaseOriginal = vi.fn();
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+    store.publish(registrationWithLease("original", releaseOriginal));
+    failComparisonCommit = true;
+
+    expect(() => store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ])).toThrow(/injected destination rename failure/);
+
+    expect(hasRegistration(store, "original")).toBe(true);
+    expect(hasRegistration(store, "head")).toBe(false);
+    expect(hasRegistration(store, "comparison")).toBe(false);
+    expect(releaseOriginal).not.toHaveBeenCalled();
+    expect(releaseHead).toHaveBeenCalledTimes(1);
+    expect(releaseComparison).toHaveBeenCalledTimes(1);
+  });
+
+  it("accounts victim bytes when both rollback and reservation cleanup fail", () => {
+    const artifactBytes = materializeValidatedArtifact(ARTIFACT).bytes.length;
+    let injectFailures = false;
+    let originalPath = "";
+    const onError = vi.fn();
+    const renamePath = vi.fn((source: string, destination: string) => {
+      if (
+        injectFailures
+        && source.includes(".stage-")
+        && destination.endsWith(createHash("sha256").update("comparison").digest("hex"))
+      ) {
+        throw new Error("injected destination rename failure");
+      }
+      if (injectFailures && source.includes(".eviction-") && destination === originalPath) {
+        throw new Error("injected victim restore failure");
+      }
+      renameSync(source, destination);
+    });
+    const removePath = vi.fn((path: string) => {
+      if (injectFailures && path.includes(".eviction-")) {
+        throw new Error("injected reservation cleanup failure");
+      }
+      rmSync(path, { recursive: true, force: true });
+    });
+    const store = createStore({
+      maxEntries: 2,
+      lowWaterEntries: 1,
+      publicationHandoffTtlMs: 0,
+    }, { onError, removePath, renamePath });
+    const releaseOriginal = vi.fn();
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+    store.publish(registrationWithLease("original", releaseOriginal));
+    originalPath = dirname(registrationPath(store, "original")!);
+    injectFailures = true;
+
+    expect(() => store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ])).toThrow(/injected destination rename failure/);
+
+    expect(store.stats()).toMatchObject({
+      registrations: 0,
+      artifactBytes,
+      trashEntries: 1,
+      trashBytes: artifactBytes,
+    });
+    expect(hasRegistration(store, "original")).toBe(false);
+    expect(hasRegistration(store, "head")).toBe(false);
+    expect(hasRegistration(store, "comparison")).toBe(false);
+    expect(releaseOriginal).toHaveBeenCalledTimes(1);
+    expect(releaseHead).toHaveBeenCalledTimes(1);
+    expect(releaseComparison).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalled();
   });
 
   it("releases an exact-republish candidate while retaining the original source lease", () => {
@@ -177,14 +540,14 @@ describe("WebGraphStore", () => {
     }));
 
     writeFileSync(sourcePath, "source was replaced after publication\n", "utf8");
-    expect(store.loadArtifact("graph-file")).toEqual(ARTIFACT);
-    expect(readFileSync(store.artifactPath("graph-file")!, "utf8")).toBe(`${JSON.stringify(ARTIFACT)}\n`);
+    expect(loadRegistration(store, "graph-file")).toEqual(ARTIFACT);
+    expect(readFileSync(registrationPath(store, "graph-file")!, "utf8")).toBe(`${JSON.stringify(ARTIFACT)}\n`);
 
     unlinkSync(sourcePath);
     rmSync(sourceRoot, { recursive: true, force: true });
 
-    expect(store.loadArtifact("graph-file")).toEqual(ARTIFACT);
-    expect(readFileSync(store.artifactPath("graph-file")!, "utf8")).toBe(`${JSON.stringify(ARTIFACT)}\n`);
+    expect(loadRegistration(store, "graph-file")).toEqual(ARTIFACT);
+    expect(readFileSync(registrationPath(store, "graph-file")!, "utf8")).toBe(`${JSON.stringify(ARTIFACT)}\n`);
   });
 
   it("publishes a verified-file proof without reading, parsing, validating, or hashing it again", () => {
@@ -198,32 +561,32 @@ describe("WebGraphStore", () => {
     }));
 
     expect(descriptor.byteDigest).toBe(claimedDigest);
-    expect(readFileSync(store.artifactPath("proof-only")!, "utf8")).toBe("not JSON and not the claimed digest");
-    expect(() => store.loadArtifact("proof-only")).toThrow(/digest does not match/);
+    expect(readFileSync(registrationPath(store, "proof-only")!, "utf8")).toBe("not JSON and not the claimed digest");
+    expect(() => loadRegistration(store, "proof-only")).toThrow(/digest does not match/);
   });
 
   it("loads a fresh validated artifact and fails closed on descriptor or artifact corruption", () => {
     const store = createStore();
     store.publish(registration("graph-1"));
-    const first = store.loadArtifact("graph-1")!;
+    const first = loadRegistration(store, "graph-1")!;
     first.nodes.length = 0;
-    expect(store.loadArtifact("graph-1")?.nodes).toHaveLength(1);
+    expect(loadRegistration(store, "graph-1")?.nodes).toHaveLength(1);
 
-    const artifactPath = store.artifactPath("graph-1")!;
+    const artifactPath = registrationPath(store, "graph-1")!;
     const descriptorPath = join(dirname(artifactPath), "descriptor.json");
     const descriptor = JSON.parse(readFileSync(descriptorPath, "utf8")) as Record<string, unknown>;
     const invalidArtifact = Buffer.from(JSON.stringify({ ...ARTIFACT, nodes: [{ ...ARTIFACT.nodes[0], id: "invalid" }] }));
     descriptor.byteDigest = createHash("sha256").update(invalidArtifact).digest("hex");
     writeFileSync(artifactPath, invalidArtifact);
     writeFileSync(descriptorPath, JSON.stringify(descriptor), "utf8");
-    expect(() => store.loadArtifact("graph-1")).toThrow(/not a valid graph artifact/);
+    expect(() => loadRegistration(store, "graph-1")).toThrow(/not a valid graph artifact/);
 
     writeFileSync(artifactPath, "{broken", "utf8");
-    expect(() => store.loadArtifact("graph-1")).toThrow(/digest does not match/);
+    expect(() => loadRegistration(store, "graph-1")).toThrow(/digest does not match/);
 
     descriptor.id = "other-id";
     writeFileSync(descriptorPath, JSON.stringify(descriptor), "utf8");
-    expect(() => store.descriptor("graph-1")).toThrow(/id does not match/);
+    expect(() => registrationDescriptor(store, "graph-1")).toThrow(/id does not match/);
   });
 
   it("disposes its private root once and rejects later access", () => {
@@ -238,7 +601,7 @@ describe("WebGraphStore", () => {
     expect(release).toHaveBeenCalledTimes(1);
     expect(existsSync(rootPath)).toBe(false);
     expect(typeof store.rootPath).toBe("string");
-    expect(() => store.has("graph-1")).toThrow(/disposed/);
+    expect(() => hasRegistration(store, "graph-1")).toThrow(/disposed/);
   });
 
   it("consumes and releases a transferred source lease even after disposal", () => {
@@ -251,10 +614,46 @@ describe("WebGraphStore", () => {
   });
 });
 
-function createStore(): WebGraphStore {
-  const store = new WebGraphStore();
+function createStore(
+  options: Partial<GraphRetentionOptions> = {},
+  maintenance: WebGraphStoreMaintenance = {},
+): WebGraphStore {
+  const store = new WebGraphStore(options, maintenance);
   stores.push(store);
   return store;
+}
+
+function hasRegistration(store: WebGraphStore, id: string): boolean {
+  const registration = store.acquire(id);
+  registration?.release();
+  return registration !== undefined;
+}
+
+function registrationPath(store: WebGraphStore, id: string): string | undefined {
+  const registration = store.acquire(id);
+  try {
+    return registration?.artifactPath;
+  } finally {
+    registration?.release();
+  }
+}
+
+function registrationDescriptor(store: WebGraphStore, id: string) {
+  const registration = store.acquire(id);
+  try {
+    return registration?.descriptor;
+  } finally {
+    registration?.release();
+  }
+}
+
+function loadRegistration(store: WebGraphStore, id: string): GraphArtifact | undefined {
+  const registration = store.acquire(id);
+  try {
+    return registration?.loadArtifact();
+  } finally {
+    registration?.release();
+  }
 }
 
 function temporaryRoot(): string {

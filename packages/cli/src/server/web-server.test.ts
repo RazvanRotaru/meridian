@@ -207,15 +207,15 @@ describe("createWebServer landing + errors", () => {
   });
 
   it("preserves the source-unavailable response when the graph id is missing", async () => {
-    const descriptor = vi.spyOn(WebGraphStore.prototype, "descriptor");
+    const acquire = vi.spyOn(WebGraphStore.prototype, "acquire");
     try {
       const response = await fetch(`${base}/api/source?file=src%2Fmissing.ts`);
 
       expect(response.status).toBe(404);
       expect(await response.json()).toEqual({ error: "source not available" });
-      expect(descriptor, "a missing route id must not reach the strict graph store").not.toHaveBeenCalled();
+      expect(acquire, "a missing route id must not reach the strict graph store").not.toHaveBeenCalled();
     } finally {
-      descriptor.mockRestore();
+      acquire.mockRestore();
     }
   });
 
@@ -251,7 +251,19 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(result.counts.nodes).toBeGreaterThanOrEqual(25);
     expect(result.target).toBe(TS_EXAMPLE);
 
-    const descriptorOnlyRoutes = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
+    const originalAcquire = WebGraphStore.prototype.acquire;
+    const parsedLoads = vi.fn();
+    const descriptorOnlyRoutes = vi.spyOn(WebGraphStore.prototype, "acquire").mockImplementation(function (this: WebGraphStore, id) {
+      const registration = originalAcquire.call(this, id);
+      if (registration === undefined) return undefined;
+      return {
+        ...registration,
+        loadArtifact: () => {
+          parsedLoads();
+          return registration.loadArtifact();
+        },
+      };
+    });
     const graphResponse = await fetch(`${base}/api/graph?id=${result.id}`);
     expect(graphResponse.headers.get("content-type")).toBe("application/json; charset=utf-8");
     expect(graphResponse.headers.get("cache-control")).toBe("no-store");
@@ -276,7 +288,9 @@ describe("createWebServer generate -> view (offline path source)", () => {
     });
     expect(meta.syntheticScenarios).toContainEqual(expect.objectContaining({ id: "place-order-happy" }));
 
-    const view = await (await fetch(`${base}/view?id=${result.id}`)).text();
+    const viewResponse = await fetch(`${base}/view?id=${result.id}`);
+    expect(viewResponse.headers.get("cache-control")).toBe("no-store");
+    const view = await viewResponse.text();
     expect(view).toContain("window.__MERIDIAN__=");
     expect(view).toContain(`"graphUrl":"/api/graph?id=${result.id}"`);
     expect(view).toContain(`"overlayUrl":"/api/overlay?id=${result.id}"`);
@@ -287,6 +301,17 @@ describe("createWebServer generate -> view (offline path source)", () => {
     expect(view).toContain('"telemetrySources":[{"id":"demo"');
     expect(view).toContain('"preselectedTelemetrySourceId":null');
     expect(view).toContain('"defaultEnv":null');
+    const boot = JSON.parse(view.match(/window\.__MERIDIAN__=(\{.*?\})<\/script>/s)?.[1] ?? "null") as {
+      graphViewLease?: { version: number; leaseId: string; url: string; createUrl: string };
+    };
+    expect(boot.graphViewLease).toMatchObject({ version: 1 });
+    const renewed = await fetch(`${base}${boot.graphViewLease!.url}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, graphIds: [result.id] }),
+    });
+    expect(renewed.status).toBe(200);
+    expect(await renewed.json()).toMatchObject({ version: 1, expiresAtMs: expect.any(Number) });
     // A path-sourced session has no GitHub identity: the boot contract carries null (a GitHub
     // session carries the {repository, subdir} source object instead of the old boolean).
     expect(view).toContain('"githubSource":null');
@@ -296,10 +321,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     );
     expect(source.file).toBe("src/services/orderService.ts");
     expect(source.code.length).toBeGreaterThan(0);
-    expect(descriptorOnlyRoutes, "graph streaming plus meta/view/source must not parse the artifact").not.toHaveBeenCalled();
+    expect(parsedLoads, "graph streaming plus meta/view/source must not parse the artifact").not.toHaveBeenCalled();
     descriptorOnlyRoutes.mockRestore();
 
-    const telemetryLoads = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
+    const telemetryLoads = vi.spyOn(WebGraphStore.prototype, "acquire");
     const missingSource = await fetch(`${base}/api/overlay?id=${result.id}&env=demo`);
     expect(missingSource.status).toBe(404);
     expect(await missingSource.json()).toEqual({ error: "no overlay for env 'demo'" });
@@ -318,10 +343,10 @@ describe("createWebServer generate -> view (offline path source)", () => {
     );
     expect(traces).toMatchObject({ source: "mock", env: "demo" });
     expect(traces.traces.length).toBeGreaterThanOrEqual(10);
-    expect(telemetryLoads, "each telemetry request must load one validated artifact transiently").toHaveBeenCalledTimes(4);
+    expect(telemetryLoads, "each telemetry request must pin one registration transiently").toHaveBeenCalledTimes(4);
     telemetryLoads.mockRestore();
 
-    const syntheticLoad = vi.spyOn(WebGraphStore.prototype, "loadArtifact");
+    const syntheticLoad = vi.spyOn(WebGraphStore.prototype, "acquire");
     const executionResponse = await post(`/api/synthetic-executions?id=${result.id}`, {
       scenarioId: "place-order-happy",
       rootNodeId: "ts:src/services/orderService.ts#OrderService.placeOrder",
@@ -340,8 +365,24 @@ describe("createWebServer generate -> view (offline path source)", () => {
       trace: { spans: expect.any(Array) },
       snapshots: expect.any(Array),
     });
-    expect(syntheticLoad, "synthetic execution must load one validated artifact for the request").toHaveBeenCalledTimes(1);
+    expect(syntheticLoad, "synthetic execution must pin one registration for the request").toHaveBeenCalledTimes(1);
     syntheticLoad.mockRestore();
+
+    const released = await fetch(`${base}${boot.graphViewLease!.url}`, { method: "DELETE" });
+    expect(released.status).toBe(204);
+    const recreated = await fetch(`${base}${boot.graphViewLease!.createUrl}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ version: 1, baseGraphId: result.id, graphIds: [result.id] }),
+    });
+    expect(recreated.status).toBe(201);
+    const recreatedGrant = await recreated.json() as { version: number; leaseId: string; url: string };
+    expect(recreatedGrant).toMatchObject({
+      version: 1,
+      leaseId: expect.stringMatching(/^[A-Za-z0-9_-]{32}$/),
+      url: expect.stringMatching(/^\/api\/graph-views\//),
+    });
+    expect((await fetch(`${base}${recreatedGrant.url}`, { method: "DELETE" })).status).toBe(204);
   }, 60_000);
 
   it("auto-detects Python for a pyproject tree", async () => {
@@ -542,24 +583,28 @@ function githubExecutionCtx(options: { allow: boolean; runtime: boolean; withSce
   const withScenario = options.withScenario !== false;
   const ctx = {
     graphStore: {
-      descriptor: (candidate: string) => candidate === id ? {
-        sourceRoot: "/tmp/pr-source",
-        source: { kind: "github", owner: "octo", repo: "repo" },
-        synthetic: {
-          scenarios: withScenario ? [{
-            id: "add-item",
-            label: "Add item",
-            rootId,
-            defaultInput: {},
-          }] : [],
-          sourceFingerprint: withScenario ? "fingerprint" : null,
-          trust: {
-            mode: "sandboxed-pr",
-            provenance: { repository: "octo/repo", headSha: "abc123" },
+      acquire: (candidate: string) => candidate === id ? {
+        descriptor: {
+          sourceRoot: "/tmp/pr-source",
+          source: { kind: "github", owner: "octo", repo: "repo" },
+          synthetic: {
+            scenarios: withScenario ? [{
+              id: "add-item",
+              label: "Add item",
+              rootId,
+              defaultInput: {},
+            }] : [],
+            sourceFingerprint: withScenario ? "fingerprint" : null,
+            trust: {
+              mode: "sandboxed-pr",
+              provenance: { repository: "octo/repo", headSha: "abc123" },
+            },
           },
         },
+        artifactPath: "/tmp/pr-artifact.json",
+        loadArtifact: () => ({} as GraphArtifact),
+        release: vi.fn(),
       } : undefined,
-      loadArtifact: (candidate: string) => candidate === id ? {} as GraphArtifact : undefined,
     },
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: options.allow,

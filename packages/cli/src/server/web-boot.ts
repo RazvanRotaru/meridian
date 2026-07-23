@@ -25,6 +25,15 @@ export interface SyntheticExecutionBootCapability {
   syntheticExecutionTrust: SyntheticExecutionTrust | null;
 }
 
+export interface GraphViewLeaseBoot {
+  version: 1;
+  leaseId: string;
+  url: string;
+  createUrl: string;
+  expiresAtMs: number;
+  heartbeatIntervalMs: number;
+}
+
 /** One exact, per-id capability projection shared by initial boot and subsequent graph/meta swaps. */
 export function syntheticExecutionBootCapability(
   id: string,
@@ -53,6 +62,7 @@ export function injectViewBoot(
   html: string,
   id: string,
   source: ArtifactSource | undefined,
+  graphViewLease: GraphViewLeaseBoot,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
   syntheticExecutionTrust: SyntheticExecutionTrust | null = null,
 ): string {
@@ -71,6 +81,7 @@ export function injectViewBoot(
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
+    graphViewLease,
     ...syntheticCapability,
     hasOverlay: false,
     overlayKind: null,

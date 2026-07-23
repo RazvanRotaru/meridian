@@ -19,6 +19,7 @@ import { serve } from "../server/serve";
 import { CliError, EXIT } from "../errors";
 import { isLoopbackHost } from "../server/web-guards";
 import { repositoryRetentionOptionsFromEnv } from "../server/web-repository-retention";
+import { graphRetentionOptionsFromEnv } from "../server/web-graph-retention";
 
 export interface WebOptions extends GlobalOptions {
   port: number;
@@ -50,11 +51,13 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
   const githubClientId = resolveGitHubClientId(options.githubClientId, process.env.MERIDIAN_GITHUB_CLIENT_ID);
   const fallback = await resolveFallbackAuth(githubClientId, reporter);
   let repositoryRetention;
+  let graphRetention;
   try {
     repositoryRetention = repositoryRetentionOptionsFromEnv();
+    graphRetention = graphRetentionOptionsFromEnv();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new CliError(EXIT.usage, `invalid repository cache retention configuration: ${message}`);
+    throw new CliError(EXIT.usage, `invalid cache retention configuration: ${message}`);
   }
   const server = createWebServer({
     rendererRoot: rendererRoot(),
@@ -65,8 +68,12 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     fallbackToken: fallback.token,
     fallbackUser: fallback.user,
     repositoryRetention,
+    graphRetention,
     onRepositoryRetentionError: (error) => reporter.info(
       `Repository cache maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
+    ),
+    onGraphRetentionError: (error) => reporter.info(
+      `Graph cache maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
     ),
     refreshCache: options.refreshCache,
     allowSyntheticExecution: options.allowSyntheticExecution === true,

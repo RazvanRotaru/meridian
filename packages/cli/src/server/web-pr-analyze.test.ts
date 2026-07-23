@@ -33,6 +33,7 @@ import { sendJson } from "./http-response";
 import { WebError } from "./web-error";
 import { createGitHubClient } from "./github";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
+import type { GraphRetentionOptions } from "./web-graph-retention";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import type { AnalysisCoordinatorOptions } from "./web-analysis-coordinator";
 import {
@@ -171,8 +172,8 @@ describe("handlePrAnalyze", () => {
     expect(done.warnings).toEqual(["w1", "base warning"]);
 
     const sourceDir = graphDescriptor(ctx, done.graphId as string).sourceRoot;
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(done.graphId as string), ARTIFACT);
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(done.comparisonGraphId as string), COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, done.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, done.comparisonGraphId as string), COMPARISON_ARTIFACT);
     expect(sourceDir).toContain(cacheRoot);
     expect(graphDescriptor(ctx, done.comparisonGraphId as string).sourceRoot).toContain(cacheRoot);
     expect(graphDescriptor(ctx, done.graphId as string).source).toMatchObject({ kind: "github", owner: "org", repo: "repo" });
@@ -221,6 +222,34 @@ describe("handlePrAnalyze", () => {
     expect(maximumActive).toBe(2);
     expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
+  });
+
+  it("rejects a two-sided publication atomically when the active session owns the remaining capacity", async () => {
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 2 }, {
+      maxEntries: 2,
+      lowWaterEntries: 1,
+      publicationHandoffTtlMs: 0,
+    });
+
+    const captured = await invoke(ctx, BODY);
+
+    expect(captured.lines().map((line) => line.stage)).toEqual([
+      "clone",
+      "checkout",
+      "extract",
+      "error",
+    ]);
+    expect(captured.lines().at(-1)).toMatchObject({
+      message: "graph registration capacity is currently in use; retry shortly",
+      retryAfterSeconds: 5,
+    });
+    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+    expect(hasGraph(ctx, "artifact")).toBe(true);
+    expect(readdirSync(ctx.graphStore.rootPath)).toHaveLength(1);
+    expect(repositories.leaseRecords).toEqual([
+      expect.objectContaining({ side: "head", releaseCount: 1 }),
+      expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+    ]);
   });
 
   it("returns a retryable preparation overload without starting another clone", async () => {
@@ -356,7 +385,7 @@ describe("handlePrAnalyze", () => {
     await waitFor(() => stageEntries().length === 0);
 
     expect(abandoned.captured.lines().some((line) => line.stage === "done" || line.stage === "error")).toBe(false);
-    expect(ctx.graphStore.descriptor("artifact")).toBeDefined();
+    expect(graphDescriptor(ctx, "artifact")).toBeDefined();
     expect(repositories.discardedWorkspaceIds).toHaveLength(1);
     expect(repositories.leaseRecordsFor(repositories.discardedWorkspaceIds[0]!))
       .toEqual(expect.arrayContaining([
@@ -407,7 +436,7 @@ describe("handlePrAnalyze", () => {
 
   it("singleflights identical PR requests while preserving each response stream", async () => {
     const ctx = githubCtx();
-    const publish = vi.spyOn(ctx.graphStore, "publish");
+    const publishBatch = vi.spyOn(ctx.graphStore, "publishBatch");
     const firstAnalysisStarted = deferred<void>();
     const release = deferred<void>();
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
@@ -432,8 +461,9 @@ describe("handlePrAnalyze", () => {
     expect(follower.captured.lines().at(-1)).toStrictEqual(first.captured.lines().at(-1));
     expect(repositories.prepareCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
-    expect(publish).toHaveBeenCalledTimes(2);
-    const transferredLeases = publish.mock.calls.map(([registration]) => registration.metadata.sourceLease);
+    expect(publishBatch).toHaveBeenCalledTimes(1);
+    const transferredLeases = publishBatch.mock.calls[0]![0]
+      .map((registration) => registration.metadata.sourceLease);
     expect(transferredLeases).toStrictEqual(repositories.leaseRecords.map((record) => record.lease));
     expect(repositories.leaseRecords).toEqual([
       expect.objectContaining({ side: "head", releaseCount: 0 }),
@@ -572,8 +602,8 @@ describe("handlePrAnalyze", () => {
       mode: "sandboxed-pr",
       provenance: { repository: "org/repo", headSha: HEAD_SHA },
     });
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(first.graphId as string), ARTIFACT);
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(second.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, first.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, second.graphId as string), ARTIFACT);
   });
 
   it("keeps the PR graph reviewable and leaks no details when its synthetic manifest is malformed", async () => {
@@ -589,7 +619,7 @@ describe("handlePrAnalyze", () => {
     expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
     const done = lines.at(-1)!;
     const graphId = done.graphId as string;
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(graphId), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, graphId), ARTIFACT);
     expect(graphDescriptor(ctx, graphId).synthetic).toEqual({
       scenarios: [],
       sourceFingerprint: null,
@@ -610,13 +640,13 @@ describe("handlePrAnalyze", () => {
       symlinkSync(outside, join(workspace.headDir, "selected"));
     };
     const ctx = githubCtx({ kind: "github", owner: "org", repo: "repo", subdir: "selected" });
-    const publish = vi.spyOn(ctx.graphStore, "publish");
+    const publishBatch = vi.spyOn(ctx.graphStore, "publishBatch");
     ctx.allowSyntheticPrExecution = true;
     ctx.syntheticPrSandboxRuntimeSupported = () => true;
     try {
       const captured = await invoke(ctx, BODY);
       expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
-      expect(publish).not.toHaveBeenCalled();
+      expect(publishBatch).not.toHaveBeenCalled();
       expect(analyzeRepository).not.toHaveBeenCalled();
       expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
       expect(repositories.discardedWorkspaceIds).toHaveLength(1);
@@ -634,8 +664,8 @@ describe("handlePrAnalyze", () => {
     expect(first.headSha).not.toBe(second.headSha);
     expect(first.graphId).not.toBe(second.graphId);
     expect(first.comparisonGraphId).toBe(second.comparisonGraphId);
-    expect(ctx.graphStore.has(first.graphId as string)).toBe(true);
-    expect(ctx.graphStore.has(second.graphId as string)).toBe(true);
+    expect(hasGraph(ctx, first.graphId as string)).toBe(true);
+    expect(hasGraph(ctx, second.graphId as string)).toBe(true);
   });
 
   it("reuses an unchanged PR artifact and checkout after a server restart", async () => {
@@ -655,7 +685,7 @@ describe("handlePrAnalyze", () => {
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.graphId as string).sourceRoot)).toBe(true);
     expect(existsSync(graphDescriptor(restarted, second.at(-1)?.comparisonGraphId as string).sourceRoot)).toBe(true);
-    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(second.at(-1)?.comparisonGraphId as string), COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(restarted, second.at(-1)?.comparisonGraphId as string), COMPARISON_ARTIFACT);
   });
 
   it("publishes refreshed PR snapshots under new ids without rebinding the open review", async () => {
@@ -685,10 +715,10 @@ describe("handlePrAnalyze", () => {
     expect(second.cache).toBe("miss");
     expect(secondHeadId).not.toBe(firstHeadId);
     expect(secondComparisonId).not.toBe(firstComparisonId);
-    expect(ctx.graphStore.loadArtifact(firstHeadId)?.generatedAt).toBe(ARTIFACT.generatedAt);
-    expect(ctx.graphStore.loadArtifact(firstComparisonId)?.generatedAt).toBe(COMPARISON_ARTIFACT.generatedAt);
-    expect(ctx.graphStore.loadArtifact(secondHeadId)?.generatedAt).toBe(refreshedAt);
-    expect(ctx.graphStore.loadArtifact(secondComparisonId)?.generatedAt).toBe(refreshedAt);
+    expect(loadGraph(ctx, firstHeadId)?.generatedAt).toBe(ARTIFACT.generatedAt);
+    expect(loadGraph(ctx, firstComparisonId)?.generatedAt).toBe(COMPARISON_ARTIFACT.generatedAt);
+    expect(loadGraph(ctx, secondHeadId)?.generatedAt).toBe(refreshedAt);
+    expect(loadGraph(ctx, secondComparisonId)?.generatedAt).toBe(refreshedAt);
     expect(existsSync(firstSourceRoot)).toBe(true);
   });
 
@@ -705,8 +735,8 @@ describe("handlePrAnalyze", () => {
     const failed = (await invoke(ctx, BODY)).lines();
 
     expect(failed.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(headId), ARTIFACT);
-    expectWithoutReviewFingerprints(ctx.graphStore.loadArtifact(comparisonId), COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, headId), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(ctx, comparisonId), COMPARISON_ARTIFACT);
     expect(existsSync(headRoot)).toBe(true);
     expect(existsSync(comparisonRoot)).toBe(true);
   });
@@ -736,8 +766,8 @@ describe("handlePrAnalyze", () => {
     expect(secondDone.comparisonGraphId).toBe(firstDone.comparisonGraphId);
     expect(secondDone.headSha).toBe(HEAD_SHA);
     expect(secondDone.mergeBaseSha).toBe(MERGE_BASE_SHA);
-    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.graphId as string), ARTIFACT);
-    expectWithoutReviewFingerprints(restarted.graphStore.loadArtifact(secondDone.comparisonGraphId as string), COMPARISON_ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(restarted, secondDone.graphId as string), ARTIFACT);
+    expectWithoutReviewFingerprints(loadGraph(restarted, secondDone.comparisonGraphId as string), COMPARISON_ARTIFACT);
     expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
 
@@ -1052,7 +1082,7 @@ describe("handlePrAnalyze", () => {
 
   it("emits exactly one error line mid-pipeline and removes the temp dir", async () => {
     const ctx = githubCtx();
-    const publish = vi.spyOn(ctx.graphStore, "publish");
+    const publishBatch = vi.spyOn(ctx.graphStore, "publishBatch");
     repositories.afterFetchComplete = () => {
       throw new WebError(422, "repository preparation failed: boom");
     };
@@ -1062,7 +1092,7 @@ describe("handlePrAnalyze", () => {
     expect(lines[2].message).toBe("repository preparation failed: boom");
     expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
     expect(repositories.leaseRecords).toEqual([]);
-    expect(publish).not.toHaveBeenCalled();
+    expect(publishBatch).not.toHaveBeenCalled();
   });
 
   it("never echoes a non-WebError's text into the error line", async () => {
@@ -1142,8 +1172,9 @@ function beginInvoke(ctx: Context, body: unknown) {
 function githubCtx(
   source: ArtifactSource | undefined = { kind: "github", owner: "org", repo: "repo" },
   coordinatorOptions: AnalysisCoordinatorOptions = { maxConcurrentAnalyses: 2 },
+  graphRetention: Partial<GraphRetentionOptions> = {},
 ): Context {
-  const graphStore = new WebGraphStore();
+  const graphStore = new WebGraphStore(graphRetention);
   const analysisCoordinator = new AnalysisCoordinator(coordinatorOptions);
   activeGraphStores.push(graphStore);
   activeCoordinators.push(analysisCoordinator);
@@ -1193,9 +1224,28 @@ function currentPrSnapshotMetadataPath(): string {
 }
 
 function graphDescriptor(ctx: Context, id: string) {
-  const descriptor = ctx.graphStore.descriptor(id);
-  expect(descriptor).toBeDefined();
-  return descriptor!;
+  const registration = ctx.graphStore.acquire(id);
+  try {
+    expect(registration).toBeDefined();
+    return registration!.descriptor;
+  } finally {
+    registration?.release();
+  }
+}
+
+function loadGraph(ctx: Context, id: string): GraphArtifact | undefined {
+  const registration = ctx.graphStore.acquire(id);
+  try {
+    return registration?.loadArtifact();
+  } finally {
+    registration?.release();
+  }
+}
+
+function hasGraph(ctx: Context, id: string): boolean {
+  const registration = ctx.graphStore.acquire(id);
+  registration?.release();
+  return registration !== undefined;
 }
 
 function requestWith(body: unknown): IncomingMessage {

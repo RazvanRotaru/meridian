@@ -76,7 +76,12 @@ describe("generate canonical repository analysis", () => {
     let webArtifact: GraphArtifact | undefined;
     try {
       const generated = await generateGraph(context, { kind: "path", value: root }, undefined);
-      webArtifact = graphStore.loadArtifact(generated.id);
+      const registration = graphStore.acquire(generated.id);
+      try {
+        webArtifact = registration?.loadArtifact();
+      } finally {
+        registration?.release();
+      }
     } finally {
       await analysisCoordinator.close();
       graphStore.dispose();

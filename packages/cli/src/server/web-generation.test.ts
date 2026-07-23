@@ -92,9 +92,9 @@ describe("web graph generation publication", () => {
 
     expect(same.id).toBe(first.id);
     expect(changed.id).not.toBe(first.id);
-    expect(graphStore.loadArtifact(first.id)).toStrictEqual(LOCAL_ARTIFACT);
-    expect(graphStore.loadArtifact(changed.id)).toStrictEqual(changedArtifact);
-    expect(graphStore.descriptor(first.id)).toMatchObject({
+    expect(loadRegistration(graphStore, first.id)).toStrictEqual(LOCAL_ARTIFACT);
+    expect(loadRegistration(graphStore, changed.id)).toStrictEqual(changedArtifact);
+    expect(registrationDescriptor(graphStore, first.id)).toMatchObject({
       id: first.id,
       sourceRoot: root,
       source: { kind: "path" },
@@ -115,7 +115,7 @@ describe("web graph generation publication", () => {
     const generated = await generateGraph(ctx, { kind: "path", value: root }, undefined);
 
     expect(publish).toHaveBeenCalledTimes(1);
-    expect(graphStore.descriptor(generated.id)?.synthetic).toEqual({
+    expect(registrationDescriptor(graphStore, generated.id)?.synthetic).toEqual({
       scenarios: [SCENARIO],
       sourceFingerprint: "fixture-fingerprint",
       trust: { mode: "local" },
@@ -128,8 +128,8 @@ describe("web graph generation publication", () => {
 
     expect(changed.id).not.toBe(generated.id);
     expect(publish).toHaveBeenCalledTimes(2);
-    expect(graphStore.descriptor(generated.id)?.synthetic.sourceFingerprint).toBe("fixture-fingerprint");
-    expect(graphStore.descriptor(changed.id)?.synthetic.sourceFingerprint).toBe("changed-fingerprint");
+    expect(registrationDescriptor(graphStore, generated.id)?.synthetic.sourceFingerprint).toBe("fixture-fingerprint");
+    expect(registrationDescriptor(graphStore, changed.id)?.synthetic.sourceFingerprint).toBe("changed-fingerprint");
   });
 
   it("reclaims local staging and publishes nothing after a non-cooperative late cancellation", async () => {
@@ -179,9 +179,9 @@ describe("web graph generation publication", () => {
     expect(first.id).not.toBe(second.id);
     expect(publish.mock.calls[0]?.[0].material).toMatchObject({ kind: "verified-file", path: main.path });
     expect(publish.mock.calls[1]?.[0].material).toMatchObject({ kind: "verified-file", path: release.path });
-    expect(graphStore.loadArtifact(first.id)).toStrictEqual(main.artifact);
-    expect(graphStore.loadArtifact(second.id)).toStrictEqual(release.artifact);
-    expect(graphStore.descriptor(first.id)).toMatchObject({
+    expect(loadRegistration(graphStore, first.id)).toStrictEqual(main.artifact);
+    expect(loadRegistration(graphStore, second.id)).toStrictEqual(release.artifact);
+    expect(registrationDescriptor(graphStore, first.id)).toMatchObject({
       sourceRoot: root,
       source: { kind: "github", owner: "org", repo: "repo" },
     });
@@ -264,8 +264,8 @@ describe("web graph generation publication", () => {
     const second = await generateGraph(ctx, { kind: "github", value: "org/repo", ref: "main" }, undefined);
 
     expect(second.id).not.toBe(first.id);
-    expect(graphStore.loadArtifact(first.id)).toStrictEqual(original.artifact);
-    expect(graphStore.loadArtifact(second.id)).toStrictEqual(refreshed.artifact);
+    expect(loadRegistration(graphStore, first.id)).toStrictEqual(original.artifact);
+    expect(loadRegistration(graphStore, second.id)).toStrictEqual(refreshed.artifact);
   });
 });
 
@@ -361,4 +361,22 @@ function deferred<Value>() {
     resolve = resolvePromise;
   });
   return { promise, resolve };
+}
+
+function loadRegistration(store: WebGraphStore, id: string): GraphArtifact | undefined {
+  const registration = store.acquire(id);
+  try {
+    return registration?.loadArtifact();
+  } finally {
+    registration?.release();
+  }
+}
+
+function registrationDescriptor(store: WebGraphStore, id: string) {
+  const registration = store.acquire(id);
+  try {
+    return registration?.descriptor;
+  } finally {
+    registration?.release();
+  }
 }

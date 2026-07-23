@@ -45,6 +45,12 @@ import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import { responseCanWrite } from "./web-cancellation";
 import { sendOverloadJson } from "./web-overload";
 import { WebGraphStore } from "./web-graph-store";
+import type { GraphRetentionOptions } from "./web-graph-retention";
+import {
+  handleGraphViewCreate,
+  handleGraphViewDelete,
+  handleGraphViewPut,
+} from "./web-graph-views";
 import { parseSyntheticExecutionRequest, readJsonBody } from "./web-request";
 import { SyntheticExecutionError } from "./synthetic-error";
 import {
@@ -100,8 +106,12 @@ export interface WebServerConfig {
   repositories?: RepositoryMirror;
   /** Persistent repository-store budget override; production resolves environment defaults. */
   repositoryRetention?: Partial<RepositoryRetentionOptions>;
+  /** Process-private inactive graph registration budget override. */
+  graphRetention?: Partial<GraphRetentionOptions>;
   /** Optional background-maintenance diagnostic sink. */
   onRepositoryRetentionError?: (error: unknown) => void;
+  /** Optional process-private graph-registry cleanup diagnostic sink. */
+  onGraphRetentionError?: (error: unknown) => void;
 }
 
 export interface Context {
@@ -154,7 +164,9 @@ export function createWebServer(config: WebServerConfig): Server {
     onRetentionError: config.onRepositoryRetentionError,
   });
   // Validate every admission bound before allocating the graph store's private temporary root.
-  const graphStore = new WebGraphStore();
+  const graphStore = new WebGraphStore(config.graphRetention, {
+    onError: config.onGraphRetentionError,
+  });
   let ctx: Context;
   try {
     ctx = buildContext(config, graphStore, analysisCoordinator, analysisMemory, repositories, cacheRoot);
@@ -271,11 +283,30 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
     await handleApiPost(ctx, request, response, url);
     return;
   }
+  const graphViewLeaseId = graphViewLeaseIdFromPath(url.pathname);
+  if (request.method === "PUT" && graphViewLeaseId !== null) {
+    assertJsonContentType(request);
+    await handleGraphViewPut(ctx.graphStore, request, response, graphViewLeaseId);
+    return;
+  }
+  if (request.method === "DELETE" && graphViewLeaseId !== null) {
+    handleGraphViewDelete(ctx.graphStore, response, graphViewLeaseId);
+    return;
+  }
   await handleApiGet(ctx, request, response, url);
+}
+
+function graphViewLeaseIdFromPath(pathname: string): string | null {
+  const match = /^\/api\/graph-views\/([^/]+)$/.exec(pathname);
+  return match?.[1] ?? null;
 }
 
 async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
+  if (pathname === "/api/graph-views") {
+    await handleGraphViewCreate(ctx.graphStore, request, response);
+    return;
+  }
   if (pathname === "/api/generate") {
     await handleGenerate(ctx, request, response);
     return;
@@ -322,59 +353,62 @@ export async function handleSyntheticExecution(
   id: string | null,
 ): Promise<void> {
   assertLoopbackHost(request);
-  const descriptor = id ? ctx.graphStore.descriptor(id) : undefined;
-  const sourceRoot = descriptor?.sourceRoot;
-  const source = descriptor?.source;
-  const scenarios = descriptor?.synthetic.scenarios;
-  const sourceFingerprint = descriptor?.synthetic.sourceFingerprint ?? undefined;
-  const trust = descriptor?.synthetic.trust ?? undefined;
-  const localAdmission = source?.kind === "path"
-    && ctx.allowSyntheticExecution
-    && trust?.mode === "local";
-  const sandboxedPrAdmission = source?.kind === "github"
-    && ctx.allowSyntheticPrExecution
-    && trust?.mode === "sandboxed-pr"
-    && trust.provenance.repository === `${source.owner}/${source.repo}`
-    && trust.provenance.headSha.length > 0
-    && ctx.syntheticPrSandboxRuntimeSupported();
-  if (
-    (!localAdmission && !sandboxedPrAdmission)
-    || sourceRoot === undefined
-    || scenarios === undefined
-    || scenarios.length === 0
-    || sourceFingerprint === undefined
-  ) {
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  if (registration === undefined) {
     sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
     return;
   }
-  const artifact = id ? ctx.graphStore.loadArtifact(id) : undefined;
-  if (artifact === undefined) {
-    sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
-    return;
+  try {
+    const descriptor = registration.descriptor;
+    const sourceRoot = descriptor.sourceRoot;
+    const source = descriptor.source;
+    const scenarios = descriptor.synthetic.scenarios;
+    const sourceFingerprint = descriptor.synthetic.sourceFingerprint ?? undefined;
+    const trust = descriptor.synthetic.trust ?? undefined;
+    const localAdmission = source.kind === "path"
+      && ctx.allowSyntheticExecution
+      && trust?.mode === "local";
+    const sandboxedPrAdmission = source.kind === "github"
+      && ctx.allowSyntheticPrExecution
+      && trust?.mode === "sandboxed-pr"
+      && trust.provenance.repository === `${source.owner}/${source.repo}`
+      && trust.provenance.headSha.length > 0
+      && ctx.syntheticPrSandboxRuntimeSupported();
+    if (
+      (!localAdmission && !sandboxedPrAdmission)
+      || scenarios.length === 0
+      || sourceFingerprint === undefined
+    ) {
+      sendJson(response, 404, { error: "synthetic execution is not enabled for this graph" });
+      return;
+    }
+    const artifact = registration.loadArtifact();
+    if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
+      sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
+      return;
+    }
+    const body = parseSyntheticExecutionRequest(await readJsonBody(request));
+    const scenario = scenarios.find((candidate) => candidate.id === body.scenarioId);
+    if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
+      throw new WebError(409, "selected flow no longer matches the synthetic scenario");
+    }
+    const executionRequest = {
+      sourceRoot,
+      artifact,
+      scenarioId: body.scenarioId,
+      expectedRootId: body.rootNodeId,
+      expectedSourceFingerprint: sourceFingerprint,
+      input: body.input,
+      inputOverrides: body.inputOverrides,
+      watchers: body.watchers,
+    };
+    const execution = sandboxedPrAdmission
+      ? await ctx.runSyntheticScenarioInOci(executionRequest)
+      : await (await import("./synthetic-execution")).runSyntheticScenario(executionRequest);
+    sendJson(response, 200, execution);
+  } finally {
+    registration.release();
   }
-  if (sandboxedPrAdmission && request.headers["x-meridian-sandbox-consent"] !== "true") {
-    sendJson(response, 403, { error: "sandbox consent is required for GitHub synthetic execution" });
-    return;
-  }
-  const body = parseSyntheticExecutionRequest(await readJsonBody(request));
-  const scenario = scenarios.find((candidate) => candidate.id === body.scenarioId);
-  if (scenario !== undefined && scenario.rootId !== body.rootNodeId) {
-    throw new WebError(409, "selected flow no longer matches the synthetic scenario");
-  }
-  const executionRequest = {
-    sourceRoot,
-    artifact,
-    scenarioId: body.scenarioId,
-    expectedRootId: body.rootNodeId,
-    expectedSourceFingerprint: sourceFingerprint,
-    input: body.input,
-    inputOverrides: body.inputOverrides,
-    watchers: body.watchers,
-  };
-  const execution = sandboxedPrAdmission
-    ? await ctx.runSyntheticScenarioInOci(executionRequest)
-    : await (await import("./synthetic-execution")).runSyntheticScenario(executionRequest);
-  sendJson(response, 200, execution);
 }
 
 async function handleApiGet(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
@@ -413,8 +447,12 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/source") {
     const id = url.searchParams.get("id");
-    const descriptor = id ? ctx.graphStore.descriptor(id) : undefined;
-    sendSource(response, descriptor?.sourceRoot ?? null, url.searchParams);
+    const registration = id ? ctx.graphStore.acquire(id) : undefined;
+    try {
+      sendSource(response, registration?.descriptor.sourceRoot ?? null, url.searchParams);
+    } finally {
+      registration?.release();
+    }
     return;
   }
   if (pathname === "/api/prs") {
@@ -473,12 +511,16 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
 }
 
 function loadTelemetryGraph(ctx: Context, response: ServerResponse, id: string | null) {
-  const artifact = id ? ctx.graphStore.loadArtifact(id) : undefined;
-  if (artifact === undefined) {
+  const registration = id ? ctx.graphStore.acquire(id) : undefined;
+  if (registration === undefined) {
     sendJson(response, 404, { error: "unknown graph id" });
     return null;
   }
-  return artifact;
+  try {
+    return registration.loadArtifact();
+  } finally {
+    registration.release();
+  }
 }
 
 function sendError(response: ServerResponse, error: unknown): void {

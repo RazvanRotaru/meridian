@@ -3,6 +3,14 @@ import { readBootConfig } from "./bootConfig";
 
 const BASE_CONFIG = {
   graphUrl: "/api/graph?id=graph-1",
+  graphViewLease: {
+    version: 1,
+    leaseId: "a".repeat(32),
+    url: `/api/graph-views/${"a".repeat(32)}`,
+    createUrl: "/api/graph-views",
+    expiresAtMs: 10_000,
+    heartbeatIntervalMs: 1_000,
+  },
   metaUrl: "/api/meta?id=graph-1",
   overlayUrl: "/api/overlay?id=graph-1",
   hasOverlay: false,
@@ -40,7 +48,34 @@ describe("telemetry boot config", () => {
       syntheticExecutionUrl: null,
       syntheticExecutionTrust: null,
       syntheticScenarios: [],
+      graphViewLease: BASE_CONFIG.graphViewLease,
     });
+  });
+
+  it("rejects an injected server boot contract without a graph view lease", () => {
+    const { graphViewLease: _omitted, ...withoutLease } = BASE_CONFIG;
+    vi.stubGlobal("window", { __MERIDIAN__: withoutLease });
+
+    expect(() => readBootConfig()).toThrow("graphViewLease is required");
+  });
+
+  it("accepts an explicit null lease only for a non-evicting static artifact server", () => {
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...BASE_CONFIG,
+        graphUrl: "/api/graph",
+        graphViewLease: null,
+      },
+    });
+
+    expect(readBootConfig().graphViewLease).toBeNull();
+  });
+
+  it("rejects a registered graph id without its renewable view lease", () => {
+    vi.stubGlobal("window", { __MERIDIAN__: { ...BASE_CONFIG, graphViewLease: null } });
+
+    expect(() => readBootConfig())
+      .toThrow("registered graph views require a graphViewLease");
   });
 
   it("accepts only bounded synthetic scenarios and an explicit execution endpoint", () => {

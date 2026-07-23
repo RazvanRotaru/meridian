@@ -18,8 +18,13 @@ const TEST_ARTIFACT: GraphArtifact = {
 
 describe("injectViewBoot", () => {
   it("exposes the exact PR-session source only for a GitHub-sourced graph", () => {
-    const github = injectViewBoot("<head></head>", "graph-1", { kind: "github", owner: "octo", repo: "repo" });
-    const local = injectViewBoot("<head></head>", "graph-2", { kind: "other" });
+    const github = injectViewBoot(
+      "<head></head>",
+      "graph-1",
+      { kind: "github", owner: "octo", repo: "repo" },
+      viewLease("graph-1"),
+    );
+    const local = injectViewBoot("<head></head>", "graph-2", { kind: "other" }, viewLease("graph-2"));
 
     expect(github).toContain('"overlayUrl":"/api/overlay?id=graph-1"');
     expect(github).toContain('"traceUrl":"/api/traces?id=graph-1"');
@@ -28,6 +33,7 @@ describe("injectViewBoot", () => {
     expect(github).toContain('"label":"Synthetic demo"');
     expect(github).toContain('"preselectedTelemetrySourceId":null');
     expect(github).toContain('"githubSource":{"repository":"octo/repo","subdir":""}');
+    expect(github).toContain('"graphViewLease":{"version":1');
     expect(github).toContain('"syntheticExecutionUrl":null');
     expect(github).toContain('"syntheticScenarios":[]');
     expect(github).toContain('"syntheticExecutionTrust":null');
@@ -41,7 +47,14 @@ describe("injectViewBoot", () => {
       rootId: "ts:src/services/orderService.ts#OrderService.placeOrder",
       defaultInput: { customerId: "cust_demo", lines: [] },
     };
-    const html = injectViewBoot("<head></head>", "graph-2", { kind: "path" }, [scenario], { mode: "local" });
+    const html = injectViewBoot(
+      "<head></head>",
+      "graph-2",
+      { kind: "path" },
+      viewLease("graph-2"),
+      [scenario],
+      { mode: "local" },
+    );
 
     expect(html).toContain('"syntheticExecutionUrl":"/api/synthetic-executions?id=graph-2"');
     expect(html).toContain('"syntheticScenarios":[{"id":"place-order"');
@@ -51,6 +64,7 @@ describe("injectViewBoot", () => {
       "<head></head>",
       "graph-3",
       { kind: "github", owner: "octo", repo: "repo" },
+      viewLease("graph-3"),
       [scenario],
     );
     expect(remote).toContain('"syntheticExecutionUrl":null');
@@ -60,6 +74,7 @@ describe("injectViewBoot", () => {
       "<head></head>",
       "graph-4",
       { kind: "github", owner: "octo", repo: "repo" },
+      viewLease("graph-4"),
       [scenario],
       { mode: "sandboxed-pr", provenance: { repository: "octo/repo", headSha: "abc123" } },
     );
@@ -75,6 +90,7 @@ describe("injectViewBoot", () => {
       "<head></head>",
       "graph-empty",
       { kind: "github", owner: "octo", repo: "repo" },
+      viewLease("graph-empty"),
       null,
       { mode: "sandboxed-pr", provenance: { repository: "octo/repo", headSha: "abc123" } },
     );
@@ -84,6 +100,17 @@ describe("injectViewBoot", () => {
     expect(html).toContain('"syntheticExecutionTrust":{"mode":"sandboxed-pr"');
   });
 });
+
+function viewLease(graphId: string) {
+  return {
+    version: 1 as const,
+    leaseId: "a".repeat(32),
+    url: `/api/graph-views/${graphId}`,
+    createUrl: "/api/graph-views",
+    expiresAtMs: 10_000,
+    heartbeatIntervalMs: 1_000,
+  };
+}
 
 describe("artifact source execution identity", () => {
   it("retains local path provenance instead of collapsing it into the generic non-GitHub case", () => {
