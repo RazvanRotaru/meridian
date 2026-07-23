@@ -8,7 +8,6 @@ import { WebError } from "./web-error";
 import {
   materializeValidatedArtifact,
   WebGraphStore,
-  WebGraphStoreCapacityError,
   type WebGraphRegistration,
 } from "./web-graph-store";
 import type { GraphRetentionOptions } from "./web-graph-retention";
@@ -283,10 +282,6 @@ async function route(
 function sendTestError(response: ServerResponse, error: unknown): void {
   if (error instanceof WebError) {
     sendJson(response, error.status, { error: error.message });
-    return;
-  }
-  if (error instanceof WebGraphStoreCapacityError) {
-    sendJson(response, 503, { error: error.message }, { "retry-after": "5" });
     return;
   }
   sendJson(response, 500, { error: "internal error" });

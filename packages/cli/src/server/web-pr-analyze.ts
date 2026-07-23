@@ -125,9 +125,9 @@ async function streamAnalysis(
           );
           if (comparison.existingPin !== undefined) existingPins.push(comparison.existingPin);
           throwIfAborted(jobSignal);
-          // The store consumes both workspace leases even when aggregate admission fails. HEAD and
-          // merge-base become visible together or not at all, so a rejected second side cannot
-          // strand an undisclosed HEAD registration that blocks a retry.
+          // The store consumes both workspace leases and publishes HEAD + merge-base atomically.
+          // Retention pressure may temporarily exceed its soft targets while live owners are
+          // protected, but it cannot reject or split this coherent pair.
           leasesHandedOff = true;
           ctx.graphStore.publishBatch([head.registration, comparison.registration]);
           return doneLine(

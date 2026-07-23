@@ -224,11 +224,10 @@ describe("handlePrAnalyze", () => {
     expect(analyzeRepository).toHaveBeenCalledTimes(4);
   });
 
-  it("rejects a two-sided publication atomically when the active session owns the remaining capacity", async () => {
+  it("publishes a coherent two-sided graph above the soft target while the active session is pinned", async () => {
     const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 2 }, {
       maxEntries: 2,
       lowWaterEntries: 1,
-      publicationHandoffTtlMs: 0,
     });
 
     const captured = await invoke(ctx, BODY);
@@ -237,18 +236,21 @@ describe("handlePrAnalyze", () => {
       "clone",
       "checkout",
       "extract",
-      "error",
+      "done",
     ]);
-    expect(captured.lines().at(-1)).toMatchObject({
-      message: "graph registration capacity is currently in use; retry shortly",
-      retryAfterSeconds: 5,
+    const done = captured.lines().at(-1);
+    expect(done).toMatchObject({
+      graphId: expect.any(String),
+      comparisonGraphId: expect.any(String),
     });
-    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 3, sourceLeases: 2 });
     expect(hasGraph(ctx, "artifact")).toBe(true);
-    expect(readdirSync(ctx.graphStore.rootPath)).toHaveLength(1);
+    expect(hasGraph(ctx, String(done?.graphId))).toBe(true);
+    expect(hasGraph(ctx, String(done?.comparisonGraphId))).toBe(true);
+    expect(readdirSync(ctx.graphStore.rootPath)).toHaveLength(3);
     expect(repositories.leaseRecords).toEqual([
-      expect.objectContaining({ side: "head", releaseCount: 1 }),
-      expect.objectContaining({ side: "comparison", releaseCount: 1 }),
+      expect.objectContaining({ side: "head", releaseCount: 0 }),
+      expect.objectContaining({ side: "comparison", releaseCount: 0 }),
     ]);
   });
 

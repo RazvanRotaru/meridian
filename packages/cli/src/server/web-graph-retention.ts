@@ -45,7 +45,7 @@ export interface GraphRetentionCandidate {
   readonly publishedAtMs: number;
   readonly lastAccessAtMs: number;
   readonly pinned: boolean;
-  /** Explicit short-lived publication reservation. Stores must admission-bound these reservations. */
+  /** Explicit short-lived publication reservation protected across temporary retention pressure. */
   readonly handoffUntilMs: number;
 }
 
@@ -187,8 +187,8 @@ export function graphRetentionOptionsFromEnv(
 /**
  * Deterministic pure policy: expire eligible idle registrations, then drain only dimensions that
  * crossed a high watermark down to their corresponding low watermark. Pins and publication
- * handoffs are absolute protections inside this selector. The store's admission transaction is
- * responsible for rejecting a publication when those owners leave no room under a hard maximum.
+ * handoffs are absolute protections inside this selector. A store may temporarily remain above a
+ * target while those owners are active, then run the policy again after release or expiry.
  */
 export function selectGraphRetentionCandidates<
   Candidate extends GraphRetentionCandidate,
