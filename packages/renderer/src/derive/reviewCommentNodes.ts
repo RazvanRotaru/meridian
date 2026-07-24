@@ -1,7 +1,7 @@
 /**
- * Project PR-review comments onto graph identities. Draft line anchors and GitHub RIGHT-side
- * comments use current/new-side coordinates, so only a graph in that same coordinate space can
- * safely attach them to a code node; the live synchronous base fallback keeps them at file level.
+ * Project PR-review comments onto graph identities. RIGHT-side draft/comment anchors use current
+ * coordinates, so only a graph in that same coordinate space can safely attach them to a code
+ * node. LEFT-side deletion anchors stay at file level rather than targeting an unrelated HEAD line.
  * Exact owners stay separate from visible representatives so collapsed containers can carry them.
  */
 import type { GraphNode } from "@meridian/core";
@@ -47,7 +47,7 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
     // hidden draft up onto a still-visible ancestor.
     if (!targetsByPath.has(draft.path)) continue;
     const target = draft.line !== null
-      ? draft.lineStale === true || !input.lineCoordinatesMatchGraph
+      ? draft.lineStale === true || draft.side === "LEFT" || !input.lineCoordinatesMatchGraph
         ? fileOwner(draft.path, targetsByPath)
         : headLineOwner(draft.path, draft.line)
       : draft.nodeId !== null && input.index.nodesById.has(draft.nodeId)
@@ -59,6 +59,7 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
       body: draft.body,
       author: "Draft comment",
       line: draft.line,
+      side: draft.side,
       lineStale: draft.lineStale === true,
       url: null,
     });
@@ -77,7 +78,8 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
         body: comment.body,
         author: comment.author,
         line: comment.line,
-        lineStale: comment.side !== "RIGHT",
+        side: comment.side,
+        lineStale: false,
         url: comment.url || null,
       });
     }
@@ -120,6 +122,14 @@ function fileTargets(files: readonly ReviewFileRow[], index: GraphIndex): Map<st
     const target = { moduleId: file.moduleId, graphPath: module.location.file };
     targets.set(file.path, target);
     if (!targets.has(target.graphPath)) targets.set(target.graphPath, target);
+    for (const unit of file.units) {
+      const unitPath = index.nodesById.get(unit.nodeId)?.location.file;
+      if (unitPath && !targets.has(unitPath)) {
+        // Renamed-file tombstones retain their BASE source path even though the owning file/module
+        // uses the current PR path. Old persisted LEFT drafts still belong to this file indicator.
+        targets.set(unitPath, target);
+      }
+    }
   }
   return targets;
 }

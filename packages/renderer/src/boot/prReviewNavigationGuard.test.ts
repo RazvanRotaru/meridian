@@ -40,6 +40,7 @@ describe("PR review navigation gesture lock", () => {
       lineRevision: null,
       path: "src/a.ts",
       line: 10,
+      side: "RIGHT" as const,
       confirmDiscard: false,
       error: null,
     };
@@ -131,6 +132,7 @@ describe("PR review navigation gesture lock", () => {
         lineRevision: null,
         path: "src/a.ts",
         line: 10,
+        side: "RIGHT",
         body: "unfinished",
         confirmDiscard: false,
         error: null,

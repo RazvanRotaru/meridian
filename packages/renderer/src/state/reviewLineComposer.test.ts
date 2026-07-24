@@ -15,6 +15,7 @@ const TARGET: ReviewLineComposerTarget = {
   lineRevision: "head-a",
   path: "src/live.ts",
   line: 19,
+  side: "RIGHT",
 };
 
 describe("reviewLineComposer", () => {
@@ -92,7 +93,7 @@ describe("reviewLineComposer", () => {
     });
   });
 
-  it("matches the review, revision, path, and line exactly", () => {
+  it("matches the review, revision, path, side, and line exactly", () => {
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET })).toBe(true);
     expect(matchesReviewLineComposerTarget(null, TARGET)).toBe(false);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, reviewKey: "repo|pr-43" })).toBe(false);
@@ -101,5 +102,6 @@ describe("reviewLineComposer", () => {
     expect(matchesReviewLineComposerTarget({ ...TARGET, lineRevision: null }, { ...TARGET, lineRevision: null })).toBe(true);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, path: "src/other.ts" })).toBe(false);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, line: 20 })).toBe(false);
+    expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, side: "LEFT" })).toBe(false);
   });
 });

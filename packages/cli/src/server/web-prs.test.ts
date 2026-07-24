@@ -643,6 +643,35 @@ describe("handleSubmitReview", () => {
     });
   });
 
+  it("forwards mixed LEFT and RIGHT line coordinates unchanged", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let posted: unknown;
+    vi.stubGlobal("fetch", (async (_url: string | URL | Request, init?: RequestInit) => {
+      posted = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        comments: [
+          { path: "src/a.ts", line: 24, side: "LEFT", body: "deleted behavior" },
+          { path: "src/a.ts", line: 25, side: "RIGHT", body: "replacement behavior" },
+        ],
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(posted).toEqual({
+      event: "COMMENT",
+      comments: [
+        { path: "src/a.ts", line: 24, side: "LEFT", body: "deleted behavior" },
+        { path: "src/a.ts", line: 25, side: "RIGHT", body: "replacement behavior" },
+      ],
+    });
+  });
+
   it("never adds a review-level body to the GitHub payload", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     let posted: unknown;
@@ -797,6 +826,10 @@ describe("handleSubmitReview", () => {
     const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
     const noLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", body: "x" }] }));
     const zeroLine = await invokePost(ctx, bodyRequest({ number: 7, comments: [{ path: "a.ts", line: 0, body: "x" }] }));
+    const invalidSide = await invokePost(ctx, bodyRequest({
+      number: 7,
+      comments: [{ path: "a.ts", line: 2, side: "MIDDLE", body: "x" }],
+    }));
     const malformedFileComments = await invokePost(ctx, bodyRequest({
       number: 7,
       comments: [{ path: "a.ts", line: 2, body: "inline" }],
@@ -815,6 +848,7 @@ describe("handleSubmitReview", () => {
     expect([
       noLine.status(),
       zeroLine.status(),
+      invalidSide.status(),
       malformedFileComments.status(),
       legacyNotes.status(),
       empty.status(),
@@ -822,7 +856,7 @@ describe("handleSubmitReview", () => {
       changesWithoutSummary.status(),
       badCommit.status(),
       badNumber.status(),
-    ]).toEqual([400, 400, 400, 400, 400, 400, 400, 400, 400]);
+    ]).toEqual([400, 400, 400, 400, 400, 400, 400, 400, 400, 400]);
     expect(JSON.parse(malformedFileComments.body()).error).toMatch(/path, optional label/);
     expect(JSON.parse(legacyNotes.body()).error).toMatch(/use fileComments/);
     expect(fetch).not.toHaveBeenCalled();
@@ -853,6 +887,10 @@ describe("handleSubmitReview", () => {
       ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
       bodyRequest({
         ...VALID_BODY,
+        comments: [
+          { path: "src/a.ts", line: 25, side: "LEFT", body: "check" },
+          { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
+        ],
         fileComments: [{ path: "src/c.ts", label: "File", body: "Existing file note" }],
         commitId: "abcdef1234567",
       }),
@@ -875,7 +913,7 @@ describe("handleSubmitReview", () => {
     expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({
       commit_id: "abcdef1234567",
       comments: [
-        { path: "src/a.ts", line: 25, side: "RIGHT", body: "check" },
+        { path: "src/a.ts", line: 25, side: "LEFT", body: "check" },
         { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
       ],
     });
@@ -892,7 +930,7 @@ describe("handleSubmitReview", () => {
       {
         reviewId: "PRR_node_61",
         path: "src/a.ts",
-        body: "**Meridian location:** `L25` · review commit `abcdef1`\n\ncheck",
+        body: "**Meridian location:** `L25 · base` · review commit `abcdef1`\n\ncheck",
       },
       {
         reviewId: "PRR_node_61",

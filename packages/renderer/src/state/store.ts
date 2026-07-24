@@ -145,6 +145,7 @@ import {
   type PrFileStatus,
   type PrListResponse,
   type PrOneResponse,
+  type PrReviewCommentSide,
   type PrReviewSubmissionEvent,
   type PrSessionSource,
   type PrSummary,
@@ -913,8 +914,14 @@ export interface BlueprintState {
   toggleReviewUnitsViewed(nodeIds: readonly string[]): void;
   toggleReviewFileViewed(path: string): void;
   toggleReviewFilesViewed(paths: readonly string[]): void;
-  addReviewComment(path: string, nodeId: string | null, body: string, line?: number | null): void;
-  openReviewLineComposer(path: string, line: number): void;
+  addReviewComment(
+    path: string,
+    nodeId: string | null,
+    body: string,
+    line?: number | null,
+    side?: PrReviewCommentSide | null,
+  ): void;
+  openReviewLineComposer(path: string, line: number, side?: PrReviewCommentSide): void;
   setReviewLineComposerBody(body: string): void;
   /** True means the caller may dismiss immediately. False leaves a dirty composer open on its
    * inline Keep/Discard confirmation; the requesting host closes only after a later discard. */
@@ -1450,7 +1457,7 @@ function isSourceLineCount(value: unknown): value is number {
 }
 
 /** Whether changing only this view's chrome keeps the active composer mounted on the exact same
- * HEAD source row. This lets inline → modal expansion feel continuous while still guarding an
+ * diff row. This lets inline → modal expansion feel continuous while still guarding an
  * unrelated hover-card draft that happens to coexist with an older inline source view. */
 function codeViewCanHostReviewLineComposer(state: BlueprintState, view: CodeView): boolean {
   const composer = state.reviewLineComposer;
@@ -1460,9 +1467,14 @@ function codeViewCanHostReviewLineComposer(state: BlueprintState, view: CodeView
     || composer.reviewKey !== state.review.context.reviewKey
     || composer.lineRevision !== prReviewRevisionKey(state.prReviewRevision)
     || composer.path !== view.node.location.file
-    || (view.sourceSide ?? "head") !== "head"
     || view.code === null
   ) {
+    return false;
+  }
+  if (composer.side === "LEFT") {
+    return view.diffLines?.some((line) => line.kind === "deleted" && line.oldLine === composer.line) === true;
+  }
+  if ((view.sourceSide ?? "head") !== "head") {
     return false;
   }
   const baseLine = view.baseLine ?? view.node.location.startLine;
@@ -5453,7 +5465,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // The line composer is one session-only editing surface shared by hover, inline, modal, and
     // edge source hosts. Capturing the review revision prevents a remounted view from silently
     // retargeting unfinished prose after the PR head changes.
-    openReviewLineComposer(path, line) {
+    openReviewLineComposer(path, line, side = "RIGHT") {
       const state = get();
       if (
         !state.review
@@ -5469,6 +5481,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         lineRevision: prReviewRevisionKey(state.prReviewRevision),
         path,
         line,
+        side,
       };
       const current = state.reviewLineComposer;
       if (matchesReviewLineComposerTarget(current, target)) {
@@ -5478,7 +5491,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({ reviewLineComposer: openReviewLineComposerState(current, target) });
         return;
       }
-      if (!guardReviewLineComposerTransition(() => get().openReviewLineComposer(path, line))) {
+      if (!guardReviewLineComposerTransition(() => get().openReviewLineComposer(path, line, side))) {
         return;
       }
       set({ reviewLineComposer: openReviewLineComposerState(get().reviewLineComposer, target) });
@@ -5516,22 +5529,26 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       transition?.();
     },
 
-    // Add a draft comment on a file (nodeId null), touched unit, or explicit HEAD-side line. Drafts
+    // Add a draft comment on a file (nodeId null), touched unit, or explicit diff line. Drafts
     // persist under the reviewKey until submitted or deleted.
-    addReviewComment(path, nodeId, body, line = null) {
+    addReviewComment(path, nodeId, body, line = null, side = line === null ? null : "RIGHT") {
       const { review, reviewComments, index, prReviewRevision } = get();
       const trimmed = body.trim();
       if (!review || trimmed.length === 0) {
         return;
       }
       const lineRevision = line === null ? null : prReviewRevisionKey(prReviewRevision);
+      const lineSide = line === null ? null : side === "LEFT" ? "LEFT" : "RIGHT";
       const comment: ReviewComment = {
         id: newCommentId(),
         path,
         nodeId,
         line,
+        side: lineSide,
         ...(lineRevision === null ? {} : { lineRevision }),
-        anchorLabel: line === null ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null)) : `L${line}`,
+        anchorLabel: line === null
+          ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null))
+          : `L${line}${lineSide === "LEFT" ? " · base" : ""}`,
         body: trimmed,
         at: new Date().toISOString(),
       };
@@ -5725,6 +5742,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewComments,
         reviewFiles,
         reviewCommentRangesByFile,
+        reviewDiffLinesByFile,
         prReviewed: prNumber,
         reviewSubmitStatus,
         prReviewStale,
@@ -5760,7 +5778,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewFiles,
         review.context,
         reviewCommentRangesByFile,
-        { forceFileComments },
+        { forceFileComments, diffLinesByFile: reviewDiffLinesByFile },
       );
       const submittedIds = new Set(visibleComments.map((comment) => comment.id));
       const submittedKey = review.context.reviewKey;

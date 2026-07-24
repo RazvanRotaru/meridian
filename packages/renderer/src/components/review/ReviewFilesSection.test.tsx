@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { ChangedDiffLine } from "@meridian/core";
 import type { ReviewFileRow } from "../../derive/reviewFiles";
-import { ReviewFilesSection } from "./ReviewFilesSection";
+import type { PrGitHubComment } from "../../state/prTypes";
+import { reviewCommentHasCanvasPlacement, ReviewFilesSection } from "./ReviewFilesSection";
 
 const FILE: ReviewFileRow = {
   path: "src/bootstrap-host.ts",
@@ -23,6 +25,7 @@ const STATE = {
   review: null,
   prReviewed: null,
   reviewCommentRangesByFile: {},
+  reviewDiffLinesByFile: {},
   prDiscussion: null,
   reviewCommentsVisible: false,
   reviewPathScope: null,
@@ -62,5 +65,32 @@ describe("ReviewFilesSection", () => {
     expect(focused).toContain('aria-pressed="true"');
     expect(focused).toContain('title="Restore review scope and affected flows"');
     expect(focused).toContain("bootstrap-host.ts");
+  });
+
+  it("moves only exact, renderable deleted-line comments from the full rail fallback", () => {
+    const deletion: ChangedDiffLine = {
+      kind: "deleted",
+      oldLine: 12,
+      newLine: null,
+      beforeNewLine: 12,
+      text: "removed",
+    };
+    const comment: PrGitHubComment = {
+      id: 1,
+      inReplyToId: null,
+      path: FILE.path,
+      line: 12,
+      side: "LEFT",
+      body: "why remove this?",
+      author: "octo",
+      viewerCanEdit: false,
+      updatedAt: "2026-07-24T00:00:00Z",
+      url: "https://github.com/o/r/pull/1#discussion_r1",
+    };
+
+    expect(reviewCommentHasCanvasPlacement(FILE, comment, [deletion])).toBe(true);
+    expect(reviewCommentHasCanvasPlacement(FILE, { ...comment, line: 13 }, [deletion])).toBe(false);
+    expect(reviewCommentHasCanvasPlacement(FILE, { ...comment, url: "" }, [deletion])).toBe(false);
+    expect(reviewCommentHasCanvasPlacement({ ...FILE, moduleId: null }, comment, [deletion])).toBe(false);
   });
 });

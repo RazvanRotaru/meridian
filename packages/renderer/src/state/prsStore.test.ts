@@ -941,7 +941,7 @@ describe("PR store slice", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       number: 7,
       event: "COMMENT",
-      comments: [{ path, line: 1, body: "Keep this in the review draft" }],
+      comments: [{ path, line: 1, side: "RIGHT", body: "Keep this in the review draft" }],
       fileComments: [],
       commitId: "abcdef1234567890abcdef1234567890abcdef12",
     });
@@ -982,7 +982,7 @@ describe("PR store slice", () => {
 
     expect(submissions).toEqual([
       { number: 7, event: "APPROVE", comments: [], fileComments: [] },
-      { number: 7, event: "COMMENT", comments: [{ path, line: 1, body: "Inline note" }], fileComments: [] },
+      { number: 7, event: "COMMENT", comments: [{ path, line: 1, side: "RIGHT", body: "Inline note" }], fileComments: [] },
       { number: 7, event: "REQUEST_CHANGES", comments: [], fileComments: [], body: "Please fix the blocker." },
     ]);
   });
@@ -1007,7 +1007,14 @@ describe("PR store slice", () => {
     store.setState(selectedPrState(7));
     await store.getState().reviewPrInGraph();
     const path = store.getState().reviewFiles[0].path;
+    store.setState({
+      reviewDiffLinesByFile: {
+        ...store.getState().reviewDiffLinesByFile,
+        [path]: [{ kind: "deleted", oldLine: 2, newLine: null, beforeNewLine: 2, text: "removed" }],
+      },
+    });
     store.getState().addReviewComment(path, null, "Valid inline draft");
+    store.getState().addReviewComment(path, null, "Deleted-line draft", 2, "LEFT");
     store.getState().addReviewComment(path, null, "Outside diff context", 11);
     await store.getState().submitReviewComments();
 
@@ -1015,7 +1022,10 @@ describe("PR store slice", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       number: 7,
       event: "COMMENT",
-      comments: [{ path, line: 1, body: "Valid inline draft" }],
+      comments: [
+        { path, line: 1, side: "RIGHT", body: "Valid inline draft" },
+        { path, line: 2, side: "LEFT", body: "Deleted-line draft" },
+      ],
       fileComments: [{ path, label: "L11", body: "Outside diff context" }],
     });
     expect(store.getState().reviewComments).toEqual([]);
@@ -1309,7 +1319,7 @@ describe("PR store slice", () => {
     expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
       number: 7,
       event: "COMMENT",
-      comments: [{ path, line: 1, body: "Comment on the reviewed revision" }],
+      comments: [{ path, line: 1, side: "RIGHT", body: "Comment on the reviewed revision" }],
       fileComments: [],
       commitId: reviewedHeadSha,
     });

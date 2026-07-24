@@ -16,9 +16,12 @@ import { matchesReviewLineComposerTarget } from "../state/reviewLineComposer";
 import type { CodeView } from "../state/store";
 import { CodeBlock, type CodeDiffLine, type CodeSourceSide } from "./CodeBlock";
 import {
+  currentReviewCommentPath,
   useCodeReviewComments,
+  useDeletedCodeReviewComments,
   useGitHubCommentableReviewLines,
   usePendingCodeReviewComments,
+  usePendingDeletedCodeReviewComments,
 } from "./review/useCodeReviewComments";
 import { summarizeChangeKinds, useChangeSummary, useChangedLines, useLineChangeKinds } from "./useChangedLines";
 
@@ -39,6 +42,8 @@ export interface SourceDiffSummary {
 
 export interface SourceDiffModel {
   view: CodeView;
+  /** Current PR/checklist identity. It can differ from `file` while showing a renamed file's BASE. */
+  reviewPath: string;
   file: string;
   baseLine: number;
   /** Exact visible source rows; zero means the loaded source is truly empty. */
@@ -58,6 +63,8 @@ export interface SourceDiffModel {
   inlineCommentableLines: ReadonlySet<number>;
   /** Every visible HEAD row on which Meridian can preserve a draft. */
   commentableLines: ReadonlySet<number>;
+  /** Exact visible BASE lines represented by canonical deletion rows. */
+  deletedCommentableLines: ReadonlySet<number>;
   /** Explains which drafts become inline comments versus file-level review comments. */
   reviewCommentScopeNote: string | null;
   removedRows: ReadonlyMap<number, string[]>;
@@ -70,6 +77,8 @@ export interface SourceDiffModel {
 /** Build the exact presentation model once. Every host must pass this model to SourceDiffBody. */
 export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const review = useBlueprint((state) => state.review);
+  const reviewFiles = useBlueprint((state) => state.reviewFiles);
+  const index = useBlueprint((state) => state.index);
   const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const forceFileComments = useBlueprint((state) => state.prReviewStale
@@ -78,6 +87,10 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const prReviewStatus = useBlueprint((state) => state.prReviewStatus);
   const prReviewFiles = useBlueprint((state) => state.prReviewSource?.files ?? null);
   const file = codeView.node.location.file;
+  const reviewPath = useMemo(
+    () => currentReviewCommentPath(file, reviewFiles, index.nodesById, codeView.node.id),
+    [codeView.node.id, file, index, reviewFiles],
+  );
   const legacyRemoved = useBlueprint((state) => state.reviewRemovedByFile[file] ?? EMPTY_REMOVED);
   const legacyRemovedTruncated = useBlueprint((state) => state.reviewRemovedTruncatedByFile[file] === true);
   const wholeFile = codeView.wholeFile ?? false;
@@ -171,9 +184,22 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     }
     return rows;
   }, [baseLine, diffLines, legacyRemoved, shownEnd]);
+  const deletedLines = useMemo(() => new Set(
+    (diffLines ?? []).flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []),
+  ), [diffLines]);
   const commentCode = sourceSide === "head" ? codeView.code : null;
-  const existingComments = useCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
-  const pendingComments = usePendingCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
+  const headComments = useCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
+  const deletedComments = useDeletedCodeReviewComments(file, deletedLines);
+  const existingComments = useMemo(
+    () => [...headComments, ...deletedComments],
+    [deletedComments, headComments],
+  );
+  const headDrafts = usePendingCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
+  const deletedDrafts = usePendingDeletedCodeReviewComments(file, deletedLines);
+  const pendingComments = useMemo(
+    () => [...headDrafts, ...deletedDrafts],
+    [deletedDrafts, headDrafts],
+  );
   const githubCommentableLines = useGitHubCommentableReviewLines(file, baseLine, commentCode, sourceLineCount);
   const githubCommentingReady = prReviewed !== null
     && review !== null
@@ -198,6 +224,14 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       : visibleSourceLines(baseLine, sourceLineCount),
     [baseLine, codeView.code, review, sourceLineCount, sourceSide],
   );
+  const deletedCommentableLines = useMemo(
+    () => review === null
+      || prReviewRefreshing
+      || prReviewStatus === "preparing"
+      ? EMPTY_COMMENTABLE_LINES
+      : deletedLines,
+    [deletedLines, prReviewRefreshing, prReviewStatus, review],
+  );
   const reviewCommentScopeNote = useMemo(
     () => githubCommentingReady && sourceSide === "head"
       ? githubLineCommentScopeNote(inlineCommentableLines, sourceLineCount)
@@ -207,6 +241,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
 
   return {
     view: codeView,
+    reviewPath,
     file,
     baseLine,
     sourceLineCount,
@@ -222,6 +257,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     pendingComments,
     inlineCommentableLines,
     commentableLines,
+    deletedCommentableLines,
     reviewCommentScopeNote,
     removedRows,
     removedTruncated: diffLines === undefined && legacyRemovedTruncated,
@@ -267,8 +303,11 @@ export function SourceDiffBody({
       lineRevision,
       path: model.file,
       line: composer.line,
+      side: composer.side,
     })
-    && model.commentableLines.has(composer.line)
+    && (composer.side === "LEFT"
+      ? model.deletedCommentableLines.has(composer.line)
+      : model.commentableLines.has(composer.line))
     ? composer
     : null;
   useEffect(() => {
@@ -308,14 +347,16 @@ export function SourceDiffBody({
           focusLines={focusLines}
           hiddenSourceLines={model.hiddenSourceLines}
           commentableLines={model.commentableLines}
-          onLineClick={model.commentableLines.size > 0 ? (line) => {
+          commentableDeletedLines={model.deletedCommentableLines}
+          onLineClick={model.commentableLines.size > 0 || model.deletedCommentableLines.size > 0 ? (line, side) => {
             // Pin synchronously. Waiting for the controlled composer render is late enough for a
             // hover-card leave timer to win when the inserted row moves the pointer outside.
             onComposerEngage?.();
-            openReviewLineComposer(model.file, line);
+            openReviewLineComposer(model.file, line, side);
           } : undefined}
           lineComposer={activeComposer === null ? null : {
             line: activeComposer.line,
+            side: activeComposer.side,
             value: activeComposer.body,
             onValueChange: setReviewLineComposerBody,
             confirmDiscard: activeComposer.confirmDiscard,
@@ -323,7 +364,7 @@ export function SourceDiffBody({
             onKeepEditing: keepEditingReviewLineComposer,
             onDiscard: discardReviewLineComposer,
             onAdd: (body) => {
-              addReviewComment(model.file, null, body, activeComposer.line);
+              addReviewComment(model.reviewPath, null, body, activeComposer.line, activeComposer.side);
               discardReviewLineComposer();
             },
             onCancel: () => {
@@ -371,9 +412,9 @@ export function githubLineCommentScopeNote(
 ): string | null {
   if (visibleLineCount <= 0 || commentableLines.size >= visibleLineCount) return null;
   if (commentableLines.size === 0) {
-    return "Comments in this preview will attach to the file";
+    return "Comments on current lines in this preview will attach to the file";
   }
-  return `${formatLineRanges(commentableLines)} can be inline · comments on other lines attach to the file`;
+  return `${formatLineRanges(commentableLines)} can be inline on current code · comments on other current lines attach to the file`;
 }
 
 function visibleSourceLines(baseLine: number, lineCount: number): ReadonlySet<number> {

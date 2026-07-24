@@ -56,6 +56,7 @@ function pendingComment(
     path: FILE,
     nodeId: null,
     line,
+    side: line === null ? null : "RIGHT",
     anchorLabel: line === null ? null : `L${line}`,
     body,
     at: "2026-07-13T00:00:00.000Z",
@@ -185,7 +186,7 @@ describe("CodePanel review comments", () => {
       expect(markup).toContain(`aria-label="Comment on line ${line}"`);
     }
     expect(markup).toContain('data-review-comment-scope="inline-and-file"');
-    expect(markup).toContain("L17–L19 can be inline · comments on other lines attach to the file");
+    expect(markup).toContain("L17–L19 can be inline on current code · comments on other current lines attach to the file");
   });
 
   it("does not add a scope note when every visible line is in the PR diff", () => {

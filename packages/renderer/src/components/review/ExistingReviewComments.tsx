@@ -128,7 +128,10 @@ export function ExistingCommentLinks(props: { comments: readonly PrGitHubComment
   return (
     <div style={LINK_LIST} data-existing-review-comment-links="true">
       {props.comments.map((comment) => {
-        const label = `${comment.line === null ? "Comment" : `L${comment.line}`} · ${comment.author}`;
+        const location = comment.line === null
+          ? "Comment"
+          : `L${comment.line}${comment.side === "LEFT" ? " · base" : ""}`;
+        const label = `${location} · ${comment.author}`;
         return comment.url ? (
           <a
             key={comment.id}

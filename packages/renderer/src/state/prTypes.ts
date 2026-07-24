@@ -2,6 +2,7 @@ import type { ChangedDiffLine, ChangedLineSpan, LineRange } from "@meridian/core
 
 export type PrsTab = "open" | "closed";
 export type PrReviewSubmissionEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
+export type PrReviewCommentSide = "LEFT" | "RIGHT";
 
 /** One exact edit run's old/new spans; an empty side starts at its 1-based next-row cursor. */
 export interface LineEdit {
@@ -113,7 +114,7 @@ export interface PrGitHubComment {
   inReplyToId: number | null;
   path: string;
   line: number | null;
-  side: "LEFT" | "RIGHT" | null;
+  side: PrReviewCommentSide | null;
   body: string;
   author: string;
   /** GitHub's viewer-specific permission for editing this exact comment. */

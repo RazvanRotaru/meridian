@@ -1,13 +1,13 @@
 /**
  * Draft comments → the one GitHub review submission: unit comments anchor to the first changed
- * line INSIDE the unit, file comments to the file's first changed line, and anything without a
- * real new-side API anchor to stand on — no hunks, a whole-file-deletion hunk (start 0), a vanished
- * or drifted unit, or a visible line outside the public API's diff context — becomes a labeled
- * file-level review comment. Never dropped and never anchored by guesswork.
+ * line INSIDE the unit, file comments to the file's first changed line, and anything without an
+ * exact API-safe diff coordinate becomes a labeled file-level review comment. Never dropped and
+ * never anchored by guesswork.
  */
 
 import { describe, expect, it } from "vitest";
 import type { ReviewContext } from "@meridian/core";
+import type { PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import type { ReviewFileRow } from "./reviewFiles";
 import { buildReviewSubmission } from "./reviewSubmit";
@@ -45,15 +45,22 @@ const FILES: ReviewFileRow[] = [
   { path: "src/gone.ts", status: "deleted", moduleId: null, isTest: false, fingerprint: "0-1", blastRadius: 0, deletedImpact: null, units: [] },
 ];
 
-function draft(path: string, nodeId: string | null, body: string, anchorLabel: string | null = null, line: number | null = null): ReviewComment {
-  return { id: body, path, nodeId, line, anchorLabel, body, at: "t" };
+function draft(
+  path: string,
+  nodeId: string | null,
+  body: string,
+  anchorLabel: string | null = null,
+  line: number | null = null,
+  side: PrReviewCommentSide | null = line === null ? null : "RIGHT",
+): ReviewComment {
+  return { id: body, path, nodeId, line, side, anchorLabel, body, at: "t" };
 }
 
 describe("buildReviewSubmission", () => {
   it("anchors a unit comment to the first changed line inside the unit", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "check this")], FILES, CONTEXT);
     // The unit starts at 10 but the hunk starts at 25 — the anchor must be a line the diff shows.
-    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, body: "check this" }]);
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, side: "RIGHT", body: "check this" }]);
     expect(submission.fileComments).toEqual([]);
   });
 
@@ -94,12 +101,12 @@ describe("buildReviewSubmission", () => {
 
   it("anchors a file comment to the file's first changed line", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", null, "file note")], FILES, CONTEXT);
-    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, body: "file note" }]);
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 25, side: "RIGHT", body: "file note" }]);
   });
 
   it("honors an explicit line inside an anchorable hunk", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "right here", "Repo", 83)], FILES, CONTEXT);
-    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 83, body: "right here" }]);
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 83, side: "RIGHT", body: "right here" }]);
   });
 
   it("keeps an explicit context line inline using the patch header's API-safe range", () => {
@@ -109,8 +116,56 @@ describe("buildReviewSubmission", () => {
       CONTEXT,
       { "src/a.ts": [{ start: 77, end: 88 }] },
     );
-    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 78, body: "right here too" }]);
+    expect(submission.comments).toEqual([{ path: "src/a.ts", line: 78, side: "RIGHT", body: "right here too" }]);
     expect(submission.fileComments).toEqual([]);
+  });
+
+  it("anchors an exact deleted row on the LEFT side, including a whole-file deletion", () => {
+    const submission = buildReviewSubmission(
+      [
+        draft("src/a.ts", null, "why remove this line?", null, 24, "LEFT"),
+        draft("src/gone.ts", null, "why remove this file line?", null, 4, "LEFT"),
+      ],
+      FILES,
+      CONTEXT,
+      {},
+      {
+        diffLinesByFile: {
+          "src/a.ts": [{ kind: "deleted", oldLine: 24, newLine: null, beforeNewLine: 25, text: "old line" }],
+          "src/gone.ts": [{ kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 1, text: "gone" }],
+        },
+      },
+    );
+
+    expect(submission.comments).toEqual([
+      { path: "src/a.ts", line: 24, side: "LEFT", body: "why remove this line?" },
+      { path: "src/gone.ts", line: 4, side: "LEFT", body: "why remove this file line?" },
+    ]);
+    expect(submission.fileComments).toEqual([]);
+  });
+
+  it("demotes stale or unverified LEFT lines without losing their base-side label", () => {
+    const stale = {
+      ...draft("src/a.ts", null, "old revision", null, 24, "LEFT"),
+      lineStale: true,
+    };
+    const submission = buildReviewSubmission(
+      [stale, draft("src/a.ts", null, "not a deletion", null, 23, "LEFT")],
+      FILES,
+      CONTEXT,
+      {},
+      {
+        diffLinesByFile: {
+          "src/a.ts": [{ kind: "deleted", oldLine: 24, newLine: null, beforeNewLine: 25, text: "old line" }],
+        },
+      },
+    );
+
+    expect(submission.comments).toEqual([]);
+    expect(submission.fileComments).toEqual([
+      { path: "src/a.ts", label: "L24 · base · previous revision", body: "old revision" },
+      { path: "src/a.ts", label: "L23 · base", body: "not a deletion" },
+    ]);
   });
 
   it("resolves a graph-relative draft path to the canonical PR path before anchoring and submitting", () => {
@@ -134,7 +189,75 @@ describe("buildReviewSubmission", () => {
     expect(submission.comments).toEqual([{
       path: "packages/renderer/src/a.ts",
       line: 78,
+      side: "RIGHT",
       body: "canonical path",
+    }]);
+    expect(submission.fileComments).toEqual([]);
+  });
+
+  it("resolves a renamed file's old path to its canonical current PR path for a LEFT anchor", () => {
+    const renamedContext: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [
+        { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", hunks: [{ start: 20, end: 20 }] },
+      ],
+    };
+    const renamedFiles: ReviewFileRow[] = [{
+      ...FILES[0]!,
+      path: "src/new.ts",
+      status: "renamed",
+    }];
+    const submission = buildReviewSubmission(
+      [draft("src/old.ts", null, "renamed deletion", null, 18, "LEFT")],
+      renamedFiles,
+      renamedContext,
+      {},
+      {
+        diffLinesByFile: {
+          "src/old.ts": [{ kind: "deleted", oldLine: 18, newLine: null, beforeNewLine: 20, text: "old name" }],
+        },
+      },
+    );
+
+    expect(submission.comments).toEqual([{
+      path: "src/new.ts",
+      line: 18,
+      side: "LEFT",
+      body: "renamed deletion",
+    }]);
+    expect(submission.fileComments).toEqual([]);
+  });
+
+  it("keeps a LEFT rename anchor on the pre-image owner when the old path was recreated", () => {
+    const collisionContext: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [
+        { path: "src/new.ts", previousPath: "src/old.ts", status: "renamed", hunks: [{ start: 20, end: 20 }] },
+        { path: "src/old.ts", status: "added", hunks: [{ start: 1, end: 2 }] },
+      ],
+    };
+    const collisionFiles: ReviewFileRow[] = [
+      { ...FILES[0]!, path: "src/new.ts", status: "renamed" },
+      { ...FILES[0]!, path: "src/old.ts", status: "added", moduleId: "ts:src/old.ts" },
+    ];
+    const submission = buildReviewSubmission(
+      [draft("src/old.ts", null, "pre-image deletion", null, 18, "LEFT")],
+      collisionFiles,
+      collisionContext,
+      {},
+      {
+        diffLinesByFile: {
+          "src/new.ts": [{ kind: "deleted", oldLine: 18, newLine: null, beforeNewLine: 20, text: "old behavior" }],
+          "src/old.ts": [{ kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "new file" }],
+        },
+      },
+    );
+
+    expect(submission.comments).toEqual([{
+      path: "src/new.ts",
+      line: 18,
+      side: "LEFT",
+      body: "pre-image deletion",
     }]);
     expect(submission.fileComments).toEqual([]);
   });
@@ -253,6 +376,7 @@ describe("buildReviewSubmission", () => {
       [
         draft("src/a.ts", null, "normally file-anchored"),
         draft("src/a.ts", "ts:src/a.ts#helper", "normally inline", "helper", 83),
+        draft("src/a.ts", null, "normally deleted-line inline", null, 24, "LEFT"),
       ],
       FILES,
       CONTEXT,
@@ -264,6 +388,7 @@ describe("buildReviewSubmission", () => {
     expect(submission.fileComments).toEqual([
       { path: "src/a.ts", label: null, body: "normally file-anchored" },
       { path: "src/a.ts", label: "L83", body: "normally inline" },
+      { path: "src/a.ts", label: "L24 · base", body: "normally deleted-line inline" },
     ]);
   });
 });

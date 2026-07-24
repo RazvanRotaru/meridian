@@ -40,6 +40,7 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
   const review = useBlueprint((state) => state.review);
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const commentRanges = useBlueprint((state) => state.reviewCommentRangesByFile);
+  const diffLinesByFile = useBlueprint((state) => state.reviewDiffLinesByFile);
   const forceFileComments = useBlueprint((state) => state.prReviewStale
     && (state.prReviewRevision?.headSha ?? null) === null);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -56,14 +57,14 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
         reviewFiles,
         review.context,
         commentRanges,
-        { forceFileComments },
+        { forceFileComments, diffLinesByFile },
       );
       if (submission.fileComments.length > 0) {
         fileComments.add(comment.id);
       }
     }
     return fileComments;
-  }, [commentRanges, forceFileComments, livePrReview, props.comments, review, reviewFiles]);
+  }, [commentRanges, diffLinesByFile, forceFileComments, livePrReview, props.comments, review, reviewFiles]);
   if (props.comments.length === 0) {
     return null;
   }
@@ -86,7 +87,7 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
                   ? "GitHub will attach this review comment to the file because its line cannot be anchored inline"
                   : undefined}
               >
-                {`L${comment.line}${comment.lineStale ? " · previous revision" : ""}`}
+                {`L${comment.line}${comment.side === "LEFT" ? " · base" : ""}${comment.lineStale ? " · previous revision" : ""}`}
               </span>
             ) : null}
             {inCode ? <span style={PENDING_CHIP}>Pending</span> : null}

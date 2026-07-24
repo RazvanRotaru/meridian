@@ -55,6 +55,7 @@ describe("review comment node evidence", () => {
         draft("file", null, null),
         draft("method-line", null, 25),
         draft("class-line", null, 15),
+        { ...draft("deleted-line", null, 25), side: "LEFT" },
       ],
       existingComments: [
         existing("RIGHT", 24),
@@ -66,7 +67,7 @@ describe("review comment node evidence", () => {
 
     expect(countsOf(result)).toEqual({
       [METHOD]: { draftCount: 2, existingCount: 2 },
-      [FILE]: { draftCount: 1, existingCount: 2 },
+      [FILE]: { draftCount: 2, existingCount: 2 },
       [CLASS]: { draftCount: 1, existingCount: 0 },
     });
   });
@@ -124,6 +125,45 @@ describe("review comment node evidence", () => {
     expect(evidence.size).toBe(0);
     expect(projectReviewCommentNodeEvidence(evidence, [rfNode(PACKAGE, 1)], INDEX).size).toBe(0);
   });
+
+  it("keeps a renamed BASE-path LEFT draft on its current file indicator", () => {
+    const currentModule = node("ts:src/current.ts", "module", null, "src/current.ts", 1, 40);
+    const baseUnit = node("base:src/previous.ts#removed", "function", null, "src/previous.ts", 10, 20);
+    const renamedIndex = buildGraphIndex({
+      nodes: [currentModule, baseUnit],
+      edges: [],
+    } as unknown as GraphArtifact);
+    const renamedFile: ReviewFileRow = {
+      ...FILE_ROW,
+      path: "src/current.ts",
+      status: "renamed",
+      moduleId: currentModule.id,
+      units: [{
+        nodeId: baseUnit.id,
+        displayName: "removed",
+        kind: "function",
+        startLine: 10,
+        endLine: 20,
+        sourceSide: "base",
+        depth: 0,
+        isTest: false,
+        fingerprint: "removed",
+      }],
+    };
+    const renamedDraft: ReviewComment = {
+      ...draft("renamed-left", null, 12),
+      path: "src/previous.ts",
+      side: "LEFT",
+    };
+
+    expect(countsOf(deriveReviewCommentNodeEvidence(input({
+      drafts: [renamedDraft],
+      files: [renamedFile],
+      index: renamedIndex,
+    })))).toEqual({
+      [currentModule.id]: { draftCount: 1, existingCount: 0 },
+    });
+  });
 });
 
 describe("review comment visible-node projection", () => {
@@ -166,7 +206,7 @@ function countsOf(evidence: ReadonlyMap<string, { draftCount: number; existingCo
 }
 
 function preview(key: string) {
-  return { key, kind: "existing" as const, body: key, author: "octo", line: 1, lineStale: false, url: null };
+  return { key, kind: "existing" as const, body: key, author: "octo", line: 1, side: "RIGHT" as const, lineStale: false, url: null };
 }
 
 function node(id: string, kind: string, parentId: string | null, file: string, startLine: number, endLine: number): GraphNode {
@@ -174,7 +214,7 @@ function node(id: string, kind: string, parentId: string | null, file: string, s
 }
 
 function draft(id: string, nodeId: string | null, line: number | null): ReviewComment {
-  return { id, path: PR_PATH, nodeId, line, anchorLabel: null, body: id, at: "2026-07-12T00:00:00Z" };
+  return { id, path: PR_PATH, nodeId, line, side: line === null ? null : "RIGHT", anchorLabel: null, body: id, at: "2026-07-12T00:00:00Z" };
 }
 
 function existing(side: PrGitHubComment["side"], line: number | null): PrGitHubComment {

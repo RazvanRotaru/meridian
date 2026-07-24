@@ -497,12 +497,12 @@ function boundedArray(raw: unknown, name: string): unknown[] {
 
 function parseComment(entry: unknown): ReviewCommentInput {
   const comment = asRecord(entry);
-  const { path, line, body } = comment;
+  const { path, line, body, side = "RIGHT" } = comment;
   const validLine = typeof line === "number" && Number.isSafeInteger(line) && line > 0;
-  if (!isFilledString(path) || !validLine || !isFilledString(body)) {
-    throw new WebError(400, "each comment needs a path, a positive line, and a non-empty body");
+  if (!isFilledString(path) || !validLine || (side !== "LEFT" && side !== "RIGHT") || !isFilledString(body)) {
+    throw new WebError(400, "each comment needs a path, a positive line, LEFT or RIGHT side, and a non-empty body");
   }
-  return { path, line: line as number, body };
+  return { path, line: line as number, side, body };
 }
 
 function parseFileComment(entry: unknown): ReviewFileCommentInput {

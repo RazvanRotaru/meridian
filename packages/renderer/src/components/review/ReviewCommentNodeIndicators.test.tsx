@@ -77,7 +77,7 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
       <CommentPreviewCard
         label="2 review comments"
         comments={[
-          comment("first", { line: 42, body: "Use **the helper**", url: "https://github.com/o/r/pull/1#comment" }),
+          comment("first", { line: 42, side: "LEFT", body: "Use **the helper**", url: "https://github.com/o/r/pull/1#comment" }),
           comment("draft", { kind: "draft", author: "Draft comment", line: null }),
         ]}
       />,
@@ -85,7 +85,7 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
 
     expect(markup).toContain('role="tooltip"');
     expect(markup).toContain("2 review comments");
-    expect(markup).toContain("L42");
+    expect(markup).toContain("L42 · base");
     expect(markup).toContain("<strong>the helper</strong>");
     expect(markup).toContain('href="https://github.com/o/r/pull/1#comment"');
     expect(markup).toContain("Draft comment");
@@ -106,7 +106,7 @@ function comment(key: string, overrides: Partial<ReviewCommentNodePreview> = {})
 }
 
 function baseComment(key: string) {
-  return { key, kind: "existing" as const, body: key, author: "octo", line: 1, lineStale: false, url: null as string | null };
+  return { key, kind: "existing" as const, body: key, author: "octo", line: 1, side: "RIGHT" as const, lineStale: false, url: null as string | null };
 }
 
 function rfNode(id: string, semanticDepth?: number): Node {

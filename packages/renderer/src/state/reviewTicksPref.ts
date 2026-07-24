@@ -12,6 +12,8 @@
  * graph-URL scopes are one-way migration inputs supplied only by the live canonical PR identity.
  */
 
+import type { PrReviewCommentSide } from "./prTypes";
+
 const STORAGE_PREFIX = "meridian.review.";
 
 export interface ReviewTick {
@@ -23,14 +25,16 @@ export interface ReviewTick {
   address?: string;
 }
 
-/** One draft review comment, anchored to a changed file, touched unit, or changed HEAD-side line. */
+/** One draft review comment, anchored to a changed file, touched unit, or exact diff line. */
 export interface ReviewComment {
   id: string;
   path: string;
   /** The touched unit the comment targets; null == a file-level comment. */
   nodeId: string | null;
-  /** Explicit HEAD-side line selected in the code panel; null == use the file/unit heuristic. */
+  /** Explicit line selected in the code panel; null == use the file/unit heuristic. */
   line: number | null;
+  /** Diff side for an explicit line. Legacy line drafts omitted this and normalize to RIGHT. */
+  side: PrReviewCommentSide | null;
   /** The PR revision changed after this line was selected. Keep the draft, but disarm its inline
    * anchor so it submits as a file-level comment rather than retargeting unrelated code. */
   lineStale?: boolean;
@@ -119,7 +123,7 @@ function coerce(parsed: unknown): ReviewProgress {
     unitTicks: isTickMap(record.unitTicks) ? record.unitTicks : {},
     fileTicks: isTickMap(record.fileTicks) ? record.fileTicks : {},
     comments: Array.isArray(record.comments)
-      ? record.comments.filter(isComment).map((comment) => ({ ...comment, line: comment.line ?? null }))
+      ? record.comments.filter(isComment).map(normalizeComment)
       : [],
   };
 }
@@ -149,7 +153,19 @@ function isTickMap(value: unknown): value is Record<string, ReviewTick> {
     });
 }
 
-type StoredReviewComment = Omit<ReviewComment, "line"> & { line?: number | null };
+type StoredReviewComment = Omit<ReviewComment, "line" | "side"> & {
+  line?: number | null;
+  side?: PrReviewCommentSide | null;
+};
+
+function normalizeComment(comment: StoredReviewComment): ReviewComment {
+  const line = comment.line ?? null;
+  return {
+    ...comment,
+    line,
+    side: line === null ? null : comment.side === "LEFT" ? "LEFT" : "RIGHT",
+  };
+}
 
 function isComment(value: unknown): value is StoredReviewComment {
   if (typeof value !== "object" || value === null) {
@@ -161,6 +177,7 @@ function isComment(value: unknown): value is StoredReviewComment {
     typeof comment.path === "string" &&
     (comment.nodeId === null || typeof comment.nodeId === "string") &&
     (comment.line === undefined || comment.line === null || typeof comment.line === "number") &&
+    (comment.side === undefined || comment.side === null || comment.side === "LEFT" || comment.side === "RIGHT") &&
     (comment.lineStale === undefined || typeof comment.lineStale === "boolean") &&
     (comment.lineRevision === undefined || comment.lineRevision === null || typeof comment.lineRevision === "string") &&
     (comment.anchorLabel === null || typeof comment.anchorLabel === "string") &&
