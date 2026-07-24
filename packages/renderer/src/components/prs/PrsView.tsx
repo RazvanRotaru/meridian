@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
+import {
+  matchesPrSearchQuery,
+  mergePrSearchResults,
+  nextPrSearchResult,
+  normalizePrSearchQuery,
+} from "../../state/prSearch";
 import { PRS_UNAVAILABLE_ERROR, type PrSummary, type PrsTab, type RelatedPrsState } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { PrCard } from "./PrCard";
@@ -12,19 +18,27 @@ export function PrsView() {
   const hasMore = useBlueprint((state) => state.prsHasMore[state.prsTab]);
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
+  const searchQuery = useBlueprint((state) => state.prSearchQuery);
+  const searchResultNumbers = useBlueprint((state) => state.prSearchResults);
+  const searchLoading = useBlueprint((state) => state.prSearchLoading);
+  const searchError = useBlueprint((state) => state.prSearchError);
+  const extraSummaries = useBlueprint((state) => state.prExtraSummaries);
   const selected = useBlueprint((state) => state.prSelected);
   const related = useBlueprint((state) => state.relatedPrs);
-  const { setPrsTab, loadPrs, selectPr, clearRelatedPrs } = useBlueprintActions();
+  const { setPrsTab, loadPrs, searchPrs, clearPrSearch, selectPr, clearRelatedPrs } = useBlueprintActions();
 
-  // Ephemeral view state: search text + chosen author, filtering the already-loaded list only.
+  // Query text and author remain view-local; remote result identity/cache lives in the store so a
+  // late priority lookup can be stale-guarded independently from ordinary queue pagination.
   const [query, setQuery] = useState("");
   const [author, setAuthor] = useState("");
+  const [activeResult, setActiveResult] = useState<number | null>(null);
 
   // Switching Open/Closed clears both filters — otherwise a stale author pick could silently
   // resurface and re-filter when the user returns to a tab where that author exists again.
   const switchTab = (state: PrsTab) => {
     setQuery("");
     setAuthor("");
+    setActiveResult(null);
     setPrsTab(state);
   };
 
@@ -32,13 +46,75 @@ export function PrsView() {
   // Deriving validity (instead of an effect) keeps the select consistent when the tab's authors
   // change: a stale pick that's no longer present silently falls back to "All authors".
   const activeAuthor = authors.includes(author) ? author : "";
-  const filtered = useMemo(() => filterPrs(prs, query, activeAuthor), [prs, query, activeAuthor]);
+  const localMatches = useMemo(() => filterPrs(prs, query, activeAuthor), [prs, query, activeAuthor]);
+  const remoteMatches = useMemo(() => {
+    if (normalizePrSearchQuery(query) === "" || normalizePrSearchQuery(query) !== searchQuery) {
+      return [];
+    }
+    const summaries = searchResultNumbers
+      .map((number) => extraSummaries[number])
+      .filter((pr): pr is PrSummary => pr !== undefined);
+    return filterPrs(summaries, query, activeAuthor);
+  }, [activeAuthor, extraSummaries, query, searchQuery, searchResultNumbers]);
+  const filtered = useMemo(
+    () => mergePrSearchResults(localMatches, remoteMatches),
+    [localMatches, remoteMatches],
+  );
+  const resultNumbers = useMemo(() => filtered.map((pr) => pr.number), [filtered]);
+  const queueComplete = prs !== null && !hasMore;
 
   useEffect(() => {
     if (githubSource && prs === null && !loading && error === null) {
       void loadPrs(1);
     }
   }, [error, githubSource, loadPrs, loading, prs]);
+
+  useEffect(() => {
+    clearPrSearch();
+    const trimmed = query.trim();
+    if (related !== null || trimmed === "" || queueComplete) {
+      return;
+    }
+    const timer = window.setTimeout(() => void searchPrs(trimmed), 250);
+    return () => window.clearTimeout(timer);
+  }, [clearPrSearch, query, queueComplete, related, searchPrs, tab]);
+
+  useEffect(() => {
+    if (activeResult !== null && !resultNumbers.includes(activeResult)) {
+      setActiveResult(null);
+    }
+  }, [activeResult, resultNumbers]);
+
+  const onQueryChange = (value: string) => {
+    setQuery(value);
+    setActiveResult(null);
+  };
+
+  const onQueryKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Escape") {
+      setActiveResult(null);
+      return;
+    }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") {
+      return;
+    }
+    if (event.key === "Enter") {
+      if (activeResult === null) {
+        return;
+      }
+      event.preventDefault();
+      void selectPr(activeResult);
+      return;
+    }
+    event.preventDefault();
+    const next = nextPrSearchResult(resultNumbers, activeResult, event.key === "ArrowDown" ? 1 : -1);
+    setActiveResult(next);
+    if (next !== null) {
+      window.requestAnimationFrame(() => {
+        document.getElementById(`pr-search-result-${next}`)?.scrollIntoView({ block: "nearest" });
+      });
+    }
+  };
 
   if (!githubSource || (error === PRS_UNAVAILABLE_ERROR && prs === null && related === null)) {
     return (
@@ -73,8 +149,21 @@ export function PrsView() {
           </div>
         </header>
         {related !== null ? <RelatedFilterBanner related={related} onClear={clearRelatedPrs} /> : null}
-        {related === null && prs !== null && prs.length > 0 ? (
-          <PrsFilterBar query={query} onQueryChange={setQuery} author={activeAuthor} onAuthorChange={setAuthor} authors={authors} />
+        {related === null ? (
+          <PrsFilterBar
+            query={query}
+            onQueryChange={onQueryChange}
+            onQueryKeyDown={onQueryKeyDown}
+            activeDescendant={activeResult !== null ? `pr-search-result-${activeResult}` : undefined}
+            busy={searchLoading}
+            status={prSearchStatus(query, filtered.length, searchLoading, searchError, prs, hasMore)}
+            author={activeAuthor}
+            onAuthorChange={(value) => {
+              setAuthor(value);
+              setActiveResult(null);
+            }}
+            authors={authors}
+          />
         ) : null}
         <div style={BODY_STYLE}>
           <div style={LIST_STYLE} className="mrd-scroll">
@@ -89,12 +178,38 @@ export function PrsView() {
               : null}
             {related === null || related.error !== null ? (
               <>
-                {prs === null && loading ? <SkeletonList /> : null}
-                {prs !== null && prs.length === 0 ? <div style={EMPTY_STYLE}>No {tab} pull requests.</div> : null}
-                {related === null && prs !== null && prs.length > 0 && filtered.length === 0 ? <div style={EMPTY_STYLE}>{noMatchMessage(query)}</div> : null}
-                {(related?.error ? prs ?? [] : filtered).map((pr) => (
-                  <PrCard key={pr.number} pr={pr} active={selected === pr.number} onSelect={() => void selectPr(pr.number)} />
-                ))}
+                <div
+                  id={related === null ? "pr-search-results" : undefined}
+                  role={related === null ? "listbox" : undefined}
+                  aria-label={related === null ? "Pull requests" : undefined}
+                  aria-busy={related === null ? searchLoading : undefined}
+                  style={RESULTS_STYLE}
+                >
+                  {prs === null && loading && filtered.length === 0 ? <SkeletonList /> : null}
+                  {related === null && query.trim() !== "" && filtered.length === 0 && searchLoading ? (
+                    <div style={EMPTY_STYLE}>Searching GitHub…</div>
+                  ) : null}
+                  {related === null && query.trim() !== "" && filtered.length === 0 && !searchLoading ? (
+                    <div style={EMPTY_STYLE}>{noMatchMessage(query)}</div>
+                  ) : null}
+                  {related === null && query.trim() === "" && prs !== null && prs.length === 0 ? (
+                    <div style={EMPTY_STYLE}>No {tab} pull requests.</div>
+                  ) : null}
+                  {(related?.error ? prs ?? [] : filtered).map((pr) => (
+                    <PrCard
+                      key={pr.number}
+                      pr={pr}
+                      active={selected === pr.number}
+                      searchOption={related === null}
+                      keyboardActive={related === null && activeResult === pr.number}
+                      onPointerMove={related === null ? () => setActiveResult(pr.number) : undefined}
+                      onSelect={() => {
+                        setActiveResult(pr.number);
+                        void selectPr(pr.number);
+                      }}
+                    />
+                  ))}
+                </div>
               </>
             ) : null}
             {error && error !== PRS_UNAVAILABLE_ERROR ? <div style={ERROR_STYLE}>{error}</div> : null}
@@ -147,26 +262,37 @@ function uniqueAuthors(prs: PrSummary[] | null): string[] {
   return [...new Set(prs.map((pr) => pr.author))].sort((a, b) => a.localeCompare(b));
 }
 
-// AND-compose the two filters over the loaded list: title/number substring, then exact author.
+// AND-compose the shared arbitrary-text vocabulary with the exact author menu.
 function filterPrs(prs: PrSummary[] | null, query: string, author: string): PrSummary[] {
   if (prs === null) {
     return [];
   }
-  return prs.filter((pr) => matchesQuery(pr, query) && (author === "" || pr.author === author));
-}
-
-// Case-insensitive substring on the title; the number matches with or without a leading "#".
-function matchesQuery(pr: PrSummary, query: string): boolean {
-  const needle = query.trim().toLowerCase();
-  if (needle === "") {
-    return true;
-  }
-  return pr.title.toLowerCase().includes(needle) || String(pr.number).includes(needle.replace(/^#/, ""));
+  return prs.filter((pr) => matchesPrSearchQuery(pr, query) && (author === "" || pr.author === author));
 }
 
 function noMatchMessage(query: string): string {
   const trimmed = query.trim();
   return trimmed ? `No PRs match "${trimmed}"` : "No PRs match the current filters.";
+}
+
+function prSearchStatus(
+  query: string,
+  count: number,
+  loading: boolean,
+  error: string | null,
+  prs: PrSummary[] | null,
+  queueHasMore: boolean,
+): string {
+  const trimmed = query.trim();
+  if (trimmed === "") {
+    if (prs === null) return "Loading pull requests…";
+    const suffix = queueHasMore ? " · more available" : "";
+    return `${prs.length} ${prs.length === 1 ? "pull request" : "pull requests"} loaded${suffix}`;
+  }
+  const matches = `${count} ${count === 1 ? "match" : "matches"}`;
+  if (loading) return `${matches} · searching GitHub…`;
+  if (error) return `${matches} · GitHub search unavailable: ${error}`;
+  return matches;
 }
 
 const PAGE_STYLE: React.CSSProperties = { width: "100%", height: "100%", background: "#080B10", color: "#E6EDF3" };
@@ -179,6 +305,7 @@ const SUBTITLE_STYLE: React.CSSProperties = { marginTop: 4, fontSize: 13, color:
 const SEGMENT_STYLE: React.CSSProperties = { display: "flex", gap: 2, padding: 2, border: "1px solid #2A2F37", borderRadius: 8, background: "#0E1116" };
 const BODY_STYLE: React.CSSProperties = { minHeight: 0, flex: 1, display: "grid", gridTemplateColumns: "minmax(320px, 0.95fr) minmax(360px, 1.05fr)", gap: 18 };
 const LIST_STYLE: React.CSSProperties = { minHeight: 0, overflowY: "auto", display: "flex", flexDirection: "column", gap: 10, paddingRight: 4 };
+const RESULTS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 10 };
 const EMPTY_STYLE: React.CSSProperties = { border: "1px dashed #2A2F37", borderRadius: 8, padding: 18, color: "#8B949E", background: "#0E1116" };
 const ERROR_STYLE: React.CSSProperties = { border: "1px solid #7F1D1D", borderRadius: 8, padding: 12, color: "#FCA5A5", background: "#1A0E12" };
 const LOAD_MORE_STYLE: React.CSSProperties = { border: "1px solid #2A2F37", borderRadius: 8, background: "#161B22", color: "#E6EDF3", padding: "10px 12px", cursor: "pointer" };

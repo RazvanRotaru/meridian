@@ -70,7 +70,7 @@ describe.skipIf(!chromiumInstalled())("landing repository persistence (headless 
 
     await repositoryInput.fill(REPLACEMENT_REPOSITORY);
     expect(await storedRepository(page)).toBe(SAVED_REPOSITORY);
-    const replacement = page.getByRole("button", { name: REPLACEMENT_REPOSITORY, exact: true });
+    const replacement = page.getByRole("option", { name: REPLACEMENT_REPOSITORY, exact: true });
     await replacement.waitFor();
     await replacement.click();
 

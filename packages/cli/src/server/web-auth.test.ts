@@ -126,6 +126,26 @@ describe("handleRepoBranches", () => {
     expect(seen[0]).toEqual({ owner: "private-org", repo: "project", token: "gho_gh_cli" });
   });
 
+  it("forwards a non-empty priority query without requiring authentication", async () => {
+    const seen: BranchesRequest[] = [];
+    const ctx: AuthContext = {
+      sessions: new SessionStore(),
+      github: githubBranches(["feature/search"], seen),
+    };
+    const captured = capturedResponse();
+
+    await handleRepoBranches(ctx, requestWith(undefined), captured.response, "public-org/project", " search ");
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({ branches: ["feature/search"] });
+    expect(seen).toEqual([{
+      owner: "public-org",
+      repo: "project",
+      token: undefined,
+      query: "search",
+    }]);
+  });
+
   it("rejects fuzzy or non-GitHub repository input before calling GitHub", async () => {
     const ctx: AuthContext = { sessions: new SessionStore(), github: neverCalledGitHub() };
     const captured = capturedResponse();

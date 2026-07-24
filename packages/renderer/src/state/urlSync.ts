@@ -267,5 +267,10 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     prFilesSuggestedSubdir: "",
     prsLoading: false,
     prsError: null,
+    prSearchQuery: "",
+    prSearchResults: [],
+    prSearchHasMore: false,
+    prSearchLoading: false,
+    prSearchError: null,
   };
 }

@@ -16,6 +16,7 @@ const BRANCH_RESULT_LIMIT = 100;
 /** One full page of `GET /user/repos` — the pagination loop in github.ts caps the total. */
 const LIST_RESULT_LIMIT = 100;
 const PR_LIST_RESULT_LIMIT = 30;
+const PR_SEARCH_RESULT_LIMIT = 100;
 const PR_FILE_RESULT_LIMIT = 100;
 const PR_COMMENT_RESULT_LIMIT = 100;
 const PR_REVIEW_RESULT_LIMIT = 100;
@@ -187,11 +188,31 @@ export function parseBranchList(json: unknown): string[] {
   return branches;
 }
 
-export function parsePullRequestList(json: unknown): PrSummary[] {
+/** A matching-refs response uses complete `refs/heads/*` names instead of branch-list `name`s. */
+export function parseMatchingBranchList(json: unknown): string[] {
   if (!Array.isArray(json)) {
     return [];
   }
-  return json.slice(0, PR_LIST_RESULT_LIMIT).map((item) => toPrSummary(asObject(item)));
+  const branches: string[] = [];
+  for (const item of json.slice(0, BRANCH_RESULT_LIMIT)) {
+    const ref = optionalString(asObject(item), "ref");
+    if (!ref?.startsWith("refs/heads/")) {
+      continue;
+    }
+    const name = ref.slice("refs/heads/".length);
+    if (isAllowedCloneRef(name)) {
+      branches.push(name);
+    }
+  }
+  return branches;
+}
+
+export function parsePullRequestList(json: unknown, limit = PR_LIST_RESULT_LIMIT): PrSummary[] {
+  if (!Array.isArray(json)) {
+    return [];
+  }
+  const boundedLimit = Math.min(Math.max(0, Math.trunc(limit)), PR_SEARCH_RESULT_LIMIT);
+  return json.slice(0, boundedLimit).map((item) => toPrSummary(asObject(item)));
 }
 
 export function parsePullRequestFiles(json: unknown): PrFile[] {

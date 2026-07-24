@@ -8,6 +8,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifyQuery,
   parseBranchList,
+  parseMatchingBranchList,
   parsePatchDetail,
   parsePullRequestComments,
   parsePullRequestFiles,
@@ -60,6 +61,18 @@ describe("parseBranchList", () => {
   it("returns nothing for a non-list response and caps one GitHub page", () => {
     expect(parseBranchList({ branches: [] })).toEqual([]);
     expect(parseBranchList(Array.from({ length: 120 }, (_unused, index) => ({ name: `branch-${index}` })))).toHaveLength(100);
+  });
+});
+
+describe("parseMatchingBranchList", () => {
+  it("projects only safe head refs to branch names", () => {
+    expect(parseMatchingBranchList([
+      { ref: "refs/heads/feature/search" },
+      { ref: "refs/heads/release-1.2" },
+      { ref: "refs/tags/feature/search" },
+      { ref: "refs/heads/bad branch" },
+      {},
+    ])).toEqual(["feature/search", "release-1.2"]);
   });
 });
 

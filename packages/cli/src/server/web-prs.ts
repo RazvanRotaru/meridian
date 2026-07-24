@@ -45,9 +45,17 @@ export async function handlePullRequests(
     return;
   }
   const state = parseState(query.get("state"));
-  const page = parsePositiveInt(query.get("page"), "page");
+  const search = query.get("q")?.trim() ?? "";
+  const page = search ? 1 : parsePositiveInt(query.get("page"), "page");
   const token = githubTokenFor(ctx, request);
-  const result = await listPullRequests({ owner: source.owner, repo: source.repo, state, page, token });
+  const result = await listPullRequests({
+    owner: source.owner,
+    repo: source.repo,
+    state,
+    page,
+    token,
+    ...(search ? { query: search } : {}),
+  });
   sendJson(response, 200, result);
 }
 
