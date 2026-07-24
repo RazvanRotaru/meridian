@@ -1,5 +1,4 @@
 import type { PrChangedFile } from "../state/prTypes";
-import { normalizePath } from "./matchAffectedFiles";
 
 /**
  * Explain a changed file whose canonical manifest has no trustworthy textual body. Exact path
@@ -25,7 +24,7 @@ function reviewFileForSource(
   sourceFile: string,
   files: readonly PrChangedFile[],
 ): PrChangedFile | null {
-  const source = normalizePath(sourceFile);
+  const source = stripLeadingDotSegments(sourceFile);
   const exact = files.filter((file) => aliases(file).includes(source));
   if (exact.length === 1) return exact[0];
   if (exact.length > 1) return null;
@@ -53,5 +52,11 @@ function reviewFileForSource(
 function aliases(file: PrChangedFile): string[] {
   return [...new Set([file.path, file.previousPath]
     .filter((path): path is string => path !== undefined)
-    .map(normalizePath))];
+    .map(stripLeadingDotSegments))];
+}
+
+function stripLeadingDotSegments(path: string): string {
+  let stripped = path;
+  while (stripped.startsWith("./")) stripped = stripped.slice(2);
+  return stripped;
 }

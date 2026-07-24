@@ -107,11 +107,34 @@ export async function queryGraphql(
   return graphqlRequest(fetchImpl, body, token, "GitHub could not load personalized pull request status");
 }
 
+/** Authenticated GraphQL mutation for viewer-scoped pull-request state. */
+export class GitHubGraphqlMutationError extends WebError {
+  constructor(_status: number, message: string) {
+    super(502, message);
+    this.name = "GitHubGraphqlMutationError";
+  }
+}
+
+export async function mutateGraphql(
+  fetchImpl: typeof fetch,
+  body: unknown,
+  token: string,
+): Promise<unknown> {
+  return graphqlRequest(
+    fetchImpl,
+    body,
+    token,
+    "GitHub could not update pull request viewed-file status",
+    GitHubGraphqlMutationError,
+  );
+}
+
 async function graphqlRequest(
   fetchImpl: typeof fetch,
   body: unknown,
   token: string,
   errorMessage: string,
+  graphqlErrorType: typeof WebError = WebError,
 ): Promise<unknown> {
   const response = await apiRequest(fetchImpl, `${API_ROOT}/graphql`, token, {
     method: "POST",
@@ -125,7 +148,7 @@ async function graphqlRequest(
     ? (json as Record<string, unknown>).errors
     : undefined;
   if (Array.isArray(errors) && errors.length > 0) {
-    throw new WebError(502, errorMessage);
+    throw new graphqlErrorType(502, errorMessage);
   }
   return json;
 }

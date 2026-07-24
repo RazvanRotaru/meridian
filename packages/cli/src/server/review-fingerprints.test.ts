@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -71,6 +71,37 @@ describe("withReviewFingerprints", () => {
     const sidecar = reviewFingerprintsFromArtifact(artifact)!;
     expect(Object.keys(sidecar.files)).toEqual(["a.ts"]);
     expect(Object.keys(sidecar.units)).toEqual(["ts:a.ts#value"]);
+  });
+
+  it("keeps a literal backslash filename distinct from its slash-path sibling on POSIX", () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "meridian-review-fingerprint-"));
+    roots.push(root);
+    const literalBackslash = "literal\\name.ts";
+    const slashPath = "literal/name.ts";
+    mkdirSync(join(root, "literal"));
+    writeFileSync(join(root, literalBackslash), "export const literal = 1;\n");
+    writeFileSync(join(root, slashPath), "export const slash = 2;\n");
+    const artifact = withReviewFingerprints({
+      schemaVersion: "1.1.0",
+      generatedAt: "2026-07-22T00:00:00Z",
+      generator: { name: "test", version: "1" },
+      target: { name: "test", root: ".", language: "typescript" },
+      nodes: [literalBackslash, slashPath].map((file) => ({
+        id: `ts:${file}`,
+        kind: "module",
+        qualifiedName: file,
+        displayName: file,
+        location: { file, startLine: 1, endLine: 1 },
+      })),
+      edges: [],
+    } satisfies GraphArtifact, root);
+    const files = reviewFingerprintsFromArtifact(artifact)!.files;
+
+    expect(Object.keys(files).sort()).toEqual([literalBackslash, slashPath].sort());
+    expect(files[literalBackslash]?.address).toBe(`file:v1\0${literalBackslash}`);
+    expect(files[slashPath]?.address).toBe(`file:v1\0${slashPath}`);
+    expect(files[literalBackslash]?.digest).not.toBe(files[slashPath]?.digest);
   });
 });
 

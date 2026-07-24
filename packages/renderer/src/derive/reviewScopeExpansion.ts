@@ -7,7 +7,6 @@
 
 import type { GraphIndex } from "../graph/graphIndex";
 import { UNIT_CARD_KINDS } from "./blockDeps";
-import { normalizePath } from "./matchAffectedFiles";
 import type { ReviewFileRow } from "./reviewFiles";
 
 export interface ReviewScopeBaseNodes {
@@ -31,11 +30,10 @@ export function expandReviewScopeBaseUnits(
   collapsedRoots: ReadonlySet<string> = new Set(),
 ): Set<string> {
   const expanded = new Set(current);
-  const normalizedPaths = new Set([...includedPaths].map(normalizePath));
   const collapsedRootIds = [...collapsedRoots];
 
   for (const file of reviewFiles) {
-    if (!normalizedPaths.has(normalizePath(file.path))) {
+    if (!includedPaths.has(file.path)) {
       continue;
     }
     for (const unit of file.units) {

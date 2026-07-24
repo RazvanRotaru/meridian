@@ -86,18 +86,22 @@ export interface ChangedFileManifestEntry {
 export function tagChangedNodes(nodes: GraphNode[], changed: ChangedRanges): GraphNode[] {
   const filesNeedingFallback = new Set(Object.keys(changed));
   const tagged = nodes.map((node) => {
-    if (isFileContainer(node) || !overlapsChange(node, changed)) {
+    const changedKey = matchingPathKey(changed, node.location.file);
+    if (isFileContainer(node) || changedKey === null || !overlapsChange(node, changed)) {
       return node;
     }
-    filesNeedingFallback.delete(normalizePath(node.location.file));
+    filesNeedingFallback.delete(changedKey);
     return withChangedTag(node);
   });
   if (filesNeedingFallback.size === 0) {
     return tagged;
   }
-  return tagged.map((node) =>
-    node.kind === "module" && filesNeedingFallback.has(normalizePath(node.location.file)) ? withChangedTag(node) : node,
-  );
+  return tagged.map((node) => {
+    const changedKey = matchingPathKey(changed, node.location.file);
+    return node.kind === "module" && changedKey !== null && filesNeedingFallback.has(changedKey)
+      ? withChangedTag(node)
+      : node;
+  });
 }
 
 export function isChangedNode(node: GraphNode): boolean {
@@ -123,7 +127,7 @@ export function changedRangesFromExtensions(extensions: unknown): ChangedRanges 
   const ranges: ChangedRanges = {};
   for (const [file, spans] of Object.entries(files)) {
     if (Array.isArray(spans)) {
-      ranges[file] = spans.filter(isLineRange);
+      setOwnRecordValue(ranges, file, spans.filter(isLineRange));
     }
   }
   return ranges;
@@ -141,7 +145,7 @@ export function changedLineStatsFromExtensions(extensions: unknown): ChangedLine
   const stats: ChangedLineStats = {};
   for (const [file, value] of Object.entries(raw)) {
     if (isChangedLineDelta(value)) {
-      stats[normalizePath(file)] = value;
+      setOwnRecordValue(stats, file, value);
     }
   }
   return stats;
@@ -160,7 +164,7 @@ export function changedLineKindsFromExtensions(extensions: unknown): ChangedLine
     }
     const spans = value.filter(isChangedLineSpan);
     if (spans.length > 0) {
-      kinds[normalizePath(file)] = spans;
+      setOwnRecordValue(kinds, file, spans);
     }
   }
   return kinds;
@@ -182,7 +186,7 @@ export function changedDiffLinesFromExtensions(extensions: unknown): ChangedDiff
     }
     const rows = value.filter(isChangedDiffLine);
     if (rows.length > 0) {
-      diffLines[normalizePath(file)] = rows;
+      setOwnRecordValue(diffLines, file, rows);
     }
   }
   return diffLines;
@@ -212,7 +216,7 @@ export function changedFileManifestFromExtensions(extensions: unknown): ChangedF
   return manifest;
 }
 
-/** The line delta for one node's file, normalized against windows/posix separators. */
+/** The line delta for one node's exact canonical file identity. */
 export function changedLineDeltaForNode(
   stats: ChangedLineStats,
   node: Pick<GraphNode, "location">,
@@ -221,7 +225,7 @@ export function changedLineDeltaForNode(
   if (!file) {
     return null;
   }
-  return stats[normalizePath(file)] ?? null;
+  return valueForPath(stats, file) ?? null;
 }
 
 /** The changed line numbers inside one node's span — what a code panel's gutter marks amber. */
@@ -232,7 +236,7 @@ export function changedLinesWithin(
   endLine: number | undefined,
 ): Set<number> {
   const lines = new Set<number>();
-  const spans = ranges[normalizePath(file)] ?? [];
+  const spans = valueForPath(ranges, file) ?? [];
   const last = endLine ?? startLine;
   for (const span of spans) {
     for (let line = Math.max(span.start, startLine); line <= Math.min(span.end, last); line += 1) {
@@ -250,7 +254,7 @@ export function changedLineKindsWithin(
   endLine: number | undefined,
 ): ReadonlyMap<number, ChangedLineKind> {
   const lines = new Map<number, ChangedLineKind>();
-  const spans = kinds[normalizePath(file)] ?? [];
+  const spans = valueForPath(kinds, file) ?? [];
   const last = endLine ?? startLine;
   for (const span of spans) {
     for (let line = Math.max(span.start, startLine); line <= Math.min(span.end, last); line += 1) {
@@ -346,9 +350,7 @@ function isManifestPath(value: unknown): value is string {
     typeof value !== "string"
     || value.length === 0
     || value.startsWith("/")
-    || value.includes("\\")
     || value.includes("\0")
-    || /^[A-Za-z]:/.test(value)
   ) {
     return false;
   }
@@ -360,7 +362,7 @@ function isPositiveLine(value: unknown): value is number {
 }
 
 function overlapsChange(node: GraphNode, changed: ChangedRanges): boolean {
-  const ranges = changed[normalizePath(node.location.file)];
+  const ranges = valueForPath(changed, node.location.file);
   if (!ranges) {
     return false;
   }
@@ -381,6 +383,23 @@ function withChangedTag(node: GraphNode): GraphNode {
   return { ...node, tags: [...(node.tags ?? []), CHANGED_TAG] };
 }
 
-function normalizePath(file: string): string {
-  return file.replace(/\\/g, "/");
+function valueForPath<T>(record: Record<string, T>, file: string): T | undefined {
+  // changedSince records and graph locations are produced from the same canonical extraction.
+  // Git paths are opaque identities, so a compatibility guess must never map a missing literal
+  // backslash file onto a surviving slash-path sibling.
+  return Object.hasOwn(record, file) ? record[file] : undefined;
+}
+
+function matchingPathKey<T>(record: Record<string, T>, file: string): string | null {
+  return Object.hasOwn(record, file) ? file : null;
+}
+
+/** Define an own enumerable value for Git-valid keys such as `__proto__`. */
+function setOwnRecordValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }

@@ -2,9 +2,9 @@
  * The files-first review checklist's data: every changed file as one row, expanded into the touched
  * code units (functions/classes/interfaces/methods) inside it — the GitHub "Files changed" mental
  * model projected onto the graph. Units are exactly `computeAffectedNodes`' blocks (hunks ∩ node
- * ranges), so a checked unit corresponds 1:1 with an amber-ringed card on the review graph.
+ * ranges), while viewed progress remains file-atomic to match GitHub.
  *
- * Each unit and unit-less file carries a worker-proven semantic address plus exact-source digest.
+ * Each unit and file carries a worker-proven semantic address plus exact-source digest.
  * A persisted tick whose identity/content no longer matches renders "stale", so line motion does
  * not erase progress and same-shaped changed text never stays silently green.
  */
@@ -13,7 +13,8 @@ import { computeAffectedNodes, isTestPath, NON_BLOCK_KINDS } from "@meridian/cor
 import { reviewFingerprintsFromArtifact } from "@meridian/core";
 import type { ChangeStatus, GraphArtifact, GraphEdge, ReviewContext } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
-import type { ReviewTick } from "../state/reviewTicksPref";
+import type { PrFileViewedState } from "../state/prTypes";
+import { setReviewTick, type ReviewTick } from "../state/reviewTicksPref";
 import { buildInboundByTarget } from "./inboundEdges";
 import { matchAffectedFiles } from "./matchAffectedFiles";
 
@@ -118,8 +119,11 @@ export function deriveReviewFiles(
       bucket ? bucket.push(row) : unitsByFile.set(node.file, [row]);
     }
   }
-  const matches = matchAffectedFiles(index, context.changedFiles.map((file) => file.path));
-  const moduleByPath = new Map(matches.matched.map((match) => [match.path, match.moduleId]));
+  const moduleByPath = new Map<string, string>();
+  for (const file of context.changedFiles) {
+    const matches = matchAffectedFiles(index, [file.path]);
+    if (matches.matched.length === 1) moduleByPath.set(file.path, matches.matched[0].moduleId);
+  }
   const changedPaths = new Set(context.changedFiles.map((file) => file.path));
   const deletedPaths = new Set(
     context.changedFiles.filter((file) => file.status === "deleted").map((file) => file.path),
@@ -141,16 +145,19 @@ export function deriveReviewFiles(
     .map((file) => {
       const units = (unitsByFile.get(file.path) ?? []).sort((a, b) => a.startLine - b.startLine);
       const moduleId = moduleByPath.get(file.path) ?? null;
+      const fileIdentity = fingerprints !== null && Object.hasOwn(fingerprints.files, file.path)
+        ? fingerprints.files[file.path]
+        : undefined;
       return {
         path: file.path,
         status: file.status,
         moduleId,
         isTest: isReviewTestPath(file.path, index, options.baseIndex),
         units,
-        fingerprint: fingerprints?.files[normalizeReviewPath(file.path)]?.digest ?? "unverified",
-        address: fingerprints?.files[normalizeReviewPath(file.path)]?.address ?? null,
+        fingerprint: fileIdentity?.digest ?? "unverified",
+        address: fileIdentity?.address ?? null,
         previousAddress: file.status === "renamed" && file.previousPath
-          ? `file:v1\0${normalizeReviewPath(file.previousPath)}`
+          ? `file:v1\0${file.previousPath}`
           : null,
         blastRadius: blastRadiusOf(units, changedPaths, index, activeInbound),
         deletedImpact: file.status === "deleted"
@@ -247,7 +254,7 @@ export function checkStateOf(
 }
 
 export function tickForUnit(unit: ReviewUnitRow, ticks: Record<string, ReviewTick>): ReviewTick | undefined {
-  const direct = ticks[unit.nodeId];
+  const direct = Object.hasOwn(ticks, unit.nodeId) ? ticks[unit.nodeId] : undefined;
   if (direct !== undefined) {
     return direct.address === unit.previousAddress && unit.address ? { ...direct, address: unit.address } : direct;
   }
@@ -259,7 +266,7 @@ export function tickForUnit(unit: ReviewUnitRow, ticks: Record<string, ReviewTic
 }
 
 export function tickForFile(file: ReviewFileRow, ticks: Record<string, ReviewTick>): ReviewTick | undefined {
-  const direct = ticks[file.path];
+  const direct = Object.hasOwn(ticks, file.path) ? ticks[file.path] : undefined;
   if (direct !== undefined) {
     return direct.address === file.previousAddress && file.address ? { ...direct, address: file.address } : direct;
   }
@@ -271,19 +278,30 @@ export function tickForFile(file: ReviewFileRow, ticks: Record<string, ReviewTic
 }
 
 /**
- * A file's aggregate viewed state. With units it DERIVES from them (all done ⇒ done; any stale ⇒
- * stale — a moved block must never hide under a green file). Without units the explicit file tick
- * decides. `fileTick` is ignored when units exist: the units are the single source of truth.
+ * A file is the atomic GitHub viewed-state unit. A signed-in live review supplies the canonical
+ * viewer-specific state explicitly; local/artifact reviews fall back to the persisted whole-file
+ * tick. Legacy unit ticks remain parseable but no longer affect the active state.
  */
 export function fileViewState(
   file: ReviewFileRow,
-  unitTicks: Record<string, ReviewTick>,
+  _unitTicks: Record<string, ReviewTick>,
   fileTicks: Record<string, ReviewTick>,
+  githubStates: Readonly<Record<string, PrFileViewedState>> | null | undefined = null,
 ): CheckState {
-  if (file.units.length === 0) {
-    return checkStateOf(file.fingerprint, tickForFile(file, fileTicks), file.address);
+  const githubState = githubStates != null && Object.hasOwn(githubStates, file.path)
+    ? githubStates[file.path]
+    : undefined;
+  if (githubStates != null) {
+    if (githubState === "VIEWED") return "done";
+    if (githubState === "DISMISSED") return "stale";
+    return "todo";
   }
-  return unitsViewState(file.units, unitTicks);
+  // File ticks are already keyed by an exact path (or reconciled through one unique rename
+  // address), so unmatched files without worker semantic addresses remain safely reviewable.
+  const tick = tickForFile(file, fileTicks);
+  if (tick === undefined) return "todo";
+  if (tick.viewed === false) return "todo";
+  return tick.fingerprint === file.fingerprint ? "done" : "stale";
 }
 
 /** Aggregate changed leaves beneath a structural unit (for example, methods inside a class). */
@@ -298,28 +316,80 @@ export function unitsViewState(
   return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
 }
 
+/**
+ * One-way migration from Meridian's former per-unit checklist to GitHub's file-atomic model.
+ * Complete current files become whole-file ticks; partial/stale represented progress is dropped.
+ * Unknown unit ticks are retained so a filtered-out file can be migrated when it is projected.
+ */
+export function promoteFullyViewedUnitTicks(
+  files: readonly ReviewFileRow[],
+  unitTicks: Record<string, ReviewTick>,
+  fileTicks: Record<string, ReviewTick>,
+): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
+  const nextUnits = { ...unitTicks };
+  const nextFiles = { ...fileTicks };
+  for (const file of files) {
+    const resolved = file.units.map((unit) => tickForUnit(unit, unitTicks));
+    const fullyViewed = file.units.length > 0
+      && file.units.every((unit, index) =>
+        checkStateOf(unit.fingerprint, resolved[index], unit.address) === "done");
+    const existingFileTick = tickForFile(file, fileTicks);
+    if (
+      fullyViewed
+      && existingFileTick?.viewed !== false
+      && existingFileTick?.fingerprint !== file.fingerprint
+    ) {
+      const latestAt = resolved.reduce(
+        (latest, tick) => tick !== undefined && tick.at > latest ? tick.at : latest,
+        "",
+      );
+      // A uniquely resolved old-path/stale tick must not suppress a complete current unit
+      // migration. Replace it with the exact current file identity before dropping the units.
+      removeFileTick(nextFiles, file);
+      setReviewTick(nextFiles, file.path, {
+        at: latestAt,
+        fingerprint: file.fingerprint,
+        ...(file.address ? { address: file.address } : {}),
+      });
+    }
+    for (const unit of file.units) removeUnitTick(nextUnits, unit);
+  }
+  return { unitTicks: nextUnits, fileTicks: nextFiles };
+}
+
+/** Remove one exact or uniquely address-matched local file tick after GitHub accepts it. */
+export function removeReviewFileTick(
+  ticks: Record<string, ReviewTick>,
+  file: ReviewFileRow,
+): Record<string, ReviewTick> {
+  const next = { ...ticks };
+  removeFileTick(next, file);
+  return next;
+}
+
 /** Aggregate a set of changed files for folder-level progress. A stale descendant wins so a folder
  * can never retain a completed marker after one of its reviewed files changes. */
 export function filesViewState(
   files: readonly ReviewFileRow[],
   unitTicks: Record<string, ReviewTick>,
   fileTicks: Record<string, ReviewTick>,
+  githubStates: Readonly<Record<string, PrFileViewedState>> | null | undefined = null,
 ): CheckState {
-  const states = files.map((file) => fileViewState(file, unitTicks, fileTicks));
+  const states = files.map((file) => fileViewState(file, unitTicks, fileTicks, githubStates));
   if (states.some((state) => state === "stale")) {
     return "stale";
   }
   return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
 }
 
-/** How many rows read as fully "viewed" (all their units done). ONE definition so the panel header,
- * the collapsed rail, and the control-panel resume chip all report the same progress fraction. */
+/** How many changed files read as viewed. ONE definition keeps every progress summary aligned. */
 export function countViewedFiles(
   files: readonly ReviewFileRow[],
   unitTicks: Record<string, ReviewTick>,
   fileTicks: Record<string, ReviewTick>,
+  githubStates: Readonly<Record<string, PrFileViewedState>> | null | undefined = null,
 ): number {
-  return files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  return files.filter((file) => fileViewState(file, unitTicks, fileTicks, githubStates) === "done").length;
 }
 
 /** The single unit-tick transition: done un-ticks; todo/stale ticks fresh. Returns a new record. */
@@ -334,7 +404,11 @@ export function applyUnitTick(
     return next;
   }
   removeUnitTick(next, unit);
-  next[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
+  setReviewTick(next, unit.nodeId, {
+    at,
+    fingerprint: unit.fingerprint,
+    ...(unit.address ? { address: unit.address } : {}),
+  });
   return next;
 }
 
@@ -349,7 +423,11 @@ export function applyUnitsToggle(
   for (const unit of units) {
     if (markViewed) {
       removeUnitTick(next, unit);
-      next[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
+      setReviewTick(next, unit.nodeId, {
+        at,
+        fingerprint: unit.fingerprint,
+        ...(unit.address ? { address: unit.address } : {}),
+      });
     } else {
       removeUnitTick(next, unit);
     }
@@ -357,38 +435,29 @@ export function applyUnitsToggle(
   return next;
 }
 
-/**
- * The file-viewed toggle, cascading over its units: a not-fully-viewed file ticks EVERYTHING fresh
- * (the "I've read this file" bulk gesture); a done file un-ticks everything. Unit-less files flip
- * their own explicit tick. Returns new records; callers persist them whole.
- */
+/** Toggle one file atomically, clearing any legacy unit ticks owned by that file. */
 export function applyFileToggle(
   file: ReviewFileRow,
   unitTicks: Record<string, ReviewTick>,
   fileTicks: Record<string, ReviewTick>,
   at: string,
+  githubStates: Readonly<Record<string, PrFileViewedState>> | null | undefined = null,
 ): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
-  const state = fileViewState(file, unitTicks, fileTicks);
-  if (file.units.length === 0) {
-    const nextFiles = { ...fileTicks };
-    if (state === "done") {
-      removeFileTick(nextFiles, file);
-    } else {
-      removeFileTick(nextFiles, file);
-      nextFiles[file.path] = { at, fingerprint: file.fingerprint, ...(file.address ? { address: file.address } : {}) };
-    }
-    return { unitTicks, fileTicks: nextFiles };
-  }
+  const state = fileViewState(file, unitTicks, fileTicks, githubStates);
+  const nextFiles = { ...fileTicks };
   const nextUnits = { ...unitTicks };
   for (const unit of file.units) {
-    if (state === "done") {
-      removeUnitTick(nextUnits, unit);
-    } else {
-      removeUnitTick(nextUnits, unit);
-      nextUnits[unit.nodeId] = { at, fingerprint: unit.fingerprint, ...(unit.address ? { address: unit.address } : {}) };
-    }
+    removeUnitTick(nextUnits, unit);
   }
-  return { unitTicks: nextUnits, fileTicks };
+  removeFileTick(nextFiles, file);
+  if (state !== "done") {
+    setReviewTick(nextFiles, file.path, {
+      at,
+      fingerprint: file.fingerprint,
+      ...(file.address ? { address: file.address } : {}),
+    });
+  }
+  return { unitTicks: nextUnits, fileTicks: nextFiles };
 }
 
 function removeUnitTick(ticks: Record<string, ReviewTick>, unit: ReviewUnitRow): void {
@@ -409,24 +478,24 @@ function removeUniqueAddressTick(ticks: Record<string, ReviewTick>, candidates: 
   if (keys.length === 1) delete ticks[keys[0]];
 }
 
-/** Folder-level bulk toggle. A partially viewed folder completes only its unfinished/stale files;
- * a fully viewed folder clears every descendant tick. This preserves already-completed work while
- * making the folder control an unambiguous all-on/all-off gesture. */
+/** Folder-level bulk toggle. A mixed folder completes unfinished/stale files; a done folder clears
+ * every descendant file. Already-completed files stay untouched during the completing gesture. */
 export function applyFilesToggle(
   files: readonly ReviewFileRow[],
   unitTicks: Record<string, ReviewTick>,
   fileTicks: Record<string, ReviewTick>,
   at: string,
+  githubStates: Readonly<Record<string, PrFileViewedState>> | null | undefined = null,
 ): { unitTicks: Record<string, ReviewTick>; fileTicks: Record<string, ReviewTick> } {
-  const markViewed = filesViewState(files, unitTicks, fileTicks) !== "done";
+  const markViewed = filesViewState(files, unitTicks, fileTicks, githubStates) !== "done";
   let nextUnitTicks = unitTicks;
   let nextFileTicks = fileTicks;
   for (const file of files) {
-    const state = fileViewState(file, nextUnitTicks, nextFileTicks);
+    const state = fileViewState(file, nextUnitTicks, nextFileTicks, githubStates);
     if ((markViewed && state === "done") || (!markViewed && state !== "done")) {
       continue;
     }
-    const next = applyFileToggle(file, nextUnitTicks, nextFileTicks, at);
+    const next = applyFileToggle(file, nextUnitTicks, nextFileTicks, at, githubStates);
     nextUnitTicks = next.unitTicks;
     nextFileTicks = next.fileTicks;
   }
@@ -447,8 +516,18 @@ function toUnitRow(
   }
   const start = node.location.startLine;
   const end = node.location.endLine ?? start;
-  const identity = fingerprints?.[nodeId];
-  const changed = context.changedFiles.find((entry) => normalizeReviewPath(entry.path) === normalizeReviewPath(file));
+  const identity = fingerprints !== null && Object.hasOwn(fingerprints, nodeId)
+    ? fingerprints[nodeId]
+    : undefined;
+  const exactChanged = context.changedFiles.find((entry) => entry.path === file);
+  const normalizedChanged = exactChanged === undefined
+    ? context.changedFiles.filter(
+        (entry) => normalizeReviewPath(entry.path) === normalizeReviewPath(file),
+      )
+    : [];
+  // A literal backslash is a valid POSIX Git filename. Prefer exact identity, and only use the
+  // historical slash-normalized join when it resolves to one unambiguous changed file.
+  const changed = exactChanged ?? (normalizedChanged.length === 1 ? normalizedChanged[0] : undefined);
   return {
     nodeId,
     displayName: node.displayName,
@@ -461,7 +540,7 @@ function toUnitRow(
     fingerprint: identity?.digest ?? "unverified",
     address: identity?.address ?? null,
     previousAddress: changed?.status === "renamed" && changed.previousPath
-      ? semanticAddressAtPath(identity?.address, normalizeReviewPath(changed.previousPath))
+      ? semanticAddressAtPath(identity?.address, changed.previousPath)
       : null,
   };
 }

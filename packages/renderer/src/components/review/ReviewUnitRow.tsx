@@ -7,8 +7,8 @@
 
 import { useState } from "react";
 import { useBlueprintActions } from "../../state/StoreContext";
-import { checkStateOf, type ReviewUnitRow as UnitRowData } from "../../derive/reviewFiles";
-import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
+import { type CheckState, type ReviewUnitRow as UnitRowData } from "../../derive/reviewFiles";
+import type { ReviewComment } from "../../state/reviewTicksPref";
 import { accentForKind } from "../../theme/kindColors";
 import { CommentButton, CommentComposer, CommentList } from "./ReviewComments";
 import { KIND_CHIP, kindChipText, MONO, NO_FOCUS_RING, TEST_CHIP, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
@@ -16,15 +16,17 @@ import { KIND_CHIP, kindChipText, MONO, NO_FOCUS_RING, TEST_CHIP, TICK_BTN, TICK
 export function UnitRow(props: {
   unit: UnitRowData;
   path: string;
-  tick: ReviewTick | undefined;
+  /** GitHub viewed state is file-atomic; every unit in this row shares its owning file's state. */
+  viewState: CheckState;
   drafts: readonly ReviewComment[];
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
+  viewedBlockedReason?: string | null;
 }) {
-  const { unit, path, tick, drafts, composer, onComposer } = props;
+  const { unit, path, viewState, drafts, composer, onComposer, viewedBlockedReason = null } = props;
   const { toggleReviewUnitTick, addReviewComment, setReviewLit, selectReviewNode } = useBlueprintActions();
   const [hovered, setHovered] = useState(false);
-  const state = checkStateOf(unit.fingerprint, tick);
+  const state = viewState;
   const isBaseOnly = unit.sourceSide === "base";
   const composerHere = !isBaseOnly && composer !== null && composer.nodeId === unit.nodeId;
   const chip = kindChipText(unit.kind);
@@ -61,8 +63,14 @@ export function UnitRow(props: {
         )}
         <button
           type="button"
-          style={{ ...TICK_BTN, color: TICK_COLOR[state] }}
-          title={state === "stale" ? "Changed since checked — click to re-check" : "Mark as reviewed"}
+          style={{ ...TICK_BTN, color: TICK_COLOR[state], ...(viewedBlockedReason === null ? {} : VIEWED_DISABLED) }}
+          disabled={viewedBlockedReason !== null}
+          title={viewedBlockedReason
+            ?? (state === "done"
+              ? `Viewed ${path} — click to unmark the file`
+              : state === "stale"
+                ? `${path} changed since viewed — click to mark the file again`
+                : `Mark ${path} as viewed`)}
           onClick={() => toggleReviewUnitTick(unit.nodeId)}
         >
           {TICK_GLYPH[state]}
@@ -77,6 +85,7 @@ export function UnitRow(props: {
 }
 
 const ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, padding: "1px 6px 1px 0", borderRadius: 6 };
+const VIEWED_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.55 };
 const MAIN: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 5, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: "3px 0", textAlign: "left", ...NO_FOCUS_RING };
 const NAME: React.CSSProperties = { minWidth: 0, fontSize: 12, color: "#C9D1D9", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" };
 const LOC: React.CSSProperties = { fontFamily: MONO, fontSize: 10, color: "#5A6472", flexShrink: 0 };

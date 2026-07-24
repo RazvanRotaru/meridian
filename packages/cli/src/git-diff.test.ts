@@ -117,6 +117,21 @@ describe("parseUnifiedDiffWithStats", () => {
     ]);
   });
 
+  it("stores a valid __proto__ Git path as own diff metadata", () => {
+    const parsed = parseUnifiedDiffWithStats([
+      "diff --git a/__proto__ b/__proto__",
+      "--- a/__proto__",
+      "+++ b/__proto__",
+      "@@ -0,0 +1 @@",
+      "+export const value = 1;",
+    ].join("\n"));
+
+    for (const record of [parsed.ranges, parsed.stats, parsed.kinds, parsed.diffLines]) {
+      expect(Object.hasOwn(record, "__proto__")).toBe(true);
+    }
+    expect(parsed.stats["__proto__"]).toEqual({ added: 1, deleted: 0 });
+  });
+
   it("keeps unpaired additions green after a replacement in the same hunk", () => {
     const mixedHunk = [
       "diff --git a/src/settings.ts b/src/settings.ts",
@@ -357,14 +372,17 @@ describe("changedSinceMetadata", () => {
 describe("parseNameStatusManifest", () => {
   it("parses literal NUL-delimited paths without C-style quoting", () => {
     const odd = "src/a\tquote\"and\nline.ts";
+    const literalBackslash = "src/a\\b.ts";
     expect(parseNameStatusManifest([
       "A", odd,
+      "M", literalBackslash,
       "T", "src/type-change",
       "R100", "src/old name.ts", "src/new name.ts",
       "D", "src/deleted.bin",
       "",
     ].join("\0"))).toEqual([
       { path: odd, status: "added" },
+      { path: literalBackslash, status: "modified" },
       { path: "src/type-change", status: "modified" },
       { path: "src/new name.ts", status: "renamed", previousPath: "src/old name.ts" },
       { path: "src/deleted.bin", status: "deleted" },
@@ -382,7 +400,6 @@ describe("parseNameStatusManifest", () => {
       "R101\0src/old.ts\0src/new.ts\0",
       "M\0src/a.ts\0D\0src/a.ts\0",
       "A\0../escape.ts\0",
-      "A\0src\\windows.ts\0",
       "A\0/src/absolute.ts\0",
       "R100\0src/a.ts\0src/a.ts\0",
     ]) {

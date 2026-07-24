@@ -12,7 +12,6 @@ import { rangesOverlap, type ChangedDiffLine, type LineRange, type ReviewContext
 import type { PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import type { ReviewFileRow, ReviewUnitRow } from "./reviewFiles";
-import { normalizePath } from "./matchAffectedFiles";
 
 export interface ReviewSubmission {
   comments: { path: string; line: number; side: PrReviewCommentSide; body: string }[];
@@ -139,18 +138,18 @@ function resolveReviewPath(
   files: readonly ReviewFileRow[],
   context: ReviewContext,
 ): string | null {
-  const changedByNormalized = new Map(context.changedFiles.map((file) => [normalizePath(file.path), file.path]));
+  const changedPaths = context.changedFiles.map((file) => file.path);
   const visiblePaths = files
-    .map((file) => changedByNormalized.get(normalizePath(file.path)))
-    .filter((path): path is string => path !== undefined);
-  const candidates = visiblePaths.length > 0 ? [...new Set(visiblePaths)] : context.changedFiles.map((file) => file.path);
+    .map((file) => uniquePathAlias(file.path, changedPaths))
+    .filter((path): path is string => path !== null);
+  const candidates = visiblePaths.length > 0 ? [...new Set(visiblePaths)] : changedPaths;
   const candidateSet = new Set(candidates);
   if (draft.nodeId !== null) {
     const owningPaths = new Set(
       files
         .filter((file) => file.units.some((unit) => unit.nodeId === draft.nodeId))
-        .map((file) => changedByNormalized.get(normalizePath(file.path)))
-        .filter((path): path is string => path !== undefined),
+        .map((file) => uniquePathAlias(file.path, changedPaths))
+        .filter((path): path is string => path !== null),
     );
     if (owningPaths.size === 1) return [...owningPaths][0]!;
   }
@@ -180,7 +179,10 @@ function resolvePreviousReviewPath(
   if (matchedAlias === null) return null;
   const paths = new Set(
     aliases
-      .filter((entry) => normalizePath(entry.alias) === normalizePath(matchedAlias))
+      .filter(
+        (entry) =>
+          stripLeadingDotSegments(entry.alias) === stripLeadingDotSegments(matchedAlias),
+      )
       .map((entry) => entry.path),
   );
   return paths.size === 1 ? [...paths][0]! : null;
@@ -191,17 +193,17 @@ function rangesForPath(
   draftPath: string,
   contextPath: string,
 ): readonly LineRange[] | undefined {
-  const exactContext = rangesByFile[contextPath];
+  const exactContext = ownValue(rangesByFile, contextPath);
   if (exactContext !== undefined) {
     return exactContext;
   }
-  const exactDraft = rangesByFile[draftPath];
+  const exactDraft = ownValue(rangesByFile, draftPath);
   if (exactDraft !== undefined) {
     return exactDraft;
   }
   const key = uniquePathAlias(draftPath, Object.keys(rangesByFile))
     ?? uniquePathAlias(contextPath, Object.keys(rangesByFile));
-  return key === null ? undefined : rangesByFile[key];
+  return key === null ? undefined : ownValue(rangesByFile, key);
 }
 
 function linesForPath(
@@ -209,32 +211,32 @@ function linesForPath(
   contextPath: string,
   draftPath: string,
 ): readonly ChangedDiffLine[] | undefined {
-  const exactContext = linesByFile[contextPath];
+  const exactContext = ownValue(linesByFile, contextPath);
   if (exactContext !== undefined) {
     return exactContext;
   }
-  const exactDraft = linesByFile[draftPath];
+  const exactDraft = ownValue(linesByFile, draftPath);
   if (exactDraft !== undefined) {
     return exactDraft;
   }
   const key = uniquePathAlias(draftPath, Object.keys(linesByFile))
     ?? uniquePathAlias(contextPath, Object.keys(linesByFile));
-  return key === null ? undefined : linesByFile[key];
+  return key === null ? undefined : ownValue(linesByFile, key);
 }
 
 function uniquePathAlias(path: string, candidates: readonly string[]): string | null {
-  const normalized = normalizePath(path);
-  const exact = candidates.filter((candidate) => normalizePath(candidate) === normalized);
+  const canonical = stripLeadingDotSegments(path);
+  const exact = candidates.filter((candidate) => stripLeadingDotSegments(candidate) === canonical);
   if (exact.length === 1) {
     return exact[0];
   }
   let bestLength = 0;
   let winners: string[] = [];
   for (const candidate of candidates) {
-    const normalizedCandidate = normalizePath(candidate);
-    const suffixLength = normalizedCandidate.endsWith(`/${normalized}`)
-      ? normalized.length
-      : normalized.endsWith(`/${normalizedCandidate}`) ? normalizedCandidate.length : 0;
+    const canonicalCandidate = stripLeadingDotSegments(candidate);
+    const suffixLength = canonicalCandidate.endsWith(`/${canonical}`)
+      ? canonical.length
+      : canonical.endsWith(`/${canonicalCandidate}`) ? canonicalCandidate.length : 0;
     if (suffixLength > bestLength) {
       bestLength = suffixLength;
       winners = [candidate];
@@ -243,6 +245,16 @@ function uniquePathAlias(path: string, candidates: readonly string[]): string | 
     }
   }
   return winners.length === 1 ? winners[0] : null;
+}
+
+function stripLeadingDotSegments(path: string): string {
+  let stripped = path;
+  while (stripped.startsWith("./")) stripped = stripped.slice(2);
+  return stripped;
+}
+
+function ownValue<T>(record: Readonly<Record<string, T>>, path: string): T | undefined {
+  return Object.hasOwn(record, path) ? record[path] : undefined;
 }
 
 /** The file's hunks that can host a RIGHT-side comment: a pure-deletion hunk starts at 0 and names

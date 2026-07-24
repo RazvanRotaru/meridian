@@ -66,13 +66,14 @@ const ARTIFACT: GraphArtifact = {
 
 describe("ReviewNodeViewedChrome", () => {
   it("renders graph-scaled folder, file, and unit states in periwinkle without a fixed toolbar transform", () => {
-    const markup = renderReviewNodes({ fingerprint: "unit-fingerprint" });
+    const markup = renderReviewNodes({ fingerprint: "file-fingerprint" });
 
     expect(markup.match(/data-review-view-state="done"/g)?.length).toBeGreaterThanOrEqual(4);
     expect(markup).toContain('data-review-viewed-scope="folder"');
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup).toContain('data-review-viewed-scope="unit"');
     expect(markup).toContain("Viewed src folder — click to unmark");
+    expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
     expect(markup).toContain("#A78BFA");
     expect(markup).toContain("background-color:#A78BFA1A");
     expect(markup).not.toContain("#3FB950");
@@ -90,15 +91,15 @@ describe("ReviewNodeViewedChrome", () => {
 
     expect(markup).toMatch(new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="done"`));
     expect(markup).toMatch(new RegExp(`data-review-node-id="${FILE_ID}"[^>]+data-review-view-state="done"`));
-    expect(markup).toContain("Viewed OsService — click to unmark");
+    expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
 
     store.getState().toggleReviewUnitsViewed([UNIT_ID]);
-    expect(store.getState().reviewUnitTicks[UNIT_ID]).toBeUndefined();
+    expect(store.getState().reviewFileTicks["src/ServiceContainerFactory.ts"]).toBeUndefined();
   });
 
   it("uses a dashed, icon-distinct stale state and hides controls outside the review surface", () => {
     const stale = renderReviewNodes({ fingerprint: "old-fingerprint" });
-    const disabled = renderReviewNodes({ fingerprint: "unit-fingerprint", enabled: false });
+    const disabled = renderReviewNodes({ fingerprint: "file-fingerprint", enabled: false });
 
     expect(stale).toContain('data-review-view-state="stale"');
     expect(stale).toMatch(/data-review-viewed-scope="folder" data-review-view-state="stale"/);
@@ -115,7 +116,7 @@ describe("ReviewNodeViewedChrome", () => {
   });
 
   it("does not add folder progress chrome without an exact review-rollup membership", () => {
-    const markup = renderReviewNodes({ fingerprint: "unit-fingerprint", folderMembers: [] });
+    const markup = renderReviewNodes({ fingerprint: "file-fingerprint", folderMembers: [] });
 
     expect(markup).not.toContain('data-review-viewed-scope="folder"');
     expect(markup).toContain('data-review-viewed-scope="file"');
@@ -128,11 +129,11 @@ describe("ReviewNodeViewedChrome", () => {
     const outsideTick = store.getState().reviewFileTicks["other/b.ts"];
     store.getState().toggleReviewFilesViewed(["src/ServiceContainerFactory.ts"]);
 
-    expect(store.getState().reviewUnitTicks[UNIT_ID]).toBeDefined();
+    expect(store.getState().reviewFileTicks["src/ServiceContainerFactory.ts"]).toBeDefined();
     expect(store.getState().reviewFileTicks["other/b.ts"]).toBe(outsideTick);
 
     store.getState().toggleReviewFilesViewed(["src/ServiceContainerFactory.ts"]);
-    expect(store.getState().reviewUnitTicks[UNIT_ID]).toBeUndefined();
+    expect(store.getState().reviewFileTicks["src/ServiceContainerFactory.ts"]).toBeUndefined();
     expect(store.getState().reviewFileTicks["other/b.ts"]).toBe(outsideTick);
   });
 });
@@ -186,7 +187,7 @@ describe("ReviewViewedButton", () => {
 
 describe("ReviewPreviewViewedControl", () => {
   it("resolves file and declaration previews to the same semantic state and top-right control as their nodes", () => {
-    const store = reviewStore({ fingerprint: "unit-fingerprint", folderMembers: [FILE_ID] });
+    const store = reviewStore({ fingerprint: "file-fingerprint", folderMembers: [FILE_ID] });
 
     const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
@@ -200,8 +201,7 @@ describe("ReviewPreviewViewedControl", () => {
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup.match(/data-review-viewed-scope="unit"/g)?.length).toBe(2);
     expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
-    expect(markup).toContain("Viewed OsService — click to unmark");
-    expect(markup).toContain("Viewed run — click to unmark");
+    expect(markup.match(/Viewed src\/ServiceContainerFactory\.ts — click to unmark/g)?.length).toBeGreaterThanOrEqual(3);
     expect(markup).toContain("top:-10px;right:-10px");
     expect(markup.match(/class="review-node-viewed-outline"/g)?.length).toBe(3);
     expect(markup).toContain("background-color:#A78BFA1A");
@@ -216,7 +216,7 @@ describe("ReviewPreviewViewedControl", () => {
     );
 
     expect(markup).toContain('data-review-view-state="todo"');
-    expect(markup).toContain('aria-label="Mark run as viewed"');
+    expect(markup).toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
     expect(markup).toContain('aria-pressed="false"');
     expect(markup).not.toContain('class="review-node-viewed-outline"');
     expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:hover");
@@ -315,8 +315,10 @@ function reviewStore({
       blastRadius: 0,
       deletedImpact: null,
     }],
-    reviewUnitTicks: fingerprint === undefined ? {} : { [UNIT_ID]: { at: "now", fingerprint } },
-    reviewFileTicks: {},
+    reviewUnitTicks: {},
+    reviewFileTicks: fingerprint === undefined
+      ? {}
+      : { "src/ServiceContainerFactory.ts": { at: "now", fingerprint } },
     minimalRollups: folderMembers.length === 0 ? {} : { [FOLDER_ID]: folderMembers },
   });
   const snapshot = store.getState();

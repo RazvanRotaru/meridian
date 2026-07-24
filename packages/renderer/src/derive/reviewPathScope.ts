@@ -1,14 +1,14 @@
 /**
  * Session-only path scoping for a PR review. Review file paths are repo-relative, so a scope is a
- * normalized path prefix matched on a `/` segment boundary — `src/aria/app` must never include
+ * exact `/`-separated path prefix matched on a segment boundary — `src/aria/app` must never include
  * `src/aria/application`.
  */
 
-import { normalizePath } from "./matchAffectedFiles";
-
 /** Normalize free-form review path input without treating it as a filesystem path. */
 export function normalizeReviewPathScope(path: string): string {
-  return normalizePath(path.trim())
+  let normalized = path;
+  while (normalized.startsWith("./")) normalized = normalized.slice(2);
+  return normalized
     .replace(/^\/+/, "")
     .replace(/\/{2,}/g, "/")
     .replace(/\/+$/, "");

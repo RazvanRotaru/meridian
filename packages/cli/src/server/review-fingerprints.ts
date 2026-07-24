@@ -115,7 +115,12 @@ export function withReviewFingerprints(
   ): boolean {
     const addedBytes = key.length + address.length + digest.length;
     if (entries >= MAX_ENTRIES || textBytes + addedBytes > MAX_TEXT_BYTES || addresses.has(address)) return false;
-    target[key] = { address, digest };
+    Object.defineProperty(target, key, {
+      value: { address, digest },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
     addresses.add(address);
     entries += 1;
     textBytes += addedBytes;
@@ -135,7 +140,9 @@ function sourcePathWithin(root: string, file: string): string | null {
 }
 
 function normalizePath(path: string): string {
-  return path.replaceAll("\\", "/");
+  // Extractor paths may use the host separator on Windows. On POSIX, however, backslash is an
+  // ordinary Git filename character and must remain distinct from `/`.
+  return process.platform === "win32" ? path.replaceAll("\\", "/") : path;
 }
 
 function lineOffsets(bytes: Buffer): number[] {

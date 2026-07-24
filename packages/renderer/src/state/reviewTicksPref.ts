@@ -23,6 +23,31 @@ export interface ReviewTick {
   fingerprint: string;
   /** Semantic address proven by the worker. Required for content-based unit/file carry-forward. */
   address?: string;
+  /** Immutable GitHub viewer identity that owns a durable file-sync intent after authentication is
+   * lost. This is meaningful only for fileTicks; legacy and explicitly local ticks remain
+   * unscoped. */
+  viewerId?: string;
+  /** Display login captured beside viewerId. Never used as the authorization/ownership key. */
+  viewerLogin?: string;
+  /** Desired GitHub file state for a durable authenticated sync intent. Missing means viewed for
+   * backward compatibility; `false` is the tombstone needed to retain an unview gesture. */
+  viewed?: boolean;
+  /** Immutable PR head that owns an authenticated sync intent. Legacy/local ticks omit it. */
+  headSha?: string;
+}
+
+/** Define an own enumerable tick even when a valid Git-controlled key is `__proto__`. */
+export function setReviewTick(
+  ticks: Record<string, ReviewTick>,
+  key: string,
+  tick: ReviewTick,
+): void {
+  Object.defineProperty(ticks, key, {
+    value: tick,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 /** One draft review comment, anchored to a changed file, touched unit, or exact diff line. */
@@ -53,7 +78,7 @@ export interface ReviewProgress {
   ticks: Record<string, ReviewTick>;
   /** Per-unit ticks, keyed by nodeId (the files checklist). */
   unitTicks: Record<string, ReviewTick>;
-  /** Explicit per-file viewed ticks, keyed by path (only meaningful for unit-less files). */
+  /** Browser-local whole-file viewed ticks, keyed by exact review path. */
   fileTicks: Record<string, ReviewTick>;
   /** Draft comments not yet submitted to the PR. */
   comments: ReviewComment[];
@@ -149,7 +174,32 @@ function isTickMap(value: unknown): value is Record<string, ReviewTick> {
       const record = tick as Record<string, unknown>;
       return typeof record.at === "string"
         && typeof record.fingerprint === "string"
-        && (record.address === undefined || typeof record.address === "string");
+        && (record.address === undefined || typeof record.address === "string")
+        && (record.viewed === undefined || typeof record.viewed === "boolean")
+        && (
+          record.headSha === undefined
+          || (
+            typeof record.headSha === "string"
+            && record.headSha.length > 0
+            && record.headSha === record.headSha.trim()
+          )
+        )
+        && (
+          record.viewerId === undefined
+          || (
+            typeof record.viewerId === "string"
+            && record.viewerId.length > 0
+            && record.viewerId === record.viewerId.trim()
+          )
+        )
+        && (
+          record.viewerLogin === undefined
+          || (
+            typeof record.viewerLogin === "string"
+            && record.viewerLogin.length > 0
+            && record.viewerLogin === record.viewerLogin.trim()
+          )
+        );
     });
 }
 

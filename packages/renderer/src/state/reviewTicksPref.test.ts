@@ -1,6 +1,6 @@
 /**
- * Persistence of review progress: the v1 → v2 migration (flow ticks survive, new fields default
- * empty), the v2 round-trip, and the malformed-record fallback. localStorage is stubbed — the
+ * Persistence of review progress: v1/v2 → v3 migration (flow ticks survive, new fields default
+ * empty), the v3 round-trip, and the malformed-record fallback. localStorage is stubbed — the
  * module's guards make every read best-effort.
  */
 
@@ -45,7 +45,16 @@ describe("readReviewProgress", () => {
       version: 3,
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: { unit: { at: "t", fingerprint: "u" } },
-      fileTicks: { "a.ts": { at: "t", fingerprint: "h" } },
+      fileTicks: {
+        "a.ts": {
+          at: "t",
+          fingerprint: "h",
+          viewerId: "U_Astrid",
+          viewerLogin: "Astrid",
+          viewed: false,
+          headSha: "a".repeat(40),
+        },
+      },
       comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, side: "LEFT", lineStale: true, lineRevision: "rev-a", anchorLabel: "L12 · base", body: "note", at: "t" }],
     };
     writeReviewProgress("scope", progress);

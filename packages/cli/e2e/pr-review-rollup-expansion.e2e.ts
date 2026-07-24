@@ -263,6 +263,30 @@ function fakeGitHub(source: PrReviewFixture): typeof fetch {
     const url = new URL(request.url);
     if (url.hostname !== "api.github.com") return nativeFetch(input, init);
     const path = url.pathname;
+    if (request.method === "POST" && path === "/graphql") {
+      const payload = (await request.json()) as { query?: unknown };
+      const query = typeof payload.query === "string" ? payload.query : "";
+      if (query.includes("query MeridianPullRequestViewedFiles")) {
+        return json({
+          data: {
+            viewer: { id: "U_rollup_e2e_reviewer", login: "rollup-e2e-reviewer" },
+            repository: {
+              pullRequest: {
+                id: "PR_rollup_e2e_7",
+                headRefOid: source.headSha,
+                files: {
+                  nodes: source.files.map((file) => ({
+                    path: file.api.filename,
+                    viewerViewedState: "UNVIEWED",
+                  })),
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      }
+    }
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls") return json([summary]);
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls/7") return json(summary);
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls/7/files") {

@@ -28,7 +28,9 @@ function canonicalGitHubRepository(value: string): string | null {
 }
 
 function canonicalExtractionSubdir(value: string): string | null {
-  const normalized = value.trim().replaceAll("\\", "/").replace(/^\/+|\/+$/g, "");
+  // The server already emits its platform-canonical extraction prefix. In a browser, retain
+  // backslashes as opaque POSIX filename characters instead of conflating two review scopes.
+  const normalized = value.trim().replace(/^\/+|\/+$/g, "");
   if (normalized === "") return "";
   const parts = normalized.split("/");
   return parts.every((part) => part !== "" && part !== "." && part !== "..") ? parts.join("/") : null;

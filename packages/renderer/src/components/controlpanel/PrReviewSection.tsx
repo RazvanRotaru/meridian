@@ -34,6 +34,7 @@ export function PrReviewSection() {
   const reviewFiles = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
   const viewMode = useBlueprint((state) => state.viewMode);
   const sessionSource = useBlueprint((state) => state.prSessionSource);
   const index = useBlueprint((state) => state.index);
@@ -60,7 +61,7 @@ export function PrReviewSection() {
   const resumable = prReviewed !== null && !reviewOpen && hasReviewPayload;
   const resuming = resumable && prReviewStatus === "preparing";
   const resumeFailed = resumable && prReviewStatus === "error";
-  const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks);
+  const viewed = countViewedFiles(reviewFiles, unitTicks, fileTicks, githubViewedStates);
 
   const unavailable = error === PRS_UNAVAILABLE_ERROR && open === null;
   const disconnected = !githubSource;

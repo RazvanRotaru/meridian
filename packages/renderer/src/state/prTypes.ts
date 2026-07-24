@@ -13,6 +13,7 @@ export interface LineEdit {
 }
 
 export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
+export type PrFileViewedState = "VIEWED" | "UNVIEWED" | "DISMISSED";
 
 export interface PrSummary {
   number: number;
@@ -73,6 +74,29 @@ export interface PrFilesResponse {
   totalFiles: number;
   outsideCount: number;
   suggestedSubdir: string;
+}
+
+/** Viewer-specific GitHub state for every changed file at one immutable PR head. */
+export interface PrViewedFilesResponse {
+  files: Array<{ path: string; state: PrFileViewedState }>;
+  headSha: string;
+  viewerId: string;
+  viewerLogin: string;
+}
+
+export interface PrViewedFileMutationResponse {
+  path: string;
+  state: PrFileViewedState;
+  headSha: string;
+  viewerId: string;
+  viewerLogin: string;
+}
+
+export interface PrViewedFilesMutationResponse {
+  files: Array<{ path: string; state: PrFileViewedState }>;
+  headSha: string;
+  viewerId: string;
+  viewerLogin: string;
 }
 
 export interface PrOneResponse {

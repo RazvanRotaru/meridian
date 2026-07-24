@@ -15,13 +15,25 @@ import {
   type ReviewCommentInput,
   type ReviewFileCommentInput,
 } from "./github-review";
+import {
+  fetchPullRequestViewedCoordinates,
+  fetchPullRequestViewedFiles,
+  setPullRequestFileViewed,
+  setPullRequestFilesViewed,
+} from "./github-pr-viewed";
+import { GitHubGraphqlMutationError } from "./github-http";
 import { sendJson } from "./http-response";
 import { githubTokenFor, githubUserFor } from "./web-auth";
 import { WebError } from "./web-error";
 import { readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
-import { deepestCommonDirectory, partitionExtractionSubdir, restoreExtractionSubdir } from "./web-source";
+import {
+  canonicalExtractionSubdir,
+  deepestCommonDirectory,
+  partitionExtractionSubdir,
+  restoreExtractionSubdir,
+} from "./web-source";
 import type { PrSummary } from "./github-parse";
 
 const GITHUB_SOURCE_ERROR = "pull requests need a GitHub-sourced session";
@@ -32,6 +44,11 @@ const MAX_RELATED_PATHS = 100;
 const RELATED_PR_PAGES = 3;
 const RELATED_PR_CONCURRENCY = 4;
 const HEAD_SHA = /^[0-9a-f]{7,40}$/i;
+const FULL_GIT_OBJECT_ID = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i;
+const MAX_VIEWED_FILE_PATH_LENGTH = 4_096;
+const MAX_GITHUB_VIEWER_ID_LENGTH = 512;
+const MAX_VIEWED_FILE_CHANGES = 25;
+const viewedFileOperationLanes = new WeakMap<Context, Map<string, Promise<void>>>();
 
 export async function handlePullRequests(
   ctx: Context,
@@ -234,6 +251,297 @@ export async function handlePullRequestFiles(
     outsideCount: outside.length,
     suggestedSubdir: deepestCommonDirectory(outside),
   });
+}
+
+/**
+ * GitHub's viewerViewedState is per-user, so unlike the public PR file list this endpoint always
+ * requires an authenticated viewer. Paths exposed to the browser remain extraction-relative.
+ */
+export async function handlePullRequestViewedFiles(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  const prNumber = parsePositiveInt(query.get("n"), "n");
+  const token = requireViewedFilesToken(ctx, request);
+  const release = await acquireViewedFileOperation(
+    ctx,
+    viewedFileOperationKey(source, prNumber),
+  );
+  try {
+    const result = await fetchPullRequestViewedFiles(globalThis.fetch, {
+      owner: source.owner,
+      repo: source.repo,
+      prNumber,
+      token,
+    });
+    const files = viewedFilesInsideExtraction(result.files, source.subdir);
+    sendJson(response, 200, {
+      files,
+      headSha: result.headSha,
+      viewerId: result.viewerId,
+      viewerLogin: result.viewerLogin,
+    });
+  } finally {
+    release();
+  }
+}
+
+interface SetViewedFileBody {
+  number: number;
+  changes: Array<{ path: string; viewed: boolean }>;
+  single: boolean;
+  expectedHeadSha: string;
+  expectedViewerId: string;
+}
+
+/**
+ * Update one GitHub Viewed checkbox. GitHub's mutation has no expected-head argument, so Meridian
+ * checks the full object id immediately before the write and checks the mutation's returned head.
+ */
+export async function handleSetPullRequestViewedFile(
+  ctx: Context,
+  request: IncomingMessage,
+  response: ServerResponse,
+  query: URLSearchParams,
+): Promise<void> {
+  const source = githubSource(ctx, query.get("id"));
+  if (!source) {
+    sendJson(response, 404, { error: GITHUB_SOURCE_ERROR });
+    return;
+  }
+  const body = parseSetViewedFileBody(await readJsonBody(request, ctx.shutdownSignal));
+  const token = requireViewedFilesToken(ctx, request);
+  const repoChanges = body.changes.map((change) => ({
+    ...change,
+    path: restoreViewedFilePath(change.path, source.subdir),
+  }));
+  const release = await acquireViewedFileOperation(
+    ctx,
+    viewedFileOperationKey(source, body.number),
+  );
+  try {
+    const current = await fetchPullRequestViewedCoordinates(globalThis.fetch, {
+      owner: source.owner,
+      repo: source.repo,
+      prNumber: body.number,
+      token,
+    });
+    if (!sameGitObjectId(current.headSha, body.expectedHeadSha)) {
+      sendViewedFileConflict(response, "head", "pull request head changed; reload viewed files");
+      return;
+    }
+    if (current.viewerId !== body.expectedViewerId) {
+      sendViewedFileConflict(response, "viewer", "signed-in GitHub viewer changed; reload viewed files");
+      return;
+    }
+    let updated: { headSha: string };
+    try {
+      updated = body.single
+        ? await setPullRequestFileViewed(globalThis.fetch, {
+            pullRequestId: current.pullRequestId,
+            path: repoChanges[0].path,
+            viewed: repoChanges[0].viewed,
+            token,
+          })
+        : await setPullRequestFilesViewed(globalThis.fetch, {
+            pullRequestId: current.pullRequestId,
+            changes: repoChanges,
+            token,
+          });
+    } catch (error) {
+      if (error instanceof WebError && error.status === 409) {
+        sendViewedFileConflict(response, "head", "pull request head changed while updating viewed files; reload");
+        return;
+      }
+      if (!(error instanceof GitHubGraphqlMutationError)) throw error;
+      // A rename/removal caused by a push can make the per-path mutation fail before it can return
+      // its head. Re-read only the coordinates so that normal revision races become retryable 409s.
+      const latest = await fetchPullRequestViewedCoordinates(globalThis.fetch, {
+        owner: source.owner,
+        repo: source.repo,
+        prNumber: body.number,
+        token,
+      });
+      if (latest.viewerId !== body.expectedViewerId) {
+        sendViewedFileConflict(response, "viewer", "signed-in GitHub viewer changed while updating viewed files; reload");
+        return;
+      }
+      if (!sameGitObjectId(latest.headSha, body.expectedHeadSha)) {
+        sendViewedFileConflict(response, "head", "pull request head changed while updating viewed files; reload");
+        return;
+      }
+      throw error;
+    }
+    if (!sameGitObjectId(updated.headSha, body.expectedHeadSha)) {
+      sendViewedFileConflict(response, "head", "pull request head changed while updating viewed files; reload");
+      return;
+    }
+    const files = body.changes.map((change) => ({
+      path: change.path,
+      state: change.viewed ? "VIEWED" as const : "UNVIEWED" as const,
+    }));
+    sendJson(response, 200, body.single
+      ? {
+          ...files[0],
+          headSha: updated.headSha,
+          viewerId: current.viewerId,
+          viewerLogin: current.viewerLogin,
+        }
+      : {
+          files,
+          headSha: updated.headSha,
+          viewerId: current.viewerId,
+          viewerLogin: current.viewerLogin,
+        });
+  } finally {
+    release();
+  }
+}
+
+function viewedFileOperationKey(
+  source: Extract<ArtifactSource, { kind: "github" }>,
+  prNumber: number,
+): string {
+  return `${source.owner}/${source.repo}#${prNumber}`;
+}
+
+/**
+ * Serialize every viewed-state read/write for one PR in this web session. A browser navigation can
+ * abandon its HTTP response while the bounded GitHub request still completes server-side; the next
+ * GET or opposite mutation must observe that completion instead of racing it and landing out of
+ * order.
+ */
+async function acquireViewedFileOperation(
+  ctx: Context,
+  key: string,
+): Promise<() => void> {
+  let lanes = viewedFileOperationLanes.get(ctx);
+  if (lanes === undefined) {
+    lanes = new Map();
+    viewedFileOperationLanes.set(ctx, lanes);
+  }
+  const previous = lanes.get(key) ?? Promise.resolve();
+  let settle!: () => void;
+  const current = new Promise<void>((resolve) => {
+    settle = resolve;
+  });
+  lanes.set(key, current);
+  await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    settle();
+    if (lanes!.get(key) === current) lanes!.delete(key);
+  };
+}
+
+function parseSetViewedFileBody(raw: unknown): SetViewedFileBody {
+  const body = asRecord(raw);
+  const number = positiveBodyInteger(body.number, "number");
+  const single = body.changes === undefined;
+  const changes = single
+    ? [{ path: viewedFilePath(body.path), viewed: viewedFileValue(body.viewed) }]
+    : viewedFileChanges(body.changes);
+  if (typeof body.expectedHeadSha !== "string" || !FULL_GIT_OBJECT_ID.test(body.expectedHeadSha)) {
+    throw new WebError(400, "expectedHeadSha must be a full hexadecimal Git object id");
+  }
+  if (
+    typeof body.expectedViewerId !== "string"
+    || body.expectedViewerId.length === 0
+    || body.expectedViewerId.length > MAX_GITHUB_VIEWER_ID_LENGTH
+    || body.expectedViewerId !== body.expectedViewerId.trim()
+  ) {
+    throw new WebError(400, "expectedViewerId must identify the hydrated GitHub viewer");
+  }
+  return {
+    number,
+    changes,
+    single,
+    expectedHeadSha: body.expectedHeadSha,
+    expectedViewerId: body.expectedViewerId,
+  };
+}
+
+function viewedFileChanges(raw: unknown): Array<{ path: string; viewed: boolean }> {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_VIEWED_FILE_CHANGES) {
+    throw new WebError(400, `changes must contain 1-${MAX_VIEWED_FILE_CHANGES} viewed-file updates`);
+  }
+  const paths = new Set<string>();
+  return raw.map((value) => {
+    const change = asRecord(value);
+    const path = viewedFilePath(change.path);
+    if (paths.has(path)) throw new WebError(400, "changes must not contain duplicate file paths");
+    paths.add(path);
+    return { path, viewed: viewedFileValue(change.viewed) };
+  });
+}
+
+function viewedFileValue(raw: unknown): boolean {
+  if (typeof raw !== "boolean") throw new WebError(400, "viewed must be a boolean");
+  return raw;
+}
+
+function viewedFilePath(raw: unknown): string {
+  if (
+    typeof raw !== "string"
+    || raw.length === 0
+    || raw.length > MAX_VIEWED_FILE_PATH_LENGTH
+    || raw.includes("\0")
+    || raw.startsWith("/")
+  ) {
+    throw new WebError(400, "path must be a canonical extraction-relative file path");
+  }
+  const segments = raw.split("/");
+  if (segments.some((segment) => segment.length === 0 || segment === "." || segment === "..")) {
+    throw new WebError(400, "path must be a canonical extraction-relative file path");
+  }
+  return raw;
+}
+
+function restoreViewedFilePath(path: string, subdir: string | undefined): string {
+  const prefix = canonicalExtractionSubdir(subdir);
+  return prefix ? `${prefix}/${path}` : path;
+}
+
+function viewedFilesInsideExtraction<T extends { path: string }>(
+  files: T[],
+  subdir: string | undefined,
+): T[] {
+  const prefix = canonicalExtractionSubdir(subdir);
+  if (!prefix) return files;
+  const pathPrefix = `${prefix}/`;
+  return files.flatMap((file) =>
+    file.path.startsWith(pathPrefix)
+      ? [{ ...file, path: file.path.slice(pathPrefix.length) }]
+      : []);
+}
+
+function requireViewedFilesToken(ctx: Context, request: IncomingMessage): string {
+  const token = githubTokenFor(ctx, request);
+  if (!token) {
+    throw new WebError(401, "viewed-file synchronization requires a GitHub sign-in");
+  }
+  return token;
+}
+
+function sameGitObjectId(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+function sendViewedFileConflict(
+  response: ServerResponse,
+  conflict: "head" | "viewer",
+  error: string,
+): void {
+  sendJson(response, 409, { error, conflict });
 }
 
 export async function handlePullRequestOne(

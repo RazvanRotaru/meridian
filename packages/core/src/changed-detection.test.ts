@@ -56,10 +56,10 @@ describe("tagChangedNodes", () => {
     expect(twice[1].tags).toEqual(ALPHA.tags ? [...ALPHA.tags, "changed"] : ["changed"]);
   });
 
-  it("matches windows-style artifact paths against forward-slash diff paths", () => {
+  it("does not conflate a literal-backslash node path with slash-keyed diff metadata", () => {
     const winNode = node("ts:src/win.ts#f", "function", "src\\win.ts", 2, 3);
     const tagged = tagChangedNodes([winNode], { "src/win.ts": [{ start: 2, end: 2 }] });
-    expect(collectChangedIds(tagged)).toEqual(new Set(["ts:src/win.ts#f"]));
+    expect(collectChangedIds(tagged)).toEqual(new Set());
   });
 
   it("returns everything unchanged for an empty diff", () => {
@@ -101,10 +101,15 @@ describe("changedFileManifestFromExtensions", () => {
     expect(changedFileManifestFromExtensions({
       changedSince: { manifest: [{ path: "bad\0path.ts", status: "added" }] },
     })).toBeNull();
-    for (const path of ["/absolute.ts", "C:/absolute.ts", "../escape.ts", "src/../escape.ts", "src\\win.ts", "src//a.ts", "./src/a.ts"]) {
+    for (const path of ["/absolute.ts", "../escape.ts", "src/../escape.ts", "src//a.ts", "./src/a.ts"]) {
       expect(changedFileManifestFromExtensions({
         changedSince: { manifest: [{ path, status: "modified" }] },
       })).toBeNull();
+    }
+    for (const path of ["C:/literal.ts", "src\\literal.ts"]) {
+      expect(changedFileManifestFromExtensions({
+        changedSince: { manifest: [{ path, status: "modified" }] },
+      })).toEqual([{ path, status: "modified" }]);
     }
   });
 });
@@ -154,7 +159,7 @@ describe("changedLineStatsFromExtensions", () => {
 });
 
 describe("changedLineKindsFromExtensions", () => {
-  it("round-trips per-line kinds and normalizes file separators", () => {
+  it("round-trips per-line kinds without collapsing literal backslashes", () => {
     const extensions = {
       changedSince: {
         kinds: {
@@ -163,7 +168,7 @@ describe("changedLineKindsFromExtensions", () => {
       },
     };
     expect(changedLineKindsFromExtensions(extensions)).toEqual({
-      "src/a.ts": [{ start: 12, end: 14, kind: "added" }],
+      "src\\a.ts": [{ start: 12, end: 14, kind: "added" }],
     });
   });
 
@@ -185,7 +190,7 @@ describe("changedLineKindsFromExtensions", () => {
 });
 
 describe("changedDiffLinesFromExtensions", () => {
-  it("round-trips exact ordered add/delete rows and normalizes file separators", () => {
+  it("round-trips exact ordered add/delete rows without collapsing literal backslashes", () => {
     const extensions = {
       changedSince: {
         diffLines: {
@@ -197,7 +202,7 @@ describe("changedDiffLinesFromExtensions", () => {
       },
     };
     expect(changedDiffLinesFromExtensions(extensions)).toEqual({
-      "src/a.ts": [
+      "src\\a.ts": [
         { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old", noNewline: true },
         { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
       ],
@@ -228,12 +233,12 @@ describe("changedDiffLinesFromExtensions", () => {
 });
 
 describe("changedLineDeltaForNode", () => {
-  it("returns the node file's line delta with normalized separators", () => {
+  it("returns only the node file's exact line delta", () => {
     const stats: ChangedLineStats = { "src/a.ts": { added: 7, deleted: 3 } };
     const posix = node("ts:src/a.ts#f", "function", "src/a.ts", 1, 1);
     const windows = node("ts:src/a.ts#g", "function", "src\\a.ts", 2, 2);
     expect(changedLineDeltaForNode(stats, posix)).toEqual({ added: 7, deleted: 3 });
-    expect(changedLineDeltaForNode(stats, windows)).toEqual({ added: 7, deleted: 3 });
+    expect(changedLineDeltaForNode(stats, windows)).toBeNull();
   });
 });
 
@@ -249,8 +254,8 @@ describe("changedLinesWithin", () => {
     expect(changedLinesWithin(ranges, "src/a.ts", 4, undefined)).toEqual(new Set([4]));
   });
 
-  it("normalizes windows-style node paths to the diff's forward slashes", () => {
-    expect(changedLinesWithin(ranges, "src\\a.ts", 4, 4)).toEqual(new Set([4]));
+  it("does not borrow a slash sibling's ranges for a literal-backslash path", () => {
+    expect(changedLinesWithin(ranges, "src\\a.ts", 4, 4)).toEqual(new Set());
   });
 });
 
@@ -273,7 +278,8 @@ describe("changedLineKindsWithin", () => {
     );
   });
 
-  it("normalizes windows paths and uses deleted > modified > added precedence", () => {
-    expect(changedLineKindsWithin(kinds, "src\\a.ts", 6, 6)).toEqual(new Map([[6, "deleted"]]));
+  it("keeps literal-backslash files separate while using deleted > modified > added precedence", () => {
+    expect(changedLineKindsWithin(kinds, "src\\a.ts", 6, 6)).toEqual(new Map());
+    expect(changedLineKindsWithin(kinds, "src/a.ts", 6, 6)).toEqual(new Map([[6, "deleted"]]));
   });
 });

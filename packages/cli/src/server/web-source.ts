@@ -34,13 +34,31 @@ export function partitionExtractionSubdir<T extends { path: string }>(
   }
   const inside: T[] = [];
   const outside: T[] = [];
+  const pathPrefix = `${prefix}/`;
   for (const file of files) {
-    const path = normalizedPath(file.path);
-    if (!path.startsWith(`${prefix}/`)) {
+    // Git paths are opaque byte-like names once decoded by GitHub. Only the configured extraction
+    // prefix is normalized; preserve the remainder exactly so trailing spaces and literal
+    // backslashes use the same key in PR files, comments, source reads, and viewed state.
+    if (!file.path.startsWith(pathPrefix)) {
       outside.push(file);
       continue;
     }
-    inside.push({ ...file, path: path.slice(prefix.length + 1) });
+    const projected = { ...file, path: file.path.slice(pathPrefix.length) };
+    const previousPath = (file as T & { previousPath?: unknown }).previousPath;
+    if (typeof previousPath === "string") {
+      if (previousPath.startsWith(pathPrefix)) {
+        Object.defineProperty(projected, "previousPath", {
+          value: previousPath.slice(pathPrefix.length),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      } else {
+        // A rename that crossed into the extraction root has no valid extraction-local old path.
+        delete (projected as T & { previousPath?: unknown }).previousPath;
+      }
+    }
+    inside.push(projected);
   }
   return { inside, outside };
 }
@@ -53,7 +71,7 @@ export function canonicalExtractionSubdir(subdir: string | undefined): string {
 /** Deepest repo-root directory shared by candidate files. Unsafe parent segments never suggest a root. */
 export function deepestCommonDirectory(files: readonly { path: string }[]): string {
   const directories = files.flatMap((file) => {
-    const segments = file.path.replace(/\\/g, "/").split("/");
+    const segments = file.path.split("/");
     if (segments.includes("..")) {
       return [];
     }
@@ -69,8 +87,7 @@ export function deepestCommonDirectory(files: readonly { path: string }[]): stri
 /** The inverse of stripExtractionSubdir, for WRITES: a browser path back to repo-root-relative. */
 export function restoreExtractionSubdir(path: string, subdir: string | undefined): string {
   const prefix = normalizedSubdir(subdir);
-  const normalized = normalizedPath(path);
-  return prefix ? `${prefix}/${normalized}` : normalized;
+  return prefix ? `${prefix}/${path}` : path;
 }
 
 function parseGitHubRepo(value: string): { owner: string; repo: string } | null {
@@ -101,9 +118,9 @@ function normalizedSubdir(subdir: string | undefined): string | null {
 }
 
 function normalizedPath(path: string): string {
-  return path
+  const platformPath = process.platform === "win32" ? path.replace(/\\/g, "/") : path;
+  return platformPath
     .trim()
-    .replace(/\\/g, "/")
     .split("/")
     .filter((part) => part.length > 0 && part !== ".")
     .join("/");

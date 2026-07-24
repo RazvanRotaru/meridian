@@ -129,7 +129,7 @@ export function parseNameStatusManifest(output: string): ChangedFileManifestEntr
 
   const append = (entry: ChangedFileManifestEntry): void => {
     if (!isSafeManifestPath(entry.path) || (entry.previousPath !== undefined && !isSafeManifestPath(entry.previousPath))) {
-      throw malformedManifest("path is not extraction-root-relative POSIX");
+      throw malformedManifest("path is not extraction-root-relative");
     }
     if (seenPaths.has(entry.path)) {
       throw malformedManifest(`duplicate path '${entry.path}'`);
@@ -170,7 +170,9 @@ function renameScore(status: string): number | null {
 }
 
 function isSafeManifestPath(path: string): boolean {
-  if (path.startsWith("/") || path.includes("\\") || /^[A-Za-z]:/.test(path)) {
+  // `git diff -z` emits opaque repository paths. A backslash (or `C:` prefix) is an ordinary
+  // filename character on POSIX, not a traversal separator; `/` is Git's only path separator.
+  if (path.startsWith("/")) {
     return false;
   }
   return path.split("/").every((segment) => segment.length > 0 && segment !== "." && segment !== "..");
@@ -209,10 +211,12 @@ interface ParsedFullUnifiedDiff {
 }
 
 function parseFullUnifiedDiff(diff: string): ParsedFullUnifiedDiff {
-  const changed: ChangedRanges = {};
-  const stats: ChangedLineStats = {};
-  const kinds: ChangedLineKinds = {};
-  const diffLines: ChangedDiffLines = {};
+  // Git paths are opaque keys and may validly be named `__proto__`, `constructor`, or `toString`.
+  // Null-prototype records keep those names as ordinary data throughout the prepared artifact.
+  const changed = Object.create(null) as ChangedRanges;
+  const stats = Object.create(null) as ChangedLineStats;
+  const kinds = Object.create(null) as ChangedLineKinds;
+  const diffLines = Object.create(null) as ChangedDiffLines;
   let complete = true;
 
   for (const section of splitFileSections(diff)) {

@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { reviewViewedGestureBlockReason } from "../../state/store";
 import { ReviewPanelResizableLayout } from "./ReviewPanel";
 
 describe("ReviewPanelResizableLayout", () => {
@@ -28,6 +29,30 @@ describe("ReviewPanelResizableLayout", () => {
     expect(markup.match(/role="separator"/g)).toHaveLength(2);
     expect(markup).toMatch(/id="review-scope-pane"[^>]*display:none[^>]*aria-hidden="true"[^>]*inert/);
     expect(markup).toMatch(/id="review-flows-pane"[^>]*display:none[^>]*aria-hidden="true"[^>]*inert/);
+  });
+
+  it("blocks an atomic reset while GitHub viewed state is unresolved", () => {
+    const ready = {
+      prReviewed: 7,
+      prReviewStale: false,
+      prReviewRefreshing: false,
+      reviewViewedFilesSyncEnabled: true,
+      reviewViewedFilesLoading: false,
+      reviewFileViewedStates: { "src/a.ts": "VIEWED" as const },
+      reviewViewedFilesError: null,
+    };
+
+    expect(reviewViewedGestureBlockReason({ ...ready, reviewViewedFilesLoading: true })).toContain("loading");
+    expect(reviewViewedGestureBlockReason({
+      ...ready,
+      reviewFileViewedStates: null,
+      reviewViewedFilesError: "permission denied",
+    })).toContain("Retry");
+    expect(reviewViewedGestureBlockReason({
+      ...ready,
+      reviewViewedFilesError: "refetch failed",
+    })).toContain("Retry");
+    expect(reviewViewedGestureBlockReason(ready)).toBeNull();
   });
 });
 

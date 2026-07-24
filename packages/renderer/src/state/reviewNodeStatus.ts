@@ -33,7 +33,11 @@ export function reviewNodeStatusSourcesFromKinds(kinds: ChangedLineKinds | null)
   if (kinds === null) {
     return {};
   }
-  return Object.fromEntries(Object.entries(kinds).map(([file, spans]) => [normalizePath(file), { kinds: spans }]));
+  const sources: Record<string, ReviewNodeStatusSource> = {};
+  for (const [file, spans] of Object.entries(kinds)) {
+    setOwnValue(sources, file, { kinds: spans });
+  }
+  return sources;
 }
 
 /** Adapt display-accurate diff rows into graph-only status seams. Deleted rows have no HEAD line,
@@ -45,17 +49,21 @@ export function reviewNodeStatusSourcesFromDiff(
   editsByFile: Readonly<Record<string, readonly LineEdit[]>> = {},
 ): ReviewNodeStatusSources {
   const files = new Set([...Object.keys(kinds ?? {}), ...Object.keys(diffLines ?? {})]);
-  return Object.fromEntries([...files].map((file) => {
-    const spans = [...(kinds?.[file] ?? [])];
-    for (const row of diffLines?.[file] ?? []) {
+  const sources: Record<string, ReviewNodeStatusSource> = {};
+  for (const file of files) {
+    const fileKinds = ownValue(kinds, file) ?? [];
+    const spans = [...fileKinds];
+    for (const row of ownValue(diffLines, file) ?? []) {
       if (row.kind === "deleted") {
         spans.push({ start: row.beforeNewLine, end: row.beforeNewLine, kind: "deleted" });
-      } else if (!(kinds?.[file] ?? []).some((span) => span.start <= row.newLine! && span.end >= row.newLine!)) {
+      } else if (!fileKinds.some((span) => span.start <= row.newLine! && span.end >= row.newLine!)) {
         spans.push({ start: row.newLine!, end: row.newLine!, kind: "added" });
       }
     }
-    return [normalizePath(file), { kinds: spans, ...(editsByFile[file] ? { edits: editsByFile[file] } : {}) }];
-  }));
+    const edits = ownValue(editsByFile, file);
+    setOwnValue(sources, file, { kinds: spans, ...(edits === undefined ? {} : { edits }) });
+  }
+  return sources;
 }
 
 /** Resolve the exact PR status at one flow-step source anchor. */
@@ -66,7 +74,7 @@ export function reviewSourceChangeStatus(
   if (source === undefined) {
     return undefined;
   }
-  const detail = sources[source.file] ?? sources[normalizePath(source.file)];
+  const detail = ownValue(sources, source.file);
   if (detail === undefined) {
     return undefined;
   }
@@ -96,7 +104,7 @@ export function reviewNodeStatusEntries(
     const node = index.nodesById.get(entry.nodeId);
     const source = node === undefined
       ? undefined
-      : sources[node.location.file] ?? sources[normalizePath(node.location.file)];
+      : ownValue(sources, node.location.file);
     return [
       entry.nodeId,
       reviewNodeChangeStatus(node, node === undefined ? [] : index.childrenOf(node.id), entry.status, source),
@@ -162,6 +170,20 @@ function coveredBySpans(start: number, end: number, spans: readonly { start: num
   return cursor > end;
 }
 
-function normalizePath(path: string): string {
-  return path.replace(/\\/g, "/");
+function ownValue<T>(
+  record: Readonly<Record<string, T>> | null | undefined,
+  key: string,
+): T | undefined {
+  return record !== null && record !== undefined && Object.hasOwn(record, key)
+    ? record[key]
+    : undefined;
+}
+
+function setOwnValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }

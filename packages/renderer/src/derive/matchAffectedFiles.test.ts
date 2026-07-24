@@ -84,13 +84,35 @@ describe("matchAffectedFiles", () => {
     expect(matchAffectedFiles(index, ["orders.pricing"]).unmatched).toEqual(["orders.pricing"]);
   });
 
-  it("normalizes both candidate and location.file before comparing", () => {
-    const index = indexOf([moduleNode("a", "src\\a.ts")]);
+  it("strips leading dot segments without reinterpreting Git backslashes as separators", () => {
+    const index = indexOf([moduleNode("a", "src/a.ts")]);
     expect(matchAffectedFiles(index, ["./src/a.ts"]).matched.map((m) => m.moduleId)).toEqual(["a"]);
-    expect(matchAffectedFiles(index, ["repo\\src\\a.ts"]).matched.map((m) => m.moduleId)).toEqual(["a"]);
+    expect(matchAffectedFiles(index, ["repo\\src\\a.ts"]).unmatched).toEqual(["repo\\src\\a.ts"]);
   });
 
-  it("dedupes candidates that normalize to the same path", () => {
+  it("does not bind a missing literal-backslash file to a surviving slash sibling", () => {
+    const index = indexOf([moduleNode("directory", "src/a/b.ts")]);
+
+    expect(matchAffectedFiles(index, ["src/a\\b.ts"])).toEqual({
+      matched: [],
+      unmatched: ["src/a\\b.ts"],
+      ambiguous: [],
+    });
+  });
+
+  it("keeps literal-backslash and slash Git paths distinct when both exist exactly", () => {
+    const index = indexOf([
+      moduleNode("literal", "src/a\\b.ts"),
+      moduleNode("directory", "src/a/b.ts"),
+    ]);
+
+    expect(matchAffectedFiles(index, ["src/a\\b.ts", "src/a/b.ts"]).matched).toEqual([
+      { path: "src/a\\b.ts", moduleId: "literal", file: "src/a\\b.ts" },
+      { path: "src/a/b.ts", moduleId: "directory", file: "src/a/b.ts" },
+    ]);
+  });
+
+  it("dedupes candidates that differ only by leading ./ segments", () => {
     const index = indexOf([moduleNode("a", "src/a.ts")]);
     expect(matchAffectedFiles(index, ["src/a.ts", "./src/a.ts"]).matched).toHaveLength(1);
   });

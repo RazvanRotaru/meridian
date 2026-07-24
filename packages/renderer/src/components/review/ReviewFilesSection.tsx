@@ -12,8 +12,8 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import type { ChangedDiffLine } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { checkStateOf, fileViewState, tickForUnit, type ReviewFileRow } from "../../derive/reviewFiles";
-import type { PrGitHubComment } from "../../state/prTypes";
+import { fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
+import type { PrFileViewedState, PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
 import { ExistingCommentLinks, ExistingCommentList } from "./ExistingReviewComments";
@@ -24,6 +24,7 @@ import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 import { filterReviewComments } from "../../derive/reviewCommentFilter";
 import { ReviewDiscussionToolbar } from "./ReviewDiscussionToolbar";
+import { reviewViewedGestureBlockReason } from "../../state/store";
 
 const STATUS_COLOR: Record<string, string> = { added: "#3FB950", modified: "#D29922", deleted: "#F85149", renamed: "#7DD3FC" };
 // Large PRs keep every file row visible, but mounting every unit/comment body at once multiplies the
@@ -57,13 +58,19 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const sort = useBlueprint((state) => state.reviewFilesSort);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates) ?? null;
+  const viewedLoading = useBlueprint((state) => state.reviewViewedFilesLoading) ?? false;
+  const viewedLoadError = useBlueprint((state) => state.reviewViewedFilesError) ?? null;
+  const viewedSyncErrors = useBlueprint((state) => state.reviewViewedFileSyncErrors) ?? {};
+  const reviewStale = useBlueprint((state) => state.prReviewStale);
+  const viewedBlockedReason = useBlueprint(reviewViewedGestureBlockReason);
   const comments = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
   const pathScope = useBlueprint((state) => state.reviewPathScope);
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
-  const { setReviewFilesSort } = useBlueprintActions();
+  const { setReviewFilesSort, retryReviewViewedFiles } = useBlueprintActions();
   const activeGroup = useActiveChangeGroup();
   const [open, setOpen] = useState(true);
   const [composer, setComposer] = useState<CommentTarget | null>(null);
@@ -113,7 +120,8 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   if (files.length === 0) {
     return null;
   }
-  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks) === "done").length;
+  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks, githubViewedStates) === "done").length;
+  const syncFailureCount = Object.keys(viewedSyncErrors).length;
   const unmatchedCount = files.filter((file) => file.moduleId === null).length;
   const listOpen = expanded || open;
   const toggleList = () => {
@@ -133,6 +141,20 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   return (
     <section>
       <ReviewDiscussionToolbar />
+      {(viewedLoadError !== null || syncFailureCount > 0) && (
+        <div role="status" style={VIEWED_SYNC_ERROR}>
+          <span>
+            {viewedLoadError ?? `${syncFailureCount} viewed-file ${syncFailureCount === 1 ? "change" : "changes"} could not sync with GitHub.`}
+          </span>
+          {reviewStale
+            ? <span>Refresh the pull request to continue.</span>
+            : (
+                <button type="button" style={VIEWED_SYNC_RETRY} disabled={viewedLoading} onClick={() => void retryReviewViewedFiles()}>
+                  {viewedLoading ? "Retrying…" : "Retry"}
+                </button>
+              )}
+        </div>
+      )}
       <div style={{ ...SECTION_HEAD, boxSizing: "border-box", cursor: "default" }}>
         <button type="button" style={SECTION_TOGGLE} aria-expanded={listOpen} onClick={toggleList}>
           <span style={CARET}>{listOpen ? "▾" : "▸"}</span>
@@ -170,8 +192,8 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
           <FileRow
             key={file.path}
             file={file}
-            unitTicks={unitTicks}
             fileTicks={fileTicks}
+            githubViewedStates={githubViewedStates}
             drafts={draftIndex.byRow}
             draftCounts={draftIndex.countsByFile}
             githubComments={githubCommentsByFile}
@@ -179,6 +201,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
             composer={composer}
             onComposer={setComposer}
             defaultExpanded={files.length <= AUTO_EXPAND_FILE_LIMIT}
+            viewedBlockedReason={viewedBlockedReason}
           />
         ))}
     </section>
@@ -187,8 +210,8 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
 
 function FileRow(props: {
   file: ReviewFileRow;
-  unitTicks: Record<string, ReviewTick>;
   fileTicks: Record<string, ReviewTick>;
+  githubViewedStates: Record<string, PrFileViewedState> | null;
   drafts: DraftsByRow;
   draftCounts: DraftCountsByFile;
   githubComments: GitHubCommentsByFile;
@@ -196,18 +219,30 @@ function FileRow(props: {
   composer: CommentTarget | null;
   onComposer: (target: CommentTarget | null) => void;
   defaultExpanded: boolean;
+  viewedBlockedReason: string | null;
 }) {
-  const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer, defaultExpanded } = props;
+  const {
+    file,
+    fileTicks,
+    githubViewedStates,
+    drafts,
+    draftCounts,
+    githubComments,
+    commentsVisible,
+    composer,
+    onComposer,
+    defaultExpanded,
+    viewedBlockedReason,
+  } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const diffLines = useBlueprint((state) => state.reviewDiffLinesByFile[file.path] ?? NO_DIFF_LINES);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode, showReviewFile } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
-  const view = fileViewState(file, unitTicks, fileTicks);
+  const view = fileViewState(file, {}, fileTicks, githubViewedStates);
   // A viewed file folds shut (GitHub's gesture). A manual chevron override holds only until the
-  // viewed state next CHANGES — then the derived fold wins again, so completing the last unit
-  // always folds the file even after a manual expand.
+  // file's viewed state next changes, then the derived fold wins again.
   useEffect(() => {
     setOpenOverride(null);
   }, [view]);
@@ -226,8 +261,6 @@ function FileRow(props: {
     (comment) => !canvasComments.includes(comment),
   );
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
-  const doneUnits = file.units.filter((unit) =>
-    checkStateOf(unit.fingerprint, tickForUnit(unit, unitTicks), unit.address) === "done").length;
   const hasBody = file.units.length > 0 || fileDrafts.length > 0 || (commentsVisible && existingComments.length > 0) || file.deletedImpact !== null;
   return (
     <div style={FILE_BLOCK}>
@@ -263,7 +296,7 @@ function FileRow(props: {
             {file.status[0].toUpperCase()}
           </span>
           <FilePath path={file.path} />
-          {file.units.length > 0 && <span style={SECTION_COUNT}>{doneUnits}/{file.units.length}</span>}
+          {file.units.length > 0 && <span style={SECTION_COUNT}>{file.units.length} units</span>}
           {file.blastRadius > 0 && (
             <span style={BLAST_BADGE} title={`blast radius: ${file.blastRadius} files outside this PR call into the changed code`}>
               ◎ {file.blastRadius}
@@ -301,8 +334,10 @@ function FileRow(props: {
         {commentsVisible ? <GitHubCommentLink comments={existingComments} /> : null}
         <button
           type="button"
-          style={{ ...TICK_BTN, color: TICK_COLOR[view] }}
-          title={view === "done" ? "Viewed — click to unmark" : view === "stale" ? "Changed since viewed — click to re-mark" : "Mark file as viewed"}
+          style={{ ...TICK_BTN, color: TICK_COLOR[view], ...(viewedBlockedReason === null ? {} : VIEWED_DISABLED) }}
+          disabled={viewedBlockedReason !== null}
+          title={viewedBlockedReason
+            ?? (view === "done" ? "Viewed — click to unmark" : view === "stale" ? "Changed since viewed — click to re-mark" : "Mark file as viewed")}
           onClick={() => toggleReviewFileViewed(file.path)}
         >
           {TICK_GLYPH[view]}
@@ -326,7 +361,16 @@ function FileRow(props: {
             </div>
           ) : null}
           {file.units.map((unit) => (
-            <UnitRow key={unit.nodeId} unit={unit} path={file.path} tick={tickForUnit(unit, unitTicks)} drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []} composer={composer} onComposer={onComposer} />
+            <UnitRow
+              key={unit.nodeId}
+              unit={unit}
+              path={file.path}
+              viewState={view}
+              drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []}
+              composer={composer}
+              onComposer={onComposer}
+              viewedBlockedReason={viewedBlockedReason}
+            />
           ))}
           <CommentList comments={fileDrafts} />
           {composerHere && (
@@ -468,6 +512,9 @@ function FilePath({ path }: { path: string }) {
 export const ReviewFilesSection = memo(ReviewFilesSectionImpl);
 
 const FILE_BLOCK: React.CSSProperties = { borderRadius: 8, border: "1px solid #1B212A", background: "#0D1117", marginBottom: 6, paddingBottom: 2 };
+const VIEWED_SYNC_ERROR: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8, margin: "4px 6px", padding: "6px 8px", border: "1px solid #6E4B1F", borderRadius: 6, background: "#241A0F", color: "#E3B341", fontSize: 10.5 };
+const VIEWED_SYNC_RETRY: React.CSSProperties = { marginLeft: "auto", border: "1px solid #6E4B1F", borderRadius: 5, background: "#302113", color: "#F0C36A", cursor: "pointer", font: "inherit", fontSize: 10, padding: "2px 7px" };
+const VIEWED_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.55 };
 const SECTION_TOGGLE: React.CSSProperties = { flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 8, border: "none", background: "transparent", cursor: "pointer", font: "inherit", padding: 0, textAlign: "left", ...NO_FOCUS_RING };
 const SORT_TOGGLE: React.CSSProperties = { display: "inline-flex", alignItems: "center", gap: 3, flexShrink: 0, fontSize: 9.5 };
 const SORT_DIVIDER: React.CSSProperties = { color: "#3A4452" };

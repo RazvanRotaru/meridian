@@ -36,7 +36,7 @@ import type {
 } from "@meridian/core";
 import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { PrChangedFile } from "../state/prTypes";
-import { matchAffectedFiles, normalizePath } from "./matchAffectedFiles";
+import { matchAffectedFiles } from "./matchAffectedFiles";
 import type { ReviewUnitRow } from "./reviewFiles";
 
 export interface DeletedReviewUnit extends ReviewUnitRow {
@@ -123,7 +123,7 @@ const CALL_EDGE_KIND = "calls";
 
 /** Pure two-sided deletion projection. Unrelated base edges and every base extension stay excluded. */
 export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): DeletedNodeProjection {
-  const rawByPath = new Map(args.prFiles.map((file) => [normalizePath(file.path), file]));
+  const rawByPath = new Map(args.prFiles.map((file) => [file.path, file]));
   const canonicalDiffLines = changedDiffLinesFromExtensions(args.headArtifact.extensions);
   const canonicalStats = changedLineStatsFromExtensions(args.headArtifact.extensions);
   const baseFingerprints = reviewFingerprintsFromArtifact(args.baseArtifact);
@@ -134,7 +134,7 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
     if (changed.status === "added") {
       continue;
     }
-    const raw = rawByPath.get(normalizePath(changed.path));
+    const raw = rawByPath.get(changed.path);
     const baseCandidate = raw?.previousPath ?? changed.previousPath ?? changed.path;
     const baseModuleId = matchedModuleId(args.baseIndex, baseCandidate);
     if (baseModuleId === null) {
@@ -449,8 +449,8 @@ function exactCanonicalDiff(
   if (key === null) {
     return null;
   }
-  const rows = diffLines[key] ?? [];
-  const delta = stats[key];
+  const rows = Object.hasOwn(diffLines, key) ? diffLines[key] : [];
+  const delta = Object.hasOwn(stats, key) ? stats[key] : undefined;
   if (!delta || countRows(rows, "added") !== delta.added || countRows(rows, "deleted") !== delta.deleted) {
     return null;
   }
@@ -473,24 +473,16 @@ function countRows(rows: readonly ChangedDiffLine[], kind: ChangedDiffLine["kind
 }
 
 function uniquePathAlias(aliases: readonly (string | null)[], keys: readonly string[]): string | null {
-  const normalizedAliases = [...new Set(aliases.filter((alias): alias is string => alias !== null).map(normalizePath))];
-  const normalizedKeys = new Map(keys.map((key) => [normalizePath(key), key]));
-  const exact = normalizedAliases
-    .map((alias) => normalizedKeys.get(alias))
-    .filter((key): key is string => key !== undefined);
+  const rawAliases = [...new Set(aliases.filter((alias): alias is string => alias !== null))];
+  const keySet = new Set(keys);
+  const exact = rawAliases.filter((alias) => keySet.has(alias));
   if (new Set(exact).size === 1) {
     return exact[0];
   }
   if (new Set(exact).size > 1) {
     return null;
   }
-  const suffix = keys.filter((key) => {
-    const normalizedKey = normalizePath(key);
-    return normalizedAliases.some((alias) =>
-      alias.endsWith(`/${normalizedKey}`) || normalizedKey.endsWith(`/${alias}`),
-    );
-  });
-  return new Set(suffix).size === 1 ? suffix[0] : null;
+  return null;
 }
 
 function addFileCounterparts(

@@ -58,6 +58,7 @@ export async function bootstrap(): Promise<BootResult> {
       prsUrl: prApi.prsUrl,
       prOneUrl: prApi.prOneUrl,
       prFilesUrl: prApi.prFilesUrl,
+      prViewedFilesUrl: boot.githubSource ? prApi.prViewedFilesUrl : undefined,
       prRelatedUrl: prApi.prRelatedUrl,
       prCommentsUrl: prApi.prCommentsUrl,
       prChecksUrl: prApi.prChecksUrl,

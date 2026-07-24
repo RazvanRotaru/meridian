@@ -1,24 +1,22 @@
 /**
  * Viewed-state chrome rendered inside Map nodes. Because it sits beneath React Flow's node
  * transform, the outline and attached check scale with the graph instead of becoming a fixed-size
- * screen overlay. Unit controls toggle only that declaration; file and folder controls are
- * aggregate bulk actions and retain the existing cascade semantics.
+ * screen overlay. Every control resolves to GitHub's atomic file checkbox: declaration controls
+ * toggle their owning file, while structural and folder controls bulk-toggle represented files.
  */
 
 import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
 import {
-  checkStateOf,
   filesViewState,
   fileViewState,
-  tickForUnit,
-  unitsViewState,
   type CheckState,
   type ReviewFileRow,
   type ReviewUnitRow,
 } from "../../derive/reviewFiles";
 import type { GraphIndex } from "../../graph/graphIndex";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { reviewViewedGestureBlockReason } from "../../state/store";
 import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionContext";
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
 
@@ -45,7 +43,7 @@ interface UnitTarget {
 interface UnitGroupTarget {
   kind: "unit-group";
   label: string;
-  units: readonly ReviewUnitRow[];
+  files: readonly ReviewFileRow[];
 }
 
 type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget | UnitGroupTarget;
@@ -133,6 +131,7 @@ function EnabledReviewNodeViewedChrome({
           state={state}
           label={control.label}
           onToggle={control.onToggle}
+          blocked={control.blocked}
         />
       </div>
     </div>
@@ -172,6 +171,7 @@ export function ReviewPreviewViewedControl({
           state={control.state}
           label={control.label}
           onToggle={control.onToggle}
+          blocked={control.blocked}
         />
       </div>
     </>
@@ -185,12 +185,14 @@ export function ReviewViewedButton({
   state,
   label,
   onToggle,
+  blocked = false,
 }: {
   nodeId: string;
   scope: ReviewViewedScope;
   state: CheckState;
   label: string;
   onToggle: () => void;
+  blocked?: boolean;
 }) {
   return (
     <button
@@ -199,10 +201,11 @@ export function ReviewViewedButton({
       title={label}
       aria-label={label}
       aria-pressed={state === "done"}
+      disabled={blocked}
       data-review-node-id={nodeId}
       data-review-viewed-scope={scope}
       data-review-view-state={state}
-      style={BUTTON_HIT_TARGET}
+      style={{ ...BUTTON_HIT_TARGET, ...(blocked ? BLOCKED_HIT_TARGET : {}) }}
       onPointerDown={(event) => event.stopPropagation()}
       onClick={(event) => {
         event.stopPropagation();
@@ -214,6 +217,7 @@ export function ReviewViewedButton({
 }
 
 interface ReviewViewedControl {
+  blocked: boolean;
   color: string;
   label: string;
   onToggle: () => void;
@@ -230,14 +234,21 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
     state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
     state.index,
   ));
-  const state = useBlueprint((blueprint) => viewStateFor(target, blueprint.reviewUnitTicks, blueprint.reviewFileTicks));
-  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick, toggleReviewUnitsViewed } = useBlueprintActions();
+  const state = useBlueprint((blueprint) => viewStateFor(
+    target,
+    blueprint.reviewUnitTicks,
+    blueprint.reviewFileTicks,
+    blueprint.reviewFileViewedStates,
+  ));
+  const blockedReason = useBlueprint(reviewViewedGestureBlockReason);
+  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick } = useBlueprintActions();
   if (target === null || state === null) {
     return null;
   }
   return {
+    blocked: blockedReason !== null,
     color: stateColor(state),
-    label: viewedLabel(target, state),
+    label: blockedReason ?? viewedLabel(target, state),
     scope: scopeForTarget(target),
     state,
     onToggle: () => {
@@ -246,7 +257,7 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
       } else if (target.kind === "file") {
         toggleReviewFileViewed(target.file.path);
       } else if (target.kind === "unit-group") {
-        toggleReviewUnitsViewed(target.units.map((unit) => unit.nodeId));
+        toggleReviewFilesViewed(target.files.map((file) => file.path));
       } else {
         toggleReviewUnitTick(target.unit.nodeId);
       }
@@ -339,10 +350,15 @@ function reviewTargetIndex(files: readonly ReviewFileRow[], graphIndex: GraphInd
   }
   const unitGroupsByNodeId = new Map([...groupedUnits].map(([nodeId, descendants]) => {
     const ownUnit = unitsByNodeId.get(nodeId)?.unit;
+    const units = ownUnit === undefined ? descendants : [ownUnit, ...descendants];
+    const files = [...new Map(units.flatMap((unit) => {
+      const owner = unitsByNodeId.get(unit.nodeId)?.file;
+      return owner === undefined ? [] : [[owner.path, owner] as const];
+    })).values()];
     return [nodeId, {
       kind: "unit-group" as const,
       label: graphIndex.nodesById.get(nodeId)?.displayName ?? nodeId,
-      units: ownUnit === undefined ? descendants : [ownUnit, ...descendants],
+      files,
     }];
   }));
   const index = {
@@ -360,26 +376,27 @@ function viewStateFor(
   target: ReviewViewedTarget | null,
   unitTicks: Parameters<typeof fileViewState>[1],
   fileTicks: Parameters<typeof fileViewState>[2],
+  githubStates: Parameters<typeof fileViewState>[3],
 ): CheckState | null {
   if (target === null) {
     return null;
   }
   if (target.kind === "folder") {
-    return filesViewState(target.files, unitTicks, fileTicks);
+    return filesViewState(target.files, unitTicks, fileTicks, githubStates);
   }
   if (target.kind === "unit-group") {
-    return unitsViewState(target.units, unitTicks);
+    return filesViewState(target.files, unitTicks, fileTicks, githubStates);
   }
-  return target.kind === "file"
-    ? fileViewState(target.file, unitTicks, fileTicks)
-    : checkStateOf(target.unit.fingerprint, tickForUnit(target.unit, unitTicks), target.unit.address);
+  return fileViewState(target.file, unitTicks, fileTicks, githubStates);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {
   const subject = target.kind === "folder"
     ? `${target.label} folder`
     : target.kind === "file" ? target.file.path
-      : target.kind === "unit-group" ? target.label : target.unit.displayName;
+      : target.kind === "unit-group"
+        ? target.files.length === 1 ? target.files[0]!.path : `${target.files.length} files`
+        : target.file.path;
   if (state === "done") {
     return `Viewed ${subject} — click to unmark`;
   }
@@ -446,6 +463,7 @@ const BUTTON_HIT_TARGET: React.CSSProperties = {
   background: "transparent",
   cursor: "pointer",
 };
+const BLOCKED_HIT_TARGET: React.CSSProperties = { cursor: "wait" };
 
 /** One stylesheet for hover/focus emphasis; every state remains discoverable and interactive. */
 export const REVIEW_NODE_VIEWED_CSS = `

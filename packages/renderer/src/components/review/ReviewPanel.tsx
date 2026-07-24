@@ -21,7 +21,7 @@ import { ReviewFlowsSection, visibleAffectedFlows } from "./ReviewFlowsSection";
 import { ReviewSubmissionFooter } from "./ReviewSubmissionFooter";
 import { NO_FOCUS_RING, REVIEW_VIEWED_ACCENT } from "./reviewPanelKit";
 import { ReviewPreferencesPane } from "./ReviewPreferencesPane";
-import { selectedPrSummary } from "../../state/store";
+import { reviewViewedGestureBlockReason, selectedPrSummary } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 
 function ReviewPanelImpl() {
@@ -330,9 +330,10 @@ function CollapsedRail() {
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
   const stale = useBlueprint((state) => state.prReviewStale || state.prReviewRefreshing);
   const { toggleReviewPanel } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks);
+  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates);
   return (
     <button
       type="button"
@@ -360,18 +361,20 @@ function Header(props: {
   const files = useBlueprint((state) => state.reviewFiles);
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
+  const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
   const preparing = useBlueprint((state) => state.prReviewStatus === "preparing");
   const stale = useBlueprint((state) => state.prReviewStale);
   const refreshing = useBlueprint((state) => state.prReviewRefreshing);
+  const resetBlockedReason = useBlueprint(reviewViewedGestureBlockReason);
   const canExtract = useBlueprint((state) => state.prReviewed !== null
     && !state.prPreparedArtifactCurrent
     && state.prPreparedGraphId === null
     && state.analyzeUrl !== null);
   const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks);
+  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates);
   const total = files.length;
   const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
   const ctx = review.context;
@@ -408,7 +411,13 @@ function Header(props: {
           </button>
         ))}
         {total > 0 && (
-          <button type="button" style={RESET_BTN} title="Clear every reviewed tick (drafts are kept)" onClick={resetReviewTicks}>
+          <button
+            type="button"
+            style={{ ...RESET_BTN, ...(resetBlockedReason === null ? {} : RESET_BTN_DISABLED) }}
+            disabled={resetBlockedReason !== null}
+            title={resetBlockedReason ?? "Clear every reviewed tick (drafts are kept)"}
+            onClick={resetReviewTicks}
+          >
             Reset
           </button>
         )}
@@ -615,6 +624,7 @@ const PR_DESCRIPTION_TOGGLE: React.CSSProperties = { border: "none", background:
 // One shared chip metric for BOTH header buttons — mismatched size/weight reads as a glitch.
 const HEADER_BTN: React.CSSProperties = { font: "inherit", border: "1px solid #2A2F37", background: "transparent", color: "#9AA4B2", borderRadius: 6, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, lineHeight: "15px", cursor: "pointer", ...NO_FOCUS_RING };
 const RESET_BTN: React.CSSProperties = { ...HEADER_BTN };
+const RESET_BTN_DISABLED: React.CSSProperties = { cursor: "wait", opacity: 0.6 };
 const HIDE_BTN: React.CSSProperties = { ...HEADER_BTN };
 const EXTRACT_BTN: React.CSSProperties = { ...HEADER_BTN };
 const GITHUB_PR_LINK: React.CSSProperties = { color: "#7DD3FC", fontSize: 10.5, textDecoration: "none", whiteSpace: "nowrap" };

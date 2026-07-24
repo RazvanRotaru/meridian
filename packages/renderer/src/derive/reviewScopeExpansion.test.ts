@@ -72,7 +72,7 @@ describe("expandReviewScopeBaseUnits", () => {
       new Set(["keep-open"]),
       index,
       [
-        file("./src/a.ts", FILE_A, [unit(METHOD_A, "base")]),
+        file("src/a.ts", FILE_A, [unit(METHOD_A, "base")]),
         file("src/b.ts", FILE_B, [unit(METHOD_B, "base")]),
       ],
       new Set(["src/a.ts"]),
@@ -80,6 +80,19 @@ describe("expandReviewScopeBaseUnits", () => {
     );
 
     expect(expanded).toEqual(new Set(["keep-open", FILE_A, CLASS_A]));
+  });
+
+  it("does not include a slash sibling when the exact scope names a literal backslash", () => {
+    const index = buildGraphIndex(artifact);
+    const expanded = expandReviewScopeBaseUnits(
+      new Set(),
+      index,
+      [file("src/a/b.ts", FILE_A, [unit(METHOD_A, "base")])],
+      new Set(["src/a\\b.ts"]),
+      { baseNodeIds: new Set(), deletedNodeIds: new Set() },
+    );
+
+    expect(expanded).toEqual(new Set());
   });
 
   it("recognizes a legacy base row by comparison/deleted membership", () => {
