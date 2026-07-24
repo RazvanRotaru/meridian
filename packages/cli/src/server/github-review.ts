@@ -17,10 +17,11 @@ import {
 } from "./github-http";
 import { WebError } from "./web-error";
 
-/** One inline comment anchored to a new-side line of the PR diff. */
+/** One inline comment anchored to an exact side + line of the PR diff. */
 export interface ReviewCommentInput {
   path: string;
   line: number;
+  side: "LEFT" | "RIGHT";
   body: string;
 }
 
@@ -199,7 +200,7 @@ function inlinePayload(comments: readonly ReviewCommentInput[]): Array<Record<st
   return comments.map((comment) => ({
     path: comment.path,
     line: comment.line,
-    side: "RIGHT",
+    side: comment.side,
     body: comment.body,
   }));
 }
@@ -207,7 +208,7 @@ function inlinePayload(comments: readonly ReviewCommentInput[]): Array<Record<st
 function inlineAsFileComment(comment: ReviewCommentInput): ReviewFileCommentInput {
   return {
     path: comment.path,
-    label: `L${comment.line}`,
+    label: `L${comment.line}${comment.side === "LEFT" ? " · base" : ""}`,
     body: comment.body,
   };
 }

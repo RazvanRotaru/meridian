@@ -5,11 +5,14 @@
  * dirty-draft guard without owning competing copies of the text.
  */
 
+import type { PrReviewCommentSide } from "./prTypes";
+
 export interface ReviewLineComposerTarget {
   readonly reviewKey: string;
   readonly lineRevision: string | null;
   readonly path: string;
   readonly line: number;
+  readonly side: PrReviewCommentSide;
 }
 
 export interface ReviewLineComposerState extends ReviewLineComposerTarget {
@@ -69,7 +72,7 @@ export function discardReviewLineComposer(): null {
   return null;
 }
 
-/** Exact identity includes the immutable source revision; matching path and line alone is unsafe. */
+/** Exact identity includes the immutable source revision and diff side. */
 export function matchesReviewLineComposerTarget(
   left: ReviewLineComposerTarget | null,
   right: ReviewLineComposerTarget,
@@ -78,7 +81,8 @@ export function matchesReviewLineComposerTarget(
     && left.reviewKey === right.reviewKey
     && left.lineRevision === right.lineRevision
     && left.path === right.path
-    && left.line === right.line;
+    && left.line === right.line
+    && left.side === right.side;
 }
 
 /** State-suffixed aliases keep call sites explicit when the helpers are imported beside actions. */

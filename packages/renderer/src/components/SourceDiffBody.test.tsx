@@ -67,7 +67,7 @@ describe("SourceDiffBody", () => {
     expect(hoverBody.match(/data-diff-origin="delete"/g)).toHaveLength(1);
     expect(hoverBody.match(/data-diff-origin="add"/g)).toHaveLength(1);
     expect(hoverBody).toContain('data-review-comment-scope="inline-and-file"');
-    expect(hoverBody).toContain("L17–L23 can be inline · comments on other lines attach to the file");
+    expect(hoverBody).toContain("L17–L23 can be inline on current code · comments on other current lines attach to the file");
   });
 
   it("keeps the legacy deletion immediately before the first visible source line", () => {
@@ -164,7 +164,7 @@ describe("SourceDiffBody", () => {
     expect(html).toContain('data-source-line="1"');
     expect(html).toContain('aria-label="Comment on line 1"');
     expect(html).toContain('data-review-comment-scope="file-only"');
-    expect(html).toContain("Comments in this preview will attach to the file");
+    expect(html).toContain("Comments on current lines in this preview will attach to the file");
   });
 
   it("keeps a live preview with no inline overlap draftable as file-level comments", () => {
@@ -180,7 +180,7 @@ describe("SourceDiffBody", () => {
     const html = renderBody(view, 340);
 
     expect(html).toContain('data-review-comment-scope="file-only"');
-    expect(html).toContain("Comments in this preview will attach to the file");
+    expect(html).toContain("Comments on current lines in this preview will attach to the file");
     expect(html.match(/aria-label="Comment on line /g)).toHaveLength(3);
   });
 
@@ -200,6 +200,7 @@ describe("SourceDiffBody", () => {
         lineRevision: null,
         path: FILE,
         line: 20,
+        side: "RIGHT",
         body: "Carry this exact text between code views",
         confirmDiscard: false,
         error: null,
@@ -208,6 +209,37 @@ describe("SourceDiffBody", () => {
 
     expect(html).toContain('placeholder="Comment on line 20…"');
     expect(html).toContain("Carry this exact text between code views");
+  });
+
+  it("restores a LEFT composer on the exact deleted row instead of the same-number HEAD row", () => {
+    const view: CodeView = {
+      node: NODE,
+      code: "line 19\nline 20 new\nline 21",
+      lineCount: 3,
+      loading: false,
+      error: null,
+      mode: "modal",
+      baseLine: 19,
+      diffLines: REPLACEMENT,
+      sourceSide: "head",
+    };
+    const html = renderBody(view, "70vh", {
+      reviewLineComposer: {
+        reviewKey: "source-diff-test",
+        lineRevision: null,
+        path: FILE,
+        line: 20,
+        side: "LEFT",
+        body: "Question about the removed behavior",
+        confirmDiscard: false,
+        error: null,
+      },
+    });
+
+    expect(html).toContain('data-review-comment-line="20" data-review-comment-side="LEFT"');
+    expect(html).toContain('data-line-comment-composer="20" data-line-comment-composer-side="LEFT"');
+    expect(html).toContain('placeholder="Comment on deleted line 20…"');
+    expect(html).toContain("Question about the removed behavior");
   });
 
   it("restores a composer outside GitHub's inline range because its draft will attach to the file", () => {
@@ -226,6 +258,7 @@ describe("SourceDiffBody", () => {
         lineRevision: null,
         path: FILE,
         line: 24,
+        side: "RIGHT",
         body: "Preserve this outside-diff thought",
         confirmDiscard: false,
         error: null,
@@ -259,7 +292,7 @@ describe("SourceDiffBody", () => {
     });
 
     expect(html).toContain('data-review-comment-scope="file-only"');
-    expect(html).toContain("Comments in this preview will attach to the file");
+    expect(html).toContain("Comments on current lines in this preview will attach to the file");
     expect(html.match(/aria-label="Comment on line /g)).toHaveLength(3);
   });
 });
@@ -267,17 +300,17 @@ describe("SourceDiffBody", () => {
 describe("githubLineCommentScopeNote", () => {
   it("names a contiguous range and bounds fragmented range copy", () => {
     expect(githubLineCommentScopeNote(new Set([7, 8, 9]), 14)).toBe(
-      "L7–L9 can be inline · comments on other lines attach to the file",
+      "L7–L9 can be inline on current code · comments on other current lines attach to the file",
     );
     expect(githubLineCommentScopeNote(new Set([7, 9, 10, 14]), 14)).toBe(
-      "L7, L9–L10 +1 more can be inline · comments on other lines attach to the file",
+      "L7, L9–L10 +1 more can be inline on current code · comments on other current lines attach to the file",
     );
   });
 
   it("stays silent when the whole source is commentable and explains an empty overlap", () => {
     expect(githubLineCommentScopeNote(new Set([17, 18, 19]), 3)).toBeNull();
     expect(githubLineCommentScopeNote(new Set(), 14)).toBe(
-      "Comments in this preview will attach to the file",
+      "Comments on current lines in this preview will attach to the file",
     );
     expect(githubLineCommentScopeNote(new Set(), 0)).toBeNull();
   });

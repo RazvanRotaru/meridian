@@ -10,6 +10,7 @@
  */
 
 import { memo, useEffect, useMemo, useState } from "react";
+import type { ChangedDiffLine } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { checkStateOf, fileViewState, tickForUnit, type ReviewFileRow } from "../../derive/reviewFiles";
 import type { PrGitHubComment } from "../../state/prTypes";
@@ -41,6 +42,7 @@ type DraftCountsByFile = ReadonlyMap<string, DraftCounts>;
 type GitHubCommentsByFile = ReadonlyMap<string, PrGitHubComment[]>;
 
 const NO_GITHUB_COMMENTS: readonly PrGitHubComment[] = [];
+const NO_DIFF_LINES: readonly ChangedDiffLine[] = [];
 
 const rowKey = (path: string, nodeId: string | null): string => nodeId ?? `file:${path}`;
 
@@ -198,6 +200,7 @@ function FileRow(props: {
   const { file, unitTicks, fileTicks, drafts, draftCounts, githubComments, commentsVisible, composer, onComposer, defaultExpanded } = props;
   const currentNodes = useBlueprint((state) => state.index.nodesById);
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
+  const diffLines = useBlueprint((state) => state.reviewDiffLinesByFile[file.path] ?? NO_DIFF_LINES);
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode, showReviewFile } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
@@ -213,11 +216,11 @@ function FileRow(props: {
   const counts = draftCounts.get(file.path) ?? { file: 0, unit: 0, line: 0 };
   const aggregateDraftCount = counts.file + counts.unit + counts.line;
   const existingComments = githubComments.get(file.path) ?? NO_GITHUB_COMMENTS;
-  // Current HEAD-line bodies move to canvas code. Keep their GitHub links in the rail because the
-  // source service may truncate a very large file before that line; comments with no safe canvas
-  // placement (old side, no line, deleted/unmatched file, or no link) retain their full fallback.
+  // Bodies with an exact source-row placement move to canvas code. Keep their GitHub links in the
+  // rail because the source service may truncate a very large file before that line; comments with
+  // no safe placement (no line, unmatched/incomplete diff, or no link) retain their full fallback.
   const canvasComments = existingComments.filter(
-    (comment) => file.moduleId !== null && file.status !== "deleted" && comment.url.length > 0 && isHeadSideReviewComment(comment),
+    (comment) => reviewCommentHasCanvasPlacement(file, comment, diffLines),
   );
   const fallbackComments = existingComments.filter(
     (comment) => !canvasComments.includes(comment),
@@ -333,6 +336,22 @@ function FileRow(props: {
       )}
     </div>
   );
+}
+
+export function reviewCommentHasCanvasPlacement(
+  file: Pick<ReviewFileRow, "moduleId" | "status">,
+  comment: PrGitHubComment,
+  diffLines: readonly ChangedDiffLine[],
+): boolean {
+  if (file.moduleId === null || comment.url.length === 0) {
+    return false;
+  }
+  if (isHeadSideReviewComment(comment)) {
+    return file.status !== "deleted";
+  }
+  return comment.side === "LEFT"
+    && comment.line !== null
+    && diffLines.some((line) => line.kind === "deleted" && line.oldLine === comment.line);
 }
 
 function GitHubCommentLink({ comments }: { comments: readonly PrGitHubComment[] }) {

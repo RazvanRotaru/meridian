@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { PrGitHubComment } from "../../state/prTypes";
-import { reviewCommentThreadOrder } from "./ExistingReviewComments";
+import { ExistingCommentLinks, reviewCommentThreadOrder } from "./ExistingReviewComments";
 import { CommentComposer } from "./ReviewComments";
 import { reviewActionDisabled, reviewSubmissionBlocked, reviewSuccessLabel } from "./ReviewSubmissionFooter";
 
@@ -70,6 +70,18 @@ describe("reviewCommentThreadOrder", () => {
     const orphan = githubComment(4, 999);
 
     expect(reviewCommentThreadOrder([rootA, rootB, replyA, orphan]).map((comment) => comment.id)).toEqual([1, 3, 2, 4]);
+  });
+
+  it("distinguishes old- and new-side links at the same line number", () => {
+    const markup = renderToStaticMarkup(
+      <ExistingCommentLinks comments={[
+        { ...githubComment(1, null), url: "https://github.com/o/r/pull/1#discussion_r1" },
+        { ...githubComment(2, null), side: "LEFT", url: "https://github.com/o/r/pull/1#discussion_r2" },
+      ]} />,
+    );
+
+    expect(markup).toContain("L1 · octo");
+    expect(markup).toContain("L1 · base · octo");
   });
 });
 

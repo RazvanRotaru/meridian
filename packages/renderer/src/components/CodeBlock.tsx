@@ -9,7 +9,7 @@
 
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangedDiffLine, ChangedLineKind } from "@meridian/core";
-import type { PrGitHubComment } from "../state/prTypes";
+import type { PrGitHubComment, PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { ExistingCommentList } from "./review/ExistingReviewComments";
 import { CommentComposer, CommentList } from "./review/ReviewComments";
@@ -22,6 +22,19 @@ import { UnchangedCodeFoldRow } from "./UnchangedCodeFoldRow";
 export type CodeDiffLine = ChangedDiffLine;
 
 export type CodeSourceSide = "head" | "base";
+
+interface CodeLineComposer {
+  line: number;
+  side: PrReviewCommentSide;
+  onAdd: (body: string) => void | boolean | Promise<void | boolean>;
+  onCancel: () => void;
+  value?: string;
+  onValueChange?: (value: string) => void;
+  confirmDiscard?: boolean;
+  error?: string | null;
+  onKeepEditing?: () => void;
+  onDiscard?: () => void;
+}
 
 const COLOR = {
   plain: "#C9D3E0",
@@ -117,6 +130,7 @@ export function CodeBlock({
   hiddenSourceLines,
   onLineClick,
   commentableLines,
+  commentableDeletedLines,
   lineComposer,
   existingComments = EMPTY_EXISTING_COMMENTS,
   pendingComments = EMPTY_PENDING_COMMENTS,
@@ -148,25 +162,17 @@ export function CodeBlock({
   /** Source-code rows omitted from the listing. Review discussions anchored to those rows remain. */
   hiddenSourceLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
-  onLineClick?: (line: number) => void;
+  onLineClick?: (line: number, side: PrReviewCommentSide) => void;
   /** Absolute HEAD-side lines allowed to open a review draft. GitHub-safe rows submit inline;
    * other rows become file-level review comments through the submission projection. */
   commentableLines?: ReadonlySet<number>;
+  /** Exact BASE-side deletion lines allowed to open an inline review draft. */
+  commentableDeletedLines?: ReadonlySet<number>;
   /** The panel-owned composer shown immediately below its absolute source row. */
-  lineComposer?: {
-    line: number;
-    onAdd: (body: string) => void | boolean | Promise<void | boolean>;
-    onCancel: () => void;
-    value?: string;
-    onValueChange?: (value: string) => void;
-    confirmDiscard?: boolean;
-    error?: string | null;
-    onKeepEditing?: () => void;
-    onDiscard?: () => void;
-  } | null;
-  /** Existing GitHub RIGHT-side comments already filtered to this visible file slice. */
+  lineComposer?: CodeLineComposer | null;
+  /** Existing GitHub comments already filtered to the visible HEAD and deleted rows. */
   existingComments?: readonly PrGitHubComment[];
-  /** Fresh local line drafts already filtered to this visible file slice. */
+  /** Fresh local line drafts already filtered to the visible HEAD and deleted rows. */
   pendingComments?: readonly ReviewComment[];
   /** Removed patch text, grouped by the absolute new-side line emitted immediately before it. */
   removedRows?: ReadonlyMap<number, string[]>;
@@ -197,23 +203,26 @@ export function CodeBlock({
     () => lineCount === 0 ? [] : splitHighlightedLines(pieces),
     [lineCount, pieces],
   );
-  const existingCommentsByLine = useMemo(() => {
-    const byLine = new Map<number, PrGitHubComment[]>();
+  const existingCommentsByCoordinate = useMemo(() => {
+    const byCoordinate = new Map<string, PrGitHubComment[]>();
     for (const comment of existingComments) {
-      if (comment.line === null) continue;
-      const bucket = byLine.get(comment.line);
-      bucket ? bucket.push(comment) : byLine.set(comment.line, [comment]);
+      if (comment.line === null || comment.side === null) continue;
+      const key = reviewCoordinateKey(comment.side, comment.line);
+      const bucket = byCoordinate.get(key);
+      bucket ? bucket.push(comment) : byCoordinate.set(key, [comment]);
     }
-    return byLine;
+    return byCoordinate;
   }, [existingComments]);
-  const pendingCommentsByLine = useMemo(() => {
-    const byLine = new Map<number, ReviewComment[]>();
+  const pendingCommentsByCoordinate = useMemo(() => {
+    const byCoordinate = new Map<string, ReviewComment[]>();
     for (const comment of pendingComments) {
       if (comment.line === null) continue;
-      const bucket = byLine.get(comment.line);
-      bucket ? bucket.push(comment) : byLine.set(comment.line, [comment]);
+      const side = comment.side === "LEFT" ? "LEFT" : "RIGHT";
+      const key = reviewCoordinateKey(side, comment.line);
+      const bucket = byCoordinate.get(key);
+      bucket ? bucket.push(comment) : byCoordinate.set(key, [comment]);
     }
-    return byLine;
+    return byCoordinate;
   }, [pendingComments]);
   const canonicalRows = useMemo(
     () => diffLines === undefined || startLine === undefined
@@ -230,9 +239,11 @@ export function CodeBlock({
       changedLineKinds,
       evidenceLines,
       focusLines,
-      existingCommentsByLine,
-      pendingCommentsByLine,
-      composerLine: lineComposer?.line,
+      existingCommentsByLine: reviewCommentsByLine(existingCommentsByCoordinate, sourceSide === "base" ? "LEFT" : "RIGHT"),
+      pendingCommentsByLine: reviewCommentsByLine(pendingCommentsByCoordinate, sourceSide === "base" ? "LEFT" : "RIGHT"),
+      composerLine: lineComposer?.side === (sourceSide === "base" ? "LEFT" : "RIGHT")
+        ? lineComposer.line
+        : undefined,
       removedRows: effectiveRemovedRows,
       diffLines,
       sourceSide,
@@ -248,11 +259,12 @@ export function CodeBlock({
     changedLineKinds,
     evidenceLines,
     focusLines,
-    existingCommentsByLine,
+    existingCommentsByCoordinate,
     foldUnchanged,
     highlightedLines.length,
     lineComposer?.line,
-    pendingCommentsByLine,
+    lineComposer?.side,
+    pendingCommentsByCoordinate,
     effectiveRemovedRows,
     diffLines,
     sourceSide,
@@ -291,19 +303,19 @@ export function CodeBlock({
     changedLineKinds,
     evidenceLines,
     focusLines,
-    existingCommentsByLine,
-    pendingCommentsByLine,
+    existingCommentsByCoordinate,
+    pendingCommentsByCoordinate,
   ]);
   useEffect(() => {
     if (!lineComposer?.confirmDiscard) return;
     const row = listingRef.current?.querySelector<HTMLTableRowElement>(
-      `tr[data-line-comment-composer="${lineComposer.line}"]`,
+      `tr[data-line-comment-composer="${lineComposer.line}"][data-line-comment-composer-side="${lineComposer.side}"]`,
     );
     // A host-level close may be requested after the reader has scrolled far from the edited line.
     // Bring the inline confirmation (and its auto-focused Keep button) back into view so the close
     // never appears inert.
     row?.scrollIntoView({ block: "nearest" });
-  }, [lineComposer?.confirmDiscard, lineComposer?.line]);
+  }, [lineComposer?.confirmDiscard, lineComposer?.line, lineComposer?.side]);
   if (startLine === undefined) {
     return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
   }
@@ -312,7 +324,10 @@ export function CodeBlock({
   // The row table owns both scroll axes, while sticky gutter cells keep line numbers in view. Each
   // source row and its optional composer share one table, so inserting a composer or ghost row can
   // never desynchronise independently-rendered code and gutter columns.
-  const hasCommentableLines = (commentableLines?.size ?? 0) > 0 && onLineClick !== undefined;
+  const hasCommentableLines = (
+    (commentableLines?.size ?? 0) > 0
+    || (commentableDeletedLines?.size ?? 0) > 0
+  ) && onLineClick !== undefined;
   const showReviewGutter = hasCommentableLines
     || (effectiveRemovedRows?.size ?? 0) > 0
     || effectiveRemovedTruncated
@@ -321,16 +336,23 @@ export function CodeBlock({
   const gutterVisible = showGutter || showReviewGutter;
   const firstLine = startLine;
   const lastLine = startLine + highlightedLines.length - 1;
+  const deletedReviewProps = {
+    commentableLines: commentableDeletedLines,
+    existingCommentsByCoordinate,
+    lineComposer,
+    onLineClick,
+    pendingCommentsByCoordinate,
+  };
   return (
     <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
       <style>{LINE_COMMENT_BUTTON_CSS}</style>
       <table style={CODE_TABLE_STYLE}>
         <tbody>
           {canonicalRows?.deletedByBeforeLine.get(firstLine)?.map((line) => (
-            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} />
+            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} {...deletedReviewProps} />
           ))}
           {effectiveRemovedRows?.get(firstLine - 1)?.map((line, index) => (
-            <GhostRow key={`removed-${firstLine - 1}-${index}`} text={line} showGutter={gutterVisible} />
+            <GhostRow key={`removed-${firstLine - 1}-${index}`} text={line} showGutter={gutterVisible} {...deletedReviewProps} />
           ))}
           {highlightedLines.map((line, index) => {
             const lineNo = startLine + index;
@@ -356,10 +378,17 @@ export function CodeBlock({
             const evidence = evidenceLines?.has(lineNo) ?? false;
             const focused = focusLines?.has(lineNo) ?? false;
             const sourceHidden = hiddenSourceLines?.has(lineNo) ?? false;
-            const commentable = onLineClick !== undefined && (commentableLines?.has(lineNo) ?? false);
-            const composerOpen = lineComposer?.line === lineNo;
-            const lineComments = existingCommentsByLine.get(lineNo) ?? EMPTY_EXISTING_COMMENTS;
-            const lineDrafts = pendingCommentsByLine.get(lineNo) ?? EMPTY_PENDING_COMMENTS;
+            const reviewSide: PrReviewCommentSide = sourceSide === "base" ? "LEFT" : "RIGHT";
+            const commentable = onLineClick !== undefined && (
+              reviewSide === "LEFT"
+                ? (commentableDeletedLines?.has(lineNo) ?? false)
+                : (commentableLines?.has(lineNo) ?? false)
+            );
+            const composerOpen = lineComposer?.line === lineNo && lineComposer.side === reviewSide;
+            const coordinate = reviewCoordinateKey(reviewSide, lineNo);
+            const lineComments = existingCommentsByCoordinate.get(coordinate) ?? EMPTY_EXISTING_COMMENTS;
+            const lineDrafts = pendingCommentsByCoordinate.get(coordinate) ?? EMPTY_PENDING_COMMENTS;
+            const lineLabel = reviewSide === "LEFT" ? `deleted line ${lineNo}` : `line ${lineNo}`;
             return (
               <Fragment key={`line-${lineNo}`}>
                 {fold && foldExpanded ? (
@@ -385,6 +414,7 @@ export function CodeBlock({
                   data-edge-evidence-line={evidence ? "true" : undefined}
                   data-source-focus-line={focused ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
+                  data-review-comment-side={commentable ? reviewSide : undefined}
                   data-line-comment-composer-open={composerOpen ? "true" : undefined}
                 >
                   {gutterVisible ? (
@@ -395,11 +425,11 @@ export function CodeBlock({
                             type="button"
                             className="mrd-line-comment-button"
                             style={LINE_COMMENT_BUTTON_STYLE}
-                            aria-label={`Comment on line ${lineNo}`}
-                            title={`Comment on line ${lineNo}`}
+                            aria-label={`Comment on ${lineLabel}`}
+                            title={`Comment on ${lineLabel}`}
                             onClick={(event) => {
                               event.stopPropagation();
-                              onLineClick(lineNo);
+                              onLineClick(lineNo, reviewSide);
                             }}
                           >
                             +
@@ -417,7 +447,7 @@ export function CodeBlock({
                   ) : null}
                   <td
                     data-source-code-cell={commentable ? lineNo : undefined}
-                    title={commentable ? `Click to comment on line ${lineNo}` : undefined}
+                    title={commentable ? `Click to comment on ${lineLabel}` : undefined}
                     style={{
                       ...CODE_CELL_STYLE,
                       ...(lineRowStyle(kind) ?? {}),
@@ -428,9 +458,9 @@ export function CodeBlock({
                     onClick={commentable ? (event) => {
                       // A compact hover preview should not require finding a 15px gutter target.
                       // Preserve ordinary code selection and modified clicks, but make a direct
-                      // primary click on any draftable HEAD line open the same composer.
+                      // primary click on any draftable source line open the same composer.
                       if (!shouldOpenLineComposerFromCodeCell(event)) return;
-                      onLineClick(lineNo);
+                      onLineClick(lineNo, reviewSide);
                     } : undefined}
                   >
                     {line.length > 0 ? line : " "}
@@ -439,62 +469,56 @@ export function CodeBlock({
                 {!sourceHidden && canonicalRow?.noNewline ? (
                   <NoNewlineMarkerRow side={canonicalRow.kind === "added" ? "new" : "old"} showGutter={gutterVisible} />
                 ) : null}
-                {lineComments.length > 0 ? (
-                  <tr data-existing-review-comments-line={lineNo}>
-                    <td colSpan={gutterVisible ? 2 : 1} style={EXISTING_COMMENT_CELL_STYLE}>
-                      <ExistingCommentList comments={lineComments} />
-                    </td>
-                  </tr>
-                ) : null}
-                {lineDrafts.length > 0 ? (
-                  <tr data-pending-review-comments-line={lineNo}>
-                    <td colSpan={gutterVisible ? 2 : 1} style={PENDING_COMMENT_CELL_STYLE}>
-                      <CommentList comments={lineDrafts} placement="code" />
-                    </td>
-                  </tr>
-                ) : null}
-                {composerOpen ? (
-                  <tr data-line-comment-composer={lineNo}>
-                    <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
-                      <CommentComposer
-                        key={lineNo}
-                        placeholder={`Comment on line ${lineNo}…`}
-                        onAdd={lineComposer.onAdd}
-                        onCancel={lineComposer.onCancel}
-                        value={lineComposer.value}
-                        onValueChange={lineComposer.onValueChange}
-                        confirmDiscard={lineComposer.confirmDiscard}
-                        error={lineComposer.error}
-                        onKeepEditing={lineComposer.onKeepEditing}
-                        onDiscard={lineComposer.onDiscard}
-                        stopEscape
-                      />
-                    </td>
-                  </tr>
-                ) : null}
+                <LineReviewRows
+                  comments={lineComments}
+                  composer={composerOpen ? lineComposer ?? null : null}
+                  drafts={lineDrafts}
+                  gutterVisible={gutterVisible}
+                  line={lineNo}
+                  side={reviewSide}
+                />
                 {effectiveRemovedRows?.get(lineNo)?.map((removedLine, removedIndex) => (
                   <GhostRow
                     key={`removed-${lineNo}-${removedIndex}`}
                     text={removedLine}
                     showGutter={gutterVisible}
+                    {...deletedReviewProps}
                   />
                 ))}
                 {lineNo < lastLine ? canonicalRows?.deletedByBeforeLine.get(lineNo + 1)?.map((deletedLine) => (
-                  <GhostRow key={diffRowKey(deletedLine)} line={deletedLine} showGutter={gutterVisible} />
+                  <GhostRow key={diffRowKey(deletedLine)} line={deletedLine} showGutter={gutterVisible} {...deletedReviewProps} />
                 )) : null}
               </Fragment>
             );
           })}
           {highlightedLines.length > 0 ? canonicalRows?.deletedByBeforeLine.get(lastLine + 1)?.map((line) => (
-            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} />
+            <GhostRow key={diffRowKey(line)} line={line} showGutter={gutterVisible} {...deletedReviewProps} />
           )) : null}
           {effectiveRemovedTruncated ? (
-            <GhostRow text="… removed lines truncated" showGutter={gutterVisible} marker />
+            <GhostRow text="… removed lines truncated" showGutter={gutterVisible} marker {...deletedReviewProps} />
           ) : null}
         </tbody>
       </table>
     </div>
   );
+}
+
+function reviewCoordinateKey(side: PrReviewCommentSide, line: number): string {
+  return `${side}:${line}`;
+}
+
+function reviewCommentsByLine<T>(
+  commentsByCoordinate: ReadonlyMap<string, readonly T[]>,
+  side: PrReviewCommentSide,
+): Map<number, readonly T[]> {
+  const commentsByLine = new Map<number, readonly T[]>();
+  const prefix = `${side}:`;
+  for (const [coordinate, comments] of commentsByCoordinate) {
+    if (!coordinate.startsWith(prefix)) continue;
+    const line = Number(coordinate.slice(prefix.length));
+    if (Number.isSafeInteger(line)) commentsByLine.set(line, comments);
+  }
+  return commentsByLine;
 }
 
 function shouldOpenLineComposerFromCodeCell(event: React.MouseEvent<HTMLTableCellElement>): boolean {
@@ -552,30 +576,155 @@ function foldFocus(options: {
   return { lines, gaps };
 }
 
-function GhostRow(props: { text?: string; line?: CodeDiffLine; showGutter: boolean; marker?: boolean }) {
+function GhostRow(props: {
+  text?: string;
+  line?: CodeDiffLine;
+  showGutter: boolean;
+  marker?: boolean;
+  commentableLines?: ReadonlySet<number>;
+  existingCommentsByCoordinate: ReadonlyMap<string, readonly PrGitHubComment[]>;
+  lineComposer?: CodeLineComposer | null;
+  onLineClick?: (line: number, side: PrReviewCommentSide) => void;
+  pendingCommentsByCoordinate: ReadonlyMap<string, readonly ReviewComment[]>;
+}) {
   const text = props.line?.text ?? props.text ?? "";
+  const oldLine = props.line?.kind === "deleted" ? props.line.oldLine : null;
+  const commentable = oldLine !== null
+    && props.onLineClick !== undefined
+    && (props.commentableLines?.has(oldLine) ?? false);
+  const coordinate = oldLine === null ? null : reviewCoordinateKey("LEFT", oldLine);
+  const comments = coordinate === null
+    ? EMPTY_EXISTING_COMMENTS
+    : props.existingCommentsByCoordinate.get(coordinate) ?? EMPTY_EXISTING_COMMENTS;
+  const drafts = coordinate === null
+    ? EMPTY_PENDING_COMMENTS
+    : props.pendingCommentsByCoordinate.get(coordinate) ?? EMPTY_PENDING_COMMENTS;
+  const composerOpen = oldLine !== null
+    && props.lineComposer?.side === "LEFT"
+    && props.lineComposer.line === oldLine;
   return (
     <>
       <tr
         style={GHOST_ROW_STYLE}
         data-diff-origin={props.line ? "delete" : undefined}
-        data-old-line={props.line?.oldLine ?? undefined}
+        data-old-line={oldLine ?? undefined}
         data-before-new-line={props.line?.beforeNewLine}
         data-no-newline={props.line?.noNewline ? "true" : undefined}
+        data-review-comment-line={commentable ? oldLine : undefined}
+        data-review-comment-side={commentable ? "LEFT" : undefined}
+        data-line-comment-composer-open={composerOpen ? "true" : undefined}
         aria-label={canonicalDiffAriaLabel(props.line)}
       >
         {props.showGutter ? (
-          <td style={{ ...GUTTER_CELL_STYLE, ...GHOST_GUTTER_STYLE }} aria-hidden="true">
+          <td
+            style={{ ...GUTTER_CELL_STYLE, ...GHOST_GUTTER_STYLE }}
+            aria-hidden={commentable ? undefined : "true"}
+          >
             <div style={GUTTER_CONTENT_STYLE}>
-              <span>{props.line?.oldLine === null || props.line?.oldLine === undefined ? "− " : `− ${props.line.oldLine}`}</span>
+              {commentable ? (
+                <button
+                  type="button"
+                  className="mrd-line-comment-button"
+                  style={LINE_COMMENT_BUTTON_STYLE}
+                  aria-label={`Comment on deleted line ${oldLine}`}
+                  title={`Comment on deleted line ${oldLine}`}
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    props.onLineClick!(oldLine!, "LEFT");
+                  }}
+                >
+                  +
+                </button>
+              ) : null}
+              <span>{oldLine === null ? "− " : `− ${oldLine}`}</span>
             </div>
           </td>
         ) : null}
-        <td style={{ ...CODE_CELL_STYLE, ...GHOST_CODE_STYLE, ...(props.marker ? GHOST_MARKER_STYLE : {}) }}>
+        <td
+          data-deleted-code-cell={commentable ? oldLine : undefined}
+          title={commentable ? `Click to comment on deleted line ${oldLine}` : undefined}
+          style={{
+            ...CODE_CELL_STYLE,
+            ...GHOST_CODE_STYLE,
+            ...(props.marker ? GHOST_MARKER_STYLE : {}),
+            ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
+          }}
+          onClick={commentable ? (event) => {
+            if (!shouldOpenLineComposerFromCodeCell(event)) return;
+            props.onLineClick!(oldLine!, "LEFT");
+          } : undefined}
+        >
           {text.length > 0 ? text : " "}
         </td>
       </tr>
       {props.line?.noNewline ? <NoNewlineMarkerRow side="old" showGutter={props.showGutter} /> : null}
+      {oldLine !== null ? (
+        <LineReviewRows
+          comments={comments}
+          composer={composerOpen ? props.lineComposer ?? null : null}
+          drafts={drafts}
+          gutterVisible={props.showGutter}
+          line={oldLine}
+          side="LEFT"
+        />
+      ) : null}
+    </>
+  );
+}
+
+function LineReviewRows({
+  comments,
+  composer,
+  drafts,
+  gutterVisible,
+  line,
+  side,
+}: {
+  comments: readonly PrGitHubComment[];
+  composer: CodeLineComposer | null;
+  drafts: readonly ReviewComment[];
+  gutterVisible: boolean;
+  line: number;
+  side: PrReviewCommentSide;
+}) {
+  return (
+    <>
+      {comments.length > 0 ? (
+        <tr data-existing-review-comments-line={line} data-review-comment-side={side}>
+          <td colSpan={gutterVisible ? 2 : 1} style={EXISTING_COMMENT_CELL_STYLE}>
+            <ExistingCommentList comments={comments} />
+          </td>
+        </tr>
+      ) : null}
+      {drafts.length > 0 ? (
+        <tr data-pending-review-comments-line={line} data-review-comment-side={side}>
+          <td colSpan={gutterVisible ? 2 : 1} style={PENDING_COMMENT_CELL_STYLE}>
+            <CommentList comments={drafts} placement="code" />
+          </td>
+        </tr>
+      ) : null}
+      {composer !== null ? (
+        <tr
+          data-line-comment-composer={line}
+          data-line-comment-composer-side={side}
+        >
+          <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
+            <CommentComposer
+              key={`${side}-${line}`}
+              placeholder={`Comment on ${side === "LEFT" ? "deleted " : ""}line ${line}…`}
+              onAdd={composer.onAdd}
+              onCancel={composer.onCancel}
+              value={composer.value}
+              onValueChange={composer.onValueChange}
+              confirmDiscard={composer.confirmDiscard}
+              error={composer.error}
+              onKeepEditing={composer.onKeepEditing}
+              onDiscard={composer.onDiscard}
+              stopEscape
+            />
+          </td>
+        </tr>
+      ) : null}
     </>
   );
 }

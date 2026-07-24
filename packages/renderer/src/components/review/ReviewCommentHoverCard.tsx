@@ -54,7 +54,9 @@ export function CommentPreviewCard({ label, comments }: { label: string; comment
             <div style={COMMENT_META}>
               <span style={AUTHOR}>{comment.author}</span>
               {comment.line !== null ? (
-                <span style={comment.lineStale ? STALE_LINE : LINE}>{comment.lineStale ? `previous L${comment.line}` : `L${comment.line}`}</span>
+                <span style={comment.lineStale ? STALE_LINE : LINE}>
+                  {`L${comment.line}${comment.side === "LEFT" ? " · base" : ""}${comment.lineStale ? " · previous revision" : ""}`}
+                </span>
               ) : null}
               <span style={{ flex: 1 }} />
               {comment.url ? <a href={comment.url} target="_blank" rel="noreferrer" style={GITHUB_LINK}>GitHub ↗</a> : null}

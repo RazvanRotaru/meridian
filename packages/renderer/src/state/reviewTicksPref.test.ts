@@ -46,7 +46,7 @@ describe("readReviewProgress", () => {
       ticks: { flow: { at: "t", fingerprint: "f" } },
       unitTicks: { unit: { at: "t", fingerprint: "u" } },
       fileTicks: { "a.ts": { at: "t", fingerprint: "h" } },
-      comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, lineStale: true, lineRevision: "rev-a", anchorLabel: "L12", body: "note", at: "t" }],
+      comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, side: "LEFT", lineStale: true, lineRevision: "rev-a", anchorLabel: "L12 · base", body: "note", at: "t" }],
     };
     writeReviewProgress("scope", progress);
     expect(readReviewProgress("scope")).toEqual(progress);
@@ -77,12 +77,17 @@ describe("readReviewProgress", () => {
     expect(JSON.parse(data["meridian.review.canonical"]!).version).toBe(3);
   });
 
-  it("drops malformed comment elements so one corrupt draft cannot poison the submission", () => {
-    const good = { id: "1", path: "a.ts", nodeId: null, anchorLabel: null, body: "note", at: "t" };
+  it("defaults legacy explicit lines to RIGHT and drops malformed comment elements", () => {
+    const good = { id: "1", path: "a.ts", nodeId: null, line: 12, anchorLabel: "L12", body: "note", at: "t" };
+    const fileDraft = { id: "file", path: "a.ts", nodeId: null, anchorLabel: null, body: "file note", at: "t" };
     const bad = { id: "2", path: "a.ts", nodeId: null, anchorLabel: null, body: 123, at: "t" };
+    const badSide = { ...good, id: "3", side: "MIDDLE" };
     stubStorage({
-      "meridian.review.scope": JSON.stringify({ version: 2, ticks: {}, unitTicks: {}, fileTicks: {}, comments: [good, bad, "junk"] }),
+      "meridian.review.scope": JSON.stringify({ version: 2, ticks: {}, unitTicks: {}, fileTicks: {}, comments: [good, fileDraft, bad, badSide, "junk"] }),
     });
-    expect(readReviewProgress("scope").comments).toEqual([{ ...good, line: null }]);
+    expect(readReviewProgress("scope").comments).toEqual([
+      { ...good, side: "RIGHT" },
+      { ...fileDraft, line: null, side: null },
+    ]);
   });
 });

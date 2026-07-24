@@ -49,6 +49,7 @@ function pendingComment(
     path: "src/order.ts",
     nodeId: null,
     line,
+    side: "RIGHT",
     anchorLabel: `L${line}`,
     body,
     at: "2026-07-13T00:00:00.000Z",
@@ -228,15 +229,65 @@ describe("CodeBlock canonical diff rows", () => {
       showGutter: true,
       diffLines: replacement,
       sourceSide: "base" as const,
+      commentableDeletedLines: new Set([9]),
+      onLineClick: () => undefined,
     }));
 
     const deleteTags = html.match(/<tr(?=[^>]*data-diff-origin="delete")[^>]*>/g) ?? [];
     expect(deleteTags).toHaveLength(1);
     expect(deleteTags[0]).toContain('data-source-line="9"');
     expect(deleteTags[0]).toContain('data-old-line="9"');
+    expect(deleteTags[0]).toContain('data-review-comment-side="LEFT"');
     expect(deleteTags[0]).toContain('aria-label="Deleted old line 9"');
+    expect(html).toContain('aria-label="Comment on deleted line 9"');
     expect(html.match(/&#x27;old&#x27;/g)).toHaveLength(1);
     expect(html).not.toContain('data-diff-origin="add"');
+  });
+
+  it("keeps same-number LEFT and RIGHT comments attached to their exact replacement rows", () => {
+    const sameLine: CodeDiffLine[] = [
+      { kind: "deleted", oldLine: 10, newLine: null, beforeNewLine: 10, text: "old value" },
+      { kind: "added", oldLine: null, newLine: 10, beforeNewLine: 10, text: "new value" },
+    ];
+    const html = renderWithStore(createElement(CodeBlock, {
+      code: "new value",
+      startLine: 10,
+      showGutter: true,
+      diffLines: sameLine,
+      sourceSide: "head" as const,
+      commentableLines: new Set([10]),
+      commentableDeletedLines: new Set([10]),
+      onLineClick: () => undefined,
+      existingComments: [
+        existingComment("Existing deleted discussion", 10, { side: "LEFT" }),
+        existingComment("Existing head discussion", 10, { id: 102 }),
+      ],
+      pendingComments: [
+        pendingComment("Pending deleted draft", 10, { side: "LEFT", anchorLabel: "L10 · base" }),
+        pendingComment("Pending head draft", 10),
+      ],
+      lineComposer: {
+        line: 10,
+        side: "LEFT",
+        value: "Unfinished deleted-line thought",
+        onAdd: () => undefined,
+        onCancel: () => undefined,
+      },
+    }));
+
+    const deletedRow = html.match(/<tr(?=[^>]*data-diff-origin="delete")[^>]*>/)?.[0] ?? "";
+    const headRow = html.match(/<tr(?=[^>]*data-source-line="10")[^>]*>/)?.[0] ?? "";
+    expect(deletedRow).toContain('data-review-comment-line="10"');
+    expect(deletedRow).toContain('data-review-comment-side="LEFT"');
+    expect(headRow).toContain('data-review-comment-side="RIGHT"');
+    expect(html).toContain('aria-label="Comment on deleted line 10"');
+    expect(html).toContain('aria-label="Comment on line 10"');
+    expect(html).toContain('data-line-comment-composer="10" data-line-comment-composer-side="LEFT"');
+    expect(html).toContain('placeholder="Comment on deleted line 10…"');
+    expect(html.indexOf("Existing deleted discussion")).toBeLessThan(html.indexOf('data-source-line="10"'));
+    expect(html.indexOf("Pending deleted draft")).toBeLessThan(html.indexOf('data-source-line="10"'));
+    expect(html.indexOf("Existing head discussion")).toBeGreaterThan(html.indexOf('data-source-line="10"'));
+    expect(html.indexOf("Pending head draft")).toBeGreaterThan(html.indexOf('data-source-line="10"'));
   });
 
   it("renders deletion ghosts once without inventing a source row for an empty HEAD file", () => {
@@ -251,12 +302,15 @@ describe("CodeBlock canonical diff rows", () => {
       showGutter: true,
       diffLines: deletions,
       sourceSide: "head" as const,
+      commentableDeletedLines: new Set([1, 2]),
+      onLineClick: () => undefined,
     }));
 
     expect(empty).not.toContain("data-source-line");
     expect(empty.match(/data-diff-origin="delete"/g)).toHaveLength(2);
     expect(empty.match(/first removed line/g)).toHaveLength(1);
     expect(empty.match(/second removed line/g)).toHaveLength(1);
+    expect(empty.match(/aria-label="Comment on deleted line /g)).toHaveLength(2);
 
     const oneBlankLine = renderToStaticMarkup(createElement(CodeBlock, {
       code: "",
@@ -265,6 +319,23 @@ describe("CodeBlock canonical diff rows", () => {
       showGutter: true,
     }));
     expect(oneBlankLine.match(/data-source-line="1"/g)).toHaveLength(1);
+  });
+
+  it("keeps legacy removed text and truncation markers non-commentable without old coordinates", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "current",
+      startLine: 1,
+      showGutter: true,
+      removedRows: new Map([[0, ["legacy deletion"]]]),
+      removedTruncated: true,
+      commentableDeletedLines: new Set([1]),
+      onLineClick: () => undefined,
+    }));
+
+    expect(html).toContain("legacy deletion");
+    expect(html).toContain("… removed lines truncated");
+    expect(html).not.toContain("Comment on deleted line");
+    expect(html).not.toContain("data-deleted-code-cell");
   });
 
   it("uses canonical rows instead of legacy synthetic deletions when both are present", () => {

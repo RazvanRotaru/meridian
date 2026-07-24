@@ -3,7 +3,16 @@ import type { GraphNode } from "@meridian/core";
 import type { Node as FlowNode } from "@xyflow/react";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment } from "../../state/reviewTicksPref";
-import { codeReviewComments, codeReviewDrafts, commentableReviewLines, isHeadSideReviewComment } from "./useCodeReviewComments";
+import {
+  codeReviewComments,
+  codeReviewDrafts,
+  commentableReviewLines,
+  currentReviewCommentPath,
+  deletedCodeReviewComments,
+  deletedCodeReviewDrafts,
+  isHeadSideReviewComment,
+  reviewCommentPaths,
+} from "./useCodeReviewComments";
 import {
   codePreviewNode,
   expandNodeDiffPreview,
@@ -43,6 +52,7 @@ function pendingComment(
     path: "src/live.ts",
     nodeId: null,
     line,
+    side: line === null ? null : "RIGHT",
     lineRevision: "head-a",
     anchorLabel: line === null ? "live.ts" : `L${line}`,
     body,
@@ -263,6 +273,7 @@ describe("codeReviewDrafts", () => {
       pendingComment("aliased path", 20, { path: "repo/src/live.ts" }),
       pendingComment("last visible line", 21),
       pendingComment("file note", null),
+      pendingComment("same-number base draft", 20, { side: "LEFT" }),
       pendingComment("previous revision", 20, { lineStale: true }),
       pendingComment("before range", 18),
       pendingComment("after range", 22),
@@ -284,6 +295,75 @@ describe("codeReviewDrafts", () => {
     expect(codeReviewDrafts(drafts, null, 19, "one", true)).toEqual([]);
     expect(codeReviewDrafts(drafts, "src/live.ts", 19, null, true)).toEqual([]);
     expect(codeReviewDrafts(drafts, "src/live.ts", 19, "", true, 0)).toEqual([]);
+  });
+});
+
+describe("deleted code review comments", () => {
+  it("keeps only fresh LEFT-side comments and drafts on exact visible deletion rows", () => {
+    const deletedLines = new Set([18, 20]);
+    const comments = [
+      existingComment("deleted", 20, { side: "LEFT" }),
+      existingComment("same-number head", 20),
+      existingComment("other deletion", 19, { side: "LEFT" }),
+    ];
+    const drafts = [
+      pendingComment("deleted draft", 18, { side: "LEFT" }),
+      pendingComment("same-number head draft", 18),
+      pendingComment("stale deletion", 20, { side: "LEFT", lineStale: true }),
+    ];
+
+    expect(deletedCodeReviewComments(comments, "src/live.ts", deletedLines, true).map((comment) => comment.body))
+      .toEqual(["deleted"]);
+    expect(deletedCodeReviewDrafts(drafts, "src/live.ts", deletedLines, true).map((draft) => draft.body))
+      .toEqual(["deleted draft"]);
+  });
+});
+
+describe("review comment path aliases", () => {
+  it("connects a renamed BASE unit to the current PR path used by GitHub and the review rail", () => {
+    const files = [{
+      path: "src/current.ts",
+      moduleId: "ts:src/current.ts",
+      units: [{ nodeId: "base:src/previous.ts#removed" }],
+    }];
+    const nodes = new Map([
+      ["ts:src/current.ts", { location: { file: "src/current.ts" } }],
+      ["base:src/previous.ts#removed", { location: { file: "src/previous.ts" } }],
+    ]);
+
+    expect(reviewCommentPaths("src/previous.ts", files, nodes)).toEqual([
+      "src/previous.ts",
+      "src/current.ts",
+    ]);
+    expect(currentReviewCommentPath("src/previous.ts", files, nodes)).toBe("src/current.ts");
+  });
+
+  it("fails closed when more than one current review file claims the source path", () => {
+    const files = [
+      { path: "src/one.ts", moduleId: "one", units: [] },
+      { path: "src/two.ts", moduleId: "two", units: [] },
+    ];
+    const nodes = new Map([
+      ["one", { location: { file: "src/shared.ts" } }],
+      ["two", { location: { file: "src/shared.ts" } }],
+    ]);
+
+    expect(currentReviewCommentPath("src/shared.ts", files, nodes)).toBe("src/shared.ts");
+  });
+
+  it("uses the exact BASE node owner when a rename's old path was recreated", () => {
+    const baseNodeId = "base:src/old.ts#removed";
+    const files = [
+      { path: "src/new.ts", moduleId: "ts:src/new.ts", units: [{ nodeId: baseNodeId }] },
+      { path: "src/old.ts", moduleId: "ts:src/old.ts", units: [] },
+    ];
+    const nodes = new Map([
+      ["ts:src/new.ts", { location: { file: "src/new.ts" } }],
+      ["ts:src/old.ts", { location: { file: "src/old.ts" } }],
+      [baseNodeId, { location: { file: "src/old.ts" } }],
+    ]);
+
+    expect(currentReviewCommentPath("src/old.ts", files, nodes, baseNodeId)).toBe("src/new.ts");
   });
 });
 
