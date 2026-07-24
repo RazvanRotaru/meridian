@@ -4,8 +4,9 @@
  * A PR gives repo-relative paths; a node carries `location.file` relative to the extraction root, so
  * the two rarely match verbatim. We match on `location.file` ONLY (never the node id's modulePath,
  * which is a dotted package path for Python) by: EXACT match first, else the LONGEST `/`-boundary
- * suffix of the candidate. Equal-length suffix rivals — the monorepo duplicated-tail trap — are
- * reported as ambiguous rather than guessed. Pure; no React, no store.
+ * suffix of the candidate. Git paths keep backslashes opaque; extractor output is already
+ * host-canonical before it reaches this join. Equal-length suffix rivals — the monorepo
+ * duplicated-tail trap — are reported as ambiguous rather than guessed. Pure; no React, no store.
  */
 
 import type { GraphIndex } from "../graph/graphIndex";
@@ -13,16 +14,16 @@ import type { GraphIndex } from "../graph/graphIndex";
 const MODULE_KIND = "module";
 
 export interface FileMatch {
-  /** The normalized candidate path from the PR. */
+  /** The exact candidate path from the PR (apart from harmless leading `./` segments). */
   path: string;
   /** The module node it resolved to. */
   moduleId: string;
-  /** That module node's normalized `location.file` — the canonical "affected file". */
+  /** That module node's exact `location.file` — the canonical "affected file". */
   file: string;
 }
 
 export interface AmbiguousMatch {
-  /** The normalized candidate that matched several module nodes equally well. */
+  /** The exact candidate that matched several module nodes equally well. */
   path: string;
   /** Competing module node ids, sorted — the disambiguation suggestions. */
   candidates: string[];
@@ -30,7 +31,7 @@ export interface AmbiguousMatch {
 
 export interface MatchResult {
   matched: FileMatch[];
-  /** Normalized candidates that matched no module node. */
+  /** Exact candidates that matched no module node. */
   unmatched: string[];
   ambiguous: AmbiguousMatch[];
 }
@@ -48,7 +49,7 @@ export function normalizePath(path: string): string {
 export function matchAffectedFiles(index: GraphIndex, affectedFiles: string[]): MatchResult {
   const modules = moduleFiles(index);
   const result: MatchResult = { matched: [], unmatched: [], ambiguous: [] };
-  for (const candidate of dedupe(affectedFiles.map(normalizePath))) {
+  for (const candidate of dedupe(affectedFiles.map(stripLeadingDotSegments))) {
     classify(candidate, modules, result);
   }
   return result;
@@ -56,7 +57,7 @@ export function matchAffectedFiles(index: GraphIndex, affectedFiles: string[]): 
 
 interface ModuleFile {
   id: string;
-  /** Normalized `location.file`. */
+  /** Exact `location.file`; normalization is a compatibility fallback only. */
   file: string;
 }
 
@@ -64,7 +65,7 @@ function moduleFiles(index: GraphIndex): ModuleFile[] {
   const files: ModuleFile[] = [];
   for (const node of index.nodesById.values()) {
     if (node.kind === MODULE_KIND && node.location?.file) {
-      files.push({ id: node.id, file: normalizePath(node.location.file) });
+      files.push({ id: node.id, file: node.location.file });
     }
   }
   return files;
@@ -74,6 +75,13 @@ function classify(candidate: string, modules: ModuleFile[], result: MatchResult)
   const exact = modules.filter((module) => module.file === candidate);
   if (exact.length > 0) {
     record(candidate, exact, result);
+    return;
+  }
+  const dotNormalized = modules.filter(
+    (module) => stripLeadingDotSegments(module.file) === candidate,
+  );
+  if (dotNormalized.length > 0) {
+    record(candidate, dotNormalized, result);
     return;
   }
   const suffix = longestSuffixMatches(candidate, modules);
@@ -89,13 +97,14 @@ function longestSuffixMatches(candidate: string, modules: ModuleFile[]): ModuleF
   let bestLength = 0;
   let winners: ModuleFile[] = [];
   for (const module of modules) {
-    if (!candidate.endsWith(`/${module.file}`)) {
+    const moduleFile = stripLeadingDotSegments(module.file);
+    if (!candidate.endsWith(`/${moduleFile}`)) {
       continue;
     }
-    if (module.file.length > bestLength) {
-      bestLength = module.file.length;
+    if (moduleFile.length > bestLength) {
+      bestLength = moduleFile.length;
       winners = [module];
-    } else if (module.file.length === bestLength) {
+    } else if (moduleFile.length === bestLength) {
       winners.push(module);
     }
   }
@@ -114,4 +123,10 @@ function record(candidate: string, winners: ModuleFile[], result: MatchResult): 
 
 function dedupe(values: string[]): string[] {
   return [...new Set(values)];
+}
+
+function stripLeadingDotSegments(path: string): string {
+  let stripped = path;
+  while (stripped.startsWith("./")) stripped = stripped.slice(2);
+  return stripped;
 }

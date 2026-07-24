@@ -47,6 +47,8 @@ export interface PrApiUrls {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  /** GET/POST target for viewer-specific GitHub viewed-file state. */
+  prViewedFilesUrl: string;
   /** POST target for finding open PRs that touch a bounded set of source paths. */
   prRelatedUrl: string;
   /** GET target for existing inline comments and the latest review state per author. */
@@ -133,6 +135,7 @@ export function prApiUrlsFromGraphUrl(graphUrl: string): PrApiUrls {
     prsUrl: apiUrl("/api/prs", id),
     prOneUrl: apiUrl("/api/prs/one", id),
     prFilesUrl: apiUrl("/api/prs/files", id),
+    prViewedFilesUrl: apiUrl("/api/prs/viewed-files", id),
     prRelatedUrl: apiUrl("/api/prs/related", id),
     prCommentsUrl: apiUrl("/api/prs/comments", id),
     prChecksUrl: apiUrl("/api/prs/checks", id),

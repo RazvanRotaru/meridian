@@ -7,8 +7,10 @@ import {
   handlePullRequestComments,
   handlePullRequestFileContent,
   handlePullRequestFiles,
+  handlePullRequestViewedFiles,
   handlePullRequests,
   handleRelatedPullRequests,
+  handleSetPullRequestViewedFile,
   handleSubmitReview,
 } from "./web-prs";
 import type { Context } from "./web-server";
@@ -30,6 +32,8 @@ const TEST_ARTIFACT: GraphArtifact = {
   edges: [],
 };
 const activeGraphStores: WebGraphStore[] = [];
+const VIEWED_HEAD = "a".repeat(40);
+const VIEWED_VIEWER_ID = "U_kgDOBoundViewer";
 
 describe("PR routes", () => {
   afterEach(() => {
@@ -185,7 +189,13 @@ describe("PR routes", () => {
     stubFetch([
       { filename: "packages/cli/src/a.ts", status: "modified" },
       { filename: "packages/core/src/b.ts", status: "added" },
-      { filename: "packages/cli/package.json", status: "renamed" },
+      {
+        filename: "packages/cli/package.json",
+        previous_filename: "packages/cli/package-old.json",
+        status: "renamed",
+      },
+      { filename: "packages/cli/src/trailing.ts ", status: "modified" },
+      { filename: "packages/cli/C:\\literal.ts", status: "modified" },
       { filename: "packages/../escape.ts", status: "modified" },
     ]);
     const captured = await invoke(
@@ -198,13 +208,470 @@ describe("PR routes", () => {
     expect(JSON.parse(captured.body())).toEqual({
       files: [
         { path: "src/a.ts", status: "modified", additions: 0, deletions: 0, diffComplete: false },
-        { path: "package.json", status: "renamed", additions: 0, deletions: 0, diffComplete: false },
+        {
+          path: "package.json",
+          previousPath: "package-old.json",
+          status: "renamed",
+          additions: 0,
+          deletions: 0,
+          diffComplete: false,
+        },
+        { path: "src/trailing.ts ", status: "modified", additions: 0, deletions: 0, diffComplete: false },
+        { path: "C:\\literal.ts", status: "modified", additions: 0, deletions: 0, diffComplete: false },
       ],
       truncated: false,
-      totalFiles: 4,
+      totalFiles: 6,
       outsideCount: 2,
       // The unsafe `..` candidate is counted as outside but cannot influence the suggested root.
       suggestedSubdir: "packages/core/src",
+    });
+  });
+
+  it("requires authentication before loading viewer-scoped file status", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "");
+    vi.stubEnv("GH_TOKEN", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handlePullRequestViewedFiles,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7" }),
+    );
+
+    expect(captured.status()).toBe(401);
+    expect(JSON.parse(captured.body())).toEqual({
+      error: "viewed-file synchronization requires a GitHub sign-in",
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("loads GitHub viewed-file state with extraction-relative paths and viewer identity", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(JSON.stringify(viewedFilesResponse([
+        { path: "packages/cli/src/a.ts", viewerViewedState: "VIEWED" },
+        { path: "packages/core/src/b.ts", viewerViewedState: "UNVIEWED" },
+      ])), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handlePullRequestViewedFiles,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      files: [{ path: "src/a.ts", state: "VIEWED" }],
+      headSha: VIEWED_HEAD,
+      viewerId: VIEWED_VIEWER_ID,
+      viewerLogin: "daria",
+    });
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).authorization).toBe("Bearer env_secret");
+    expect(JSON.parse(String(init.body)).variables).toMatchObject({
+      owner: "org",
+      repo: "repo",
+      number: 7,
+    });
+    expect(captured.body()).not.toContain("env_secret");
+  });
+
+  it("preserves exact GitHub filenames when projecting viewed state through an extraction subdir", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      new Response(JSON.stringify(viewedFilesResponse([
+        { path: "packages/cli/src/leading.ts", viewerViewedState: "VIEWED" },
+        { path: "packages/cli/src/trailing.ts ", viewerViewedState: "UNVIEWED" },
+      ])), { status: 200 })));
+
+    const captured = await invoke(
+      handlePullRequestViewedFiles,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body()).files).toEqual([
+      { path: "src/leading.ts", state: "VIEWED" },
+      { path: "src/trailing.ts ", state: "UNVIEWED" },
+    ]);
+  });
+
+  it("validates viewed-file writes before contacting GitHub", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    const invalidBodies = [
+      { number: 0, path: "src/a.ts", viewed: true, expectedHeadSha: VIEWED_HEAD, expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "../a.ts", viewed: true, expectedHeadSha: VIEWED_HEAD, expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "src//a.ts", viewed: true, expectedHeadSha: VIEWED_HEAD, expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "src/a.ts", viewed: "yes", expectedHeadSha: VIEWED_HEAD, expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "src/a.ts", viewed: true, expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "src/a.ts", viewed: true, expectedHeadSha: "abcdef1", expectedViewerId: VIEWED_VIEWER_ID },
+      { number: 7, path: "src/a.ts", viewed: true, expectedHeadSha: VIEWED_HEAD },
+      { number: 7, path: "src/a.ts", viewed: true, expectedHeadSha: VIEWED_HEAD, expectedViewerId: ` ${VIEWED_VIEWER_ID}` },
+      {
+        number: 7,
+        changes: [{ path: "src/a.ts", viewed: true }, { path: "src/a.ts", viewed: false }],
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      },
+    ];
+
+    for (const body of invalidBodies) {
+      const captured = await invoke(
+        handleSetPullRequestViewedFile,
+        ctx,
+        bodyRequest(body),
+        new URLSearchParams({ id: "artifact" }),
+      );
+      expect(captured.status()).toBe(400);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale viewed-file write without sending a mutation", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+      new Response(JSON.stringify(viewedFilesResponse([
+        { path: "src/a.ts", viewerViewedState: "UNVIEWED" },
+      ], "b".repeat(40))), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(409);
+    expect(JSON.parse(captured.body()).error).toContain("head changed");
+    expect(JSON.parse(captured.body()).conflict).toBe("head");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).query).toContain(
+      "query MeridianPullRequestViewedCoordinates",
+    );
+  });
+
+  it("rejects a viewed-file write when the immutable signed-in GitHub viewer changed", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async () =>
+      new Response(JSON.stringify(viewedFilesResponse(
+        [],
+        VIEWED_HEAD,
+        "daria",
+        "U_kgDOAnotherViewer",
+      )), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(409);
+    expect(JSON.parse(captured.body()).error).toContain("viewer changed");
+    expect(JSON.parse(captured.body()).conflict).toBe("viewer");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the extraction subdir and reconciles a viewed-file mutation", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requestBodies.push(body);
+      if (String(body.query).includes("mutation MeridianSetPullRequestFileViewed")) {
+        return new Response(JSON.stringify({
+          data: { update: { pullRequest: { headRefOid: VIEWED_HEAD } } },
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify(viewedFilesResponse([
+        { path: "packages/cli/src/a.ts", viewerViewedState: "UNVIEWED" },
+      ])), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      path: "src/a.ts",
+      state: "VIEWED",
+      headSha: VIEWED_HEAD,
+      viewerId: VIEWED_VIEWER_ID,
+      viewerLogin: "daria",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies[1].variables).toEqual({
+      pullRequestId: "PR_7",
+      path: "packages/cli/src/a.ts",
+    });
+    expect(String(requestBodies[1].query)).toContain("markFileAsViewed");
+    expect(captured.body()).not.toContain("env_secret");
+  });
+
+  it("serializes a later viewed-state read behind an in-flight mutation for the same PR", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let resolveMutation!: (response: Response) => void;
+    const mutationResponse = new Promise<Response>((resolve) => {
+      resolveMutation = resolve;
+    });
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      if (String(body.query).includes("mutation MeridianSetPullRequestFileViewed")) {
+        return mutationResponse;
+      }
+      return Promise.resolve(new Response(JSON.stringify(viewedFilesResponse([
+        { path: "src/a.ts", viewerViewedState: "VIEWED" },
+      ])), { status: 200 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+
+    const mutation = invoke(
+      handleSetPullRequestViewedFile,
+      ctx,
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const read = invoke(
+      handlePullRequestViewedFiles,
+      ctx,
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", n: "7" }),
+    );
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    resolveMutation(new Response(JSON.stringify({
+      data: { update: { pullRequest: { headRefOid: VIEWED_HEAD } } },
+    }), { status: 200 }));
+    expect((await mutation).status()).toBe(200);
+    expect((await read).status()).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reports a conflict when the PR head changes during the viewed-file mutation", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      return new Response(JSON.stringify(
+        String(body.query).includes("mutation MeridianSetPullRequestFileViewed")
+          ? { data: { update: { pullRequest: { headRefOid: "b".repeat(40) } } } }
+          : viewedFilesResponse([{ path: "src/a.ts", viewerViewedState: "UNVIEWED" }]),
+      ), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(409);
+    expect(JSON.parse(captured.body()).error).toContain("while updating");
+    expect(JSON.parse(captured.body()).conflict).toBe("head");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("updates several viewed files behind one coordinate preflight and one batch mutation", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const requestBodies: Array<Record<string, unknown>> = [];
+    const fetchMock = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requestBodies.push(body);
+      return new Response(JSON.stringify(
+        String(body.query).includes("mutation MeridianSetPullRequestFilesViewed")
+          ? {
+              data: {
+                update0: { pullRequest: { headRefOid: VIEWED_HEAD } },
+                update1: { pullRequest: { headRefOid: VIEWED_HEAD } },
+              },
+            }
+          : viewedFilesResponse([]),
+      ), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        changes: [
+          { path: "src/a.ts", viewed: true },
+          { path: "src/b.ts", viewed: false },
+        ],
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual({
+      files: [
+        { path: "src/a.ts", state: "VIEWED" },
+        { path: "src/b.ts", state: "UNVIEWED" },
+      ],
+      headSha: VIEWED_HEAD,
+      viewerId: VIEWED_VIEWER_ID,
+      viewerLogin: "daria",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(requestBodies[1].variables).toEqual({
+      pullRequestId: "PR_7",
+      path0: "packages/cli/src/a.ts",
+      path1: "packages/cli/src/b.ts",
+    });
+  });
+
+  it("reclassifies a mutation-time rename or removal race as a revision conflict", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      if (call === 2) {
+        return new Response(JSON.stringify({ errors: [{ message: "path is not part of the pull request" }] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify(viewedFilesResponse(
+        [],
+        call === 1 ? VIEWED_HEAD : "b".repeat(40),
+      )), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        path: "src/renamed.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(409);
+    expect(JSON.parse(captured.body()).error).toContain("head changed");
+    expect(JSON.parse(captured.body()).conflict).toBe("head");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("reclassifies a mutation error as a viewer conflict by immutable viewer id", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let call = 0;
+    const fetchMock = vi.fn(async () => {
+      call += 1;
+      if (call === 2) {
+        return new Response(JSON.stringify({ errors: [{ message: "mutation unavailable" }] }), {
+          status: 200,
+        });
+      }
+      return new Response(JSON.stringify(viewedFilesResponse(
+        [],
+        VIEWED_HEAD,
+        "daria",
+        call === 1 ? VIEWED_VIEWER_ID : "U_kgDOAnotherViewer",
+      )), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      bodyRequest({
+        number: 7,
+        path: "src/a.ts",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(409);
+    expect(JSON.parse(captured.body()).conflict).toBe("viewer");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("restores opaque Git filename characters exactly for viewed-file mutations", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    const requestBodies: Array<Record<string, unknown>> = [];
+    vi.stubGlobal("fetch", vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      requestBodies.push(body);
+      return new Response(JSON.stringify(
+        String(body.query).includes("mutation MeridianSetPullRequestFileViewed")
+          ? { data: { update: { pullRequest: { headRefOid: VIEWED_HEAD } } } }
+          : viewedFilesResponse([]),
+      ), { status: 200 });
+    }));
+
+    const captured = await invoke(
+      handleSetPullRequestViewedFile,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        path: "C:\\literal.ts ",
+        viewed: true,
+        expectedHeadSha: VIEWED_HEAD,
+        expectedViewerId: VIEWED_VIEWER_ID,
+      }),
+      new URLSearchParams({ id: "artifact" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(requestBodies[1].variables).toEqual({
+      pullRequestId: "PR_7",
+      path: "packages/cli/C:\\literal.ts ",
     });
   });
 
@@ -1255,6 +1722,29 @@ function signedInSession(): { cookie: string; sessions: SessionStore } {
   const { id, session } = sessions.create({ deviceCode: "d", intervalSeconds: 5, expiresAt: now + 60_000 }, now);
   markAuthorized(session, "gho_secret", { login: "daria", avatarUrl: null }, now);
   return { cookie: `meridian_sid=${id}`, sessions };
+}
+
+function viewedFilesResponse(
+  nodes: Array<{ path: string; viewerViewedState: string }>,
+  headRefOid = VIEWED_HEAD,
+  viewerLogin = "daria",
+  viewerId = VIEWED_VIEWER_ID,
+): unknown {
+  return {
+    data: {
+      viewer: { id: viewerId, login: viewerLogin },
+      repository: {
+        pullRequest: {
+          id: "PR_7",
+          headRefOid,
+          files: {
+            nodes,
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      },
+    },
+  };
 }
 
 function requestWith(cookie: string | undefined): IncomingMessage {

@@ -3,8 +3,13 @@ import { canonicalPrReviewScope } from "./prReviewScope";
 
 describe("canonicalPrReviewScope", () => {
   it("normalizes GitHub repository identity and extraction subdirectory", () => {
-    expect(canonicalPrReviewScope({ repository: "https://github.com/Acme/Shop.git", subdir: "/packages\\app/" }, 42))
+    expect(canonicalPrReviewScope({ repository: "https://github.com/Acme/Shop.git", subdir: "/packages/app/" }, 42))
       .toBe(canonicalPrReviewScope({ repository: "acme/shop", subdir: "packages/app" }, 42));
+  });
+
+  it("keeps a literal backslash subdirectory distinct from a slash path", () => {
+    expect(canonicalPrReviewScope({ repository: "acme/shop", subdir: "packages\\app" }, 42))
+      .not.toBe(canonicalPrReviewScope({ repository: "acme/shop", subdir: "packages/app" }, 42));
   });
 
   it("isolates repository, subdirectory, and PR number without delimiter collisions", () => {

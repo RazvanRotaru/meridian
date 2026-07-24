@@ -143,12 +143,16 @@ import {
   type PrDiscussionResult,
   type PrFilesResponse,
   type PrFileStatus,
+  type PrFileViewedState,
   type PrListResponse,
   type PrOneResponse,
   type PrReviewCommentSide,
   type PrReviewSubmissionEvent,
   type PrSessionSource,
   type PrSummary,
+  type PrViewedFileMutationResponse,
+  type PrViewedFilesMutationResponse,
+  type PrViewedFilesResponse,
   type ReviewCommentFilter,
   type PrsTab,
   type RelatedPrsResponse,
@@ -189,15 +193,23 @@ import {
   type PrReviewComparison,
 } from "./prReviewSession";
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
-import { readReviewProgress, writeReviewProgress, type ReviewComment, type ReviewProgress, type ReviewTick } from "./reviewTicksPref";
+import {
+  readReviewProgress,
+  setReviewTick,
+  writeReviewProgress,
+  type ReviewComment,
+  type ReviewProgress,
+  type ReviewTick,
+} from "./reviewTicksPref";
 import { reviewContextFromPrFiles } from "../derive/prReviewContext";
 import { canonicalPrReviewScope } from "../derive/prReviewScope";
 import {
   applyFilesToggle,
-  applyFileToggle,
-  applyUnitTick,
-  applyUnitsToggle,
+  fileViewState,
   isReviewTestPath,
+  promoteFullyViewedUnitTicks,
+  removeReviewFileTick,
+  tickForFile,
   type ReviewFileRow,
   type ReviewUnitRow,
 } from "../derive/reviewFiles";
@@ -573,10 +585,24 @@ export interface BlueprintState {
   reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }>;
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
-  /** Per-unit ticks of the files checklist, keyed by nodeId — same persistence as reviewTicks. */
+  /** Legacy persisted per-unit ticks. Active review gestures are file-atomic and clear these. */
   reviewUnitTicks: Record<string, ReviewTick>;
-  /** Explicit per-file viewed ticks, keyed by path (unit-less files only; else units derive it). */
+  /** Browser-local whole-file progress, used only when GitHub viewer state is unavailable. */
   reviewFileTicks: Record<string, ReviewTick>;
+  /** GitHub viewer state for a signed-in live PR. Null keeps local/artifact progress authoritative. */
+  reviewFileViewedStates: Record<string, PrFileViewedState> | null;
+  /** This renderer was booted with the authenticated GitHub viewed-file synchronization bridge. */
+  reviewViewedFilesSyncEnabled: boolean;
+  /** Immutable viewer whose GitHub file-state snapshot is active; paired atomically with the map. */
+  reviewViewedFilesViewerId: string | null;
+  /** Display login for the active immutable viewer id. */
+  reviewViewedFilesViewerLogin: string | null;
+  reviewViewedFilesLoading: boolean;
+  reviewViewedFilesError: string | null;
+  /** Optimistic GitHub writes in flight, scoped to the active review's extraction-relative paths. */
+  reviewViewedFileSyncPending: Set<string>;
+  /** Retryable per-path GitHub mutation failures. */
+  reviewViewedFileSyncErrors: Record<string, string>;
   /** Draft review comments (file- or unit-anchored), persisted until submitted. */
   reviewComments: ReviewComment[];
   /** One unfinished HEAD-line comment shared by every source host. Session-only: unlike a Pending
@@ -927,6 +953,7 @@ export interface BlueprintState {
   toggleReviewUnitsViewed(nodeIds: readonly string[]): void;
   toggleReviewFileViewed(path: string): void;
   toggleReviewFilesViewed(paths: readonly string[]): void;
+  retryReviewViewedFiles(): Promise<void>;
   addReviewComment(
     path: string,
     nodeId: string | null,
@@ -1030,6 +1057,26 @@ export interface BlueprintState {
   relayout(): Promise<void>;
 }
 
+export function reviewViewedGestureBlockReason(state: Pick<
+  BlueprintState,
+  | "prReviewed"
+  | "prReviewStale"
+  | "prReviewRefreshing"
+  | "reviewViewedFilesSyncEnabled"
+  | "reviewViewedFilesLoading"
+  | "reviewFileViewedStates"
+  | "reviewViewedFilesError"
+>): string | null {
+  if (!state.reviewViewedFilesSyncEnabled || state.prReviewed === null) return null;
+  if (state.reviewViewedFilesLoading) return "Wait for GitHub viewed-file status to finish loading";
+  if (state.prReviewRefreshing) return "Wait for the pull request refresh to finish";
+  if (state.prReviewStale) return "Refresh the pull request before changing viewed files";
+  if (state.reviewViewedFilesError !== null) {
+    return "Retry GitHub viewed-file status before changing review progress";
+  }
+  return null;
+}
+
 export interface StoreDependencies {
   artifact: GraphArtifact;
   index: GraphIndex;
@@ -1045,6 +1092,8 @@ export interface StoreDependencies {
   prsUrl: string;
   prOneUrl: string;
   prFilesUrl: string;
+  /** GET/POST viewer-specific file state. Optional for cached/legacy renderer fixtures. */
+  prViewedFilesUrl?: string;
   prRelatedUrl: string;
   prCommentsUrl: string;
   prChecksUrl: string;
@@ -1197,8 +1246,8 @@ function displayedEvidenceSpan(
 ): { start: number; end: number } {
   const start = context.site.line;
   const end = Math.max(start, context.site.endLine ?? start);
-  const diff = state.reviewDiffByFile[context.site.file] ?? null;
-  const removedAtHead = state.reviewFileDelta[context.site.file]?.status === "removed";
+  const diff = valueForExactRecord(state.reviewDiffByFile, context.site.file) ?? null;
+  const removedAtHead = valueForExactRecord(state.reviewFileDelta, context.site.file)?.status === "removed";
   const readsPrHead =
     !state.prPreparedArtifactCurrent
     && !removedAtHead
@@ -1223,7 +1272,7 @@ function codeLoadRequest(
   // graph id and keep it out of the GitHub head-file branch: its nodes and source already share HEAD
   // coordinates, while the head-file fallback below exists for reviews on the loaded base artifact.
   const preparedArtifactCurrent = state.prPreparedArtifactCurrent;
-  const removedAtHead = state.reviewFileDelta[node.location.file]?.status === "removed";
+  const removedAtHead = valueForExactRecord(state.reviewFileDelta, node.location.file)?.status === "removed";
   const readsComparisonBase = opts?.sourceSide === "base" || state.reviewBaseNodeIds.has(node.id) || removedAtHead;
   const resolvedSourceUrl = preparedArtifactCurrent
     ? readsComparisonBase && state.sourceUrl !== null && state.prPreparedComparisonGraphId !== null
@@ -1236,7 +1285,7 @@ function codeLoadRequest(
   // coordinates and therefore needs the edit map; a prepared artifact is already in HEAD
   // coordinates, so mapping it again would double-shift the preview after an earlier hunk.
   const reviewDiff = !preparedArtifactCurrent && state.prReviewed !== null && prFileUrl && state.reviewHeadRef
-    ? state.reviewDiffByFile[node.location.file] ?? null
+    ? valueForExactRecord(state.reviewDiffByFile, node.location.file) ?? null
     : null;
   // A patch can be absent for a binary/oversized change, but the file is still a PR-head file. Its
   // file-delta entry is the fallback capability signal so the preview never silently shows BASE
@@ -1244,7 +1293,7 @@ function codeLoadRequest(
   // exists, so their old (entirely deleted) node span must come from the base source endpoint.
   const readsPrHead = !preparedArtifactCurrent && !readsComparisonBase
     && state.prReviewed !== null && prFileUrl !== null && state.reviewHeadRef !== null
-    && (reviewDiff !== null || state.reviewFileDelta[node.location.file] !== undefined);
+    && (reviewDiff !== null || valueForExactRecord(state.reviewFileDelta, node.location.file) !== undefined);
   if (!readsPrHead && !resolvedSourceUrl) {
     return null;
   }
@@ -1272,17 +1321,22 @@ function codeLoadRequest(
             end: node.location.endLine ?? node.location.startLine,
           }
         : undefined;
-  const normalizedFile = node.location.file.replace(/\\/g, "/");
   // Prepared/local artifacts carry the canonical merge-base diff beside the graph. A synchronous
   // GitHub review has not swapped artifacts, so it uses the selected PR response parsed through the
   // same unified-diff model. Never hybridize local additions with GitHub deletions.
   const artifactKinds = !readsComparisonBase && (preparedArtifactCurrent || state.prReviewed === null)
-    ? changedLineKindsFromExtensions(state.artifact.extensions)?.[normalizedFile]
+    ? valueForReviewAliases(
+        changedLineKindsFromExtensions(state.artifact.extensions),
+        new Set([node.location.file]),
+      )
     : undefined;
   const artifactDiffLines = preparedArtifactCurrent || state.prReviewed === null
-    ? changedDiffLinesFromExtensions(state.artifact.extensions)?.[normalizedFile]
+    ? valueForReviewAliases(
+        changedDiffLinesFromExtensions(state.artifact.extensions),
+        new Set([node.location.file]),
+      )
     : undefined;
-  const reviewDiffLines = state.reviewDiffLinesByFile[node.location.file] ?? state.reviewDiffLinesByFile[normalizedFile];
+  const reviewDiffLines = valueForExactRecord(state.reviewDiffLinesByFile, node.location.file);
   return {
     node,
     url: readsPrHead
@@ -1313,7 +1367,7 @@ function withCodePreviewFocus(
   state: BlueprintState,
 ): CodeView {
   if (
-    normalizeReviewFilePath(focus.file) !== normalizeReviewFilePath(node.location.file)
+    focus.file !== node.location.file
     || view.code === null
   ) {
     return view;
@@ -1323,10 +1377,7 @@ function withCodePreviewFocus(
     end: Math.max(Math.max(1, focus.line), focus.endLine ?? focus.line),
   };
   if (request.headSpan !== null && !state.prPreparedArtifactCurrent) {
-    const normalizedFile = normalizeReviewFilePath(focus.file);
-    const reviewDiff = state.reviewDiffByFile[focus.file]
-      ?? state.reviewDiffByFile[normalizedFile]
-      ?? null;
+    const reviewDiff = valueForExactRecord(state.reviewDiffByFile, focus.file) ?? null;
     if (reviewDiff !== null) {
       range = headSpanFor(range.start, range.end, reviewDiff.edits);
     }
@@ -1777,9 +1828,87 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prSearchSeq = 0;
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
+  let prViewedFilesSeq = 0;
   // Every discussion read (selection, refresh, or post-submit) shares one last-started-wins lane.
   let prDiscussionSeq = 0;
   let prFilesRequest: { number: number; sequence: number; promise: Promise<void> } | null = null;
+  type ViewedFileWrite = {
+    number: number;
+    path: string;
+    desired: boolean;
+    expectedHeadSha: string;
+    viewerId: string;
+    viewerLogin: string;
+    fileFingerprint: string;
+    fileAddress: string | null;
+    generation: number;
+    running: boolean;
+    completion: Promise<void> | null;
+  };
+  type GitHubViewerIdentity = { id: string; login: string };
+  type ViewedFileWriteCapture = {
+    key: string;
+    entry: ViewedFileWrite;
+    generation: number;
+    desired: boolean;
+  };
+  const viewedFileWrites = new Map<string, ViewedFileWrite>();
+  // Intent entries can be canceled when authentication or the immutable PR head changes, but an
+  // already-issued browser request cannot. Track those request lifetimes independently so every
+  // later canonical read waits for abandoned writes that may still reach GitHub.
+  const viewedFileSettlements = new Map<number, Set<Promise<void>>>();
+  const trackViewedFileSettlement = (number: number, completion: Promise<void>): void => {
+    const settlements = viewedFileSettlements.get(number) ?? new Set<Promise<void>>();
+    settlements.add(completion);
+    viewedFileSettlements.set(number, settlements);
+    const remove = (): void => {
+      settlements.delete(completion);
+      if (settlements.size === 0 && viewedFileSettlements.get(number) === settlements) {
+        viewedFileSettlements.delete(number);
+      }
+    };
+    void completion.then(remove, remove);
+  };
+  const waitForViewedFileSettlements = async (number: number): Promise<void> => {
+    // A settling request can synchronously enqueue a newer generation behind itself. Re-snapshot
+    // until no tracked request for this PR remains.
+    while (true) {
+      const settlements = viewedFileSettlements.get(number);
+      if (settlements === undefined || settlements.size === 0) return;
+      await Promise.allSettled([...settlements]);
+    }
+  };
+  const cancelViewedWrites = (number: number): void => {
+    for (const [key, entry] of viewedFileWrites) {
+      if (entry.number === number) viewedFileWrites.delete(key);
+    }
+  };
+  const localViewedFallbackViewers = new Map<number, GitHubViewerIdentity>();
+  const MAX_VIEWED_FILE_BATCH_SIZE = 25;
+  // The server's generic JSON reader caps UTF-8 bodies at 64 KiB. Keep enough room for request
+  // coordinates and JSON escaping while still accepting every individually valid 4,096-char path.
+  const MAX_VIEWED_FILE_BATCH_BODY_BYTES = 60_000;
+  const viewedFileUtf8 = new TextEncoder();
+  const MAX_CONCURRENT_VIEWED_FILE_WRITES = 2;
+  const viewedWriteSlotWaiters: Array<() => void> = [];
+  let activeViewedFileWrites = 0;
+  const acquireViewedWriteSlot = async (): Promise<void> => {
+    if (activeViewedFileWrites < MAX_CONCURRENT_VIEWED_FILE_WRITES) {
+      activeViewedFileWrites += 1;
+      return;
+    }
+    await new Promise<void>((resolve) => viewedWriteSlotWaiters.push(resolve));
+  };
+  const releaseViewedWriteSlot = (): void => {
+    const next = viewedWriteSlotWaiters.shift();
+    if (next) {
+      // Ownership transfers directly to the waiter; the active count does not briefly dip and let
+      // a newly enqueued write leapfrog the bounded queue.
+      next();
+    } else {
+      activeViewedFileWrites -= 1;
+    }
+  };
   let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
   let prReviewRefreshSeq = 0;
   let prAnalyzeSeq = 0;
@@ -1874,6 +2003,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
   const reviewFiles = initialReviewProjection?.files ?? [];
   const initialProgress = review ? readReviewProgress(review.context.reviewKey) : null;
+  const initialMigrationFiles = artifactReview
+    ? deriveReviewProjection(artifactReview.context, dependencies.artifact, dependencies.index, {
+        baseIndex: null,
+        showTests: true,
+      }).files
+    : [];
+  const initialMigratedProgress = initialProgress === null
+    ? null
+    : promoteFullyViewedUnitTicks(initialMigrationFiles, initialProgress.unitTicks, initialProgress.fileTicks);
+  if (initialProgress !== null && Object.keys(initialProgress.unitTicks).length > 0) {
+    writeReviewProgress(review!.context.reviewKey, {
+      ...initialProgress,
+      unitTicks: initialMigratedProgress!.unitTicks,
+      fileTicks: initialMigratedProgress!.fileTicks,
+    });
+  }
   const reviewPreferences = readReviewPreferences();
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
@@ -1881,6 +2026,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prsUrl = dependencies.prsUrl;
   const prOneUrl = dependencies.prOneUrl;
   const prFilesUrl = dependencies.prFilesUrl;
+  const prViewedFilesUrl = dependencies.prViewedFilesUrl ?? null;
   const prRelatedUrl = dependencies.prRelatedUrl;
   const prCommentsUrl = dependencies.prCommentsUrl;
   const prChecksUrl = dependencies.prChecksUrl;
@@ -2479,6 +2625,876 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     };
 
+    const sameViewedReview = (number: number): boolean => {
+      const current = get();
+      return current.prReviewed === number
+        && current.review !== null;
+    };
+
+    const sameActiveReview = (number: number): boolean =>
+      sameViewedReview(number) && get().prSelected === number;
+
+    const viewedWriteKey = (number: number, path: string): string => `${number}\0${path}`;
+
+    const sameViewedSnapshot = (entry: ViewedFileWrite): boolean => {
+      const current = get();
+      return sameViewedReview(entry.number)
+        && !current.prReviewStale
+        && normalizedGitHubSha(current.prReviewRevision?.headSha) === normalizedGitHubSha(entry.expectedHeadSha)
+        && current.reviewViewedFilesViewerId === entry.viewerId
+        && current.reviewFileViewedStates !== null;
+    };
+
+    const discardViewedWrite = (key: string, entry: ViewedFileWrite): void => {
+      entry.running = false;
+      if (viewedFileWrites.get(key) === entry) viewedFileWrites.delete(key);
+    };
+
+    const clearViewedWriteUi = (path: string): void => {
+      const current = get();
+      const pending = new Set(current.reviewViewedFileSyncPending);
+      pending.delete(path);
+      const errors = { ...current.reviewViewedFileSyncErrors };
+      delete errors[path];
+      set({ reviewViewedFileSyncPending: pending, reviewViewedFileSyncErrors: errors });
+    };
+
+    const clearSyncedLocalFileTick = (path: string, viewerId: string): void => {
+      const current = get();
+      const file = current.reviewFiles.find((candidate) => candidate.path === path);
+      const tick = file === undefined
+        ? Object.hasOwn(current.reviewFileTicks, path) ? current.reviewFileTicks[path] : undefined
+        : tickForFile(file, current.reviewFileTicks);
+      if (
+        tick === undefined
+        || (
+          tick.viewerId !== undefined
+          && tick.viewerId !== viewerId
+        )
+      ) {
+        return;
+      }
+      const nextTicks = file === undefined
+        ? { ...current.reviewFileTicks }
+        : removeReviewFileTick(current.reviewFileTicks, file);
+      if (file === undefined) delete nextTicks[path];
+      set({ reviewFileTicks: nextTicks });
+      persistReviewProgress(get());
+    };
+
+    const failViewedWritesForStaleHead = (number: number, message: string): void => {
+      cancelViewedWrites(number);
+      if (!sameViewedReview(number)) return;
+      let fileTicks = get().reviewFileTicks;
+      for (const [path, tick] of Object.entries(fileTicks)) {
+        if (tick.headSha === undefined) continue;
+        fileTicks = { ...fileTicks };
+        delete fileTicks[path];
+      }
+      set({
+        prReviewStale: true,
+        reviewViewedFilesError: message,
+        reviewFileTicks: fileTicks,
+        reviewViewedFileSyncPending: new Set<string>(),
+        reviewViewedFileSyncErrors: {},
+      });
+      persistReviewProgress(get());
+    };
+
+    const failViewedWrite = (key: string, entry: ViewedFileWrite, message: string, stale = false): void => {
+      entry.running = false;
+      if (!sameViewedSnapshot(entry)) {
+        discardViewedWrite(key, entry);
+        return;
+      }
+      if (stale) {
+        // One immutable-head conflict invalidates the whole optimistic group. Stop every queued or
+        // in-flight sibling so none can race a now-obsolete revision.
+        failViewedWritesForStaleHead(entry.number, message);
+        return;
+      }
+      const pending = new Set(get().reviewViewedFileSyncPending);
+      pending.delete(entry.path);
+      set({
+        reviewViewedFileSyncPending: pending,
+        reviewViewedFileSyncErrors: { ...get().reviewViewedFileSyncErrors, [entry.path]: message },
+      });
+    };
+
+    const enterLocalViewedMode = (
+      number: number,
+      fallbackViewerHint: GitHubViewerIdentity | null = null,
+    ): void => {
+      const current = get();
+      let fileTicks = { ...current.reviewFileTicks };
+      const at = new Date().toISOString();
+      const activeHeadSha = normalizedGitHubSha(current.prReviewRevision?.headSha);
+      const writes = [...viewedFileWrites.values()].filter((entry) =>
+        entry.number === number
+        && normalizedGitHubSha(entry.expectedHeadSha) === activeHeadSha);
+      for (const [path, tick] of Object.entries(fileTicks)) {
+        const incompleteOwner = (tick.viewerId === undefined) !== (tick.viewerLogin === undefined);
+        const staleHead = tick.headSha !== undefined
+          && normalizedGitHubSha(tick.headSha) !== activeHeadSha;
+        if (incompleteOwner || staleHead) delete fileTicks[path];
+      }
+      const persistedViewers = new Map<string, GitHubViewerIdentity>();
+      for (const tick of Object.values(fileTicks)) {
+        if (tick.viewerId !== undefined && tick.viewerLogin !== undefined) {
+          persistedViewers.set(tick.viewerId, { id: tick.viewerId, login: tick.viewerLogin });
+        }
+      }
+      // On reload, the in-memory fallback map is empty but durable ticks still carry their owner.
+      // Recover one unambiguous owner so subsequent offline gestures cannot become anonymous and
+      // later migrate into a different GitHub account.
+      const firstWrite = writes[0];
+      const fallbackViewer = fallbackViewerHint
+        ?? (firstWrite === undefined ? null : { id: firstWrite.viewerId, login: firstWrite.viewerLogin })
+        ?? (persistedViewers.size === 1 ? [...persistedViewers.values()][0]! : null);
+      for (const entry of writes) {
+        const file = current.reviewFiles.find((candidate) => candidate.path === entry.path);
+        if (file === undefined) {
+          fileTicks = { ...fileTicks };
+          delete fileTicks[entry.path];
+        } else {
+          fileTicks = removeReviewFileTick(fileTicks, file);
+        }
+        setReviewTick(fileTicks, entry.path, {
+          at,
+          fingerprint: entry.fileFingerprint,
+          ...(entry.fileAddress ? { address: entry.fileAddress } : {}),
+          viewerId: entry.viewerId,
+          viewerLogin: entry.viewerLogin,
+          viewed: entry.desired,
+          headSha: entry.expectedHeadSha,
+        });
+      }
+      cancelViewedWrites(number);
+      if (fallbackViewer === null) {
+        localViewedFallbackViewers.delete(number);
+      } else {
+        localViewedFallbackViewers.set(number, fallbackViewer);
+      }
+      set({
+        reviewUnitTicks: current.reviewUnitTicks,
+        reviewFileTicks: fileTicks,
+        reviewFileViewedStates: null,
+        reviewViewedFilesViewerId: null,
+        reviewViewedFilesViewerLogin: null,
+        reviewViewedFilesLoading: false,
+        reviewViewedFilesError: null,
+        reviewViewedFileSyncPending: new Set<string>(),
+        reviewViewedFileSyncErrors: {},
+      });
+      persistReviewProgress(get());
+    };
+
+    const reloadForChangedViewer = (number: number): void => {
+      cancelViewedWrites(number);
+      set({
+        reviewFileViewedStates: null,
+        reviewViewedFilesViewerId: null,
+        reviewViewedFilesViewerLogin: null,
+        reviewViewedFilesLoading: true,
+        reviewViewedFilesError: null,
+        reviewViewedFileSyncPending: new Set<string>(),
+        reviewViewedFileSyncErrors: {},
+      });
+      queueMicrotask(() => void loadViewedFiles(number));
+    };
+
+    const drainViewedWrite = async (key: string, entry: ViewedFileWrite): Promise<void> => {
+      if (entry.running || prViewedFilesUrl === null) return;
+      if (!sameViewedSnapshot(entry)) {
+        discardViewedWrite(key, entry);
+        return;
+      }
+      entry.running = true;
+      while (viewedFileWrites.get(key) === entry) {
+        if (!sameViewedSnapshot(entry)) {
+          discardViewedWrite(key, entry);
+          return;
+        }
+        const generation = entry.generation;
+        const desired = entry.desired;
+        const expectedHeadSha = entry.expectedHeadSha;
+        try {
+          const response = await fetch(prViewedFilesUrl, {
+            method: "POST",
+            credentials: "same-origin",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              number: entry.number,
+              path: entry.path,
+              viewed: desired,
+              expectedHeadSha,
+              expectedViewerId: entry.viewerId,
+            }),
+          });
+          if (viewedFileWrites.get(key) !== entry) return;
+          if (entry.generation !== generation) continue;
+          if (!sameViewedSnapshot(entry)) {
+            discardViewedWrite(key, entry);
+            return;
+          }
+          if (!response.ok) {
+            const failure = await viewedFileMutationFailure(response);
+            if (response.status === 401) {
+              enterLocalViewedMode(entry.number);
+              return;
+            }
+            if (response.status === 409 && failure.conflict === "viewer") {
+              reloadForChangedViewer(entry.number);
+              return;
+            }
+            failViewedWrite(key, entry, failure.message, response.status === 409);
+            return;
+          }
+          const result = (await response.json()) as PrViewedFileMutationResponse;
+          if (viewedFileWrites.get(key) !== entry) return;
+          if (entry.generation !== generation) continue;
+          if (!sameViewedSnapshot(entry)) {
+            discardViewedWrite(key, entry);
+            return;
+          }
+          const expectedState: PrFileViewedState = desired ? "VIEWED" : "UNVIEWED";
+          const resultViewerId = normalizedGitHubViewerId(result.viewerId);
+          const resultViewerLogin = normalizedGitHubLogin(result.viewerLogin);
+          if (
+            result.path !== entry.path
+            || result.state !== expectedState
+            || resultViewerId === null
+            || resultViewerLogin === null
+          ) {
+            failViewedWrite(key, entry, "GitHub returned an invalid viewed-file mutation response.");
+            return;
+          }
+          if (normalizedGitHubSha(result.headSha) !== normalizedGitHubSha(expectedHeadSha)) {
+            failViewedWrite(key, entry, "GitHub viewed-file state changed at a different pull request head. Refresh and retry.", true);
+            return;
+          }
+          if (
+            resultViewerId !== entry.viewerId
+          ) {
+            reloadForChangedViewer(entry.number);
+            return;
+          }
+          viewedFileWrites.delete(key);
+          if (sameViewedSnapshot(entry)) {
+            set({ reviewViewedFilesViewerLogin: result.viewerLogin });
+            clearSyncedLocalFileTick(entry.path, entry.viewerId);
+            clearViewedWriteUi(entry.path);
+          }
+          return;
+        } catch {
+          if (viewedFileWrites.get(key) !== entry) return;
+          if (entry.generation !== generation) continue;
+          failViewedWrite(key, entry, "could not synchronize viewed state with GitHub");
+          return;
+        }
+      }
+    };
+
+    const runViewedWrite = async (key: string, entry: ViewedFileWrite): Promise<void> => {
+      await acquireViewedWriteSlot();
+      try {
+        await drainViewedWrite(key, entry);
+      } finally {
+        releaseViewedWriteSlot();
+      }
+    };
+
+    const startViewedWrite = (key: string, entry: ViewedFileWrite): void => {
+      if (entry.completion !== null) return;
+      const completion = runViewedWrite(key, entry).finally(() => {
+        if (entry.completion === completion) entry.completion = null;
+      });
+      entry.completion = completion;
+      trackViewedFileSettlement(entry.number, completion);
+      void completion;
+    };
+
+    const prepareViewedWrite = (
+      number: number,
+      path: string,
+      desired: boolean,
+      expectedHeadSha: string,
+      viewerId: string,
+      viewerLogin: string,
+    ): { key: string; entry: ViewedFileWrite } | null => {
+      if (prViewedFilesUrl === null) return null;
+      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      const stagedTick = Object.hasOwn(get().reviewFileTicks, path)
+        ? get().reviewFileTicks[path]
+        : undefined;
+      // Bulk reset also covers canonical files currently filtered out of the review projection.
+      // A negative intent is safely path/head/viewer scoped and therefore does not need a visible
+      // fingerprint; positive gestures always originate from a projected file row.
+      if (file === undefined && stagedTick === undefined) return null;
+      const key = viewedWriteKey(number, path);
+      const existing = viewedFileWrites.get(key);
+      const entry = existing ?? {
+        number,
+        path,
+        desired,
+        expectedHeadSha,
+        viewerId,
+        viewerLogin,
+        fileFingerprint: file?.fingerprint ?? stagedTick!.fingerprint,
+        fileAddress: file?.address ?? stagedTick?.address ?? null,
+        generation: 0,
+        running: false,
+        completion: null,
+      };
+      entry.desired = desired;
+      entry.expectedHeadSha = expectedHeadSha;
+      entry.viewerId = viewerId;
+      entry.viewerLogin = viewerLogin;
+      entry.fileFingerprint = file?.fingerprint ?? stagedTick!.fingerprint;
+      entry.fileAddress = file?.address ?? stagedTick?.address ?? null;
+      entry.generation += 1;
+      viewedFileWrites.set(key, entry);
+      if (sameActiveReview(number)) {
+        const pending = new Set(get().reviewViewedFileSyncPending);
+        pending.add(path);
+        const errors = { ...get().reviewViewedFileSyncErrors };
+        delete errors[path];
+        set({ reviewViewedFileSyncPending: pending, reviewViewedFileSyncErrors: errors });
+      }
+      return { key, entry };
+    };
+
+    const failViewedBatchEntries = (
+      captures: readonly ViewedFileWriteCapture[],
+      message: string,
+    ): void => {
+      for (const { key, entry, generation } of captures) {
+        if (viewedFileWrites.get(key) !== entry || entry.generation !== generation) continue;
+        failViewedWrite(key, entry, message);
+      }
+    };
+
+    const drainViewedWriteBatch = async (
+      captures: readonly ViewedFileWriteCapture[],
+    ): Promise<void> => {
+      const first = captures[0];
+      if (first === undefined || prViewedFilesUrl === null) return;
+      if (captures.some(({ key, entry }) =>
+        viewedFileWrites.get(key) !== entry || !sameViewedSnapshot(entry))) {
+        for (const { key, entry } of captures) {
+          if (viewedFileWrites.get(key) === entry) discardViewedWrite(key, entry);
+        }
+        return;
+      }
+      try {
+        const response = await fetch(prViewedFilesUrl, {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            number: first.entry.number,
+            changes: captures.map(({ entry, desired }) => ({ path: entry.path, viewed: desired })),
+            expectedHeadSha: first.entry.expectedHeadSha,
+            expectedViewerId: first.entry.viewerId,
+          }),
+        });
+        if (captures.every(({ key, entry }) => viewedFileWrites.get(key) !== entry)) return;
+        if (captures.some(({ key, entry }) =>
+          viewedFileWrites.get(key) === entry && !sameViewedSnapshot(entry))) {
+          for (const { key, entry } of captures) {
+            if (viewedFileWrites.get(key) === entry) discardViewedWrite(key, entry);
+          }
+          return;
+        }
+        if (!response.ok) {
+          const failure = await viewedFileMutationFailure(response);
+          if (response.status === 401) {
+            enterLocalViewedMode(first.entry.number);
+            return;
+          }
+          if (response.status === 409 && failure.conflict === "viewer") {
+            reloadForChangedViewer(first.entry.number);
+            return;
+          }
+          if (response.status === 409) {
+            failViewedWritesForStaleHead(first.entry.number, failure.message);
+            return;
+          }
+          failViewedBatchEntries(captures, failure.message);
+          return;
+        }
+        const result = (await response.json()) as PrViewedFilesMutationResponse;
+        if (
+          normalizedGitHubSha(result.headSha)
+          !== normalizedGitHubSha(first.entry.expectedHeadSha)
+        ) {
+          failViewedWritesForStaleHead(
+            first.entry.number,
+            "GitHub viewed-file state changed at a different pull request head. Refresh the review.",
+          );
+          return;
+        }
+        const resultViewerId = normalizedGitHubViewerId(result.viewerId);
+        if (resultViewerId === null || normalizedGitHubLogin(result.viewerLogin) === null) {
+          failViewedBatchEntries(captures, "GitHub returned an invalid viewed-file mutation response.");
+          return;
+        }
+        if (resultViewerId !== first.entry.viewerId) {
+          reloadForChangedViewer(first.entry.number);
+          return;
+        }
+        let resultStates: Record<string, PrFileViewedState>;
+        try {
+          resultStates = parseViewedFileStates(result.files);
+        } catch {
+          failViewedBatchEntries(captures, "GitHub returned an invalid viewed-file mutation response.");
+          return;
+        }
+        if (Object.keys(resultStates).length !== captures.length) {
+          failViewedBatchEntries(captures, "GitHub returned an invalid viewed-file mutation response.");
+          return;
+        }
+        for (const { key, entry, generation, desired } of captures) {
+          if (viewedFileWrites.get(key) !== entry || entry.generation !== generation) continue;
+          const expectedState: PrFileViewedState = desired ? "VIEWED" : "UNVIEWED";
+          if (resultStates[entry.path] !== expectedState) {
+            failViewedWrite(key, entry, "GitHub returned an invalid viewed-file mutation response.");
+            continue;
+          }
+          viewedFileWrites.delete(key);
+          if (sameViewedSnapshot(entry)) {
+            set({ reviewViewedFilesViewerLogin: result.viewerLogin });
+            clearSyncedLocalFileTick(entry.path, entry.viewerId);
+            clearViewedWriteUi(entry.path);
+          }
+        }
+      } catch {
+        failViewedBatchEntries(captures, "could not synchronize viewed state with GitHub");
+      }
+    };
+
+    const runViewedWriteBatch = async (
+      captures: readonly ViewedFileWriteCapture[],
+    ): Promise<void> => {
+      await acquireViewedWriteSlot();
+      try {
+        await drainViewedWriteBatch(captures);
+      } finally {
+        releaseViewedWriteSlot();
+      }
+    };
+
+    const startViewedWriteBatch = (
+      prepared: readonly { key: string; entry: ViewedFileWrite }[],
+    ): void => {
+      const partitions = partitionViewedWrites(prepared);
+      if (partitions.length > 1) {
+        for (const partition of partitions) startViewedWriteBatch(partition);
+        return;
+      }
+      const bounded = partitions[0] ?? [];
+      const captures = bounded
+        .filter(({ entry }) => entry.completion === null)
+        .map(({ key, entry }) => ({
+          key,
+          entry,
+          generation: entry.generation,
+          desired: entry.desired,
+        }));
+      if (captures.length === 0) return;
+      if (captures.length === 1) {
+        startViewedWrite(captures[0].key, captures[0].entry);
+        return;
+      }
+      for (const { entry } of captures) entry.running = true;
+      let completion!: Promise<void>;
+      completion = runViewedWriteBatch(captures).finally(() => {
+        const changed: Array<{ key: string; entry: ViewedFileWrite }> = [];
+        for (const { key, entry, generation } of captures) {
+          if (entry.completion !== completion) continue;
+          entry.running = false;
+          entry.completion = null;
+          // A same-path gesture while the batch was in flight owns a newer generation. Let it
+          // serialize behind this request while retaining the original batch grouping.
+          if (
+            viewedFileWrites.get(key) === entry
+            && entry.generation !== generation
+            && sameViewedSnapshot(entry)
+          ) {
+            changed.push({ key, entry });
+          }
+        }
+        startViewedWriteBatch(changed);
+      });
+      for (const { entry } of captures) entry.completion = completion;
+      trackViewedFileSettlement(captures[0]!.entry.number, completion);
+      void completion;
+    };
+
+    const partitionViewedWrites = (
+      prepared: readonly { key: string; entry: ViewedFileWrite }[],
+    ): Array<Array<{ key: string; entry: ViewedFileWrite }>> => {
+      const partitions: Array<Array<{ key: string; entry: ViewedFileWrite }>> = [];
+      let current: Array<{ key: string; entry: ViewedFileWrite }> = [];
+      for (const candidate of prepared) {
+        const next = [...current, candidate];
+        if (
+          current.length > 0
+          && (
+            next.length > MAX_VIEWED_FILE_BATCH_SIZE
+            || viewedWriteBodyBytes(next) > MAX_VIEWED_FILE_BATCH_BODY_BYTES
+          )
+        ) {
+          partitions.push(current);
+          current = [candidate];
+        } else {
+          current = next;
+        }
+      }
+      if (current.length > 0) partitions.push(current);
+      return partitions;
+    };
+
+    const viewedWriteBodyBytes = (
+      prepared: readonly { entry: ViewedFileWrite }[],
+    ): number => {
+      const first = prepared[0]?.entry;
+      if (first === undefined) return 0;
+      return viewedFileUtf8.encode(JSON.stringify({
+        number: first.number,
+        changes: prepared.map(({ entry }) => ({ path: entry.path, viewed: entry.desired })),
+        expectedHeadSha: first.expectedHeadSha,
+        expectedViewerId: first.viewerId,
+      })).byteLength;
+    };
+
+    const enqueueViewedWrites = (
+      number: number,
+      changes: readonly { path: string; viewed: boolean }[],
+      expectedHeadSha: string,
+      viewerId: string,
+      viewerLogin: string,
+    ): void => {
+      if (changes.length === 0) return;
+      const current = get();
+      let fileTicks = current.reviewFileTicks;
+      const at = new Date().toISOString();
+      // Persist the latest optimistic intent before crossing the network boundary. Successful
+      // mutations remove it; failures, navigation, reloads, and authentication loss retain enough
+      // information to reconcile both mark-viewed and unview operations later.
+      for (const change of changes) {
+        const file = current.reviewFiles.find((candidate) => candidate.path === change.path);
+        const existing = file === undefined
+          ? Object.hasOwn(fileTicks, change.path) ? fileTicks[change.path] : undefined
+          : tickForFile(file, fileTicks);
+        fileTicks = file === undefined
+          ? { ...fileTicks }
+          : removeReviewFileTick(fileTicks, file);
+        if (file === undefined) delete fileTicks[change.path];
+        setReviewTick(fileTicks, change.path, {
+          at,
+          fingerprint: file?.fingerprint ?? existing?.fingerprint ?? "unverified",
+          ...(file?.address
+            ? { address: file.address }
+            : existing?.address ? { address: existing.address } : {}),
+          viewerId,
+          viewerLogin,
+          viewed: change.viewed,
+          headSha: expectedHeadSha,
+        });
+      }
+      set({ reviewFileTicks: fileTicks });
+      persistReviewProgress(get());
+      const prepared = changes
+        .map(({ path, viewed }) =>
+          prepareViewedWrite(number, path, viewed, expectedHeadSha, viewerId, viewerLogin))
+        .filter((value): value is { key: string; entry: ViewedFileWrite } => value !== null);
+      startViewedWriteBatch(prepared);
+    };
+
+    const viewedGesturesBlocked = (current: BlueprintState): boolean =>
+      reviewViewedGestureBlockReason(current) !== null;
+
+    const toggleWholeReviewFiles = (files: readonly ReviewFileRow[]): void => {
+      const current = get();
+      if (files.length === 0) return;
+      // A canonical GET may have captured state before a concurrent mutation. Pause gestures for
+      // every refetch so its landing cannot overwrite an optimistic write that GitHub accepted.
+      // A live review becomes local-only only after an explicit 401.
+      if (viewedGesturesBlocked(current)) return;
+      const unique = [...new Map(files.map((file) => [file.path, file])).values()];
+      const before = new Map(unique.map((file) => [
+        file.path,
+        fileViewState(file, current.reviewUnitTicks, current.reviewFileTicks, current.reviewFileViewedStates),
+      ]));
+      const priorLocalTicks = new Map(unique.map((file) => [
+        file.path,
+        tickForFile(file, current.reviewFileTicks),
+      ]));
+      const markViewed = [...before.values()].some((state) => state !== "done");
+      const toggledAt = new Date().toISOString();
+      const next = applyFilesToggle(
+        unique,
+        current.reviewUnitTicks,
+        current.reviewFileTicks,
+        toggledAt,
+        current.reviewFileViewedStates,
+      );
+      const nextGithubStates = current.reviewFileViewedStates === null
+        ? null
+        : { ...current.reviewFileViewedStates };
+      const changed = unique.filter((file) => (before.get(file.path) === "done") !== markViewed);
+      if (nextGithubStates !== null) {
+        for (const file of changed) {
+          setOwnRecordValue(nextGithubStates, file.path, markViewed ? "VIEWED" : "UNVIEWED");
+        }
+      }
+      let nextLocalFileTicks = next.fileTicks;
+      const number = current.prReviewed;
+      const fallbackViewer = number === null ? undefined : localViewedFallbackViewers.get(number);
+      if (nextGithubStates === null) {
+        nextLocalFileTicks = { ...nextLocalFileTicks };
+        for (const file of changed) {
+          const priorTick = priorLocalTicks.get(file.path);
+          const priorViewer = priorTick?.viewerId !== undefined && priorTick.viewerLogin !== undefined
+            ? { id: priorTick.viewerId, login: priorTick.viewerLogin }
+            : undefined;
+          const intentViewer = fallbackViewer ?? priorViewer;
+          const intentHeadSha = current.prReviewRevision?.headSha ?? priorTick?.headSha;
+          if (markViewed) {
+            const tick = tickForFile(file, nextLocalFileTicks);
+            if (tick === undefined) continue;
+            setReviewTick(nextLocalFileTicks, file.path, {
+              ...tick,
+              ...(intentViewer
+                ? { viewerId: intentViewer.id, viewerLogin: intentViewer.login }
+                : {}),
+              ...(intentHeadSha ? { headSha: intentHeadSha } : {}),
+            });
+          } else if (intentViewer !== undefined) {
+            setReviewTick(nextLocalFileTicks, file.path, {
+              at: toggledAt,
+              fingerprint: file.fingerprint,
+              ...(file.address ? { address: file.address } : {}),
+              viewerId: intentViewer.id,
+              viewerLogin: intentViewer.login,
+              viewed: false,
+              ...(intentHeadSha ? { headSha: intentHeadSha } : {}),
+            });
+          }
+        }
+      }
+      set({
+        reviewUnitTicks: next.unitTicks,
+        // Canonical state stays in memory. Preserve only durable migration/fallback intents, whose
+        // ticks carry viewer ownership when they originated from an authenticated write.
+        reviewFileTicks: nextGithubStates === null ? nextLocalFileTicks : current.reviewFileTicks,
+        reviewFileViewedStates: nextGithubStates,
+      });
+      persistReviewProgress(get());
+      const expectedHeadSha = current.prReviewRevision?.headSha;
+      const viewerId = current.reviewViewedFilesViewerId;
+      const viewerLogin = current.reviewViewedFilesViewerLogin;
+      if (
+        nextGithubStates !== null
+        && number !== null
+        && typeof expectedHeadSha === "string"
+        && viewerId !== null
+        && viewerLogin !== null
+      ) {
+        enqueueViewedWrites(
+          number,
+          changed.map((file) => ({ path: file.path, viewed: markViewed })),
+          expectedHeadSha,
+          viewerId,
+          viewerLogin,
+        );
+      }
+    };
+
+    const loadViewedFiles = async (number: number): Promise<void> => {
+      if (prViewedFilesUrl === null || !sameActiveReview(number)) return;
+      const sequence = ++prViewedFilesSeq;
+      set({ reviewViewedFilesLoading: true, reviewViewedFilesError: null });
+      try {
+        // A mutation may already be past the browser boundary when a resume/refresh begins.
+        // Let every such write settle before reading canonical state so an older GET cannot land
+        // over a mutation that GitHub accepts a moment later.
+        await waitForViewedFileSettlements(number);
+        if (sequence !== prViewedFilesSeq || !sameActiveReview(number)) return;
+        const url = new URL(prViewedFilesUrl, requestOrigin());
+        url.searchParams.set("n", String(number));
+        const response = await fetch(url, { credentials: "same-origin", cache: "no-store" });
+        if (sequence !== prViewedFilesSeq || !sameActiveReview(number)) return;
+        // An explicitly signed-out session retains browser-local whole-file progress. Other
+        // failures can mean a broken permission/session/repository and must remain visible.
+        if (response.status === 401) {
+          const knownViewerId = get().reviewViewedFilesViewerId;
+          const knownViewerLogin = get().reviewViewedFilesViewerLogin;
+          const knownViewer = knownViewerId === null || knownViewerLogin === null
+            ? null
+            : { id: knownViewerId, login: knownViewerLogin };
+          // Failed/queued mutations still carry the user's latest desired value. Convert them to
+          // viewer-owned local ticks before leaving canonical mode instead of dropping that intent.
+          enterLocalViewedMode(number, knownViewer);
+          return;
+        }
+        if (!response.ok) throw new Error(await errorMessage(response));
+        const result = (await response.json()) as PrViewedFilesResponse;
+        const current = get();
+        const activeHeadSha = current.prReviewRevision?.headSha;
+        if (
+          activeHeadSha === null
+          || activeHeadSha === undefined
+          || normalizedGitHubSha(result.headSha) !== normalizedGitHubSha(activeHeadSha)
+        ) {
+          cancelViewedWrites(number);
+          set({
+            reviewViewedFilesLoading: false,
+            reviewViewedFilesError: "GitHub viewed-file state belongs to a newer pull request head. Refresh the review.",
+            prReviewStale: true,
+            reviewViewedFileSyncPending: new Set<string>(),
+            reviewViewedFileSyncErrors: {},
+          });
+          return;
+        }
+        const states = parseViewedFileStates(result.files);
+        const viewerId = parseGitHubViewerId(result.viewerId);
+        const viewerLogin = parseGitHubViewerLogin(result.viewerLogin);
+        localViewedFallbackViewers.delete(number);
+        let localFileTicks = current.reviewFileTicks;
+        const localChangesToSync = new Map<string, boolean>();
+        const visiblePaths = new Set(current.reviewFiles.map((file) => file.path));
+        for (const file of current.reviewFiles) {
+          const tick = tickForFile(file, localFileTicks);
+          if (tick === undefined) continue;
+          const incompleteOwner = (tick.viewerId === undefined) !== (tick.viewerLogin === undefined);
+          const ownedByAnotherViewer = tick.viewerId !== undefined && tick.viewerId !== viewerId;
+          if (incompleteOwner || ownedByAnotherViewer) {
+            // One persisted path has one intent slot. Once GitHub establishes a different active
+            // viewer, discard the foreign slot rather than ever rendering or relabeling it locally.
+            localFileTicks = removeReviewFileTick(localFileTicks, file);
+            continue;
+          }
+          const coordinateBoundIntent = tick.headSha !== undefined;
+          if (
+            tick.headSha !== undefined
+            && normalizedGitHubSha(tick.headSha) !== normalizedGitHubSha(result.headSha)
+          ) {
+            localFileTicks = removeReviewFileTick(localFileTicks, file);
+            continue;
+          }
+          const remoteState = states[file.path];
+          if (remoteState === undefined) continue;
+          if (tick.viewed === false) {
+            if (tick.viewerId === undefined) {
+              localFileTicks = removeReviewFileTick(localFileTicks, file);
+              continue;
+            }
+            if (remoteState !== "UNVIEWED") {
+              // Preserve an optimistic unview while the same-head write is retried.
+              setOwnRecordValue(states, file.path, "UNVIEWED");
+              localChangesToSync.set(file.path, false);
+            } else {
+              // Only GitHub's explicit UNVIEWED state satisfies a negative intent. DISMISSED is
+              // separately rendered as stale and still needs the unmark mutation used by Reset.
+              localFileTicks = removeReviewFileTick(localFileTicks, file);
+            }
+            continue;
+          }
+          if (!coordinateBoundIntent) {
+            if (tick.fingerprint === "unverified" || file.fingerprint === "unverified") {
+              localFileTicks = removeReviewFileTick(localFileTicks, file);
+              continue;
+            }
+            if (fileViewState(file, current.reviewUnitTicks, localFileTicks, null) !== "done") {
+              continue;
+            }
+          }
+          if (remoteState === "VIEWED") {
+            localFileTicks = removeReviewFileTick(localFileTicks, file);
+          } else if (remoteState === "UNVIEWED" || remoteState === "DISMISSED") {
+            // Keep a durable local intent until GitHub accepts the migration. Canonical state makes
+            // the optimistic marker visible; this tick only protects a retry/reload after failure.
+            localFileTicks = removeReviewFileTick(localFileTicks, file);
+            setReviewTick(localFileTicks, file.path, {
+              at: tick!.at,
+              fingerprint: file.fingerprint,
+              ...(file.address ? { address: file.address } : {}),
+              viewerId,
+              viewerLogin,
+              viewed: true,
+              headSha: result.headSha,
+            });
+            setOwnRecordValue(states, file.path, "VIEWED");
+            localChangesToSync.set(file.path, true);
+          }
+        }
+        // Authenticated intents carry exact path + immutable head + viewer coordinates, so both
+        // directions can retry while a test file is filtered out. Unowned legacy positive ticks
+        // still wait for a visible row and its current fingerprint check above.
+        for (const [path, tick] of Object.entries(localFileTicks)) {
+          if (visiblePaths.has(path)) continue;
+          const incompleteOwner = (tick.viewerId === undefined) !== (tick.viewerLogin === undefined);
+          if (
+            incompleteOwner
+            || (tick.viewerId !== undefined && tick.viewerId !== viewerId)
+          ) {
+            localFileTicks = { ...localFileTicks };
+            delete localFileTicks[path];
+            continue;
+          }
+          if (
+            tick.headSha === undefined
+            || normalizedGitHubSha(tick.headSha) !== normalizedGitHubSha(result.headSha)
+            || !Object.hasOwn(states, path)
+          ) {
+            localFileTicks = { ...localFileTicks };
+            delete localFileTicks[path];
+            continue;
+          }
+          const desired = tick.viewed !== false;
+          const satisfied = desired ? states[path] === "VIEWED" : states[path] === "UNVIEWED";
+          if (satisfied) {
+            localFileTicks = { ...localFileTicks };
+            delete localFileTicks[path];
+          } else {
+            setOwnRecordValue(states, path, desired ? "VIEWED" : "UNVIEWED");
+            localChangesToSync.set(path, desired);
+          }
+        }
+        cancelViewedWrites(number);
+        set({
+          reviewUnitTicks: current.reviewUnitTicks,
+          reviewFileTicks: localFileTicks,
+          reviewFileViewedStates: states,
+          reviewViewedFilesViewerId: viewerId,
+          reviewViewedFilesViewerLogin: viewerLogin,
+          reviewViewedFilesLoading: false,
+          reviewViewedFilesError: null,
+          reviewViewedFileSyncPending: new Set<string>(),
+          reviewViewedFileSyncErrors: {},
+        });
+        // Canonical state clears satisfied intents and immediately retries same-viewer intents in
+        // either direction. Positive legacy progress still requires a current file fingerprint.
+        persistReviewProgress(get());
+        enqueueViewedWrites(
+          number,
+          [...localChangesToSync].map(([path, viewed]) => ({ path, viewed })),
+          result.headSha,
+          viewerId,
+          viewerLogin,
+        );
+      } catch (error) {
+        if (sequence === prViewedFilesSeq && sameActiveReview(number)) {
+          set({
+            reviewViewedFilesLoading: false,
+            reviewViewedFilesError: error instanceof Error ? error.message : "could not load GitHub viewed-file state",
+          });
+        }
+      }
+    };
+
     return {
     artifact: dependencies.artifact,
     index: dependencies.index,
@@ -2582,8 +3598,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewFilesSort: "path",
     reviewFileDelta: {},
     reviewTicks: initialProgress?.ticks ?? {},
-    reviewUnitTicks: initialProgress?.unitTicks ?? {},
-    reviewFileTicks: initialProgress?.fileTicks ?? {},
+    reviewUnitTicks: initialMigratedProgress?.unitTicks ?? {},
+    reviewFileTicks: initialMigratedProgress?.fileTicks ?? {},
+    reviewFileViewedStates: null,
+    reviewViewedFilesSyncEnabled: prViewedFilesUrl !== null,
+    reviewViewedFilesViewerId: null,
+    reviewViewedFilesViewerLogin: null,
+    reviewViewedFilesLoading: false,
+    reviewViewedFilesError: null,
+    reviewViewedFileSyncPending: new Set<string>(),
+    reviewViewedFileSyncErrors: {},
     reviewComments: initialProgress?.comments ?? [],
     reviewLineComposer: null,
     reviewFlowSplitView: reviewPreferences.flowSplitView,
@@ -5426,62 +6450,132 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset every reviewed tick (flows, units, files) but KEEP the draft comments — progress is
     // disposable, written words are not.
     resetReviewTicks() {
-      if (!get().review) {
+      const current = get();
+      if (!current.review || viewedGesturesBlocked(current)) {
         return;
       }
-      set({ reviewTicks: {}, reviewUnitTicks: {}, reviewFileTicks: {} });
+      const changedPaths = current.reviewFileViewedStates === null
+        ? []
+        : Object.entries(current.reviewFileViewedStates)
+            .filter(([, state]) => state !== "UNVIEWED")
+            .map(([path]) => path);
+      const nextGithubStates = current.reviewFileViewedStates === null
+        ? null
+        : Object.fromEntries(
+            Object.keys(current.reviewFileViewedStates).map((path) => [path, "UNVIEWED" as const]),
+          );
+      const fallbackViewer = current.prReviewed === null
+        ? undefined
+        : localViewedFallbackViewers.get(current.prReviewed);
+      let nextFileTicks: Record<string, ReviewTick> = {};
+      if (nextGithubStates === null) {
+        const at = new Date().toISOString();
+        for (const file of current.reviewFiles) {
+          if (fileViewState(file, current.reviewUnitTicks, current.reviewFileTicks, null) !== "done") continue;
+          const priorTick = tickForFile(file, current.reviewFileTicks);
+          const priorViewer = priorTick?.viewerId !== undefined && priorTick.viewerLogin !== undefined
+            ? { id: priorTick.viewerId, login: priorTick.viewerLogin }
+            : undefined;
+          const intentViewer = fallbackViewer ?? priorViewer;
+          if (intentViewer === undefined) continue;
+          const intentHeadSha = current.prReviewRevision?.headSha ?? priorTick?.headSha;
+          setReviewTick(nextFileTicks, file.path, {
+            at,
+            fingerprint: file.fingerprint,
+            ...(file.address ? { address: file.address } : {}),
+            viewerId: intentViewer.id,
+            viewerLogin: intentViewer.login,
+            viewed: false,
+            ...(intentHeadSha ? { headSha: intentHeadSha } : {}),
+          });
+        }
+        for (const [path, tick] of Object.entries(current.reviewFileTicks)) {
+          if (
+            tick.viewerId === undefined
+            || tick.viewerLogin === undefined
+            || Object.hasOwn(nextFileTicks, path)
+          ) continue;
+          setReviewTick(nextFileTicks, path, { ...tick, at, viewed: false });
+        }
+      }
+      set({
+        reviewTicks: {},
+        reviewUnitTicks: {},
+        reviewFileTicks: nextFileTicks,
+        reviewFileViewedStates: nextGithubStates,
+      });
       persistReviewProgress(get());
+      const expectedHeadSha = current.prReviewRevision?.headSha;
+      const viewerId = current.reviewViewedFilesViewerId;
+      const viewerLogin = current.reviewViewedFilesViewerLogin;
+      if (
+        nextGithubStates !== null
+        && current.prReviewed !== null
+        && typeof expectedHeadSha === "string"
+        && viewerId !== null
+        && viewerLogin !== null
+      ) {
+        enqueueViewedWrites(
+          current.prReviewed,
+          changedPaths.map((path) => ({ path, viewed: false })),
+          expectedHeadSha,
+          viewerId,
+          viewerLogin,
+        );
+      }
     },
 
-    // Tick one touched unit in the files checklist; the owning file's viewed state derives from these.
+    // GitHub's viewed state is file-atomic. A unit gesture toggles its owning file as one operation.
     toggleReviewUnitTick(nodeId) {
-      const { reviewFiles, reviewUnitTicks } = get();
-      const unit = reviewFiles.flatMap((file) => file.units).find((candidate) => candidate.nodeId === nodeId);
-      if (!unit) {
-        return;
-      }
-      set({ reviewUnitTicks: applyUnitTick(reviewUnitTicks, unit, new Date().toISOString()) });
-      persistReviewProgress(get());
+      const file = get().reviewFiles.find((candidate) => candidate.units.some((unit) => unit.nodeId === nodeId));
+      if (file) toggleWholeReviewFiles([file]);
     },
 
-    // Structural cards derive their progress from the directly changed leaves they contain.
+    // Structural cards resolve their changed leaves back to unique owning files.
     toggleReviewUnitsViewed(nodeIds) {
-      const { reviewFiles, reviewUnitTicks } = get();
       const selectedIds = new Set(nodeIds);
-      const units = reviewFiles.flatMap((file) => file.units)
-        .filter((unit) => selectedIds.has(unit.nodeId));
-      if (units.length === 0) {
-        return;
-      }
-      set({ reviewUnitTicks: applyUnitsToggle(units, reviewUnitTicks, new Date().toISOString()) });
-      persistReviewProgress(get());
+      const files = get().reviewFiles.filter((file) => file.units.some((unit) => selectedIds.has(unit.nodeId)));
+      toggleWholeReviewFiles(files);
     },
 
-    // The per-file "viewed" checkbox: cascades over the file's units (all on / all off); an
-    // unit-less file flips its own explicit tick.
+    // The per-file checkbox is the same atomic transition GitHub exposes.
     toggleReviewFileViewed(path) {
-      const { reviewFiles, reviewUnitTicks, reviewFileTicks } = get();
-      const file = reviewFiles.find((candidate) => candidate.path === path);
-      if (!file) {
-        return;
-      }
-      const next = applyFileToggle(file, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
-      set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
-      persistReviewProgress(get());
+      const file = get().reviewFiles.find((candidate) => candidate.path === path);
+      if (file) toggleWholeReviewFiles([file]);
     },
 
     // Folder markers bulk-toggle exactly the changed descendant files represented by that folder.
-    // Persist once so the graph marker and review rail advance as one atomic progress update.
     toggleReviewFilesViewed(paths) {
-      const { reviewFiles, reviewUnitTicks, reviewFileTicks } = get();
       const selectedPaths = new Set(paths);
-      const files = reviewFiles.filter((candidate) => selectedPaths.has(candidate.path));
-      if (files.length === 0) {
+      toggleWholeReviewFiles(get().reviewFiles.filter((candidate) => selectedPaths.has(candidate.path)));
+    },
+
+    async retryReviewViewedFiles() {
+      const current = get();
+      if (current.prReviewed === null || current.prReviewStale) return;
+      if (current.reviewViewedFilesError !== null) {
+        await loadViewedFiles(current.prReviewed);
         return;
       }
-      const next = applyFilesToggle(files, reviewUnitTicks, reviewFileTicks, new Date().toISOString());
-      set({ reviewUnitTicks: next.unitTicks, reviewFileTicks: next.fileTicks });
-      persistReviewProgress(get());
+      const retryPaths = Object.keys(current.reviewViewedFileSyncErrors);
+      await waitForViewedFileSettlements(current.prReviewed);
+      if (!sameActiveReview(current.prReviewed) || get().prReviewStale) return;
+      const retryable = retryPaths
+        .flatMap((path) => {
+          const key = viewedWriteKey(current.prReviewed!, path);
+          const entry = viewedFileWrites.get(key);
+          return entry === undefined ? [] : [{ key, entry }];
+        });
+      if (retryable.length > 0) {
+        const pending = new Set(get().reviewViewedFileSyncPending);
+        const errors = { ...get().reviewViewedFileSyncErrors };
+        for (const { entry } of retryable) {
+          pending.add(entry.path);
+          delete errors[entry.path];
+        }
+        set({ reviewViewedFileSyncPending: pending, reviewViewedFileSyncErrors: errors });
+      }
+      startViewedWriteBatch(retryable);
     },
 
     // The line composer is one session-only editing surface shared by hover, inline, modal, and
@@ -6072,13 +7166,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // every review surface through the same toggle (members, files, flows, groups, progress and
       // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
       if (prReviewed !== null && minimalSeedIds.length > 0) {
+        let reprojected: boolean;
         if (get().minimalGraphHistory.length > 0) {
-          reprojectLivePrReview(showTests ? "Showing tests…" : "Hiding tests…", true);
+          reprojected = reprojectLivePrReview(showTests ? "Showing tests…" : "Hiding tests…", true);
         } else {
-          applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
+          reprojected = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             reprojecting: true,
             preserveReviewSelection: true,
           });
+        }
+        const projected = get();
+        if (
+          reprojected
+          && showTests
+          && projected.reviewFileViewedStates !== null
+          && !projected.prReviewStale
+        ) {
+          // Hidden legacy unit ticks are promoted only when their test files enter the projection.
+          // Reconcile those new file intents with the already-loaded canonical GitHub snapshot.
+          queueMicrotask(() => void loadViewedFiles(prReviewed));
         }
         return;
       }
@@ -6879,10 +7985,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (current.prReviewed !== number || current.prReviewRevision !== revision || current.prReviewRefreshing) {
             return;
           }
-          set({
-            ...refreshedPrSummaryState(current, latest),
-            prReviewStale: isPrReviewStale(revision, latest),
-          });
+          const stale = isPrReviewStale(revision, latest);
+          set(refreshedPrSummaryState(current, latest));
+          if (stale) {
+            failViewedWritesForStaleHead(
+              number,
+              "Pull request files changed at a newer head. Refresh the review to continue.",
+            );
+          } else {
+            set({ prReviewStale: false });
+          }
         } catch {
           // Freshness is advisory. A transient GitHub/network failure must not interrupt review or
           // replace the page's stronger load/submit errors with a noisy polling warning.
@@ -6998,6 +8110,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           });
           if (!applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: true,
+            viewedFilesLoading: prViewedFilesUrl !== null,
           })) {
             // The refreshed PR no longer intersects this extraction. Keep the old review rather than
             // silently replacing it with an empty/base canvas; the stale control remains retryable.
@@ -7012,6 +8125,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               prPrepareError: "The refreshed pull request no longer matches this graph.",
             });
             restoreRetainedReviewFiles();
+          } else {
+            await loadViewedFiles(number);
           }
         }
       } catch (error) {
@@ -7092,7 +8207,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
       }
-      applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches);
+      if (applyPrReviewToMap(
+        get,
+        set,
+        prFilesUrl,
+        invalidateMinimalLayout,
+        invalidateModuleLayout,
+        invalidateArtifactCaches,
+        { viewedFilesLoading: prViewedFilesUrl !== null },
+      )) {
+        await loadViewedFiles(selected);
+      }
     },
 
     // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
@@ -7193,6 +8318,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             {
               reprojecting: true,
               preserveReviewSelection: true,
+              viewedFilesLoading: prViewedFilesUrl !== null,
             },
           );
           if (!resumed) {
@@ -7209,6 +8335,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             });
             return;
           }
+          await loadViewedFiles(prReviewed);
           // Rebuild the reader's lightweight review context, not the entire PR. Each selector
           // invalidates the full pass that applyPrReviewToMap just queued before that pass derives,
           // so a scoped Resume remains cheap even for a repository-wide change.
@@ -7405,6 +8532,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           });
           const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
             preserveReviewDiffOnly: !enteringFromPrs,
+            viewedFilesLoading: prViewedFilesUrl !== null,
           });
           if (!entered) {
             // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
@@ -7431,6 +8559,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             await settleGraphHandoff("release");
           } else {
             await settleGraphHandoff("commit");
+            await loadViewedFiles(prNumber);
           }
         } catch (error) {
           await settleGraphHandoff("release").catch(() => undefined);
@@ -7511,6 +8640,8 @@ function applyPrReviewToMap(
     reprojecting?: boolean;
     preserveReviewSelection?: boolean;
     preserveReviewDiffOnly?: boolean;
+    /** Set for a true entry/resume/head refresh that immediately hydrates GitHub viewer state. */
+    viewedFilesLoading?: boolean;
   } = {},
 ): boolean {
   const {
@@ -7673,8 +8804,11 @@ function applyPrReviewToMap(
   // The synchronous review's graph is base-relative while patch kinds are head-relative. Preserve
   // each file's edit map beside its exact kinds so node spans can be translated before colouring.
   // A prepared graph instead reads its own authoritative, already-aligned changedSince stamp.
-  const reviewDiffByFile: Record<string, { edits: LineEdit[]; kinds: ChangedLineSpan[] }> = {};
-  const reviewDiffLinesByFile: Record<string, ChangedDiffLine[]> = {};
+  const reviewDiffByFile = Object.create(null) as Record<
+    string,
+    { edits: LineEdit[]; kinds: ChangedLineSpan[] }
+  >;
+  const reviewDiffLinesByFile = Object.create(null) as Record<string, ChangedDiffLine[]>;
   if (!swapped) {
     for (const binding of fileBindings) {
       if (binding.file.diffComplete !== false && binding.file.edits && binding.file.edits.length > 0) {
@@ -7719,7 +8853,10 @@ function applyPrReviewToMap(
   // GitHub's whole-file +N/-M churn per changed file, keyed by node.location.file, for the marker a
   // changed FILE card shows before its name (files aren't coloured; only their touched blocks are).
   const artifactStats = swapped ? changedLineStatsFromExtensions(reviewedHeadArtifact.extensions) : null;
-  const reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }> = {};
+  const reviewFileDelta = Object.create(null) as Record<
+    string,
+    { added: number; deleted: number; status?: PrFileStatus }
+  >;
   for (const binding of fileBindings) {
     const fallback = {
       added: binding.file.additions,
@@ -7764,7 +8901,7 @@ function applyPrReviewToMap(
   // path prefix. This is what makes the fast (synchronous) review show head code without re-extract.
   // SWAPPED mode carries neither field: node.location is already head-relative, so showCode's
   // headSpanFor remap must never run — it reads the local head checkout via activeSourceUrl instead.
-  const reviewCommentRangesByFile: Record<string, LineRange[]> = {};
+  const reviewCommentRangesByFile = Object.create(null) as Record<string, LineRange[]>;
   for (const binding of fileBindings) {
     const file = binding.file;
     if (file.status === "removed" || file.diffComplete === false) {
@@ -7784,8 +8921,11 @@ function applyPrReviewToMap(
   // Removed text is parsed from GitHub's patch in HEAD coordinates, so unlike the base→head edit
   // remap above it is valid in BOTH sync and swapped reviews. Join through the same matched module
   // path so the code panel can look it up with node.location.file in either graph.
-  const reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]> = {};
-  const reviewRemovedTruncatedByFile: Record<string, boolean> = {};
+  const reviewRemovedByFile = Object.create(null) as Record<
+    string,
+    { afterNewLine: number; lines: string[] }[]
+  >;
+  const reviewRemovedTruncatedByFile = Object.create(null) as Record<string, boolean>;
   for (const binding of fileBindings) {
     const prFile = binding.file;
     if ((prFile.removed?.length ?? 0) > 0) {
@@ -7798,6 +8938,7 @@ function applyPrReviewToMap(
   const progress = liveProgress ?? readReviewProgress(context.reviewKey, {
     legacyKeys: [`${prFilesUrl}|pr-${prSelected}`],
   });
+  const migratedProgress = promoteFullyViewedUnitTicks(files, progress.unitTicks, progress.fileTicks);
   const currentSelection = get();
   const loadedRevision = options.reprojecting
     ? currentSelection.prReviewRevision
@@ -7853,8 +8994,28 @@ function applyPrReviewToMap(
     reviewRemovedByFile,
     reviewRemovedTruncatedByFile,
     reviewTicks: progress.ticks,
-    reviewUnitTicks: progress.unitTicks,
-    reviewFileTicks: progress.fileTicks,
+    // GitHub's viewed model is whole-file atomic. Fully complete legacy units migrate once to a
+    // file tick; partial/stale represented units are intentionally dropped.
+    reviewUnitTicks: migratedProgress.unitTicks,
+    reviewFileTicks: migratedProgress.fileTicks,
+    reviewFileViewedStates: options.reprojecting ? currentSelection.reviewFileViewedStates : null,
+    reviewViewedFilesViewerId: options.reprojecting
+      ? currentSelection.reviewViewedFilesViewerId
+      : null,
+    reviewViewedFilesViewerLogin: options.reprojecting
+      ? currentSelection.reviewViewedFilesViewerLogin
+      : null,
+    reviewViewedFilesLoading: options.viewedFilesLoading
+      ?? (options.reprojecting ? currentSelection.reviewViewedFilesLoading : false),
+    reviewViewedFilesError: options.viewedFilesLoading === undefined && options.reprojecting
+      ? currentSelection.reviewViewedFilesError
+      : null,
+    reviewViewedFileSyncPending: options.reprojecting
+      ? currentSelection.reviewViewedFileSyncPending
+      : new Set<string>(),
+    reviewViewedFileSyncErrors: options.reprojecting
+      ? currentSelection.reviewViewedFileSyncErrors
+      : {},
     reviewComments,
     reviewPanelHidden: options.reprojecting ? currentSelection.reviewPanelHidden : false,
     // A Tests toggle can happen while a review POST is in flight. Reprojection must not disarm the
@@ -7905,9 +9066,9 @@ function applyPrReviewToMap(
     minimalLayoutStatus: visibleSeeds.length > 0 ? "laying-out" : "idle",
     minimalLayoutActivity: visibleSeeds.length > 0 ? { label: "Preparing review graph…" } : null,
   });
-  if (lineAnchorsInvalidated) {
-    // The stable reviewKey intentionally carries drafts across pushes. Persist the invalidated
-    // anchor marker with them so a reload cannot make an old numeric line look current again.
+  if (lineAnchorsInvalidated || Object.keys(progress.unitTicks).length > 0) {
+    // Persist both one-way unit→file migration and invalidated line anchors under the stable key.
+    // A reload must not resurrect partial unit progress or make an old numeric line look current.
     persistReviewProgress(get());
   }
   // Only the visible review graph is laid out. The underlying Map is intentionally absent until
@@ -7944,7 +9105,7 @@ function preparedHeadAffected(
 ): AffectedNode[] {
   const kindsByFile = changedLineKindsFromExtensions(artifact.extensions);
   const statsByFile = changedLineStatsFromExtensions(artifact.extensions);
-  const rawByPath = new Map(prFiles.map((file) => [normalizeReviewFilePath(file.path), file]));
+  const rawByPath = new Map(prFiles.map((file) => [file.path, file]));
   const statusByCanonicalFile = new Map<string, AffectedNode["status"]>();
   const changedFiles = context.changedFiles.map((changed) => {
     const match = matchAffectedFiles(index, [changed.path]).matched[0];
@@ -7953,7 +9114,7 @@ function preparedHeadAffected(
       : index.nodesById.get(match.moduleId)?.location.file ?? changed.path;
     statusByCanonicalFile.set(canonicalPath, changed.status);
     const aliases = new Set([changed.path, canonicalPath]);
-    const raw = rawByPath.get(normalizeReviewFilePath(changed.path));
+    const raw = rawByPath.get(changed.path);
     const canonicalKinds = valueForReviewAliases(kindsByFile, aliases);
     const canonicalStats = valueForReviewAliases(statsByFile, aliases);
     const exactKinds = canonicalKinds
@@ -8044,9 +9205,9 @@ function bindReviewFiles(
   baseIndex: GraphIndex | null,
   deleted: DeletedNodeProjection,
 ): BoundReviewFile[] {
-  const deletedByPath = new Map(deleted.files.map((file) => [normalizeReviewFilePath(file.path), file]));
+  const deletedByPath = new Map(deleted.files.map((file) => [file.path, file]));
   return files.map((file) => {
-    const aliases = new Set<string>([file.path, normalizeReviewFilePath(file.path)]);
+    const aliases = new Set<string>([file.path]);
     const headFiles = new Set<string>();
     const headMatch = matchAffectedFiles(headIndex, [file.path]).matched[0];
     const headFile = headMatch === undefined ? undefined : headIndex.nodesById.get(headMatch.moduleId)?.location.file;
@@ -8059,48 +9220,29 @@ function bindReviewFiles(
     const baseMatch = baseIndex === null ? undefined : matchAffectedFiles(baseIndex, [baseCandidate]).matched[0];
     const baseFile = baseMatch === undefined ? undefined : baseIndex!.nodesById.get(baseMatch.moduleId)?.location.file;
     if (baseFile) aliases.add(baseFile);
-    const projected = deletedByPath.get(normalizeReviewFilePath(file.path));
+    const projected = deletedByPath.get(file.path);
     if (projected) aliases.add(projected.basePath);
     return { file, aliases, headFiles };
   });
 }
 
-/** Exact key first, then one unambiguous slash-boundary suffix alias. The latter mirrors graph file
- * matching for extraction subfolders without guessing between duplicated monorepo tails. */
+/** Resolve only aliases proven while binding the exact PR path to the HEAD/base graph. */
 function valueForReviewAliases<T>(
   record: Readonly<Record<string, T>> | null,
   aliases: ReadonlySet<string>,
 ): T | undefined {
   if (record === null) return undefined;
-  const normalizedAliases = new Set([...aliases].map(normalizeReviewFilePath));
-  for (const [key, value] of Object.entries(record)) {
-    if (normalizedAliases.has(normalizeReviewFilePath(key))) return value;
+  for (const alias of aliases) {
+    if (Object.hasOwn(record, alias)) return record[alias];
   }
-  let bestLength = 0;
-  let winner: T | undefined;
-  let ambiguous = false;
-  for (const [key, value] of Object.entries(record)) {
-    const normalizedKey = normalizeReviewFilePath(key);
-    for (const alias of normalizedAliases) {
-      const length = normalizedKey.endsWith(`/${alias}`)
-        ? alias.length
-        : alias.endsWith(`/${normalizedKey}`) ? normalizedKey.length : 0;
-      if (length > bestLength) {
-        bestLength = length;
-        winner = value;
-        ambiguous = false;
-      } else if (length > 0 && length === bestLength && winner !== value) {
-        ambiguous = true;
-      }
-    }
-  }
-  return bestLength > 0 && !ambiguous ? winner : undefined;
+  return undefined;
 }
 
-function normalizeReviewFilePath(path: string): string {
-  let normalized = path.replace(/\\/g, "/");
-  while (normalized.startsWith("./")) normalized = normalized.slice(2);
-  return normalized;
+function valueForExactRecord<T>(
+  record: Readonly<Record<string, T>>,
+  path: string,
+): T | undefined {
+  return Object.hasOwn(record, path) ? record[path] : undefined;
 }
 
 /** A line number belongs to one immutable HEAD revision. On refresh OR a later restored session,
@@ -8775,6 +9917,73 @@ async function fetchPrFiles(baseUrl: string, number: number): Promise<PrFilesRes
   return (await response.json()) as PrFilesResponse;
 }
 
+function normalizedGitHubSha(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+function normalizedGitHubLogin(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase();
+  return normalized ? normalized : null;
+}
+
+function normalizedGitHubViewerId(value: string | null | undefined): string | null {
+  return typeof value === "string" && value.length > 0 && value === value.trim()
+    ? value
+    : null;
+}
+
+function parseGitHubViewerId(value: unknown): string {
+  const viewerId = typeof value === "string" ? normalizedGitHubViewerId(value) : null;
+  if (viewerId === null) {
+    throw new Error("GitHub returned an invalid viewed-file viewer");
+  }
+  return viewerId;
+}
+
+function parseGitHubViewerLogin(value: unknown): string {
+  if (
+    typeof value !== "string"
+    || normalizedGitHubLogin(value) === null
+    || value !== value.trim()
+  ) {
+    throw new Error("GitHub returned an invalid viewed-file viewer");
+  }
+  return value;
+}
+
+function parseViewedFileStates(
+  files: PrViewedFilesResponse["files"],
+): Record<string, PrFileViewedState> {
+  if (!Array.isArray(files)) throw new Error("GitHub returned invalid viewed-file state");
+  const entries: Array<[string, PrFileViewedState]> = [];
+  const paths = new Set<string>();
+  for (const file of files) {
+    if (
+      typeof file?.path !== "string"
+      || file.path.length === 0
+      || (file.state !== "VIEWED" && file.state !== "UNVIEWED" && file.state !== "DISMISSED")
+      || paths.has(file.path)
+    ) {
+      throw new Error("GitHub returned invalid viewed-file state");
+    }
+    paths.add(file.path);
+    entries.push([file.path, file.state]);
+  }
+  // Object.fromEntries defines data properties for Git-valid names such as "__proto__".
+  return Object.fromEntries(entries);
+}
+
+/** Assign a Git-controlled key as data, never through Object.prototype's legacy setters. */
+function setOwnRecordValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
+}
+
 /** Keep every place selectedPrSummary can read in sync with a forced one-PR refresh. The extra
  * cache alone is insufficient because paged rows intentionally take precedence. */
 function refreshedPrSummaryState(
@@ -8837,6 +10046,22 @@ async function fetchPrChecks(baseUrl: string, number: number, sha: string): Prom
     throw new Error("PR checks unavailable");
   }
   return (await response.json()) as PrChecks;
+}
+
+async function viewedFileMutationFailure(
+  response: Response,
+): Promise<{ message: string; conflict: "head" | "viewer" | null }> {
+  try {
+    const data = (await response.json()) as { error?: unknown; conflict?: unknown };
+    return {
+      message: typeof data.error === "string" && data.error.length > 0
+        ? data.error
+        : "Could not synchronize viewed state with GitHub.",
+      conflict: data.conflict === "head" || data.conflict === "viewer" ? data.conflict : null,
+    };
+  } catch {
+    return { message: "Could not synchronize viewed state with GitHub.", conflict: null };
+  }
 }
 
 async function errorMessage(response: Response): Promise<string> {

@@ -62,7 +62,12 @@ function readEntries(value: Record<string, unknown>): Record<string, ReviewConte
       return null;
     }
     addresses.add(raw.address);
-    entries[key] = { address: raw.address, digest: raw.digest };
+    Object.defineProperty(entries, key, {
+      value: { address: raw.address, digest: raw.digest },
+      enumerable: true,
+      configurable: true,
+      writable: true,
+    });
   }
   return entries;
 }

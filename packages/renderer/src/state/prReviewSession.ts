@@ -25,8 +25,9 @@ import { loadArtifact } from "../boot/loadArtifact";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { FileMatch } from "../derive/matchAffectedFiles";
 import { deriveReviewData, type ReviewData } from "../derive/reviewData";
+import { promoteFullyViewedUnitTicks } from "../derive/reviewFiles";
 import { deriveReviewProjection } from "../derive/reviewProjection";
-import { readReviewProgress } from "./reviewTicksPref";
+import { readReviewProgress, writeReviewProgress } from "./reviewTicksPref";
 import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromDiff } from "./reviewNodeStatus";
 import type { BlueprintState } from "./store";
 import type { SyntheticExecutionTrust } from "./syntheticExecutionTrust";
@@ -214,6 +215,22 @@ export function restorePrReviewBaseline(
         showTests: get().showTests,
       })
     : null;
+  const migrationFiles = baseline.review
+    ? deriveReviewProjection(baseline.review.context, baseline.artifact, baseline.index, {
+        baseIndex: null,
+        showTests: true,
+      }).files
+    : [];
+  const migratedProgress = progress === null
+    ? null
+    : promoteFullyViewedUnitTicks(migrationFiles, progress.unitTicks, progress.fileTicks);
+  if (baseline.review !== null && progress !== null && Object.keys(progress.unitTicks).length > 0) {
+    writeReviewProgress(baseline.review.context.reviewKey, {
+      ...progress,
+      unitTicks: migratedProgress!.unitTicks,
+      fileTicks: migratedProgress!.fileTicks,
+    });
+  }
   if (projection !== null) {
     applyChangedIds(baseline.index, projection.affected.map((node) => node.nodeId));
     applyChangedStatus(
@@ -232,8 +249,15 @@ export function restorePrReviewBaseline(
     ...restoredGraph,
     review: projection?.review ?? null,
     reviewTicks: progress?.ticks ?? {},
-    reviewUnitTicks: progress?.unitTicks ?? {},
-    reviewFileTicks: progress?.fileTicks ?? {},
+    reviewUnitTicks: migratedProgress?.unitTicks ?? {},
+    reviewFileTicks: migratedProgress?.fileTicks ?? {},
+    reviewFileViewedStates: null,
+    reviewViewedFilesViewerId: null,
+    reviewViewedFilesViewerLogin: null,
+    reviewViewedFilesLoading: false,
+    reviewViewedFilesError: null,
+    reviewViewedFileSyncPending: new Set<string>(),
+    reviewViewedFileSyncErrors: {},
     reviewComments: progress?.comments ?? [],
     reviewFiles: projection?.files ?? [],
     reviewPanelHidden: false,
@@ -449,8 +473,16 @@ export function withPrLineDiff(
     const hunks = hunksByPath.get(match.path);
     const locFile = index.nodesById.get(match.moduleId)?.location?.file;
     if (hunks && hunks.length > 0 && locFile) {
-      changedFiles[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end }));
-      changedKinds[locFile] = hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const }));
+      setOwnRecordValue(
+        changedFiles,
+        locFile,
+        hunks.map((hunk) => ({ start: hunk.start, end: hunk.end })),
+      );
+      setOwnRecordValue(
+        changedKinds,
+        locFile,
+        hunks.map((hunk) => ({ start: hunk.start, end: hunk.end, kind: "added" as const })),
+      );
     }
   }
   // extensions is a strict JsonValue; the ranges/spans are plain JSON, so cast the assembled
@@ -469,6 +501,15 @@ export function withPrLineDiff(
 export function hasPrReviewLineDiff(artifact: GraphArtifact): boolean {
   return (artifact.extensions as { changedSince?: { source?: unknown } } | undefined)
     ?.changedSince?.source === "pr-review";
+}
+
+function setOwnRecordValue<T>(record: Record<string, T>, key: string, value: T): void {
+  Object.defineProperty(record, key, {
+    value,
+    enumerable: true,
+    configurable: true,
+    writable: true,
+  });
 }
 
 function requestOrigin(): string {

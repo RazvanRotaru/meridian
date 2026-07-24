@@ -62,6 +62,11 @@ interface SubmittedReview {
   comments: Array<{ path: string; line: number; side: string; body: string }>;
 }
 
+interface ViewedFileMutation {
+  path: string;
+  viewed: boolean;
+}
+
 let fixture: PrReviewFixture | undefined;
 let smartGitServer: Server | undefined;
 let webService: WebService | undefined;
@@ -70,6 +75,7 @@ let page: Page;
 let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const submittedReviews: SubmittedReview[] = [];
+const viewedFileMutations: ViewedFileMutation[] = [];
 
 describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)", () => {
   beforeAll(setup, 180_000);
@@ -142,7 +148,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await changedFunction.hover();
     const contextLoyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
     await contextLoyaltyPreview.waitFor();
-    await contextLoyaltyPreview.getByTitle("src/pricing/loyaltyTiers.ts").waitFor();
+    await contextLoyaltyPreview.getByText("src/pricing/loyaltyTiers.ts", { exact: true }).waitFor();
     await contextLoyaltyPreview.hover();
     expect(await contextLoyaltyPreview.isVisible()).toBe(true);
     // Hover source is available throughout an active review, including nodes untouched by its diff.
@@ -185,17 +191,17 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
     const pythonRiskNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${PYTHON_RISK_FUNCTION_ID}"]`);
     await pythonRiskNode.waitFor();
-    let addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
-    let addedBlock = addedFile.locator("xpath=../..");
-    const addedUnits = addedBlock.getByTitle("Mark as reviewed");
-    await addedUnits.first().waitFor();
-    expect(await addedUnits.count()).toBeGreaterThan(0);
+    const addedFile = reviewFileButton(page, "src/pricing/loyaltyTiers.ts");
+    const addedBlock = addedFile.locator("xpath=../..");
+    const addedViewedControl = addedBlock.getByTitle("Mark file as viewed");
+    await addedViewedControl.waitFor();
+    expect(await addedViewedControl.count()).toBe(1);
     expect(await addedFile.getByText("added — extract head to view", { exact: true }).count()).toBe(0);
 
     const pythonFile = reviewFileButton(page, PYTHON_REVIEW_PATH);
-    const pythonUnits = pythonFile.locator("xpath=../..").getByTitle("Mark as reviewed");
-    await pythonUnits.first().waitFor();
-    expect(await pythonUnits.count()).toBeGreaterThan(0);
+    const pythonViewedControl = pythonFile.locator("xpath=../..").getByTitle("Mark file as viewed");
+    await pythonViewedControl.waitFor();
+    expect(await pythonViewedControl.count()).toBe(1);
     await pythonRiskNode.getByRole("button", { name: "View source" }).click();
     const pythonSourceDialog = page.getByRole("dialog", { name: "Source code" });
     await pythonSourceDialog.waitFor();
@@ -287,6 +293,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await loyaltyPreview.getByText("Pinned", { exact: true }).count()).toBe(0);
     expect(await loyaltyPreview.getByRole("button", { name: "Close code preview" }).count()).toBe(0);
     await previewViewedButton.click();
+    await expect.poll(() => [...viewedFileMutations]).toEqual([
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+    ]);
     await page.getByText("Files changed", { exact: true }).hover();
     await page.waitForTimeout(500);
     await loyaltyPreview.waitFor({ state: "detached" });
@@ -495,10 +505,15 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.keyboard.press("Escape");
     await loyaltySourceDialog.waitFor({ state: "detached" });
 
-    // 4e — one unit tick completes the added file and advances the header fraction.
+    // 4e — a file gesture marks the file Viewed through GitHub and advances the header.
     await page.getByText("0/3 files viewed", { exact: true }).waitFor();
-    await addedBlock.getByTitle("Mark as reviewed").first().click();
+    await addedViewedControl.click();
     await page.getByText("1/3 files viewed", { exact: true }).waitFor();
+    await expect.poll(() => [...viewedFileMutations]).toEqual([
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+    ]);
 
     // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
     await page.getByRole("button", { name: "Submit comments" }).click();
@@ -525,21 +540,22 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     ]);
     expect(submittedReviews[0]).not.toHaveProperty("body");
 
-    // 4g — URL-backed reload restores the review; the checked unit remains in localStorage.
-    const storedTick = await storedUnitTicks(page);
-    expect(Object.keys(storedTick.unitTicks)).toHaveLength(1);
-    expect(storedTick.key).toContain("github-pr:v1");
-    expect(storedTick.key).not.toContain("id=");
-    expect(Object.values(storedTick.unitTicks)[0]).toMatchObject({
-      address: expect.stringContaining("unit:v1"),
-      fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
-    });
+    // 4g — erase Meridian's local progress before reload; GitHub's file state restores 1/3.
+    const clearedProgressKeys = await clearStoredReviewProgress(page);
+    expect(clearedProgressKeys).toHaveLength(1);
+    expect(clearedProgressKeys[0]).toContain("github-pr:v1");
+    expect(clearedProgressKeys[0]).not.toContain("id=");
     await page.waitForFunction(() => new URL(window.location.href).searchParams.get("rev") === "1");
     expect(new URL(page.url()).searchParams.get("rev")).toBe("1");
-    await page.reload({ waitUntil: "networkidle" });
+    await page.reload({ waitUntil: "domcontentloaded" });
     await page.getByText("Files changed", { exact: true }).waitFor({ timeout: 60_000 });
     await syncProvenance.waitFor();
-    expect(await storedUnitTicks(page)).toEqual(storedTick);
+    await page.getByText("1/3 files viewed", { exact: true }).waitFor();
+    expect(viewedFileMutations).toEqual([
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+    ]);
 
     // 4h — Escape closes the source modal only; repeated Escape and outward zoom leave the review
     // overlay in place, while explicit Close parks it for the text-only Resume chip. The source
@@ -588,6 +604,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
 async function setup(): Promise<void> {
   ensureBuilt();
+  viewedFileMutations.length = 0;
   fixture = buildPrReviewFixture();
   const smartGit = await startSmartGitServer(fixture);
   smartGitServer = smartGit.server;
@@ -744,11 +761,14 @@ async function generateSession(baseUrl: string): Promise<{ id: string }> {
 function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeof fetch {
   let existingCommentBody = EXISTING_COMMENT_TEXT;
   const threadReplies: Array<Record<string, unknown>> = [];
+  const viewedFileStates = new Map<string, "VIEWED" | "UNVIEWED" | "DISMISSED">(
+    source.files.map((file) => [file.api.filename, "UNVIEWED" as const]),
+  );
   const summary = {
     number: 7,
     title: "Add loyalty tiers",
     user: { login: "e2e-reviewer" },
-    head: { ref: "pr-head" },
+    head: { ref: "pr-head", sha: source.headSha },
     base: { ref: "main" },
     updated_at: "2026-07-11T10:00:00Z",
     draft: false,
@@ -762,6 +782,86 @@ function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeo
       return nativeFetch(input, init);
     }
     const path = url.pathname;
+    if (request.method === "POST" && path === "/graphql") {
+      const payload = (await request.json()) as {
+        query?: unknown;
+        variables?: Record<string, unknown>;
+      };
+      const query = typeof payload.query === "string" ? payload.query : "";
+      const variables = payload.variables ?? {};
+      if (query.includes("query MeridianPullRequestViewedFiles")) {
+        return json({
+          data: {
+            viewer: { id: "U_e2e_reviewer", login: "e2e-reviewer" },
+            repository: {
+              pullRequest: {
+                id: "PR_e2e_7",
+                headRefOid: source.headSha,
+                files: {
+                  nodes: source.files.map((file) => ({
+                    path: file.api.filename,
+                    viewerViewedState: viewedFileStates.get(file.api.filename) ?? "UNVIEWED",
+                  })),
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      }
+      if (query.includes("query MeridianPullRequestViewedCoordinates")) {
+        return json({
+          data: {
+            viewer: { id: "U_e2e_reviewer", login: "e2e-reviewer" },
+            repository: {
+              pullRequest: {
+                id: "PR_e2e_7",
+                headRefOid: source.headSha,
+              },
+            },
+          },
+        });
+      }
+      if (query.includes("mutation MeridianSetPullRequestFilesViewed")) {
+        const updates: Record<string, { pullRequest: { headRefOid: string } }> = {};
+        const paths = Object.entries(variables)
+          .flatMap(([name, value]) => {
+            const match = /^path(\d+)$/.exec(name);
+            return match && typeof value === "string"
+              ? [{ index: Number(match[1]), path: value }]
+              : [];
+          })
+          .sort((left, right) => left.index - right.index);
+        for (const { index, path: filePath } of paths) {
+          if (!viewedFileStates.has(filePath)) {
+            return json({ errors: [{ message: "unknown fixture file" }] });
+          }
+          const viewed = query.includes(`update${index}: markFileAsViewed`);
+          viewedFileStates.set(filePath, viewed ? "VIEWED" : "UNVIEWED");
+          viewedFileMutations.push({ path: filePath, viewed });
+          updates[`update${index}`] = {
+            pullRequest: { headRefOid: source.headSha },
+          };
+        }
+        return json({ data: updates });
+      }
+      if (query.includes("mutation MeridianSetPullRequestFileViewed")) {
+        const filePath = variables.path;
+        if (typeof filePath !== "string" || !viewedFileStates.has(filePath)) {
+          return json({ errors: [{ message: "unknown fixture file" }] });
+        }
+        const viewed = query.includes("update: markFileAsViewed");
+        viewedFileStates.set(filePath, viewed ? "VIEWED" : "UNVIEWED");
+        viewedFileMutations.push({ path: filePath, viewed });
+        return json({
+          data: {
+            update: {
+              pullRequest: { headRefOid: source.headSha },
+            },
+          },
+        });
+      }
+    }
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls") return json([summary]);
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls/7") return json(summary);
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls/7/files") {
@@ -847,12 +947,11 @@ function restoreEnv(name: string, value: string | undefined): void {
   else process.env[name] = value;
 }
 
-async function storedUnitTicks(target: Page): Promise<{ key: string; unitTicks: Record<string, unknown> }> {
+async function clearStoredReviewProgress(target: Page): Promise<string[]> {
   return target.evaluate(() => {
-    const key = Object.keys(localStorage).find((candidate) => candidate.startsWith("meridian.review."));
-    if (!key) throw new Error("review progress was not written to localStorage");
-    const record = JSON.parse(localStorage.getItem(key) ?? "null") as { unitTicks?: Record<string, unknown> } | null;
-    return { key, unitTicks: record?.unitTicks ?? {} };
+    const keys = Object.keys(localStorage).filter((candidate) => candidate.startsWith("meridian.review."));
+    for (const key of keys) localStorage.removeItem(key);
+    return keys;
   });
 }
 

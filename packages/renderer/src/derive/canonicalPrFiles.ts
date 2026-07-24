@@ -14,7 +14,6 @@ import {
 } from "@meridian/core";
 import type { ChangedDiffLine, GraphArtifact, LineRange } from "@meridian/core";
 import type { PrChangedFile, PrFileStatus } from "../state/prTypes";
-import { normalizePath } from "./matchAffectedFiles";
 
 /**
  * Return `githubFiles` unchanged when paired with an older/malformed artifact. Once a valid
@@ -31,17 +30,21 @@ export function canonicalPrFiles(
     return [...githubFiles];
   }
 
-  const rawByPath = new Map(githubFiles.map((file) => [normalizePath(file.path), file]));
-  const ranges = normalizedRecord(changedRangesFromExtensions(artifact.extensions));
+  const rawByPath = new Map(githubFiles.map((file) => [file.path, file]));
+  const ranges = changedRangesFromExtensions(artifact.extensions);
   const stats = changedLineStatsFromExtensions(artifact.extensions);
   const kinds = changedLineKindsFromExtensions(artifact.extensions);
   const diffLines = changedDiffLinesFromExtensions(artifact.extensions);
 
   return manifest.map((entry) => {
-    const path = normalizePath(entry.path);
+    // Git paths are opaque byte-derived identities. In particular, `a\\b.ts` and `a/b.ts` are
+    // distinct files on GitHub; normalization belongs only in the separate graph-join layer.
+    const path = entry.path;
     const raw = rawByPath.get(path);
-    const rows = diffLines?.[path];
-    const delta = stats?.[path];
+    const rows = ownValue(diffLines, path);
+    const delta = ownValue(stats, path);
+    const fileRanges = ownValue(ranges, path);
+    const fileKinds = ownValue(kinds, path);
     const exactBody = rows !== undefined && delta !== undefined
       && countRows(rows, "added") === delta.added
       && countRows(rows, "deleted") === delta.deleted;
@@ -54,12 +57,12 @@ export function canonicalPrFiles(
     };
 
     if (entry.status === "renamed") {
-      file.previousPath = normalizePath(entry.previousPath!);
+      file.previousPath = entry.previousPath!;
     } else {
       delete file.previousPath;
     }
-    if (ranges?.[path] !== undefined) file.hunks = ranges[path].map(copyRange);
-    if (kinds?.[path] !== undefined) file.kinds = kinds[path].map((span) => ({ ...span }));
+    if (fileRanges !== undefined) file.hunks = fileRanges.map(copyRange);
+    if (fileKinds !== undefined) file.kinds = fileKinds.map((span) => ({ ...span }));
     if (rows !== undefined) {
       file.diffLines = rows.map((row) => ({ ...row }));
       file.oldHunks = deletedRanges(rows);
@@ -101,7 +104,6 @@ function copyRange(range: LineRange): LineRange {
   return { start: range.start, end: range.end };
 }
 
-function normalizedRecord<T>(record: Readonly<Record<string, T>> | null): Record<string, T> | null {
-  if (record === null) return null;
-  return Object.fromEntries(Object.entries(record).map(([path, value]) => [normalizePath(path), value]));
+function ownValue<T>(record: Readonly<Record<string, T>> | null, path: string): T | undefined {
+  return record !== null && Object.hasOwn(record, path) ? record[path] : undefined;
 }

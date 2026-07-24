@@ -361,6 +361,58 @@ describe("buildReviewSubmission", () => {
     expect(submission.fileComments).toEqual([{ path: "unknown/a.ts", label: "Unknown", body: "keep location" }]);
   });
 
+  it("keeps slash and literal-backslash draft paths bound to their exact GitHub files", () => {
+    const literalPath = "src/a\\b.ts";
+    const slashPath = "src/a/b.ts";
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [
+        { path: literalPath, status: "modified", hunks: [{ start: 1, end: 1 }] },
+        { path: slashPath, status: "modified", hunks: [{ start: 1, end: 1 }] },
+      ],
+    };
+    const files = [literalPath, slashPath].map((path): ReviewFileRow => ({
+      path,
+      status: "modified",
+      moduleId: null,
+      isTest: false,
+      units: [],
+      fingerprint: path,
+      blastRadius: 0,
+      deletedImpact: null,
+    }));
+
+    expect(buildReviewSubmission(
+      [draft(literalPath, null, "literal", null, 1)],
+      files,
+      context,
+    ).comments).toEqual([{ path: literalPath, line: 1, side: "RIGHT", body: "literal" }]);
+  });
+
+  it("treats a prototype-named file as an own range key", () => {
+    const path = "constructor";
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [{ path, status: "modified", hunks: [{ start: 1, end: 1 }] }],
+    };
+    const files: ReviewFileRow[] = [{
+      path,
+      status: "modified",
+      moduleId: null,
+      isTest: false,
+      units: [],
+      fingerprint: path,
+      blastRadius: 0,
+      deletedImpact: null,
+    }];
+
+    expect(buildReviewSubmission(
+      [draft(path, null, "prototype", null, 1)],
+      files,
+      context,
+    ).comments).toEqual([{ path, line: 1, side: "RIGHT", body: "prototype" }]);
+  });
+
   it("keeps draft order within each list", () => {
     const submission = buildReviewSubmission(
       [draft("src/a.ts", null, "one"), draft("docs/readme.md", null, "two"), draft("src/a.ts", "ts:src/a.ts#Repo", "three")],

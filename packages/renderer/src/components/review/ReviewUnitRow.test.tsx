@@ -38,7 +38,7 @@ describe("UnitRow", () => {
       <UnitRow
         unit={unit}
         path="src/a.ts"
-        tick={undefined}
+        viewState="todo"
         drafts={[]}
         composer={{ path: "src/a.ts", nodeId: unit.nodeId }}
         onComposer={() => undefined}

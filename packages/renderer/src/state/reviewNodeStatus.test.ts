@@ -81,6 +81,11 @@ describe("reviewSourceChangeStatus", () => {
       },
     })).toBe("deleted");
   });
+
+  it("does not treat inherited prototype members as file status sources", () => {
+    expect(reviewSourceChangeStatus({ file: "constructor", line: 1 }, {})).toBeUndefined();
+    expect(reviewSourceChangeStatus({ file: "__proto__", line: 1 }, {})).toBeUndefined();
+  });
 });
 
 describe("reviewNodeStatusSourcesFromDiff", () => {
@@ -90,5 +95,31 @@ describe("reviewNodeStatusSourcesFromDiff", () => {
     })).toEqual({
       "src/settings.ts": { kinds: [{ start: 42, end: 42, kind: "deleted" }] },
     });
+  });
+
+  it("keeps slash and literal-backslash files as independent exact sources", () => {
+    const sources = reviewNodeStatusSourcesFromDiff({
+      "src/a\\b.ts": [{ start: 4, end: 4, kind: "added" }],
+      "src/a/b.ts": [{ start: 4, end: 4, kind: "deleted" }],
+    }, null);
+
+    expect(reviewSourceChangeStatus({ file: "src/a\\b.ts", line: 4 }, sources)).toBe("added");
+    expect(reviewSourceChangeStatus({ file: "src/a/b.ts", line: 4 }, sources)).toBe("deleted");
+  });
+
+  it("stores prototype-named files as ordinary own keys", () => {
+    const kinds = {} as Record<string, [{ start: number; end: number; kind: "added" }]>;
+    Object.defineProperty(kinds, "constructor", {
+      value: [{ start: 1, end: 1, kind: "added" }],
+      enumerable: true,
+    });
+    Object.defineProperty(kinds, "__proto__", {
+      value: [{ start: 2, end: 2, kind: "added" }],
+      enumerable: true,
+    });
+    const sources = reviewNodeStatusSourcesFromDiff(kinds, null);
+
+    expect(reviewSourceChangeStatus({ file: "constructor", line: 1 }, sources)).toBe("added");
+    expect(reviewSourceChangeStatus({ file: "__proto__", line: 2 }, sources)).toBe("added");
   });
 });

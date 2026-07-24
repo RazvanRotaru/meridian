@@ -31,7 +31,9 @@ import {
   handlePullRequestFileContent,
   handlePullRequestFiles,
   handlePullRequestOne,
+  handlePullRequestViewedFiles,
   handleRelatedPullRequests,
+  handleSetPullRequestViewedFile,
   handlePullRequests,
   handleSubmitReview,
 } from "./web-prs";
@@ -374,6 +376,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
     await handleRelatedPullRequests(ctx, request, response, url.searchParams);
     return;
   }
+  if (pathname === "/api/prs/viewed-files") {
+    await handleSetPullRequestViewedFile(ctx, request, response, url.searchParams);
+    return;
+  }
   sendJson(response, 404, { error: "unknown endpoint" });
 }
 
@@ -500,6 +506,10 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   }
   if (pathname === "/api/prs/files") {
     await handlePullRequestFiles(ctx, request, response, url.searchParams);
+    return;
+  }
+  if (pathname === "/api/prs/viewed-files") {
+    await handlePullRequestViewedFiles(ctx, request, response, url.searchParams);
     return;
   }
   if (pathname === "/api/prs/comments") {

@@ -93,6 +93,51 @@ describe("canonicalPrFiles", () => {
     expect(canonicalPrFiles(github, changedSince({ manifest: [] }))).toEqual([]);
     expect(canonicalPrFiles(github, changedSince({ files: {} }))).toEqual(github);
   });
+
+  it("keeps literal backslashes distinct from directory separators in prepared Git paths", () => {
+    const literalBackslash = "src/a\\b.ts";
+    const slashPath = "src/a/b.ts";
+    const github: PrChangedFile[] = [
+      { path: literalBackslash, status: "modified", additions: 9, deletions: 9 },
+      { path: slashPath, status: "modified", additions: 8, deletions: 8 },
+    ];
+    const files = canonicalPrFiles(github, changedSince({
+      manifest: [
+        { path: literalBackslash, status: "modified" },
+        { path: slashPath, status: "modified" },
+      ],
+      stats: {
+        [literalBackslash]: { added: 1, deleted: 0 },
+        [slashPath]: { added: 2, deleted: 0 },
+      },
+    }));
+
+    expect(files.map((file) => file.path)).toEqual([literalBackslash, slashPath]);
+    expect(files.map((file) => file.additions)).toEqual([1, 2]);
+  });
+
+  it("treats prototype-named manifest paths as ordinary own-key lookups", () => {
+    const files = canonicalPrFiles([], changedSince({
+      manifest: [
+        { path: "constructor", status: "modified" },
+        { path: "__proto__", status: "modified" },
+      ],
+      files: {},
+      stats: {},
+      kinds: {},
+      diffLines: {},
+    }));
+
+    expect(files.map((file) => ({
+      path: file.path,
+      additions: file.additions,
+      deletions: file.deletions,
+      diffComplete: file.diffComplete,
+    }))).toEqual([
+      { path: "constructor", additions: 0, deletions: 0, diffComplete: false },
+      { path: "__proto__", additions: 0, deletions: 0, diffComplete: false },
+    ]);
+  });
 });
 
 function changedSince(value: object): GraphArtifact {

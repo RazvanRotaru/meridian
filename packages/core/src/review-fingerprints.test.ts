@@ -17,6 +17,24 @@ describe("reviewFingerprintsFromArtifact", () => {
     } })).toMatchObject({ version: 1, complete: true });
   });
 
+  it("preserves a valid __proto__ Git filename as an own file fingerprint", () => {
+    const result = reviewFingerprintsFromArtifact({ extensions: {
+      reviewFingerprints: {
+        version: 1,
+        algorithm: "sha256-source-bytes",
+        complete: true,
+        units: {},
+        files: Object.fromEntries([
+          ["__proto__", { address: "file:v1\0__proto__", digest }],
+        ]),
+      },
+    } });
+
+    expect(result).not.toBeNull();
+    expect(Object.hasOwn(result!.files, "__proto__")).toBe(true);
+    expect(result!.files["__proto__"]?.address).toBe("file:v1\0__proto__");
+  });
+
   it("rejects duplicate semantic addresses, unknown fields, and invalid digests", () => {
     const extension = (units: Record<string, unknown>): Pick<GraphArtifact, "extensions"> => ({ extensions: {
       reviewFingerprints: {

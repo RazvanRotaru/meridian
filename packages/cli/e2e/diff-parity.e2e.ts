@@ -830,6 +830,40 @@ function fakeGitHub(source: DiffParityFixture): typeof fetch {
     const url = new URL(request.url);
     if (url.hostname !== "api.github.com") return nativeFetch(input, init);
     const path = url.pathname;
+    if (request.method === "POST" && path === "/graphql") {
+      const payload = (await request.json()) as {
+        query?: unknown;
+        variables?: Record<string, unknown>;
+      };
+      const query = typeof payload.query === "string" ? payload.query : "";
+      const number = payload.variables?.number;
+      const pr = typeof number === "number"
+        ? source.prs.find((candidate) => candidate.number === number)
+        : undefined;
+      if (query.includes("query MeridianPullRequestViewedFiles") && pr) {
+        const paths = pr.files
+          .filter((file) => file.reportedByGitHub !== false)
+          .map((file) => file.api.filename);
+        return json({
+          data: {
+            viewer: { id: "U_diff_e2e_reviewer", login: "diff-e2e-reviewer" },
+            repository: {
+              pullRequest: {
+                id: `PR_diff_${pr.number}`,
+                headRefOid: pr.headSha,
+                files: {
+                  nodes: paths.map((filePath) => ({
+                    path: filePath,
+                    viewerViewedState: "UNVIEWED",
+                  })),
+                  pageInfo: { hasNextPage: false, endCursor: null },
+                },
+              },
+            },
+          },
+        });
+      }
+    }
     if (request.method === "GET" && path === "/repos/e2e/shop/pulls") return json(summaries);
     const one = /^\/repos\/e2e\/shop\/pulls\/(\d+)$/.exec(path);
     if (request.method === "GET" && one) {

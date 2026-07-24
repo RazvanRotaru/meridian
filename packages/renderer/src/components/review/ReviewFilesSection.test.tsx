@@ -23,7 +23,6 @@ const STATE = {
   reviewFileTicks: {},
   reviewComments: [],
   review: null,
-  prReviewed: null,
   reviewCommentRangesByFile: {},
   reviewDiffLinesByFile: {},
   prDiscussion: null,
@@ -36,8 +35,31 @@ const STATE = {
   prPreparedArtifactCurrent: true,
 };
 
+let prReviewed: number | null = null;
+let prReviewStale = false;
+let viewedLoadError: string | null = null;
+
 vi.mock("../../state/StoreContext", () => ({
-  useBlueprint: (selector: (state: typeof STATE) => unknown) => selector(STATE),
+  useBlueprint: (selector: (state: typeof STATE & {
+    prReviewed: number | null;
+    prReviewStale: boolean;
+    prReviewRefreshing: boolean;
+    reviewViewedFilesSyncEnabled: boolean;
+    reviewViewedFilesLoading: boolean;
+    reviewViewedFilesError: string | null;
+    reviewFileViewedStates: null;
+    reviewViewedFileSyncErrors: Record<string, string>;
+  }) => unknown) => selector({
+    ...STATE,
+    prReviewed,
+    prReviewStale,
+    prReviewRefreshing: false,
+    reviewViewedFilesSyncEnabled: true,
+    reviewViewedFilesLoading: false,
+    reviewViewedFilesError: viewedLoadError,
+    reviewFileViewedStates: null,
+    reviewViewedFileSyncErrors: {},
+  }),
   useBlueprintActions: () => ({
     setReviewFilesSort: () => undefined,
     toggleReviewFileViewed: () => undefined,
@@ -46,6 +68,7 @@ vi.mock("../../state/StoreContext", () => ({
     focusReviewFile: () => undefined,
     selectReviewNode: () => undefined,
     showReviewFile: () => Promise.resolve(),
+    retryReviewViewedFiles: () => Promise.resolve(),
   }),
 }));
 
@@ -92,5 +115,18 @@ describe("ReviewFilesSection", () => {
     expect(reviewCommentHasCanvasPlacement(FILE, { ...comment, line: 13 }, [deletion])).toBe(false);
     expect(reviewCommentHasCanvasPlacement(FILE, { ...comment, url: "" }, [deletion])).toBe(false);
     expect(reviewCommentHasCanvasPlacement({ ...FILE, moduleId: null }, comment, [deletion])).toBe(false);
+  });
+
+  it("directs a stale viewed-state failure to PR Refresh instead of a dead Retry", () => {
+    prReviewed = 7;
+    prReviewStale = true;
+    viewedLoadError = "pull request head changed";
+    const markup = renderToStaticMarkup(<ReviewFilesSection />);
+    prReviewed = null;
+    prReviewStale = false;
+    viewedLoadError = null;
+
+    expect(markup).toContain("Refresh the pull request to continue.");
+    expect(markup).not.toContain(">Retry<");
   });
 });
