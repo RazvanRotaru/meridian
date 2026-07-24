@@ -14,7 +14,7 @@ import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { SyntheticScenarioDescriptor } from "@meridian/core";
 import { readJsonBody } from "./web-request";
-import { parsePrAnalyzeRequest } from "./web-pr-request";
+import { parsePrAnalyzeRequest, parsePrPrepareRequest } from "./web-pr-request";
 import type { PrAnalyzeRequest } from "./web-pr-request";
 import { githubTokenFor } from "./web-auth";
 import { WebError } from "./web-error";
@@ -32,14 +32,44 @@ import type {
   WebGraphRegistrationHandle,
   WebGraphRegistration,
 } from "./web-graph-store";
-import type { RepositoryAnalysisFacts } from "./repository-analysis-child";
+import type {
+  RepositoryAnalysisFacts,
+  RepositoryAnalysisProgress,
+} from "./repository-analysis-child";
 import { syntheticSourceFingerprintForFiles } from "./synthetic-fingerprint";
 import { streamedOverloadLine } from "./web-overload";
 import type { RepositoryWorkspaceLease } from "./web-repository-mirror";
 import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
-type PrAnalysisStage = "clone" | "checkout" | "extract";
+type PrAnalysisStage =
+  | "clone"
+  | "checkout"
+  | "extract"
+  | "extract-head"
+  | "extract-merge-base"
+  | "reuse-head"
+  | "reuse-merge-base";
+
+interface PrAnalysisProgressLine {
+  stage: "extract-head" | "extract-merge-base";
+  progress: RepositoryAnalysisProgress;
+}
+
+type PrAnalysisProgress = PrAnalysisStage | PrAnalysisProgressLine;
+
+interface PrAnalysisDone {
+  stage: "done";
+  graphId: string;
+  comparisonGraphId: string;
+  headSha: string;
+  baseSha: string;
+  mergeBaseSha: string;
+  counts: { nodes: number; edges: number };
+  changedFiles: RepositoryAnalysisFacts["changedFiles"];
+  warnings: string[];
+  cache: "hit" | "miss";
+}
 
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
@@ -63,6 +93,43 @@ export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, re
 }
 
 /**
+ * Landing-page sibling of `/api/pr/analyze`: the repository identity comes directly from the
+ * selected PR, so opening a review never has to generate a throwaway base-branch graph first.
+ *
+ * The returned HEAD id is safe to boot immediately, but `rev=1` deliberately asks `/api/pr/analyze`
+ * again after navigation. That cheap cache hit re-resolves both moving refs; if either moved, the
+ * renderer receives and swaps to the newly prepared immutable pair instead of trusting this result.
+ */
+export async function handlePrPrepare(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
+  const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
+  try {
+    const direct = parsePrPrepareRequest(await readJsonBody(request, cancellation.signal));
+    const [owner, repo] = direct.repository.split("/") as [string, string];
+    const source: GitHubSource = { kind: "github", owner, repo };
+    const body: PrAnalyzeRequest = {
+      id: "direct-pr-prepare",
+      prNumber: direct.prNumber,
+      baseRef: direct.baseRef,
+      headRef: direct.headRef,
+      ...(direct.headSha === undefined ? {} : { expectedHeadSha: direct.headSha }),
+    };
+    const token = githubTokenFor(ctx, request);
+    beginNdjson(response);
+    await streamAnalysis(
+      ctx,
+      response,
+      source,
+      token,
+      body,
+      cancellation.signal,
+      (completed) => directPreparationDone(completed, direct.prNumber),
+    );
+  } finally {
+    cancellation.dispose();
+  }
+}
+
+/**
  * The streamed body. Every stage writes a line before the work it names starts, so the browser
  * sees "clone → checkout → extract" progress on a miss; a hit emits only `done`. Any failure
  * collapses to a single safe `error` line, and `/api/source` reads from the persistent checkout.
@@ -74,10 +141,11 @@ async function streamAnalysis(
   token: string | undefined,
   body: PrAnalyzeRequest,
   signal: AbortSignal,
+  terminal: (completed: PrAnalysisDone) => Record<string, unknown> = (completed) => ({ ...completed }),
 ): Promise<void> {
   try {
     const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
-    const completed = await ctx.analysisCoordinator.run<Record<string, unknown>, PrAnalysisStage>(
+    const completed = await ctx.analysisCoordinator.run<PrAnalysisDone, PrAnalysisProgress>(
       prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache),
       async ({ signal: jobSignal, report, runPreparation, runAnalysis }) => {
         const cached = await cachedPrGraph({
@@ -88,8 +156,13 @@ async function streamAnalysis(
           cwd: ctx.cwd,
           token,
           refresh: ctx.refreshCache,
+          typeScriptRevisionShardMode: ctx.typeScriptRevisionShardMode,
           signal: jobSignal,
           onStage: report,
+          onExtractionProgress: (progress) => report({
+            stage: progress.revision.kind === "head" ? "extract-head" : "extract-merge-base",
+            progress,
+          }),
           runPreparation,
           // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
           // consume exactly one memory admission slot together.
@@ -134,6 +207,7 @@ async function streamAnalysis(
             head.graphId,
             comparison.graphId,
             cached.headSha,
+            cached.baseSha,
             cached.mergeBaseSha,
             cached.artifactFacts,
             [...cached.warnings, ...head.syntheticWarnings],
@@ -147,10 +221,16 @@ async function streamAnalysis(
           }
         }
       },
-      { signal, onProgress: (stage) => writeLine(response, { stage }) },
+      {
+        signal,
+        onProgress: (progress) => writeLine(
+          response,
+          typeof progress === "string" ? { stage: progress } : { ...progress },
+        ),
+      },
     );
     throwIfAborted(signal);
-    await writeLine(response, completed);
+    await writeLine(response, terminal(completed));
   } catch (error) {
     if (!isOperationCancelled(error) && responseCanWrite(response)) {
       await writeLine(
@@ -178,6 +258,7 @@ function prAnalysisJobKey(
     prNumber: body.prNumber,
     baseRef: body.baseRef,
     headRef: body.headRef,
+    expectedHeadSha: body.expectedHeadSha ?? null,
     credentialKey,
     refresh,
   })).digest("hex");
@@ -292,21 +373,48 @@ function doneLine(
   graphId: string,
   comparisonGraphId: string,
   headSha: string,
+  baseSha: string,
   mergeBaseSha: string,
   artifact: RepositoryAnalysisFacts,
   warnings: string[],
   cache: "hit" | "miss",
-): Record<string, unknown> {
+): PrAnalysisDone {
   return {
     stage: "done",
     graphId,
     comparisonGraphId,
     headSha,
+    baseSha,
     mergeBaseSha,
     counts: { nodes: artifact.summary.nodeCount, edges: artifact.summary.edgeCount },
     changedFiles: artifact.changedFiles,
     warnings,
     cache,
+  };
+}
+
+function directPreparationDone(
+  completed: PrAnalysisDone,
+  prNumber: number,
+): Record<string, unknown> {
+  const query = new URLSearchParams({
+    id: completed.graphId,
+    view: "modules",
+    prn: String(prNumber),
+    rev: "1",
+  });
+  return {
+    ...completed,
+    preparedPair: {
+      version: 1,
+      prNumber,
+      headGraphId: completed.graphId,
+      mergeBaseGraphId: completed.comparisonGraphId,
+      headSha: completed.headSha,
+      baseSha: completed.baseSha,
+      mergeBaseSha: completed.mergeBaseSha,
+    },
+    viewUrl: `/view?${query.toString()}`,
   };
 }
 

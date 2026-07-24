@@ -1,11 +1,23 @@
 import type { ServerResponse } from "node:http";
-import type { GraphArtifact } from "@meridian/core";
+import { PR_REVIEW_PROGRESS_MODEL, type GraphArtifact } from "@meridian/core";
 import { describe, expect, it, vi } from "vitest";
-import { injectViewBoot } from "./web-boot";
+import { injectPrReviewProgressModel, injectViewBoot } from "./web-boot";
 import { sendMeta, sendView } from "./web-graph";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import type { Context } from "./web-server";
 import { artifactSourceFor, type ArtifactSource } from "./web-source";
+
+describe("landing PR-review progress boot contract", () => {
+  it("injects the renderer's canonical model exactly as JSON", () => {
+    const html = injectPrReviewProgressModel("<html><head></head><body></body></html>");
+    const match = html.match(
+      /<script>window\.__MERIDIAN_PR_REVIEW_PROGRESS_MODEL__=(.*?)<\/script>/,
+    );
+
+    expect(match).not.toBeNull();
+    expect(JSON.parse(match![1]!)).toEqual(PR_REVIEW_PROGRESS_MODEL);
+  });
+});
 
 const TEST_ARTIFACT: GraphArtifact = {
   schemaVersion: "1.1.0",

@@ -6,10 +6,14 @@ import {
   changedFileManifestFromExtensions,
   targetSchema,
   type ChangedFileManifestEntry,
+  type ExtractionProgress,
+  type ExtractionProgressActivity,
+  type ExtractionProgressPhase,
   type GraphArtifact,
   type LanguageExtractor,
   type Target,
 } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import { CliError, EXIT, type ExitCode } from "../errors";
 import type { RepositoryAnalysisRequest } from "../repository-analysis-contract";
 import type { WebGraphArtifactSummary } from "./web-graph-store";
@@ -21,8 +25,18 @@ export const MAX_REPOSITORY_WORKER_SOURCE_FILES = 100_000;
 export const MAX_REPOSITORY_WORKER_SOURCE_PATH_BYTES_TOTAL = 8 * 1024 * 1024;
 export const MAX_REPOSITORY_WORKER_EMPTY_SIDE_HINTS = 64;
 export const MAX_REPOSITORY_WORKER_WARNINGS = 64;
+export const MAX_REPOSITORY_WORKER_PROGRESS_EVENTS = 512;
+export const MAX_REPOSITORY_ANALYSIS_EXECUTIONS = 8;
 
 const MAX_PATH_BYTES = 4_096;
+const MAX_PROGRESS_PATH_BYTES = 512;
+const MIN_PROGRESS_INTERVAL_MS = 1_000;
+const SUPPORTED_PROGRESS_LANGUAGE_COUNT = 2;
+const REQUIRED_PROGRESS_EVENTS_PER_LANGUAGE = 5;
+const RESERVED_ACTIVITY_PROGRESS_EVENTS = 256;
+const RESERVED_REQUIRED_PROGRESS_EVENTS =
+  SUPPORTED_PROGRESS_LANGUAGE_COUNT * REQUIRED_PROGRESS_EVENTS_PER_LANGUAGE
+  + RESERVED_ACTIVITY_PROGRESS_EVENTS;
 const MAX_CHANGED_PATH_BYTES_TOTAL = 1024 * 1024;
 const MAX_HINT_PATH_BYTES_TOTAL = 256 * 1024;
 const MAX_WARNING_BYTES = 4_000;
@@ -30,13 +44,18 @@ const MAX_WARNING_BYTES_TOTAL = 64 * 1024;
 const MAX_ERROR_TEXT_BYTES = 4_000;
 const MAX_ERROR_DETAILS = 64;
 const SHA256 = /^[a-f0-9]{64}$/;
+const GIT_TREE_OID = /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/;
 const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 
 /** Function-valued Git execution remains inside the worker and cannot cross IPC. */
 export type SerializableRepositoryAnalysisRequest = Omit<
   RepositoryAnalysisRequest,
-  "changedSinceGitExecutor"
-> & { changedSinceGitExecutor?: never };
+  "changedSinceGitExecutor" | "onExtractionProgress" | "typeScriptRevisionShards"
+> & {
+  changedSinceGitExecutor?: never;
+  onExtractionProgress?: never;
+  typeScriptRevisionShards?: never;
+};
 
 export interface NormalizedRepositoryAnalysisRequest {
   absoluteRoot: string;
@@ -58,8 +77,40 @@ export interface RepositoryAnalysisWorkerRequestMessage {
   branchVariant: { artifactOutputPath: string; branch: string } | null;
   /** PR-only bounded semantic/source fingerprints. Ordinary repository graphs omit the sidecar. */
   reviewFingerprints: ReviewFingerprintSelection | null;
+  /** Optional PR revision coordinates used only to enrich non-semantic extraction observations. */
+  progressContext: RepositoryAnalysisProgressContext | null;
+  /** Server-owned immutable-shard capability; never accepted from an HTTP analysis body. */
+  typeScriptRevisionShards: TypeScriptRevisionShardPolicy | null;
   /** Ephemeral credential: private IPC only, never argv, environment, or disk. */
   token?: string;
+}
+
+export interface RepositoryAnalysisProgressContext {
+  version: 1;
+  revision: {
+    kind: "head" | "merge-base";
+    /** Exact lowercase SHA-1 or SHA-256 Git object id. */
+    commit: string;
+    execution: {
+      current: number;
+      total: number;
+    };
+  };
+}
+
+export interface RepositoryAnalysisProgressPosition {
+  current: number;
+  total: number;
+  path: string;
+  pathTruncated: boolean;
+}
+
+export interface RepositoryAnalysisProgress extends RepositoryAnalysisProgressContext {
+  language: "typescript" | "python";
+  phase: ExtractionProgressPhase;
+  activity?: ExtractionProgressActivity;
+  unit: RepositoryAnalysisProgressPosition | null;
+  sourceFile: RepositoryAnalysisProgressPosition | null;
 }
 
 export type ReviewFingerprintSelection =
@@ -137,13 +188,20 @@ export type RepositoryAnalysisWorkerFailure =
 
 export type RepositoryAnalysisWorkerResponse =
   | { type: "result"; result: RepositoryAnalysisWorkerFileResult }
-  | { type: "error"; error: RepositoryAnalysisWorkerFailure };
+  | { type: "error"; error: RepositoryAnalysisWorkerFailure }
+  | { type: "progress"; id: string; progress: RepositoryAnalysisProgress };
 
 export function normalizeRepositoryAnalysisRequest(
   request: SerializableRepositoryAnalysisRequest,
 ): NormalizedRepositoryAnalysisRequest {
   if (request.changedSinceGitExecutor !== undefined) {
     throw new TypeError("repository analysis child request cannot contain a Git executor");
+  }
+  if (request.onExtractionProgress !== undefined) {
+    throw new TypeError("repository analysis child request cannot contain a progress callback");
+  }
+  if (request.typeScriptRevisionShards !== undefined) {
+    throw new TypeError("repository analysis child request cannot contain a TypeScript shard policy");
   }
   const normalized: NormalizedRepositoryAnalysisRequest = {
     absoluteRoot: request.absoluteRoot,
@@ -168,12 +226,34 @@ export function isRepositoryAnalysisWorkerRequest(
     || !isAbsolute(asString(value.artifactOutputPath))) return false;
   if (value.type === "analyze") {
     const keys = value.token === undefined
-      ? ["artifactOutputPath", "branchVariant", "id", "request", "reviewFingerprints", "type"]
-      : ["artifactOutputPath", "branchVariant", "id", "request", "reviewFingerprints", "token", "type"];
+      ? [
+          "artifactOutputPath",
+          "branchVariant",
+          "id",
+          "progressContext",
+          "request",
+          "reviewFingerprints",
+          "typeScriptRevisionShards",
+          "type",
+        ]
+      : [
+          "artifactOutputPath",
+          "branchVariant",
+          "id",
+          "progressContext",
+          "request",
+          "reviewFingerprints",
+          "token",
+          "typeScriptRevisionShards",
+          "type",
+        ];
     return hasExactKeys(value, keys)
       && isNormalizedAnalysisRequest(value.request)
       && isBranchVariantRequest(value.branchVariant, value.artifactOutputPath)
       && isReviewFingerprintSelection(value.reviewFingerprints)
+      && (value.progressContext === null || isRepositoryAnalysisProgressContext(value.progressContext))
+      && (value.typeScriptRevisionShards === null
+        || isTypeScriptRevisionShardPolicy(value.typeScriptRevisionShards))
       && (value.token === undefined || isBoundedNonEmptyString(value.token));
   }
   return value.type === "restamp"
@@ -189,6 +269,50 @@ export function isRepositoryAnalysisWorkerRequest(
     && typeof value.expectedInputDigest === "string"
     && SHA256.test(value.expectedInputDigest)
     && (value.branch === null || isBoundedNonEmptyString(value.branch));
+}
+
+function isTypeScriptRevisionShardPolicy(
+  value: unknown,
+): value is TypeScriptRevisionShardPolicy {
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "analysisPolicyFingerprint",
+    "buildFingerprint",
+    "cacheDir",
+    "mode",
+    "runtimeFingerprint",
+    "treeOid",
+    "version",
+  ])) return false;
+  if (!isRecord(value.runtimeFingerprint) || !hasExactKeys(value.runtimeFingerprint, [
+    "arch",
+    "nodeVersion",
+    "platform",
+    "tsMorphVersion",
+    "typescriptVersion",
+  ])) return false;
+  return value.version === 1
+    && (value.mode === "empty"
+      || value.mode === "shadow"
+      || value.mode === "verified-experimental")
+    && isAbsolute(asString(value.cacheDir))
+    && Buffer.byteLength(value.cacheDir as string) <= MAX_PATH_BYTES
+    && typeof value.treeOid === "string"
+    && GIT_TREE_OID.test(value.treeOid)
+    && typeof value.buildFingerprint === "string"
+    && SHA256.test(value.buildFingerprint)
+    && typeof value.analysisPolicyFingerprint === "string"
+    && SHA256.test(value.analysisPolicyFingerprint)
+    && [
+      value.runtimeFingerprint.nodeVersion,
+      value.runtimeFingerprint.platform,
+      value.runtimeFingerprint.arch,
+      value.runtimeFingerprint.typescriptVersion,
+      value.runtimeFingerprint.tsMorphVersion,
+    ].every((part) => (
+      typeof part === "string"
+      && part.length > 0
+      && Buffer.byteLength(part) <= 128
+    ));
 }
 
 function isReviewFingerprintSelection(value: unknown): value is ReviewFingerprintSelection | null {
@@ -208,6 +332,11 @@ export function isRepositoryAnalysisWorkerResponse(
   if (value.type === "result") {
     return hasExactKeys(value, ["result", "type"]) && isWorkerFileResult(value.result);
   }
+  if (value.type === "progress") {
+    return hasExactKeys(value, ["id", "progress", "type"])
+      && ITEM_ID.test(asString(value.id))
+      && isRepositoryAnalysisProgress(value.progress);
+  }
   if (value.type !== "error" || !hasExactKeys(value, ["error", "type"]) || !isRecord(value.error)) {
     return false;
   }
@@ -222,6 +351,148 @@ export function isRepositoryAnalysisWorkerResponse(
     && value.error.details.every((detail) => (
       typeof detail === "string" && Buffer.byteLength(detail) <= MAX_ERROR_TEXT_BYTES
     ));
+}
+
+export function isRepositoryAnalysisProgressContext(
+  value: unknown,
+): value is RepositoryAnalysisProgressContext {
+  if (!isRecord(value) || !hasExactKeys(value, ["revision", "version"])
+    || value.version !== 1 || !isRecord(value.revision)
+    || !hasExactKeys(value.revision, ["commit", "execution", "kind"])
+    || (value.revision.kind !== "head" && value.revision.kind !== "merge-base")
+    || typeof value.revision.commit !== "string"
+    || !GIT_TREE_OID.test(value.revision.commit)
+    || !isRecord(value.revision.execution)
+    || !hasExactKeys(value.revision.execution, ["current", "total"])) {
+    return false;
+  }
+  const { current, total } = value.revision.execution;
+  return Number.isSafeInteger(current)
+    && Number.isSafeInteger(total)
+    && (current as number) >= 1
+    && (total as number) >= 1
+    && (total as number) <= MAX_REPOSITORY_ANALYSIS_EXECUTIONS
+    && (current as number) <= (total as number);
+}
+
+export function isRepositoryAnalysisProgress(
+  value: unknown,
+): value is RepositoryAnalysisProgress {
+  const keys = isRecord(value) && value.activity !== undefined
+    ? ["activity", "language", "phase", "revision", "sourceFile", "unit", "version"]
+    : ["language", "phase", "revision", "sourceFile", "unit", "version"];
+  return isRecord(value)
+    && hasExactKeys(value, keys)
+    && isRepositoryAnalysisProgressContext({ version: value.version, revision: value.revision })
+    && (value.language === "typescript" || value.language === "python")
+    && isExtractionProgressPhase(value.phase)
+    && (value.activity === undefined || (
+      value.phase === "relationships"
+      && isExtractionProgressActivity(value.activity)
+    ))
+    && isProgressPosition(value.unit, true)
+    && isProgressPosition(value.sourceFile, false)
+    && (value.sourceFile === null || value.unit !== null);
+}
+
+/**
+ * Enrich real extractor observations with immutable revision coordinates while bounding IPC.
+ * File/unit observations are time-sampled; the first relationship and terminal stitch/finalize
+ * phases are preserved. Observer failures are deliberately isolated from graph extraction.
+ */
+export function createRepositoryAnalysisProgressReporter(
+  context: RepositoryAnalysisProgressContext,
+  emit: (progress: RepositoryAnalysisProgress) => void,
+  now: () => number = Date.now,
+): (progress: ExtractionProgress) => void {
+  if (!isRepositoryAnalysisProgressContext(context)) {
+    throw new TypeError("repository analysis progress context is invalid");
+  }
+  let emitted = 0;
+  let regularEmitted = 0;
+  let activityEmitted = 0;
+  let lastEmittedAt = Number.NEGATIVE_INFINITY;
+  const sawFirstSource = new Set<ExtractionProgress["language"]>();
+  const sawFinalSource = new Set<ExtractionProgress["language"]>();
+  const sawRelationships = new Set<ExtractionProgress["language"]>();
+  const sawStitch = new Set<ExtractionProgress["language"]>();
+  const sawFinalize = new Set<ExtractionProgress["language"]>();
+  let previousActivityCoordinate: string | null = null;
+  return (progress) => {
+    if (!isRawExtractionProgress(progress)) return;
+    const timestamp = now();
+    const firstObservation = emitted === 0;
+    const firstRelationship = progress.phase === "relationships"
+      && !sawRelationships.has(progress.language);
+    const firstStitch = progress.phase === "stitch"
+      && !sawStitch.has(progress.language);
+    const firstFinalize = progress.phase === "finalize"
+      && !sawFinalize.has(progress.language);
+    const firstSource = progress.sourceFile?.current === 1
+      && progress.unit?.current === 1
+      && !sawFirstSource.has(progress.language);
+    const finalSource = progress.sourceFile !== null
+      && progress.unit !== null
+      && progress.sourceFile.current === progress.sourceFile.total
+      && progress.unit.current === progress.unit.total
+      && !sawFinalSource.has(progress.language);
+    const activityCoordinate = progress.activity === undefined || progress.unit === null
+      ? null
+      : `${progress.language}\u0000${progress.unit.path}\u0000${progress.activity}`;
+    const activityTransition = activityCoordinate !== null
+      && activityCoordinate !== previousActivityCoordinate;
+    previousActivityCoordinate = activityCoordinate;
+    const requiredPhaseObservation = firstSource
+      || finalSource
+      || firstRelationship
+      || firstStitch
+      || firstFinalize;
+    const reservedActivityObservation = activityTransition
+      && activityEmitted < RESERVED_ACTIVITY_PROGRESS_EVENTS;
+    const regularCapacity = MAX_REPOSITORY_WORKER_PROGRESS_EVENTS
+      - RESERVED_REQUIRED_PROGRESS_EVENTS;
+    const sampledObservation = firstObservation
+      || timestamp - lastEmittedAt >= MIN_PROGRESS_INTERVAL_MS;
+    const capacityBucket = requiredPhaseObservation
+      ? "phase"
+      : reservedActivityObservation
+        ? "activity"
+        : sampledObservation && regularEmitted < regularCapacity
+          ? "regular"
+          : null;
+    if (capacityBucket === null || emitted >= MAX_REPOSITORY_WORKER_PROGRESS_EVENTS) {
+      return;
+    }
+    if (firstSource) sawFirstSource.add(progress.language);
+    if (finalSource) sawFinalSource.add(progress.language);
+    if (firstRelationship) sawRelationships.add(progress.language);
+    if (firstStitch) sawStitch.add(progress.language);
+    if (firstFinalize) sawFinalize.add(progress.language);
+    const bounded: RepositoryAnalysisProgress = {
+      version: 1,
+      revision: {
+        kind: context.revision.kind,
+        commit: context.revision.commit,
+        execution: { ...context.revision.execution },
+      },
+      language: progress.language,
+      phase: progress.phase,
+      ...(progress.activity === undefined ? {} : { activity: progress.activity }),
+      unit: boundedProgressPosition(progress.unit),
+      sourceFile: boundedProgressPosition(progress.sourceFile),
+    };
+    if (!isRepositoryAnalysisProgress(bounded)) return;
+    emitted += 1;
+    if (capacityBucket === "activity") activityEmitted += 1;
+    if (capacityBucket === "regular") regularEmitted += 1;
+    lastEmittedAt = timestamp;
+    try {
+      const result = emit(bounded);
+      sinkPromiseLike(result);
+    } catch {
+      // Progress is observational. A consumer cannot change or fail graph extraction.
+    }
+  };
 }
 
 export function isRepositoryAnalysisFacts(value: unknown): value is RepositoryAnalysisFacts {
@@ -369,6 +640,138 @@ export function sanitizeRepositoryWorkerText(value: string, token?: string): str
     scrubbed = scrubbed.split(token).join("***").split(encoded).join("***");
   }
   return truncateUtf8(scrubbed, MAX_ERROR_TEXT_BYTES);
+}
+
+function isRawExtractionProgress(value: unknown): value is ExtractionProgress {
+  const keys = isRecord(value) && value.activity !== undefined
+    ? ["activity", "language", "phase", "sourceFile", "unit"]
+    : ["language", "phase", "sourceFile", "unit"];
+  return isRecord(value)
+    && hasExactKeys(value, keys)
+    && (value.language === "typescript" || value.language === "python")
+    && isExtractionProgressPhase(value.phase)
+    && (value.activity === undefined || (
+      value.phase === "relationships"
+      && isExtractionProgressActivity(value.activity)
+    ))
+    && isRawProgressPosition(value.unit, true)
+    && isRawProgressPosition(value.sourceFile, false)
+    && (value.sourceFile === null || value.unit !== null);
+}
+
+function isExtractionProgressPhase(value: unknown): value is ExtractionProgressPhase {
+  return value === "project-load"
+    || value === "structure"
+    || value === "relationships"
+    || value === "stitch"
+    || value === "finalize";
+}
+
+function isExtractionProgressActivity(value: unknown): value is ExtractionProgressActivity {
+  return value === "calls-and-types"
+    || value === "imports"
+    || value === "value-references"
+    || value === "promise-discovery"
+    || value === "promise-links"
+    || value === "logic-flows"
+    || value === "ports"
+    || value === "exports";
+}
+
+function isRawProgressPosition(
+  value: unknown,
+  allowProjectRoot: boolean,
+): boolean {
+  return value === null || (
+    isRecord(value)
+    && hasExactKeys(value, ["current", "path", "total"])
+    && validProgressIndex(value.current, value.total)
+    && validProgressLogicalPath(value.path, allowProjectRoot, MAX_PATH_BYTES)
+  );
+}
+
+function isProgressPosition(
+  value: unknown,
+  allowProjectRoot: boolean,
+): value is RepositoryAnalysisProgressPosition | null {
+  return value === null || (
+    isRecord(value)
+    && hasExactKeys(value, ["current", "path", "pathTruncated", "total"])
+    && validProgressIndex(value.current, value.total)
+    && validProgressLogicalPath(value.path, allowProjectRoot, MAX_PROGRESS_PATH_BYTES)
+    && typeof value.pathTruncated === "boolean"
+  );
+}
+
+function validProgressIndex(current: unknown, total: unknown): boolean {
+  return Number.isSafeInteger(current)
+    && Number.isSafeInteger(total)
+    && (current as number) >= 1
+    && (total as number) >= 1
+    && (total as number) <= MAX_REPOSITORY_WORKER_SOURCE_FILES
+    && (current as number) <= (total as number);
+}
+
+function validProgressLogicalPath(
+  value: unknown,
+  allowProjectRoot: boolean,
+  maxBytes: number,
+): value is string {
+  if (allowProjectRoot && value === ".") return true;
+  return typeof value === "string"
+    && safeLogicalPath(value)
+    && Buffer.byteLength(value) <= maxBytes;
+}
+
+function boundedProgressPosition(
+  value: ExtractionProgress["unit"] | ExtractionProgress["sourceFile"],
+): RepositoryAnalysisProgressPosition | null {
+  if (value === null) return null;
+  const path = truncateProgressPath(value.path);
+  return {
+    current: value.current,
+    total: value.total,
+    path: path.value,
+    pathTruncated: path.truncated,
+  };
+}
+
+function truncateProgressPath(value: string): { value: string; truncated: boolean } {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength <= MAX_PROGRESS_PATH_BYTES) {
+    return { value, truncated: false };
+  }
+  const prefix = "…/";
+  let bytes = Buffer.byteLength(prefix);
+  let suffix = "";
+  const codePoints = Array.from(value);
+  for (let index = codePoints.length - 1; index >= 0; index -= 1) {
+    const codePoint = codePoints[index];
+    const codePointBytes = Buffer.byteLength(codePoint);
+    if (bytes + codePointBytes > MAX_PROGRESS_PATH_BYTES) break;
+    suffix = `${codePoint}${suffix}`;
+    bytes += codePointBytes;
+  }
+  while (suffix.startsWith("/")) {
+    suffix = suffix.slice(1);
+  }
+  return { value: `${prefix}${suffix}`, truncated: true };
+}
+
+function sinkPromiseLike(value: unknown): void {
+  if (
+    (typeof value !== "object" || value === null)
+    && typeof value !== "function"
+  ) {
+    return;
+  }
+  try {
+    if (typeof (value as { then?: unknown }).then === "function") {
+      void Promise.resolve(value).catch(() => {});
+    }
+  } catch {
+    // Progress observers cannot fail graph extraction.
+  }
 }
 
 function isNormalizedAnalysisRequest(value: unknown): value is NormalizedRepositoryAnalysisRequest {

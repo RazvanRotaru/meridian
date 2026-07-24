@@ -1,0 +1,83 @@
+/** The exact tracked files in the real-Git incremental-extraction fixture. */
+export const FIXTURE_SOURCE_FILES: Readonly<Record<string, string>> = {
+  "package.json": `${JSON.stringify({
+    name: "meridian-incremental-fixture",
+    private: true,
+    workspaces: ["packages/*"],
+  }, null, 2)}\n`,
+  "tsconfig.json": `${JSON.stringify({
+    compilerOptions: {
+      target: "ES2022",
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      lib: ["ES2022", "DOM"],
+      paths: {
+        "@fixture/provider": ["./packages/provider/src/index.ts"],
+        "@fixture/provider/*": ["./packages/provider/src/*"],
+        "@fixture/consumer": ["./packages/consumer/src/index.ts"],
+        "@fixture/unrelated": ["./packages/unrelated/src/index.ts"],
+      },
+      strict: true,
+      noEmit: true,
+    },
+    include: ["packages/**/*.ts"],
+  }, null, 2)}\n`,
+  "packages/provider/package.json": `${JSON.stringify({
+    name: "@fixture/provider",
+    private: true,
+    main: "dist/index.js",
+  }, null, 2)}\n`,
+  "packages/provider/src/index.ts": [
+    'export { normalizeOrder } from "./normalize";',
+    'export { providerVersion } from "./version";',
+    "",
+  ].join("\n"),
+  "packages/provider/src/normalize.ts": [
+    "export function normalizeOrder(raw: string): string {",
+    "  if (raw.trim().length === 0) {",
+    '    return "empty";',
+    "  }",
+    "  return raw.trim().toUpperCase();",
+    "}",
+    "",
+  ].join("\n"),
+  "packages/provider/src/version.ts": [
+    'export const providerVersion = "v1";',
+    "",
+  ].join("\n"),
+  "packages/consumer/package.json": `${JSON.stringify({
+    name: "@fixture/consumer",
+    private: true,
+    main: "dist/index.js",
+  }, null, 2)}\n`,
+  "packages/consumer/src/index.ts": [
+    'import { normalizeOrder, providerVersion } from "@fixture/provider";',
+    "",
+    "export async function submitOrder(raw: string): Promise<string> {",
+    "  const normalized = normalizeOrder(raw);",
+    '  if (normalized === "empty") {',
+    '    return "skipped";',
+    "  }",
+    '  const response = await fetch("/api/orders", { method: "POST" });',
+    "  return response.ok ? `${providerVersion}:${normalized}` : \"failed\";",
+    "}",
+    "",
+    "export function invokeUnknown(",
+    "  callback: (value: string) => void,",
+    "): void {",
+    '  callback(normalizeOrder(" pending "));',
+    "}",
+    "",
+  ].join("\n"),
+  "packages/unrelated/package.json": `${JSON.stringify({
+    name: "@fixture/unrelated",
+    private: true,
+    main: "dist/index.js",
+  }, null, 2)}\n`,
+  "packages/unrelated/src/index.ts": [
+    "export function unrelatedScore(value: number): number {",
+    "  return value * value;",
+    "}",
+    "",
+  ].join("\n"),
+};

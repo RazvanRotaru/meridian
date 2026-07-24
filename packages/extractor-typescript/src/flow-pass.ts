@@ -27,6 +27,10 @@ import { resolveTarget } from "./edge-resolve";
 import type { NodeDescriptor } from "./model";
 import { targetIdForResolution } from "./resolution-target";
 import type { ResolutionIndex } from "./resolution-index";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 
 /** A generous ceiling that only truly pathological nesting hits — a stack-overflow guard. */
 const MAX_DEPTH = 500;
@@ -44,12 +48,23 @@ export function buildLogicFlows(
   keepIds: ReadonlySet<string>,
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
   includeExitOnly: ReadonlySet<string> = new Set(),
+  onSourceFile?: RelationshipFileProgress,
 ): LogicFlows {
   const flows: LogicFlows = {};
+  let sourceFileCurrent = 0;
   // Promise-return analysis is memoized across every callable; only the file-aware walking
   // context varies per descriptor.
   const annotate = createCallAnnotator();
   for (const descriptor of descriptors) {
+    if (onSourceFile !== undefined && moduleSourcesById.has(descriptor.finalId)) {
+      sourceFileCurrent += 1;
+      reportRelationshipFileProgress(
+        onSourceFile,
+        descriptor.location.file,
+        sourceFileCurrent,
+        moduleSourcesById.size,
+      );
+    }
     if (!keepIds.has(descriptor.finalId)) {
       continue;
     }
@@ -85,7 +100,11 @@ function flowOf(callableNode: Node, walker: FlowWalker): FlowStep[] {
 // stops at its callable boundary, and a `const App = memo(() => {…})` wrapper emits one call
 // without re-charting App's body (the callback is App's own flow, not the module's).
 function moduleFlow(sourceFile: SourceFile, walker: FlowWalker): FlowStep[] {
-  return sourceFile.getStatements().flatMap((statement) => walker.walk(statement, 0));
+  const steps: FlowStep[] = [];
+  for (const statement of sourceFile.getStatements()) {
+    walkInto(statement, walker, 0, steps);
+  }
+  return steps;
 }
 
 /** The step builders recurse through this object, so the modules stay import-acyclic. */
@@ -102,39 +121,74 @@ function createWalker(index: ResolutionIndex, relativeFile: string, annotate: Fl
 
 /** A block contributes its statements' steps; a concise arrow body is a single expression. */
 function walkBody(body: Node, walker: FlowWalker, depth: number): FlowStep[] {
+  const steps: FlowStep[] = [];
+  walkBodyInto(body, walker, depth, steps);
+  return steps;
+}
+
+function walkBodyInto(
+  body: Node,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
   if (Node.isBlock(body)) {
-    return body.getStatements().flatMap((statement) => walk(statement, walker, depth));
+    for (const statement of body.getStatements()) {
+      walkInto(statement, walker, depth, steps);
+    }
+    return;
   }
-  return walk(body, walker, depth);
+  walkInto(body, walker, depth, steps);
 }
 
 function walk(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
+  const steps: FlowStep[] = [];
+  walkInto(node, walker, depth, steps);
+  return steps;
+}
+
+function walkInto(
+  node: Node,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
   if (depth > MAX_DEPTH) {
-    return [];
+    return;
   }
   if (isCallableBoundary(node)) {
-    return jsxHandlerSteps(node, walker, depth);
+    appendSteps(steps, jsxHandlerSteps(node, walker, depth));
+    return;
   }
   const control = controlStep(node, walker, depth);
   if (control) {
-    return [control];
+    steps.push(control);
+    return;
   }
   if (Node.isAwaitExpression(node)) {
-    return awaitSteps(node, walker, depth);
+    awaitStepsInto(node, walker, depth, steps);
+    return;
   }
   if (Node.isCallExpression(node) || Node.isNewExpression(node)) {
-    return callSteps(node, walker, depth);
+    callStepsInto(node, walker, depth, steps);
+    return;
   }
   if (Node.isReturnStatement(node) || Node.isThrowStatement(node)) {
-    return exitSteps(node, walker, depth);
+    exitStepsInto(node, walker, depth, steps);
+    return;
   }
-  return descend(node, walker, depth);
+  descendInto(node, walker, depth, steps);
 }
 
 // Calls nested directly under await carry the wait on their existing call step. A value operand
 // (`await pending`) has no call of its own, so append an explicit join after evaluating the operand.
-function awaitSteps(node: AwaitExpression, walker: FlowWalker, depth: number): FlowStep[] {
-  const steps = descend(node, walker, depth);
+function awaitStepsInto(
+  node: AwaitExpression,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
+  descendInto(node, walker, depth, steps);
   // A chartable DIRECT call/barrier already owns the wait badge. Pin this to the operand itself:
   // an awaited call nested in an argument must not suppress an unnameable outer call's wait gate.
   const directCall = directAwaitOperandCall(node);
@@ -145,14 +199,18 @@ function awaitSteps(node: AwaitExpression, walker: FlowWalker, depth: number): F
   if (awaitStep) {
     steps.push({ ...awaitStep, source: walker.source(node) });
   }
-  return steps;
 }
 
 // The returned/thrown expression runs FIRST (its calls chart in order), then the path ends: an
 // explicit `exit` step, so downstream views can tell a guard that leaves from a branch that falls
 // through — the difference between "this then-path rejoins" and "the rest is really the else".
-function exitSteps(node: ReturnStatement | ThrowStatement, walker: FlowWalker, depth: number): FlowStep[] {
-  const steps = descend(node, walker, depth);
+function exitStepsInto(
+  node: ReturnStatement | ThrowStatement,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
+  descendInto(node, walker, depth, steps);
   const expression = node.getExpression();
   steps.push({
     kind: "exit",
@@ -160,24 +218,36 @@ function exitSteps(node: ReturnStatement | ThrowStatement, walker: FlowWalker, d
     label: expression ? truncate(expression.getText()) : null,
     source: walker.source(node),
   });
-  return steps;
 }
 
 /** Collapse this node to nothing, but keep looking inside it for calls. */
-function descend(node: Node, walker: FlowWalker, depth: number): FlowStep[] {
-  return node.forEachChildAsArray().flatMap((child) => walk(child, walker, depth + 1));
+function descendInto(
+  node: Node,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
+  node.forEachChildAsArray().forEach((child) => {
+    walkInto(child, walker, depth + 1, steps);
+  });
 }
 
 // Descend first (arguments + callee sub-expressions run before the call), then emit this call,
 // then one nested `callback` step per inline callback it was handed — UNLESS this is an
 // Array-iteration call with an inline callback, which becomes a loop instead. An unnameable
 // callee (super(), import(), computed) emits no call step of its own.
-function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, depth: number): FlowStep[] {
+function callStepsInto(
+  node: CallExpression | NewExpression,
+  walker: FlowWalker,
+  depth: number,
+  steps: FlowStep[],
+): void {
   const iteration = Node.isCallExpression(node) ? iterationCall(node) : null;
   if (iteration) {
-    return iterationSteps(node as CallExpression, iteration, walker, depth);
+    appendSteps(steps, iterationSteps(node as CallExpression, iteration, walker, depth));
+    return;
   }
-  const steps = descend(node, walker, depth);
+  descendInto(node, walker, depth, steps);
   const callee = node.getExpression();
   const label = calleeName(callee);
   if (label) {
@@ -191,8 +261,13 @@ function callSteps(node: CallExpression | NewExpression, walker: FlowWalker, dep
       source: walker.source(node),
     });
   }
-  steps.push(...inlineCallbackSteps(node, label, walker, depth));
-  return steps;
+  appendSteps(steps, inlineCallbackSteps(node, label, walker, depth));
+}
+
+function appendSteps(target: FlowStep[], source: FlowStep[]): void {
+  source.forEach((step) => {
+    target.push(step);
+  });
 }
 
 function isCallableBoundary(node: Node): boolean {

@@ -5,7 +5,7 @@ import { selectedPrSummary } from "../../state/store";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
 import { PrChecksChip } from "./PrChecksChip";
-import { PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
+import { PrPrepareCanceled, PrPrepareError, PrPrepareProgress } from "./PrPrepareProgress";
 
 export function PrDetailPanel() {
   const selected = useBlueprint((state) => state.prSelected);
@@ -21,6 +21,7 @@ export function PrDetailPanel() {
   const loading = useBlueprint((state) => state.prsLoading);
   const error = useBlueprint((state) => state.prsError);
   const reviewStatus = useBlueprint((state) => state.prReviewStatus);
+  const reviewProgressStatus = useBlueprint((state) => state.prReviewProgress.status);
   const reviewBlocked = useBlueprint((state) => state.prReviewBlocked);
   const { selectPr, reviewPrInGraph } = useBlueprintActions();
   const preparing = reviewStatus === "preparing";
@@ -95,17 +96,23 @@ export function PrDetailPanel() {
       {(discussion?.reviews.approved.length ?? 0) > 0 || (discussion?.reviews.changesRequested.length ?? 0) > 0 || checks !== null ? (
         <ReviewStateRow reviews={discussion?.reviews ?? null} checks={checks} />
       ) : null}
-      {preparing ? <PrPrepareProgress /> : reviewStatus === "error" ? <PrPrepareError /> : (
-        <button
-          type="button"
-          style={REVIEW_STYLE}
-          disabled={!files || loading || allOutside}
-          title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
-          onClick={() => void reviewPrInGraph()}
-        >
-          Review in graph
-        </button>
-      )}
+      {preparing
+        ? <PrPrepareProgress />
+        : reviewStatus === "error"
+          ? <PrPrepareError />
+          : reviewProgressStatus === "canceled"
+            ? <PrPrepareCanceled />
+            : (
+              <button
+                type="button"
+                style={REVIEW_STYLE}
+                disabled={!files || loading || allOutside}
+                title={allOutside ? "This PR's changes are outside this session's subfolder" : undefined}
+                onClick={() => void reviewPrInGraph()}
+              >
+                Review in graph
+              </button>
+            )}
       {reviewBlocked?.number === selected ? <div style={NOTICE_STYLE}>{reviewBlocked.reason}</div> : null}
       {partiallyOutside ? (
         <div style={OUTSIDE_INFO_STYLE}>

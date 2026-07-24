@@ -3,7 +3,15 @@ import type {
   GraphViewLeaseController,
   GraphViewLeaseHandoff,
 } from "../boot/graphViewLease";
-import type { GraphArtifact, GraphNode, SyntheticExecution, SyntheticScenarioDescriptor } from "@meridian/core";
+import {
+  createPrReviewProgressSnapshot,
+  prReviewProgressStatusText,
+  reducePrReviewProgress,
+  type GraphArtifact,
+  type GraphNode,
+  type SyntheticExecution,
+  type SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PrReviewSection } from "../components/controlpanel/PrReviewSection";
@@ -4570,6 +4578,101 @@ async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
 }
 
 describe("PR head preparation (prepareHeadGraph)", () => {
+  it("reuses the booted HEAD artifact and index when live revalidation returns the same graph id", async () => {
+    const headGraphId = "pr-head-boot";
+    const comparisonGraphId = "pr-base-boot";
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: headGraphId,
+          comparisonGraphId,
+          headSha: "abc1234def5678900000",
+          mergeBaseSha: "base1234def567890000",
+        }]));
+      }
+      if (url.pathname === "/api/graph" && url.searchParams.get("id") === comparisonGraphId) {
+        return Promise.resolve(Response.json(ARTIFACT));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(HEAD_ARTIFACT, {
+      ...ANALYZE_DEPS,
+      graphId: headGraphId,
+      graphUrl: `/api/graph?id=${headGraphId}`,
+      metaUrl: `/api/meta?id=${headGraphId}`,
+    });
+    const bootIndex = store.getState().index;
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().prPreparedGraphId).toBe(headGraphId);
+    const graphRequests = fetchMock.mock.calls
+      .map(([input]) => new URL(input.toString(), "http://meridian.local"))
+      .filter((url) => url.pathname === "/api/graph");
+    expect(graphRequests.map((url) => url.searchParams.get("id"))).toEqual([comparisonGraphId]);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/meta"))).toBe(false);
+  });
+
+  it.each([
+    ["HEAD moved", "pr-head-new-head", "pr-base-new-head"],
+    ["base moved", "pr-head-new-base", "pr-base-boot"],
+  ])("does not reuse the boot pair when %s changes its immutable head graph id", async (
+    _reason,
+    nextHeadGraphId,
+    nextComparisonGraphId,
+  ) => {
+    const bootHeadGraphId = "pr-head-boot";
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: nextHeadGraphId,
+          comparisonGraphId: nextComparisonGraphId,
+          headSha: "abc1234def5678900000",
+          mergeBaseSha: "base1234def567890000",
+        }]));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === nextHeadGraphId ? HEAD_ARTIFACT : ARTIFACT,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json({
+          syntheticExecutionUrl: null,
+          syntheticScenarios: [],
+          syntheticExecutionTrust: null,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(HEAD_ARTIFACT, {
+      ...ANALYZE_DEPS,
+      graphId: bootHeadGraphId,
+      graphUrl: `/api/graph?id=${bootHeadGraphId}`,
+      metaUrl: `/api/meta?id=${bootHeadGraphId}`,
+    });
+    const bootIndex = store.getState().index;
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().index).not.toBe(bootIndex);
+    expect(store.getState().prPreparedGraphId).toBe(nextHeadGraphId);
+    const graphIds = fetchMock.mock.calls
+      .map(([input]) => new URL(input.toString(), "http://meridian.local"))
+      .filter((url) => url.pathname === "/api/graph")
+      .map((url) => url.searchParams.get("id"));
+    expect(graphIds).toEqual(expect.arrayContaining([nextHeadGraphId, nextComparisonGraphId]));
+  });
+
   it("commits graph protection only after the prepared review is installed", async () => {
     const lease = graphLeaseMock();
     vi.stubGlobal("fetch", routedFetch());
@@ -4583,6 +4686,49 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(lease.handoffs[0]!.commit).toHaveBeenCalledTimes(1);
     expect(lease.handoffs[0]!.release).not.toHaveBeenCalled();
     expect(store.getState().viewMode).toBe("modules");
+  });
+
+  it("keeps artifact handoff active while lease admission waits and attributes lease failure", async () => {
+    let rejectLease!: (reason: unknown) => void;
+    const leaseAdmission = new Promise<GraphViewLeaseHandoff>((_resolve, reject) => {
+      rejectLease = reject;
+    });
+    const beginPreparedGraphHandoff = vi.fn(() => leaseAdmission);
+    const controller: GraphViewLeaseController = {
+      leaseId: "test-view",
+      beginPreparedGraphHandoff,
+      replacePreparedGraphIds: vi.fn(async () => {}),
+      dispose: vi.fn(),
+    };
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: "artifact-1",
+          headSha: "abcdef0123456789abcdef0123456789abcdef01",
+          cache: "hit",
+        }]));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: controller });
+    store.setState(selectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(beginPreparedGraphHandoff).toHaveBeenCalledWith(["artifact-1"]));
+    expect(store.getState().prPrepareStage).toBe("handoff");
+    expect(store.getState().prReviewProgress.steps.artifacts).toBe("active");
+    expect(prReviewProgressStatusText(store.getState().prReviewProgress)).toBe(
+      "Opening exact review graphs…",
+    );
+
+    rejectLease(new Error("lease admission failed"));
+    await review;
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().prReviewProgress.steps.artifacts).toBe("error");
+    expect(prReviewProgressStatusText(store.getState().prReviewProgress))
+      .toContain("lease admission failed");
   });
 
   it("releases a protected handoff immediately when preparation is canceled during graph fetch", async () => {
@@ -4829,7 +4975,16 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       }
     });
     await store.getState().reviewPrInGraph();
-    expect(stages).toEqual(["clone", "checkout", "extract", null]);
+    expect(stages).toEqual([
+      "resolve",
+      "clone",
+      "checkout",
+      "extract",
+      "handoff",
+      "load-artifacts",
+      "projection",
+      null,
+    ]);
     expect(store.getState().prReviewStatus).toBe("idle");
     expect(store.getState().prPrepareError).toBe(null);
     expect(store.getState().prPreparedGraphId).toBe("pr-deadbeef");
@@ -4842,6 +4997,146 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+  });
+
+  it("preserves cold landing history while live pair revalidation overlaps comparison loading", async () => {
+    let releaseComparison!: (response: Response) => void;
+    const comparisonResponse = new Promise<Response>((resolve) => {
+      releaseComparison = resolve;
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/prs/files") {
+        return Promise.resolve(Response.json({
+          files: [{
+            path: "src/a.ts",
+            status: "modified",
+            additions: 1,
+            deletions: 0,
+            hunks: [{ start: 10, end: 10 }],
+          }],
+          truncated: false,
+          totalFiles: 1,
+          outsideCount: 0,
+          suggestedSubdir: "",
+        }));
+      }
+      if (url.pathname === "/api/prs/comments") {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 0 },
+          hasMore: false,
+        }));
+      }
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: "artifact-1",
+          comparisonGraphId: "pr-base-1",
+          headSha: "abcdef0123456789abcdef0123456789abcdef01",
+          mergeBaseSha: "0123456789abcdef0123456789abcdef01234567",
+          cache: "hit",
+        }]));
+      }
+      if (url.pathname === "/api/graph" && url.searchParams.get("id") === "pr-base-1") {
+        return comparisonResponse;
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    let coldProgress = createPrReviewProgressSnapshot(7);
+    for (const stage of [
+      "resolve",
+      "clone",
+      "checkout",
+      "extract",
+      "extract-head",
+      "extract-merge-base",
+    ] as const) {
+      coldProgress = reducePrReviewProgress(coldProgress, { type: "stage", stage });
+    }
+    coldProgress = reducePrReviewProgress(coldProgress, { type: "analysis-done", cache: "miss" });
+    coldProgress = reducePrReviewProgress(coldProgress, { type: "stage", stage: "handoff" });
+    coldProgress = reducePrReviewProgress(coldProgress, { type: "stage", stage: "load-artifacts" });
+    coldProgress = reducePrReviewProgress(coldProgress, { type: "stage", stage: "details" });
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState({
+      viewMode: "prs",
+      prsList: { open: [pr(7)], closed: null },
+      prReviewProgress: coldProgress,
+    });
+
+    await store.getState().selectPr(7);
+    expect(store.getState().prReviewProgress).toMatchObject({
+      activeStage: "details",
+      steps: { workspace: "done", graphs: "done", artifacts: "active", projection: "pending" },
+      revisions: { head: "done", mergeBase: "done" },
+    });
+
+    const review = store.getState().reviewPrInGraph();
+    await vi.waitFor(() => {
+      expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("id=pr-base-1"))).toBe(true);
+    });
+    expect(store.getState().prReviewProgress).toMatchObject({
+      activeStage: "load-artifacts",
+      steps: { resolve: "done", workspace: "done", graphs: "done", artifacts: "active" },
+      revisions: { head: "done", mergeBase: "done" },
+    });
+
+    releaseComparison(Response.json(ARTIFACT));
+    await review;
+    expect(store.getState().prReviewProgress).toMatchObject({
+      status: "success",
+      steps: {
+        resolve: "done",
+        workspace: "done",
+        graphs: "done",
+        artifacts: "done",
+        projection: "done",
+      },
+      revisions: { head: "done", mergeBase: "done" },
+    });
+  });
+
+  it("drops boot progress when selection resolves a different PR identity", async () => {
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/prs/files") {
+        return Promise.resolve(Response.json({
+          files: [],
+          truncated: false,
+          totalFiles: 0,
+          outsideCount: 0,
+          suggestedSubdir: "",
+        }));
+      }
+      if (url.pathname === "/api/prs/comments") {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 0 },
+          hasMore: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    let pr7Progress = reducePrReviewProgress(
+      createPrReviewProgressSnapshot(7),
+      { type: "stage", stage: "resolve" },
+    );
+    pr7Progress = reducePrReviewProgress(pr7Progress, { type: "analysis-done", cache: "hit" });
+    pr7Progress = reducePrReviewProgress(pr7Progress, { type: "stage", stage: "handoff" });
+    pr7Progress = reducePrReviewProgress(pr7Progress, { type: "stage", stage: "load-artifacts" });
+    pr7Progress = reducePrReviewProgress(pr7Progress, { type: "stage", stage: "details" });
+    const store = freshStore(ANALYZE_DEPS);
+    store.setState({
+      viewMode: "prs",
+      prsList: { open: [pr(7), pr(8)], closed: null },
+      prReviewProgress: pr7Progress,
+    });
+
+    await store.getState().selectPr(8);
+
+    expect(store.getState().prReviewProgress).toEqual(createPrReviewProgressSnapshot(8));
   });
 
   it("colours an additions-only node green inside a modified file on the prepared head graph", async () => {

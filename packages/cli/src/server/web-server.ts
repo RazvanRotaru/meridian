@@ -6,7 +6,7 @@ import { serveStatic } from "./static-files";
 import type { StaticAssets } from "./static-files";
 import { sendOverlay as sendTelemetryOverlay, sendTraces as sendTelemetryTraces } from "./api";
 import { WebError } from "./web-error";
-import { injectPrefill } from "./web-boot";
+import { injectPrefill, injectPrReviewProgressModel } from "./web-boot";
 import { sendHtml, sendJson } from "./http-response";
 import { createHttpService, type HttpService } from "./http-service";
 import { createGitHubClient, resolveGitHubClientId } from "./github";
@@ -37,7 +37,7 @@ import {
   handlePullRequests,
   handleSubmitReview,
 } from "./web-prs";
-import { handlePrAnalyze } from "./web-pr-analyze";
+import { handlePrAnalyze, handlePrPrepare } from "./web-pr-analyze";
 import { handlePickFolder } from "./web-pick-folder";
 import { pickFolder } from "./folder-dialog";
 import { handleRepoPullRequests } from "./web-repo-pulls";
@@ -71,6 +71,7 @@ import {
 import { WebRepositoryMirror, type RepositoryMirror } from "./web-repository-mirror";
 import type { RepositoryRetentionOptions } from "./web-repository-retention";
 import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
+import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -92,6 +93,8 @@ export interface WebServerConfig {
   cacheRoot?: string;
   /** Re-extract artifacts for this server run while retaining immutable checkouts. */
   refreshCache?: boolean;
+  /** Explicit server-owned opt-in for revision-safe TypeScript shards during PR analysis. */
+  typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
   /** Explicit opt-in; individual graph ids are still restricted to local `kind:path` sources. */
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
@@ -137,6 +140,7 @@ export interface Context {
   repositoryArtifactRestamp: typeof runRepositoryArtifactRestampChild;
   cacheRoot: string;
   refreshCache: boolean;
+  typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
   rendererIndex: string;
   landingHtml: string;
   staticAssets: StaticAssets;
@@ -249,6 +253,7 @@ function buildContext(
     }),
     cacheRoot,
     refreshCache: config.refreshCache === true,
+    typeScriptRevisionShardMode: config.typeScriptRevisionShardMode,
     rendererIndex: staticContext.rendererIndex,
     landingHtml: staticContext.landingHtml,
     // Stray routes fall back to the front door rather than the renderer shell.
@@ -280,7 +285,10 @@ function loadStaticContext(config: WebServerConfig): StaticWebContext {
   }
   return {
     rendererIndex: readFileSync(indexPath, "utf8"),
-    landingHtml: injectPrefill(readFileSync(config.webUiPath, "utf8"), config.source),
+    landingHtml: injectPrefill(
+      injectPrReviewProgressModel(readFileSync(config.webUiPath, "utf8")),
+      config.source,
+    ),
     github: createGitHubClient({ clientId: resolveGitHubClientId(config.githubClientId) }),
   };
 }
@@ -341,6 +349,10 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   }
   if (pathname === "/api/pr/analyze") {
     await handlePrAnalyze(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/pr/prepare") {
+    await handlePrPrepare(ctx, request, response);
     return;
   }
   if (pathname === "/api/synthetic-executions") {

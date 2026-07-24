@@ -41,7 +41,97 @@ describe("streamPrAnalysis", () => {
     expect(stages).toEqual(["clone", "checkout", "extract"]);
     expect(result.graphId).toBe("pr-abc");
     // An older server's done line has no headSha — the provenance is honestly unknown, not "".
-    expect(result).toEqual({ graphId: "pr-abc", comparisonGraphId: null, headSha: null, mergeBaseSha: null });
+    expect(result).toEqual({
+      graphId: "pr-abc",
+      comparisonGraphId: null,
+      headSha: null,
+      mergeBaseSha: null,
+      cache: null,
+    });
+  });
+
+  it("routes detailed extraction and verified revision reuse stages", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        '{"stage":"extract"}\n{"stage":"reuse-head"}\n{"stage":"extract-merge-base"}\n{"stage":"reuse-merge-base"}\n{"stage":"done","graphId":"pr-abc"}\n',
+      ])),
+    );
+    const stages: PrAnalyzeStage[] = [];
+    await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
+    expect(stages).toEqual(["extract", "reuse-head", "extract-merge-base", "reuse-merge-base"]);
+  });
+
+  it("preserves optional extraction observations and ignores unknown future stages", async () => {
+    const observation = {
+      version: 1,
+      revision: {
+        kind: "head",
+        commit: "abcdef0123456789abcdef0123456789abcdef01",
+        execution: { current: 1, total: 2 },
+      },
+      language: "typescript",
+      phase: "structure",
+      unit: null,
+      sourceFile: null,
+      futureField: true,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        `${JSON.stringify({ stage: "extract-head", progress: observation })}\n`,
+        '{"stage":"future-progress-stage","future":true}\n',
+        '{"stage":"done","graphId":"pr-abc","cache":"miss"}\n',
+      ])),
+    );
+    const updates: Array<{ stage: PrAnalyzeStage; progress: unknown }> = [];
+    const result = await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage, progress) => {
+      updates.push({ stage, progress });
+    });
+
+    expect(updates).toEqual([{ stage: "extract-head", progress: observation }]);
+    expect(result.cache).toBe("miss");
+  });
+
+  it("drops malformed extraction observations before notifying UI state", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        '{"stage":"extract-head","progress":{"version":2,"future":true}}\n',
+        '{"stage":"done","graphId":"pr-abc"}\n',
+      ])),
+    );
+    const updates: Array<{ stage: PrAnalyzeStage; progress: unknown }> = [];
+
+    await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage, progress) => {
+      updates.push({ stage, progress });
+    });
+
+    expect(updates).toEqual([{ stage: "extract-head", progress: null }]);
+  });
+
+  it("ignores valid JSON primitives and arrays in the NDJSON stream", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        'null\n42\n[]\n{"stage":"done","graphId":"pr-abc"}\n',
+      ])),
+    );
+
+    await expect(streamPrAnalysis("/api/pr/analyze", REQUEST, () => {}))
+      .resolves.toMatchObject({ graphId: "pr-abc" });
+  });
+
+  it("rejects an unbounded NDJSON line", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        `{"stage":"clone","padding":"${"x".repeat(4 * 1024 * 1024)}"}\n`,
+      ])),
+    );
+
+    await expect(streamPrAnalysis("/api/pr/analyze", REQUEST, () => {}))
+      .rejects.toThrow("oversized progress line");
   });
 
   it("carries the done line's exact head and merge-base comparison provenance", async () => {
@@ -54,6 +144,7 @@ describe("streamPrAnalysis", () => {
       comparisonGraphId: "pr-base-def",
       headSha: "abc1234def56789",
       mergeBaseSha: "def5678abc12345",
+      cache: null,
     });
   });
 

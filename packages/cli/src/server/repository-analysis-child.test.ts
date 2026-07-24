@@ -14,6 +14,7 @@ import { SCHEMA_VERSION, type GraphArtifact } from "@meridian/core";
 import {
   runRepositoryAnalysisChild,
   runRepositoryArtifactRestampChild,
+  type RepositoryAnalysisProgress,
   verifyRepositoryArtifactFile,
 } from "./repository-analysis-child";
 
@@ -32,6 +33,7 @@ describe("repository analysis child", () => {
     const artifactOutputPath = join(directory, "artifact.json");
     const branchOutputPath = join(directory, "artifact-main.json");
     const root = join(REPO, "examples", "orders-api");
+    const progress: RepositoryAnalysisProgress[] = [];
 
     const result = await runRepositoryAnalysisChild({
       absoluteRoot: root,
@@ -41,8 +43,23 @@ describe("repository analysis child", () => {
     }, {
       artifactOutputPath,
       branchVariant: { artifactOutputPath: branchOutputPath, branch: "main" },
+      progress: {
+        context: {
+          version: 1,
+          revision: {
+            kind: "head",
+            commit: "a".repeat(40),
+            execution: { current: 1, total: 2 },
+          },
+        },
+        onProgress: async (event) => {
+          progress.push(event);
+          throw new Error("async parent progress consumer failed");
+        },
+      },
       timeoutMs: 30_000,
     });
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     const artifact = JSON.parse(readFileSync(artifactOutputPath, "utf8")) as GraphArtifact;
     expect(result.material).toMatchObject({
@@ -61,6 +78,22 @@ describe("repository analysis child", () => {
     expect(result).not.toHaveProperty("artifact");
     expect(result).not.toHaveProperty("nodes");
     expect(result).not.toHaveProperty("edges");
+    expect(progress[0]).toMatchObject({
+      version: 1,
+      revision: {
+        kind: "head",
+        commit: "a".repeat(40),
+        execution: { current: 1, total: 2 },
+      },
+      language: "typescript",
+      phase: "project-load",
+    });
+    expect(progress.map((event) => event.phase)).toEqual(expect.arrayContaining([
+      "structure",
+      "relationships",
+      "stitch",
+      "finalize",
+    ]));
     expect(await verifyRepositoryArtifactFile(
       artifactOutputPath,
       result.byteLength,
@@ -126,6 +159,54 @@ describe("repository analysis child", () => {
       workerEntry: "/does/not/exist.cjs",
     })).rejects.toBe(reason);
   });
+
+  it("fails closed when a worker sends a 513th progress event", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const workerEntry = customWorker(directory, `
+      process.once("message", (message) => {
+        const progress = {
+          version: 1,
+          revision: message.progressContext.revision,
+          language: "typescript",
+          phase: "structure",
+          unit: { current: 1, total: 1, path: ".", pathTruncated: false },
+          sourceFile: null,
+        };
+        for (let current = 0; current < 513; current += 1) {
+          process.send({ type: "progress", id: message.id, progress });
+        }
+        setInterval(() => {}, 1000);
+      });
+    `);
+    let observations = 0;
+
+    await expect(runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      workerEntry,
+      terminateGraceMs: 40,
+      processTreeKillWaitMs: 2_000,
+      progress: {
+        context: {
+          version: 1,
+          revision: {
+            kind: "head",
+            commit: "a".repeat(40),
+            execution: { current: 1, total: 2 },
+          },
+        },
+        onProgress: () => { observations += 1; },
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      message: "repository analysis worker exceeded the progress event limit",
+    });
+    expect(observations).toBe(512);
+    expect(existsSync(artifactOutputPath)).toBe(false);
+  }, 15_000);
 
   it("kills the complete process group and rejects only after descendants disappear", async () => {
     const directory = temporaryDirectory();

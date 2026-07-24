@@ -10,6 +10,10 @@ import { callSiteOf, nodeKey, type NodeDescriptor } from "./model";
 import { isRuntimeImportCall } from "./import-dependency";
 import { resolveTarget, type CrossPackageResolver, type TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 import type { ResolutionIndex } from "./resolution-index";
 
 export { callSiteOf } from "./model";
@@ -28,10 +32,17 @@ export function collectRawEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   resolver?: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
 ): RawEdge[] {
   const edges: RawEdge[] = [];
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relPath = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onSourceFile,
+      relPath,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     collectBehaviouralEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
   }
   for (const descriptor of descriptors) {

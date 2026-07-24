@@ -10,6 +10,7 @@ import { writeValidatedRepositoryArtifact } from "./server/repository-analysis-a
 import {
   boundedRepositoryWorkerWarnings,
   changedMetadataForWorker,
+  createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
   isRepositoryAnalysisWorkerRequest,
   repositoryAnalysisWorkerFailure,
@@ -105,6 +106,15 @@ function analysisRequest(
     ...(input.changedSinceTimeoutMs === null ? {} : {
       changedSinceTimeoutMs: input.changedSinceTimeoutMs,
     }),
+    ...(message.progressContext === null ? {} : {
+      onExtractionProgress: createRepositoryAnalysisProgressReporter(
+        message.progressContext,
+        (progress) => sendProgress(message.id, progress),
+      ),
+    }),
+    ...(message.typeScriptRevisionShards === null ? {} : {
+      typeScriptRevisionShards: message.typeScriptRevisionShards,
+    }),
   };
   if (message.token && input.changedSince) {
     request.changedSinceGitExecutor = async (absoluteRoot, args, timeoutMs) => {
@@ -195,7 +205,26 @@ function withBranch(artifact: GraphArtifact, branch: string | null): GraphArtifa
   return { ...artifact, target: { ...artifact.target, vcs: { ...vcs, branch } } };
 }
 
-function reply(message: RepositoryAnalysisWorkerResponse): void {
+function sendProgress(
+  id: string,
+  progress: Extract<RepositoryAnalysisWorkerResponse, { type: "progress" }>["progress"],
+): void {
+  if (finished || typeof process.send !== "function" || !process.connected) return;
+  try {
+    process.send({ type: "progress", id, progress } satisfies RepositoryAnalysisWorkerResponse, (error) => {
+      if (!error || finished) return;
+      finished = true;
+      process.exitCode = 1;
+      if (process.connected) process.disconnect?.();
+    });
+  } catch {
+    // The parent transport owns cancellation/failure. Progress cannot fail extraction logic.
+  }
+}
+
+function reply(
+  message: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }>,
+): void {
   if (finished || typeof process.send !== "function" || !process.connected) {
     process.exitCode = 1;
     return;

@@ -38,5 +38,7 @@ export function analyzeRepository(request: RepositoryAnalysisRequest): Promise<P
     allowEmpty: request.allowEmpty,
     targetName: request.targetName,
     vcs: request.vcs,
+    onExtractionProgress: request.onExtractionProgress,
+    typeScriptRevisionShards: request.typeScriptRevisionShards,
   });
 }

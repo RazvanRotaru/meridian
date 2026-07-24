@@ -10,6 +10,7 @@ import type {
   DetectionResult,
   ExtractOptions,
   ExtractionDiagnostic,
+  ExtractionProgressPosition,
   ExtractionResult,
   LanguageExtractor,
   LanguageTag,
@@ -19,6 +20,7 @@ import { buildNodes } from "./nodes";
 import { buildEdges, type EdgeResult } from "./edges";
 import { buildFlows } from "./flows";
 import { buildStats } from "./stats";
+import { reportExtractionProgress } from "./progress";
 import type { AnalyzeOutput } from "./types";
 
 // Detection must cover the same source-shaped tree as extraction. A depth cap made the language
@@ -88,11 +90,36 @@ function readEntries(directory: string): Dirent[] {
   }
 }
 
-function runExtraction(options: ExtractOptions): ExtractionResult {
-  const output = runPythonAnalyzer(options);
+async function runExtraction(options: ExtractOptions): Promise<ExtractionResult> {
+  const unit: ExtractionProgressPosition = { current: 1, total: 1, path: "." };
+  reportExtractionProgress(options, {
+    language: "python",
+    phase: "project-load",
+    unit,
+    sourceFile: null,
+  });
+  const output = await runPythonAnalyzer(options);
   const index = buildNodes(output);
+  reportExtractionProgress(options, {
+    language: "python",
+    phase: "relationships",
+    unit,
+    sourceFile: null,
+  });
   const built = buildEdges(output, index, options);
+  reportExtractionProgress(options, {
+    language: "python",
+    phase: "stitch",
+    unit: null,
+    sourceFile: null,
+  });
   const flows = buildFlows(output, index, built.nodes);
+  reportExtractionProgress(options, {
+    language: "python",
+    phase: "finalize",
+    unit: null,
+    sourceFile: null,
+  });
   const stats = buildStats({
     files: output.modules.length,
     nodes: built.nodes,

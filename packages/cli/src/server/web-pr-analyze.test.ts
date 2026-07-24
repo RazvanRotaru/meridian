@@ -25,7 +25,7 @@ import { SCHEMA_VERSION } from "@meridian/core";
 import type { GraphArtifact } from "@meridian/core";
 import { analyzeRepository, REPOSITORY_ANALYSIS_VERSION } from "../repository-analysis";
 import { runGit } from "./git-exec";
-import { handlePrAnalyze } from "./web-pr-analyze";
+import { handlePrAnalyze, handlePrPrepare } from "./web-pr-analyze";
 import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
 import { SessionStore } from "./session";
@@ -68,6 +68,12 @@ vi.mock("./synthetic-fingerprint", async (importOriginal) => {
 });
 
 const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x" };
+const DIRECT_BODY = {
+  repository: "org/repo",
+  prNumber: 41,
+  baseRef: "main",
+  headRef: "feat/x",
+};
 const HEAD_SHA = "abc1234def5678900000aaaabbbbccccddddeeee";
 const BASE_SHA = "def1234def5678900000aaaabbbbccccddddeeee";
 const MERGE_BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
@@ -146,16 +152,23 @@ describe("handlePrAnalyze", () => {
     vi.clearAllMocks();
   });
 
-  it("streams clone -> checkout -> extract -> done and registers the persistent checkout", async () => {
+  it("streams clone -> checkout -> HEAD -> merge-base -> done and registers the persistent checkout", async () => {
     const ctx = githubCtx();
     ctx.allowSyntheticExecution = true; // The local-only flag must never admit a PR artifact.
     const captured = await invoke(ctx, BODY);
     expect(captured.status()).toBe(200);
     expect(captured.contentType()).toContain("application/x-ndjson");
     const lines = captured.lines();
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone",
+      "checkout",
+      "extract",
+      "extract-head",
+      "extract-merge-base",
+      "done",
+    ]);
 
-    const done = lines[3];
+    const done = lines.at(-1)!;
     expect(done.graphId).toMatch(/^pr-[0-9a-f]{12}-[0-9a-f]{40}$/);
     expect(done.comparisonGraphId).toMatch(/^pr-base-[0-9a-f]{12}-[0-9a-f]{40}$/);
     expect(done.headSha).toBe("abc1234def5678900000aaaabbbbccccddddeeee");
@@ -190,6 +203,108 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(sourceDir)).toBe(true);
   });
 
+  it("streams strict revision-scoped extraction detail under the active side stage", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      request.onExtractionProgress?.({
+        language: "typescript",
+        phase: "project-load",
+        unit: { current: 1, total: 1, path: "." },
+        sourceFile: null,
+      });
+      request.onExtractionProgress?.({
+        language: "typescript",
+        phase: "finalize",
+        unit: null,
+        sourceFile: null,
+      });
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+
+    const lines = (await invoke(githubCtx(), BODY)).lines();
+    const detailed = lines.filter((line) => line.progress !== undefined);
+    expect(detailed).toHaveLength(4);
+    expect(detailed.map((line) => line.stage)).toEqual([
+      "extract-head",
+      "extract-head",
+      "extract-merge-base",
+      "extract-merge-base",
+    ]);
+    expect(detailed.map((line) => (
+      line.progress as { revision: unknown; phase: string }
+    ).phase)).toEqual(["project-load", "finalize", "project-load", "finalize"]);
+    expect(detailed.map((line) => (
+      line.progress as { revision: { kind: string; commit: string; execution: unknown } }
+    ).revision)).toEqual([
+      { kind: "head", commit: HEAD_SHA, execution: { current: 1, total: 2 } },
+      { kind: "head", commit: HEAD_SHA, execution: { current: 1, total: 2 } },
+      { kind: "merge-base", commit: MERGE_BASE_SHA, execution: { current: 2, total: 2 } },
+      { kind: "merge-base", commit: MERGE_BASE_SHA, execution: { current: 2, total: 2 } },
+    ]);
+  });
+
+  it("prepares an immutable pair directly from the landing selection and boots its HEAD graph", async () => {
+    const ctx = githubCtx();
+    const captured = await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+
+    expect(captured.status()).toBe(200);
+    const lines = captured.lines();
+    expect(lines.at(-1)).toMatchObject({
+      stage: "done",
+      graphId: expect.stringMatching(/^pr-/),
+      comparisonGraphId: expect.stringMatching(/^pr-base-/),
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      mergeBaseSha: MERGE_BASE_SHA,
+      preparedPair: {
+        version: 1,
+        prNumber: 41,
+        headGraphId: expect.stringMatching(/^pr-/),
+        mergeBaseGraphId: expect.stringMatching(/^pr-base-/),
+        headSha: HEAD_SHA,
+        baseSha: BASE_SHA,
+        mergeBaseSha: MERGE_BASE_SHA,
+      },
+    });
+    const done = lines.at(-1)!;
+    const destination = new URL(String(done.viewUrl), "http://meridian.local");
+    expect(destination.pathname).toBe("/view");
+    expect(destination.searchParams.get("id")).toBe(done.graphId);
+    expect(destination.searchParams.get("prn")).toBe("41");
+    expect(destination.searchParams.get("rev")).toBe("1");
+  });
+
+  it("does not coalesce a picker-pinned direct request with an unpinned live revalidation", async () => {
+    const ctx = githubCtx();
+    const releaseAnalysis = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      await releaseAnalysis.promise;
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+
+    const live = beginInvoke(ctx, BODY);
+    await vi.waitFor(() => expect(analyzeRepository).toHaveBeenCalled());
+    const moved = await invokePrepare(ctx, {
+      ...DIRECT_BODY,
+      headSha: "f".repeat(40),
+    });
+
+    expect(moved.lines()).toEqual([{
+      stage: "error",
+      message: "the pull request head changed after it was selected; refresh and try again",
+    }]);
+    releaseAnalysis.resolve();
+    await live.completion;
+    expect(live.captured.lines().at(-1)?.stage).toBe("done");
+  });
+
   it("runs two distinct two-sided PR analyses concurrently within the default memory bound", async () => {
     const ctx = githubCtx();
     const release = deferred<void>();
@@ -216,8 +331,12 @@ describe("handlePrAnalyze", () => {
     release.resolve();
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
-    expect(firstResult.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
-    expect(secondResult.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(firstResult.lines().map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
+    expect(secondResult.lines().map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
     expect(firstResult.lines().at(-1)?.graphId).not.toBe(secondResult.lines().at(-1)?.graphId);
     expect(maximumActive).toBe(2);
     expect(repositories.prepareCalls).toHaveLength(2);
@@ -236,6 +355,8 @@ describe("handlePrAnalyze", () => {
       "clone",
       "checkout",
       "extract",
+      "extract-head",
+      "extract-merge-base",
       "done",
     ]);
     const done = captured.lines().at(-1);
@@ -454,12 +575,16 @@ describe("handlePrAnalyze", () => {
     const first = beginInvoke(ctx, BODY);
     await firstAnalysisStarted.promise;
     const follower = beginInvoke(ctx, BODY);
-    await waitFor(() => follower.captured.body().includes('"stage":"extract"'));
+    await waitFor(() => follower.captured.body().includes('"stage":"extract-head"'));
     release.resolve();
     await Promise.all([first.completion, follower.completion]);
 
-    expect(first.captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
-    expect(follower.captured.lines().map((line) => line.stage)).toEqual(["extract", "done"]);
+    expect(first.captured.lines().map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
+    expect(follower.captured.lines().map((line) => line.stage)).toEqual([
+      "extract-head", "extract-merge-base", "done",
+    ]);
     expect(follower.captured.lines().at(-1)).toStrictEqual(first.captured.lines().at(-1));
     expect(repositories.prepareCalls).toHaveLength(1);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
@@ -499,7 +624,7 @@ describe("handlePrAnalyze", () => {
     const abandoned = beginInvoke(ctx, BODY);
     await firstAnalysisStarted.promise;
     const survivor = beginInvoke(ctx, BODY);
-    await waitFor(() => survivor.captured.body().includes('"stage":"extract"'));
+    await waitFor(() => survivor.captured.body().includes('"stage":"extract-head"'));
     abandoned.request.emit("aborted");
     await abandoned.completion;
     release.resolve();
@@ -530,7 +655,9 @@ describe("handlePrAnalyze", () => {
 
     const lines = (await invoke(githubCtx(), BODY)).lines();
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "error",
+    ]);
     expect(lines.at(-1)?.message).toBe("internal error while analyzing the pull request");
     expect(lines.some((line) => line.stage === "done")).toBe(false);
   });
@@ -618,7 +745,9 @@ describe("handlePrAnalyze", () => {
 
     const captured = await invoke(ctx, BODY);
     const lines = captured.lines();
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
     const done = lines.at(-1)!;
     const graphId = done.graphId as string;
     expectWithoutReviewFingerprints(loadGraph(ctx, graphId), ARTIFACT);
@@ -647,7 +776,7 @@ describe("handlePrAnalyze", () => {
     ctx.syntheticPrSandboxRuntimeSupported = () => true;
     try {
       const captured = await invoke(ctx, BODY);
-      expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+      expect(captured.lines().map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
       expect(publishBatch).not.toHaveBeenCalled();
       expect(analyzeRepository).not.toHaveBeenCalled();
       expect(existsSync(repositories.createdWorkspaces[0]!.root)).toBe(false);
@@ -675,7 +804,9 @@ describe("handlePrAnalyze", () => {
     const restarted = githubCtx();
     const second = (await invoke(restarted, BODY)).lines();
 
-    expect(first.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(first.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
     expect(first.at(-1)?.cache).toBe("miss");
     expect(second.map((line) => line.stage)).toEqual(["done"]);
     expect(second.at(-1)?.cache).toBe("hit");
@@ -736,14 +867,16 @@ describe("handlePrAnalyze", () => {
 
     const failed = (await invoke(ctx, BODY)).lines();
 
-    expect(failed.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(failed.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "error",
+    ]);
     expectWithoutReviewFingerprints(loadGraph(ctx, headId), ARTIFACT);
     expectWithoutReviewFingerprints(loadGraph(ctx, comparisonId), COMPARISON_ARTIFACT);
     expect(existsSync(headRoot)).toBe(true);
     expect(existsSync(comparisonRoot)).toBe(true);
   });
 
-  it("re-analyzes both revisions when cache metadata predates runtime import extraction", async () => {
+  it("rebuilds stale pair metadata from separately verified immutable revision artifacts", async () => {
     const firstCtx = githubCtx();
     const first = (await invoke(firstCtx, BODY)).lines();
     const firstDone = first.at(-1)!;
@@ -762,7 +895,9 @@ describe("handlePrAnalyze", () => {
     const second = (await invoke(restarted, BODY)).lines();
     const secondDone = second.at(-1)!;
 
-    expect(second.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(second.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
+    ]);
     expect(secondDone.cache).toBe("miss");
     expect(secondDone.graphId).toBe(firstDone.graphId);
     expect(secondDone.comparisonGraphId).toBe(firstDone.comparisonGraphId);
@@ -771,7 +906,7 @@ describe("handlePrAnalyze", () => {
     expectWithoutReviewFingerprints(loadGraph(restarted, secondDone.graphId as string), ARTIFACT);
     expectWithoutReviewFingerprints(loadGraph(restarted, secondDone.comparisonGraphId as string), COMPARISON_ARTIFACT);
     expect(repositories.prepareCalls).toHaveLength(2);
-    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
 
     const restoredMetadataPath = currentPrSnapshotMetadataPath();
     expect(restoredMetadataPath).not.toBe(metadataPath);
@@ -793,7 +928,9 @@ describe("handlePrAnalyze", () => {
     const first = (await invoke(firstCtx, BODY)).lines();
     const done = first.at(-1)!;
 
-    expect(first.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(first.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
     expect(done.cache).toBe("miss");
     const headRoot = graphDescriptor(firstCtx, done.graphId as string).sourceRoot;
     const comparisonRoot = graphDescriptor(firstCtx, done.comparisonGraphId as string).sourceRoot;
@@ -860,7 +997,9 @@ describe("handlePrAnalyze", () => {
     const lines = (await invoke(ctx, BODY)).lines();
     const done = lines.at(-1)!;
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-merge-base", "extract-head", "done",
+    ]);
     expect(done.cache).toBe("miss");
     const headRoot = graphDescriptor(ctx, done.graphId as string).sourceRoot;
     const comparisonRoot = graphDescriptor(ctx, done.comparisonGraphId as string).sourceRoot;
@@ -885,6 +1024,15 @@ describe("handlePrAnalyze", () => {
     expect(cached.at(-1)?.cache).toBe("hit");
     expect(readdirSync(graphDescriptor(restarted, cached.at(-1)?.graphId as string).sourceRoot)).toEqual([]);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
+
+    mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
+    const movedBase = (await invoke(githubCtx(source), BODY)).lines();
+    expect(movedBase.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "reuse-merge-base", "extract", "extract-head", "done",
+    ]);
+    expect(movedBase.at(-1)?.cache).toBe("miss");
+    expect(movedBase.at(-1)?.comparisonGraphId).toBe(done.comparisonGraphId);
+    expect(analyzeRepository).toHaveBeenCalledTimes(3);
   });
 
   it("does not materialize a configured subdirectory missing from both revisions", async () => {
@@ -893,7 +1041,7 @@ describe("handlePrAnalyze", () => {
       BODY,
     )).lines();
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
     expect(lines.at(-1)?.message).toContain("source subfolder was not found in the repository");
     expect(analyzeRepository).not.toHaveBeenCalled();
   });
@@ -910,7 +1058,7 @@ describe("handlePrAnalyze", () => {
       BODY,
     )).lines();
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "error"]);
     expect(lines.at(-1)?.message).toContain("escapes the repository through a symbolic link");
     expect(analyzeRepository).not.toHaveBeenCalled();
   });
@@ -932,12 +1080,11 @@ describe("handlePrAnalyze", () => {
       BODY,
     )).lines();
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "error",
+    ]);
     expect(lines.at(-1)?.message).toContain("escapes the repository through a symbolic link");
-    expect(analyzeRepository).toHaveBeenCalledTimes(1);
-    const headRequest = vi.mocked(analyzeRepository).mock.calls[0][0];
-    expect(headRequest.absoluteRoot.endsWith(join("head", "linked"))).toBe(true);
-    expect(headRequest.changedSince).toBe(MERGE_BASE_SHA);
+    expect(analyzeRepository).not.toHaveBeenCalled();
   });
 
   it("does not materialize an absent comparison subdirectory through an escaping symlink parent", async () => {
@@ -957,12 +1104,13 @@ describe("handlePrAnalyze", () => {
       BODY,
     )).lines();
 
-    expect(lines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "error"]);
+    expect(lines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "error",
+    ]);
     expect(lines.at(-1)?.message).toContain("escapes the repository through a symbolic link");
     expect(existsSync(join(outside, "app"))).toBe(false);
-    // HEAD extraction remains the established first half of the extract stage; comparison is never
-    // handed to the analyzer after containment validation fails.
-    expect(analyzeRepository).toHaveBeenCalledTimes(1);
+    // Both exact roots are validated before cache probing or memory-heavy analysis admission.
+    expect(analyzeRepository).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -987,10 +1135,12 @@ describe("handlePrAnalyze", () => {
 
     const restarted = githubCtx(source);
     const secondLines = (await invoke(restarted, BODY)).lines();
-    expect(secondLines.map((line) => line.stage)).toEqual(["clone", "checkout", "extract", "done"]);
+    expect(secondLines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
+    ]);
     expect(secondLines.at(-1)?.cache).toBe("miss");
     expect(repositories.prepareCalls).toHaveLength(2);
-    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
 
     const replacement = graphDescriptor(restarted, secondLines.at(-1)?.[idField] as string).sourceRoot;
     expect(realpathSync.native(replacement)).not.toBe(realpathSync.native(outside));
@@ -1016,16 +1166,23 @@ describe("handlePrAnalyze", () => {
     });
   });
 
-  it("re-analyzes when the base branch moves even if the PR head is unchanged", async () => {
+  it("rebuilds a moved-base pair while reusing both unchanged revision artifacts", async () => {
     const ctx = githubCtx();
-    const first = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const firstLines = (await invoke(ctx, BODY)).lines();
+    const first = firstLines.at(-1)!;
     mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
-    const second = (await invoke(ctx, BODY)).lines().at(-1)!;
+    const secondLines = (await invoke(ctx, BODY)).lines();
+    const second = secondLines.at(-1)!;
 
+    expect(secondLines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
+    ]);
+    expect(second.cache).toBe("miss");
     expect(second.headSha).toBe(first.headSha);
     expect(second.graphId).not.toBe(first.graphId);
+    expect(second.comparisonGraphId).toBe(first.comparisonGraphId);
     expect(repositories.prepareCalls).toHaveLength(2);
-    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+    expect(analyzeRepository).toHaveBeenCalledTimes(2);
   });
 
   it("uses the mirror's exact merge base for both comparison source and canonical diff", async () => {
@@ -1153,6 +1310,18 @@ async function invoke(ctx: Context, body: unknown) {
   const running = beginInvoke(ctx, body);
   await running.completion;
   return running.captured;
+}
+
+async function invokePrepare(ctx: Context, body: unknown) {
+  const captured = capturedResponse();
+  const request = requestWith(body);
+  try {
+    await handlePrPrepare(ctx, request, captured.response);
+  } catch (error) {
+    if (!(error instanceof WebError)) throw error;
+    sendJson(captured.response, error.status, { error: error.message });
+  }
+  return captured;
 }
 
 function beginInvoke(ctx: Context, body: unknown) {

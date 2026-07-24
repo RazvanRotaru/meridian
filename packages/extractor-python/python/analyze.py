@@ -36,17 +36,21 @@ def main() -> None:
     options = read_options(sys.argv[2] if len(sys.argv) > 2 else None)
     diagnostics: list[str] = []
     discovered = list(discover_modules(root, options["include"], options["exclude"]))
-    parsed = parse_modules(discovered, diagnostics)
+    parsed = parse_modules(discovered, diagnostics, options["progress"])
+    emit_progress(options["progress"], "structure")
     aliases = module_aliases(module.discovered for module in parsed)
     project = ProjectIndex(aliases, ((item.discovered.module_path, item.tree) for item in parsed))
-    modules = [analyze_module(item, project, options["valueRefs"]) for item in parsed]
+    modules = []
+    for index, item in enumerate(parsed):
+        emit_progress(options["progress"], "structure", index + 1, len(parsed), item.discovered.file)
+        modules.append(analyze_module(item, project, options["valueRefs"]))
     diagnose_module_collisions(modules, diagnostics)
     json.dump({"language": "python", "modules": modules, "diagnostics": diagnostics}, sys.stdout)
 
 
 def read_options(raw: str | None) -> dict:
     if raw is None:
-        return {"include": [], "exclude": [], "valueRefs": False}
+        return {"include": [], "exclude": [], "valueRefs": False, "progress": False}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as error:
@@ -55,16 +59,40 @@ def read_options(raw: str | None) -> dict:
         "include": list(parsed.get("include") or []),
         "exclude": list(parsed.get("exclude") or []),
         "valueRefs": bool(parsed.get("valueRefs")),
+        "progress": bool(parsed.get("progress")),
     }
 
 
-def parse_modules(modules: list[DiscoveredModule], diagnostics: list[str]) -> list[ParsedModule]:
+def parse_modules(
+    modules: list[DiscoveredModule],
+    diagnostics: list[str],
+    progress: bool = False,
+) -> list[ParsedModule]:
     parsed: list[ParsedModule] = []
-    for module in modules:
+    for index, module in enumerate(modules):
+        emit_progress(progress, "project-load", index + 1, len(modules), module.file)
         tree = parse_file(module, diagnostics)
         if tree is not None:
             parsed.append(ParsedModule(module, tree))
     return parsed
+
+
+def emit_progress(
+    enabled: bool,
+    phase: str,
+    current: int | None = None,
+    total: int | None = None,
+    path: str | None = None,
+) -> None:
+    """Emit a private stderr record; stdout remains the analyzer's JSON wire contract."""
+    if not enabled:
+        return
+    event: dict[str, object] = {"phase": phase}
+    if current is not None and total is not None and path is not None:
+        event.update({"current": current, "total": total, "path": path})
+    # Supported Python versions line-buffer stderr even when redirected. The terminating newline
+    # makes records visible to the parent without a second explicit flush syscall per source file.
+    sys.stderr.write(f"MERIDIAN_PROGRESS\t{json.dumps(event, separators=(',', ':'))}\n")
 
 
 def parse_file(module: DiscoveredModule, diagnostics: list[str]) -> ast.Module | None:

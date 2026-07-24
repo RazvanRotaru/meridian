@@ -14,6 +14,8 @@ import { discoverWorkspacePaths } from "./workspace-paths";
 import { manifestMemberDirs } from "./workspace-scope";
 
 export interface LoadedProject {
+  /** Short-lived compiler owner. It must not escape the extraction/fingerprinting call. */
+  project: Project;
   sourceFiles: SourceFile[];
   relativePathOf: (file: SourceFile) => string;
   /** Absolute extraction root — the structural pass joins package paths onto it to spot package.json. */
@@ -41,18 +43,21 @@ export function loadProject(options: ExtractOptions): LoadedProject {
   if (memberDirs) {
     const globs = memberDirs.flatMap((dir) => [`${dir}/**/*.ts`, `${dir}/**/*.tsx`]);
     const memberPaths = new Set(memberDirs.map((dir) => relativeToRoot(root, dir)));
-    return { sourceFiles: select(fromGlobs(root, globs)), relativePathOf, root, memberPaths };
+    const project = fromGlobs(root, globs);
+    return { project, sourceFiles: select(project), relativePathOf, root, memberPaths };
   }
 
   if (options.project) {
-    const fromConfig = select(fromTsConfig(options.project));
+    const project = fromTsConfig(options.project);
+    const fromConfig = select(project);
     // A solution-style tsconfig with no usable references loads ZERO sources; fall back to the glob
     // scan so a monorepo root stays extractable instead of writing an empty graph.
     if (fromConfig.length > 0) {
-      return { sourceFiles: fromConfig, relativePathOf, root };
+      return { project, sourceFiles: fromConfig, relativePathOf, root };
     }
   }
-  return { sourceFiles: select(fromGlobs(root, options.include)), relativePathOf, root };
+  const project = fromGlobs(root, options.include);
+  return { project, sourceFiles: select(project), relativePathOf, root };
 }
 
 function fromTsConfig(tsConfigFilePath: string): Project {
@@ -100,7 +105,9 @@ export function loadUnitProject(
   const sourceFiles = project.getSourceFiles().filter((file) => isSelectable(file, relativePathOf(file), excludes));
   // memberPaths (manifest mode) makes the structural pass tag exactly the declared members as
   // package boundaries; undefined (scan fallback) tags by package.json presence, as before.
-  return memberPaths ? { sourceFiles, relativePathOf, root, memberPaths } : { sourceFiles, relativePathOf, root };
+  return memberPaths
+    ? { project, sourceFiles, relativePathOf, root, memberPaths }
+    : { project, sourceFiles, relativePathOf, root };
 }
 
 function unitProject(root: string, unitDir: string): Project {

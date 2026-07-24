@@ -7,14 +7,18 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import type { Target } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import { CliError, EXIT } from "../errors";
 import {
   errorFromRepositoryAnalysisWorker,
   isRepositoryAnalysisWorkerRequest,
   isRepositoryAnalysisWorkerResponse,
+  MAX_REPOSITORY_WORKER_PROGRESS_EVENTS,
   MAX_REPOSITORY_WORKER_STDERR_BYTES,
   normalizeRepositoryAnalysisRequest,
   type RepositoryAnalysisFacts,
+  type RepositoryAnalysisProgress,
+  type RepositoryAnalysisProgressContext,
   type RepositoryAnalysisWorkerBranchVariantResult,
   type RepositoryAnalysisWorkerFileResult,
   type RepositoryAnalysisWorkerRequest,
@@ -31,7 +35,11 @@ import { repositoryAnalysisWorkerHeapArg } from "./repository-analysis-memory";
 
 export type { SerializableRepositoryAnalysisRequest } from "./repository-analysis-worker-job";
 export { isRepositoryAnalysisFacts } from "./repository-analysis-worker-job";
-export type { RepositoryAnalysisFacts } from "./repository-analysis-worker-job";
+export type {
+  RepositoryAnalysisFacts,
+  RepositoryAnalysisProgress,
+  RepositoryAnalysisProgressContext,
+} from "./repository-analysis-worker-job";
 
 const DEFAULT_TERMINATE_GRACE_MS = 5_000;
 const DEFAULT_PROCESS_TREE_KILL_WAIT_MS = 5_000;
@@ -68,6 +76,13 @@ export interface RepositoryAnalysisChildOptions {
   branchVariant?: { artifactOutputPath: string; branch: string };
   /** Produce a bounded PR-review fingerprint sidecar inside the disposable worker. */
   reviewFingerprints?: ReviewFingerprintSelection;
+  /** Optional non-semantic progress channel, scoped to one exact PR revision. */
+  progress?: {
+    context: RepositoryAnalysisProgressContext;
+    onProgress(progress: RepositoryAnalysisProgress): void;
+  };
+  /** Server-owned immutable TypeScript shard execution policy transferred over private IPC. */
+  typeScriptRevisionShards?: TypeScriptRevisionShardPolicy;
   signal?: AbortSignal;
   /** Test/dev override; production resolves the colocated built worker. */
   workerEntry?: string | URL;
@@ -92,6 +107,8 @@ export async function runRepositoryAnalysisChild(
     artifactOutputPath: options.artifactOutputPath,
     branchVariant: options.branchVariant ?? null,
     reviewFingerprints: options.reviewFingerprints ?? null,
+    progressContext: options.progress?.context ?? null,
+    typeScriptRevisionShards: options.typeScriptRevisionShards ?? null,
     ...(options.token ? { token: options.token } : {}),
   };
   return publicResult(await runRepositoryWorkerProcess(message, options), options.artifactOutputPath);
@@ -170,7 +187,8 @@ function runRepositoryWorkerProcess(
       return;
     }
 
-    let response: RepositoryAnalysisWorkerResponse | undefined;
+    let response: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }> | undefined;
+    let progressMessages = 0;
     let terminalReason: unknown;
     let transportFailure: CliError | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -228,8 +246,35 @@ function runRepositoryWorkerProcess(
     });
     child.on("message", (value: unknown) => {
       if (settled || terminalReason !== undefined) return;
-      if (response !== undefined || !isRepositoryAnalysisWorkerResponse(value)) {
+      if (!isRepositoryAnalysisWorkerResponse(value)) {
         failTransport("repository analysis worker sent an invalid response");
+        return;
+      }
+      if (value.type === "progress") {
+        progressMessages += 1;
+        if (progressMessages > MAX_REPOSITORY_WORKER_PROGRESS_EVENTS) {
+          failTransport("repository analysis worker exceeded the progress event limit");
+          return;
+        }
+        if (response !== undefined
+          || message.type !== "analyze"
+          || message.progressContext === null
+          || value.id !== message.id
+          || !isDeepStrictEqual(value.progress.version, message.progressContext.version)
+          || !isDeepStrictEqual(value.progress.revision, message.progressContext.revision)) {
+          failTransport("repository analysis worker sent progress for an invalid revision");
+          return;
+        }
+        try {
+          const result = options.progress?.onProgress(value.progress);
+          sinkPromiseLike(result);
+        } catch {
+          // Progress is observational; a consumer cannot change or fail graph extraction.
+        }
+        return;
+      }
+      if (response !== undefined) {
+        failTransport("repository analysis worker sent more than one terminal response");
         return;
       }
       response = value;
@@ -301,6 +346,22 @@ function runRepositoryWorkerProcess(
       failTransport("could not send repository analysis worker request");
     }
   });
+}
+
+function sinkPromiseLike(value: unknown): void {
+  if (
+    (typeof value !== "object" || value === null)
+    && typeof value !== "function"
+  ) {
+    return;
+  }
+  try {
+    if (typeof (value as { then?: unknown }).then === "function") {
+      void Promise.resolve(value).catch(() => {});
+    }
+  } catch {
+    // Progress observers cannot fail repository analysis.
+  }
 }
 
 async function verifyWorkerResult(

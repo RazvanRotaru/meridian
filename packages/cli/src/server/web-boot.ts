@@ -8,7 +8,10 @@
  * The landing page gets a separate one-line prefill so a CLI positional can pre-fill the form.
  */
 
-import type { SyntheticScenarioDescriptor } from "@meridian/core";
+import {
+  PR_REVIEW_PROGRESS_MODEL,
+  type SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import { telemetrySourceDescriptors } from "./overlay-source";
 import { canonicalExtractionSubdir, type ArtifactSource } from "./web-source";
 
@@ -106,6 +109,14 @@ export function injectPrefill(html: string, source: string | undefined): string 
     return html;
   }
   return injectScript(html, `window.__MERIDIAN_PREFILL__=${escapeForScript(JSON.stringify(source))}`);
+}
+
+/** Give the dependency-free landing page the exact canonical model consumed by the renderer. */
+export function injectPrReviewProgressModel(html: string): string {
+  return injectScript(
+    html,
+    `window.__MERIDIAN_PR_REVIEW_PROGRESS_MODEL__=${escapeForScript(JSON.stringify(PR_REVIEW_PROGRESS_MODEL))}`,
+  );
 }
 
 function injectScript(html: string, body: string): string {

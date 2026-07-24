@@ -19,9 +19,23 @@ let prevNav: NavState | null = null;
 // True while a popstate-driven restore is writing to the store, so the writer stays muted.
 let suppress = false;
 
+export interface UrlRestoreProgress {
+  /** Initial `rev=1` restore reached the GitHub summary/files lane after the base layout. */
+  onReviewDetails?: () => void;
+  /** False once a newer history entry supersedes this restore. */
+  isCurrent?: () => boolean;
+}
+
 /** Apply the URL's navigation state to the store and lay out the restored view. Inert off-DOM. */
-export async function restoreFromUrl(store: BlueprintStore, search?: string): Promise<void> {
+export async function restoreFromUrl(
+  store: BlueprintStore,
+  search?: string,
+  progress: UrlRestoreProgress = {},
+): Promise<void> {
   if (typeof window === "undefined") {
+    return;
+  }
+  if (!restoreIsCurrent(progress)) {
     return;
   }
   const nav = decodeNavState(new URLSearchParams(search ?? window.location.search));
@@ -43,6 +57,9 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   const hasNoReview = !nav.reviewActive && nav.reviewPr === null && nav.prSelected === null;
   if (hasNoReview && store.getState().prReviewed !== null) {
     await store.getState().selectPr(null, { endReviewSession: true });
+    if (!restoreIsCurrent(progress)) {
+      return;
+    }
   }
   // Apply the COMPLETE structural state (not just the keys the URL carried) so a back/forward to a
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
@@ -56,19 +73,32 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   } else {
     await store.getState().relayout();
   }
+  if (!restoreIsCurrent(progress)) {
+    return;
+  }
   // The minimal-graph overlay is restored state too: rebuild its nodes when the URL carried seeds so
   // a reload / back-forward into an open overlay reproduces it (structuralState already cleared it
   // when the URL carried none).
   if (store.getState().minimalSeedIds.length > 0) {
     await store.getState().minimalRelayout();
+    if (!restoreIsCurrent(progress)) {
+      return;
+    }
   }
   if (nav.reviewActive && nav.reviewPr !== null) {
-    await restorePrReview(store, nav.reviewPr);
+    progress.onReviewDetails?.();
+    await restorePrReview(store, nav.reviewPr, () => restoreIsCurrent(progress));
+    if (!restoreIsCurrent(progress)) {
+      return;
+    }
   } else if (nav.prSelected !== null) {
     // The checks lane keys off the summary's head SHA after files land. A bookmarked PR can restore
     // before either list page exists, so resolve its one-off summary first; the file/detail fetch
     // itself stays fire-and-forget like the existing plain-browser restore.
     await store.getState().ensurePrSummary(nav.prSelected);
+    if (!restoreIsCurrent(progress)) {
+      return;
+    }
     if (selectedPrSummary(store.getState(), nav.prSelected) !== null) {
       void store.getState().selectPr(nav.prSelected);
     }
@@ -83,6 +113,10 @@ export async function restoreFromUrl(store: BlueprintStore, search?: string): Pr
   }
   applyTelemetryCoordinates(store, nav.telemetrySourceId, nav.environment);
   prevNav = navFrom(store.getState());
+}
+
+function restoreIsCurrent(progress: UrlRestoreProgress): boolean {
+  return progress.isCurrent?.() ?? true;
 }
 
 /** Start reflecting the store into the URL and honouring back/forward. Returns an unsubscribe. */
@@ -125,13 +159,21 @@ export function startUrlSync(store: BlueprintStore): () => void {
   };
 }
 
-async function restorePrReview(store: BlueprintStore, number: number): Promise<void> {
+async function restorePrReview(
+  store: BlueprintStore,
+  number: number,
+  isCurrent: () => boolean,
+): Promise<void> {
   await store.getState().ensurePrSummary(number);
-  if (selectedPrSummary(store.getState(), number) === null) {
+  if (!isCurrent() || selectedPrSummary(store.getState(), number) === null) {
     return;
   }
   await store.getState().selectPr(number);
-  if (store.getState().prSelected !== number || store.getState().prFiles === null) {
+  if (
+    !isCurrent()
+    || store.getState().prSelected !== number
+    || store.getState().prFiles === null
+  ) {
     return;
   }
   // Prepare-first is blocking: a restored review stays on the PRs waiting surface until the cached

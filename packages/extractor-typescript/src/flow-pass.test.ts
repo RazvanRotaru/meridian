@@ -10,8 +10,12 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { Project } from "ts-morph";
 import type { ExtractionResult, FlowSourceAnchor, FlowStep } from "@meridian/core";
+import { buildLogicFlows } from "./flow-pass";
 import { createTypeScriptExtractor } from "./index";
+import type { NodeDescriptor } from "./model";
+import type { ResolutionIndex } from "./resolution-index";
 
 const SOURCE = `
 export function add(a: number, b: number) {
@@ -259,6 +263,39 @@ function allSources(steps: FlowStep[]): Array<FlowSourceAnchor | undefined> {
 }
 
 describe("logic-flow pass", () => {
+  it("does not perform progress-only module membership work without an observer", () => {
+    const project = new Project({ useInMemoryFileSystem: true });
+    const sourceFile = project.createSourceFile("/src/noop.ts", "const answer = 42;");
+    const descriptor: NodeDescriptor = {
+      kind: "module",
+      idParts: { lang: "ts", modulePath: "src/noop.ts" },
+      displayName: "noop.ts",
+      qualifiedName: "src/noop.ts",
+      summary: null,
+      signature: null,
+      tags: [],
+      telemetry: null,
+      location: { file: "src/noop.ts", startLine: 1 },
+      startCol: 1,
+      parent: null,
+      declarationNode: null,
+      callableNode: null,
+      finalId: "ts:src/noop.ts",
+    };
+    const moduleSources = new class extends Map<string, typeof sourceFile> {
+      override has(): boolean {
+        throw new Error("progress membership should not run without an observer");
+      }
+    }([[descriptor.finalId, sourceFile]]);
+
+    expect(buildLogicFlows(
+      [descriptor],
+      {} as ResolutionIndex,
+      new Set([descriptor.finalId]),
+      moduleSources,
+    )).toEqual({});
+  });
+
   it("omits a callable with no calls or control structures (add)", () => {
     expect(stepsFor("add")).toBeUndefined();
   });

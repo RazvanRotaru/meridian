@@ -12,9 +12,12 @@
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
     GET  /api/repos/branches?repo=&q= -> { branches: [string] }    (q prioritizes a typed branch)
     GET  /api/repos/pulls?repo=&state=&page=&q= -> { prs: [summary + viewerStatus?], hasMore, viewerLogin? }
-    POST /api/generate     -> { id } | { error }
-  On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
-  textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
+    POST /api/generate     -> versioned blueprint-generation NDJSON
+    POST /api/pr/prepare   -> immutable HEAD + merge-base preparation NDJSON
+  Blueprint generation redirects by id. PR preparation boots the returned exact HEAD id, then the
+  renderer live-revalidates both moving refs through /api/pr/analyze before applying the review.
+  Every GitHub-sourced string is written via textContent and every external URL is https-validated
+  before use — repo names/descriptions are untrusted.
 
   Design: hero + auth-card over a live Canvas 2D rendering of a Meridian dependency graph
   (design_handoff_meridian_landing). The card's segmented toggle maps the design's two auth modes
@@ -818,6 +821,35 @@
         font-size: 13.5px;
         font-weight: 650;
       }
+      .prepare-detail {
+        --prepare-detail-line-height: 18px;
+        --prepare-detail-lines: 7;
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        min-height: calc(var(--prepare-detail-line-height) * var(--prepare-detail-lines));
+        color: #e6edf3;
+        font-size: 12.5px;
+        line-height: var(--prepare-detail-line-height);
+      }
+      #prepare-detail-text {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+      /* File telemetry changes several times a second. Keep that running copy inside the space
+         reserved before extraction starts so each path cannot move the rest of the card. The
+         complete string remains in the DOM/live announcement and as hover text. Terminal errors
+         are deliberately not clamped. */
+      .prepare-detail[data-state="active"] #prepare-detail-text {
+        display: -webkit-box;
+        max-height: calc(var(--prepare-detail-line-height) * var(--prepare-detail-lines));
+        overflow: hidden;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 7;
+      }
+      .prepare-detail[data-state="active"] {
+        height: calc(var(--prepare-detail-line-height) * var(--prepare-detail-lines));
+      }
       .prepare-steps {
         display: flex;
         flex-direction: column;
@@ -844,15 +876,71 @@
       .prepare-step[data-state="active"] {
         font-weight: 650;
       }
-      .prepare-step[data-state="active"] .prepare-dot {
+      .prepare-step[data-state="active"] > .prepare-dot {
         background: #388bfd;
         box-shadow: 0 0 0 4px rgba(56, 139, 253, 0.2);
       }
-      .prepare-step[data-state="done"] .prepare-dot {
+      .prepare-detail[data-state="active"] .prepare-dot {
+        background: #388bfd;
+        box-shadow: 0 0 0 4px rgba(56, 139, 253, 0.2);
+      }
+      .prepare-step[data-state="done"] > .prepare-dot {
         background: #56c271;
       }
-      .prepare-step[data-state="pending"] {
+      .prepare-detail[data-state="done"] .prepare-dot {
+        background: #56c271;
+      }
+      .prepare-step[data-state="reused"] > .prepare-dot {
+        background: #2dd4bf;
+      }
+      .prepare-step[data-state="skipped"] > .prepare-dot,
+      .prepare-step[data-state="canceled"] > .prepare-dot {
+        background: #6e7681;
+      }
+      .prepare-step[data-state="error"] > .prepare-dot {
+        background: #f85149;
+      }
+      .prepare-detail[data-state="error"] .prepare-dot {
+        background: #f85149;
+      }
+      .prepare-detail[data-state="canceled"] .prepare-dot {
+        background: #8b949e;
+      }
+      .prepare-step[data-state="pending"],
+      .prepare-step[data-state="skipped"] {
         color: var(--muted-2);
+      }
+      .prepare-step-content {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 7px;
+      }
+      .prepare-revisions {
+        display: flex;
+        flex-wrap: wrap;
+        align-content: flex-start;
+        gap: 6px 14px;
+        min-height: 32px;
+        padding: 0;
+        margin: 0;
+        list-style: none;
+      }
+      .prepare-revision {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        color: #aab4c0;
+        font-size: 11.5px;
+      }
+      .prepare-revision .prepare-dot {
+        width: 7px;
+        height: 7px;
+      }
+      .prepare-state-badge {
+        font-size: 0.86em;
+        font-weight: 500;
+        text-transform: uppercase;
       }
       .sr-only {
         position: absolute;
@@ -1254,20 +1342,24 @@
             >
               <span class="sr-only" id="prepare-announcement" role="status" aria-live="polite" aria-atomic="true"></span>
               <div class="prepare-title">Preparing blueprint</div>
-              <ol class="prepare-steps">
-                <li class="prepare-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
+              <div class="prepare-detail" id="prepare-detail" data-reserved-lines="7" hidden>
+                <span class="prepare-dot" aria-hidden="true"></span>
+                <span id="prepare-detail-text"></span>
+              </div>
+              <ol class="prepare-steps" id="prepare-steps">
+                <li class="prepare-step prepare-blueprint-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span>Check cache</span>
                 </li>
-                <li class="prepare-step" id="prepare-source-step" data-stage="source" data-state="pending">
+                <li class="prepare-step prepare-blueprint-step" id="prepare-source-step" data-stage="source" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-source-label">Fetch repository</span>
                 </li>
-                <li class="prepare-step" data-stage="extract" data-state="pending">
+                <li class="prepare-step prepare-blueprint-step prepare-blueprint-extract" data-stage="extract" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-extract-label">Generate code graph</span>
                 </li>
-                <li class="prepare-step" data-stage="open" data-state="pending">
+                <li class="prepare-step prepare-blueprint-step" data-stage="open" data-state="pending">
                   <span class="prepare-dot" aria-hidden="true"></span>
                   <span id="prepare-open-label">Open blueprint</span>
                 </li>
@@ -2044,7 +2136,7 @@
       }
 
       function scheduleCacheProbe() {
-        const request = buildRequest();
+        const request = buildBlueprintRequest();
         const key = request && githubRepoSlug(request.value) ? cacheKey(request) : null;
         if (mode === "github" && githubIntent === "explore" && key
           && (checkedCacheKey === key || pendingCacheKey === key)) return;
@@ -2310,6 +2402,7 @@
           body: typeof value.body === "string" ? value.body : "",
           author: typeof value.author === "string" ? value.author : "unknown",
           headRef: typeof value.headRef === "string" ? value.headRef : "",
+          headSha: typeof value.headSha === "string" ? value.headSha : "",
           baseRef: typeof value.baseRef === "string" ? value.baseRef : "",
           updatedAt: typeof value.updatedAt === "string" ? value.updatedAt : "",
           draft: value.draft === true,
@@ -3242,34 +3335,458 @@
         status.textContent = text;
       }
 
-      function showPrepareProgress(sourceKind, cacheAlreadyChecked = false) {
+      const prReviewProgressModel = window.__MERIDIAN_PR_REVIEW_PROGRESS_MODEL__;
+      const MAX_PR_PREPARE_LINE_CHARS = 4 * 1024 * 1024;
+      const MAX_REVIEW_PROGRESS_BYTES = 16 * 1024;
+      const MAX_REVIEW_MESSAGE_BYTES = 4 * 1024;
+      let reviewPrepareProgress = null;
+
+      function requirePrReviewProgressModel() {
+        if (!prReviewProgressModel
+          || prReviewProgressModel.version !== 1
+          || !Array.isArray(prReviewProgressModel.steps)
+          || !Array.isArray(prReviewProgressModel.revisions)
+          || !prReviewProgressModel.stages
+          || !prReviewProgressModel.terminal
+          || !prReviewProgressModel.telemetry) {
+          throw expectedGenerationError("PR review progress contract is unavailable.");
+        }
+        return prReviewProgressModel;
+      }
+
+      function showPrepareProgress(sourceKind, cacheAlreadyChecked = false, reviewPrNumber = null) {
         const review = sourceKind === "github" && githubIntent === "review";
-        document.querySelector(".prepare-title").textContent = review ? "Preparing PR review" : "Preparing blueprint";
-        $("prepare-cache-step").hidden = sourceKind !== "github" || cacheAlreadyChecked;
+        const model = review ? requirePrReviewProgressModel() : null;
+        document.querySelector(".prepare-title").textContent = model ? model.title : "Preparing blueprint";
+        document.querySelectorAll(".prepare-blueprint-step").forEach((step) => { step.hidden = review; });
+        document.querySelectorAll(".prepare-review-step").forEach((step) => { step.hidden = !review; });
         $("prepare-source-label").textContent = sourceKind === "path" ? "Read repository" : "Fetch repository";
         $("prepare-extract-label").textContent = "Generate code graph";
-        $("prepare-open-label").textContent = review ? "Open PR review" : "Open blueprint";
+        $("prepare-open-label").textContent = "Open blueprint";
+        $("prepare-detail").hidden = !review;
         $("prepare-progress").hidden = false;
-        setPrepareStage(sourceKind === "github" && !cacheAlreadyChecked ? "cache" : "source");
+        if (review) {
+          resetReviewPrepareProgress(reviewPrNumber);
+        } else {
+          $("prepare-cache-step").hidden = sourceKind !== "github" || cacheAlreadyChecked;
+          $("prepare-source-step").hidden = false;
+          document.querySelector(".prepare-blueprint-extract").hidden = false;
+          document.querySelector('.prepare-blueprint-step[data-stage="open"]').hidden = false;
+          setPrepareStage(sourceKind === "github" && !cacheAlreadyChecked ? "cache" : "source");
+        }
         reveal($("prepare-progress"));
       }
 
       function hidePrepareProgress() {
         $("prepare-progress").hidden = true;
+        $("prepare-detail").hidden = true;
         $("prepare-announcement").textContent = "";
       }
 
       function setPrepareStage(activeStage) {
-        const steps = Array.from(document.querySelectorAll(".prepare-step")).filter((step) => !step.hidden);
-        const activeIndex = Math.max(0, steps.findIndex((step) => step.dataset.stage === activeStage));
+        const allSteps = Array.from(document.querySelectorAll(".prepare-blueprint-step"));
+        const steps = allSteps.filter((step) => !step.hidden);
+        const activeIndex = steps.findIndex((step) => step.dataset.stage === activeStage);
+        if (activeIndex < 0) return;
+        allSteps.filter((step) => step.hidden).forEach((step) => {
+          step.dataset.state = "pending";
+          step.removeAttribute("aria-current");
+        });
         steps.forEach((step, index) => {
           const state = index < activeIndex ? "done" : index === activeIndex ? "active" : "pending";
           step.dataset.state = state;
           if (state === "active") step.setAttribute("aria-current", "step");
           else step.removeAttribute("aria-current");
         });
-        const activeStep = document.querySelector('.prepare-step[data-state="active"]');
-        $("prepare-announcement").textContent = (mode === "github" && githubIntent === "review" ? "Preparing PR review: " : "Preparing blueprint: ") + activeStep.textContent.trim();
+        const activeStep = steps[activeIndex];
+        $("prepare-announcement").textContent = "Preparing blueprint: " + activeStep.textContent.trim();
+      }
+
+      function resetReviewPrepareProgress(prNumber) {
+        const model = requirePrReviewProgressModel();
+        ensureReviewPrepareRows(model);
+        reviewPrepareProgress = createReviewPrepareProgress(model, prNumber);
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "stage",
+          stage: "resolve",
+          progress: null,
+        });
+        renderReviewPrepareProgress();
+      }
+
+      function setReviewPrepareStage(stage, progress) {
+        if (!reviewPrepareProgress) return;
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "stage",
+          stage,
+          progress: progress == null ? null : progress,
+        });
+        renderReviewPrepareProgress();
+      }
+
+      function completeReviewPrepareProgress(cache, destination) {
+        if (!reviewPrepareProgress) return;
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "analysis-done",
+          cache: cache === "hit" || cache === "miss" ? cache : null,
+        });
+        // Navigation is a real handoff, not completion: artifact loading and projection continue in
+        // the renderer. Keep their step active across the page boundary instead of skipping it.
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "stage",
+          stage: "handoff",
+          progress: null,
+        });
+        storeReviewPrepareHandoff(destination);
+        renderReviewPrepareProgress();
+      }
+
+      function failReviewPrepareProgress(message) {
+        if (!reviewPrepareProgress) return;
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "error",
+          message,
+        });
+        renderReviewPrepareProgress();
+      }
+
+      function storeReviewPrepareHandoff(destination) {
+        if (!reviewPrepareProgress || typeof destination !== "string") return;
+        const model = requirePrReviewProgressModel();
+        try {
+          window.sessionStorage.setItem(
+            model.handoffStorageKeyPrefix + destination,
+            JSON.stringify({
+              version: model.version,
+              destination,
+              createdAt: Date.now(),
+              progress: reviewPrepareProgress,
+            }),
+          );
+        } catch {
+          // Session storage is an optimization. Direct review boot remains conservative.
+        }
+      }
+
+      function createReviewPrepareProgress(model, prNumber = null) {
+        return {
+          version: model.version,
+          prNumber: Number.isSafeInteger(prNumber) && prNumber > 0 ? prNumber : null,
+          status: "idle",
+          activeStage: null,
+          steps: Object.fromEntries(model.steps.map((step) => [step.id, "pending"])),
+          revisions: { head: "pending", mergeBase: "pending" },
+          progress: null,
+          message: null,
+        };
+      }
+
+      function reduceReviewPrepareProgress(current, event) {
+        const model = requirePrReviewProgressModel();
+        if (event.type === "reset") return createReviewPrepareProgress(model, current.prNumber);
+        if (["success", "error", "canceled"].includes(current.status)) return current;
+        const next = {
+          ...current,
+          steps: { ...current.steps },
+          revisions: { ...current.revisions },
+        };
+        if (event.type === "stage") {
+          const definition = model.stages[event.stage];
+          if (!definition) return current;
+          const nextIndex = model.steps.findIndex((step) => step.id === definition.step);
+          model.steps.forEach((step, index) => {
+            if (next.steps[step.id] === "active"
+              && step.id !== definition.step
+              && index < nextIndex) {
+              next.steps[step.id] = "done";
+            }
+          });
+          next.status = "running";
+          next.activeStage = event.stage;
+          next.steps[definition.step] = "active";
+          next.progress = validReviewExtractionObservation(event.progress, event.stage, model)
+            ? event.progress
+            : null;
+          next.message = null;
+          if (event.stage === "extract-head") {
+            if (next.revisions.mergeBase === "active") next.revisions.mergeBase = "done";
+            next.revisions.head = "active";
+          } else if (event.stage === "reuse-head") {
+            if (next.revisions.mergeBase === "active") next.revisions.mergeBase = "done";
+            next.revisions.head = "reused";
+          } else if (event.stage === "extract-merge-base") {
+            if (next.revisions.head === "active") next.revisions.head = "done";
+            next.revisions.mergeBase = "active";
+          } else if (event.stage === "reuse-merge-base") {
+            if (next.revisions.head === "active") next.revisions.head = "done";
+            next.revisions.mergeBase = "reused";
+          }
+          return next;
+        }
+        if (event.type === "analysis-done") {
+          next.status = "running";
+          next.activeStage = null;
+          next.progress = null;
+          next.message = null;
+          next.steps.resolve = "done";
+          if (event.cache === "hit") {
+            next.steps.workspace = reviewCacheHitState(next.steps.workspace, "skipped");
+            next.steps.graphs = reviewCacheHitState(next.steps.graphs, "reused");
+            next.revisions.head = reviewCacheHitState(next.revisions.head, "reused");
+            next.revisions.mergeBase = reviewCacheHitState(next.revisions.mergeBase, "reused");
+          } else {
+            next.steps.workspace = next.steps.workspace === "pending"
+              ? "skipped"
+              : next.steps.workspace === "active" ? "done" : next.steps.workspace;
+            next.steps.graphs = "done";
+            next.revisions.head = next.revisions.head === "reused" ? "reused" : "done";
+            next.revisions.mergeBase = next.revisions.mergeBase === "reused" ? "reused" : "done";
+          }
+          return next;
+        }
+        if (event.type === "success") {
+          if (next.steps.projection !== "active" && next.steps.projection !== "done") return current;
+          model.steps.forEach((step) => {
+            if (next.steps[step.id] === "active") next.steps[step.id] = "done";
+            else if (next.steps[step.id] === "pending") next.steps[step.id] = "skipped";
+          });
+          for (const revision of ["head", "mergeBase"]) {
+            if (next.revisions[revision] === "active") next.revisions[revision] = "done";
+            else if (next.revisions[revision] === "pending") next.revisions[revision] = "skipped";
+          }
+          next.status = "success";
+          next.activeStage = null;
+          next.progress = null;
+          next.message = model.terminal.success;
+          return next;
+        }
+        if (event.type === "error" || event.type === "canceled") {
+          const terminalState = event.type;
+          model.steps.forEach((step) => {
+            if (next.steps[step.id] === "active") next.steps[step.id] = terminalState;
+          });
+          for (const revision of ["head", "mergeBase"]) {
+            if (next.revisions[revision] === "active") next.revisions[revision] = terminalState;
+          }
+          next.status = event.type;
+          next.progress = null;
+          next.message = event.type === "error"
+            ? boundedReviewMessage(event.message, model.terminal.error)
+            : model.terminal.canceled;
+          return next;
+        }
+        return current;
+      }
+
+      function reviewCacheHitState(state, fallback) {
+        if (state === "done" || state === "reused" || state === "skipped") return state;
+        return state === "active" ? "done" : fallback;
+      }
+
+      function ensureReviewPrepareRows(model) {
+        document.querySelectorAll(".prepare-review-step").forEach((step) => step.remove());
+        for (const step of model.steps) {
+          const row = document.createElement("li");
+          row.className = "prepare-step prepare-review-step";
+          row.dataset.stepId = step.id;
+          const dot = document.createElement("span");
+          dot.className = "prepare-dot";
+          dot.setAttribute("aria-hidden", "true");
+          const content = document.createElement("span");
+          content.className = "prepare-step-content";
+          const label = document.createElement("span");
+          label.className = "prepare-step-label";
+          label.textContent = step.label;
+          content.appendChild(label);
+          if (step.id === "graphs") {
+            const revisions = document.createElement("ul");
+            revisions.className = "prepare-revisions";
+            revisions.dataset.reservedRows = "2";
+            revisions.setAttribute("aria-label", "Exact revision graphs");
+            for (const revision of model.revisions) {
+              const revisionRow = document.createElement("li");
+              revisionRow.className = "prepare-step prepare-revision";
+              revisionRow.dataset.revisionId = revision.id;
+              const revisionDot = document.createElement("span");
+              revisionDot.className = "prepare-dot";
+              revisionDot.setAttribute("aria-hidden", "true");
+              const revisionLabel = document.createElement("span");
+              revisionLabel.className = "prepare-revision-label";
+              revisionLabel.textContent = revision.label;
+              revisionRow.append(revisionDot, revisionLabel);
+              revisions.appendChild(revisionRow);
+            }
+            content.appendChild(revisions);
+          }
+          row.append(dot, content);
+          $("prepare-steps").appendChild(row);
+        }
+      }
+
+      function renderReviewPrepareProgress() {
+        if (!reviewPrepareProgress) return;
+        const model = requirePrReviewProgressModel();
+        const currentStep = reviewPrepareProgress.activeStage
+          ? model.stages[reviewPrepareProgress.activeStage].step
+          : null;
+        for (const step of model.steps) {
+          const row = document.querySelector(`.prepare-review-step[data-step-id="${step.id}"]`);
+          if (!row) continue;
+          setPrepareRowState(
+            row,
+            step.label,
+            reviewPrepareProgress.steps[step.id],
+            step.id === currentStep,
+          );
+        }
+        for (const revision of model.revisions) {
+          const row = document.querySelector(`.prepare-revision[data-revision-id="${revision.id}"]`);
+          if (!row) continue;
+          const state = reviewPrepareProgress.revisions[revision.id];
+          // Match the shared renderer: aria-current belongs to the canonical top-level step only.
+          setPrepareRowState(row, revision.label, state, false);
+        }
+        const detail = $("prepare-detail");
+        detail.dataset.state = reviewPrepareProgress.status === "running"
+          ? "active"
+          : reviewPrepareProgress.status === "success" ? "done" : reviewPrepareProgress.status;
+        const text = reviewPrepareStatusText(reviewPrepareProgress);
+        const detailText = $("prepare-detail-text");
+        detailText.textContent = text;
+        detailText.title = reviewPrepareProgress.status === "running" ? text : "";
+        $("prepare-announcement").setAttribute(
+          "role",
+          reviewPrepareProgress.status === "error" ? "alert" : "status",
+        );
+        $("prepare-announcement").setAttribute(
+          "aria-live",
+          reviewPrepareProgress.status === "error" ? "assertive" : "polite",
+        );
+        $("prepare-announcement").textContent = model.title + ": " + text;
+      }
+
+      function setPrepareRowState(row, label, state, current) {
+        row.dataset.state = state;
+        if (state === "active" && current) row.setAttribute("aria-current", "step");
+        else row.removeAttribute("aria-current");
+        const labelNode = row.querySelector(
+          row.classList.contains("prepare-revision") ? ".prepare-revision-label" : ".prepare-step-label",
+        );
+        if (!labelNode) return;
+        labelNode.replaceChildren(document.createTextNode(label));
+        const badge = { reused: "reused", skipped: "skipped", error: "failed", canceled: "canceled" }[state];
+        if (badge) {
+          const span = document.createElement("span");
+          span.className = "prepare-state-badge";
+          span.textContent = " · " + badge;
+          labelNode.appendChild(span);
+        }
+      }
+
+      function reviewPrepareStatusText(progress) {
+        const model = requirePrReviewProgressModel();
+        if (progress.status === "success") return model.terminal.success;
+        if (progress.status === "error") return progress.message || model.terminal.error;
+        if (progress.status === "canceled") return model.terminal.canceled;
+        if (!progress.activeStage) return model.stages.resolve.label;
+        const base = model.stages[progress.activeStage].label;
+        const observation = validReviewExtractionObservation(progress.progress, progress.activeStage, model);
+        if (!observation) return base;
+        const telemetry = model.telemetry;
+        const details = [
+          telemetry.revisionLabels[observation.revision.kind] + " "
+            + observation.revision.commit.slice(0, telemetry.commitLength),
+          telemetry.languageLabels[observation.language],
+          telemetry.executionLabel + " " + observation.revision.execution.current
+            + "/" + observation.revision.execution.total,
+          telemetry.phaseLabels[observation.phase],
+        ];
+        if (observation.activity) {
+          details.push(telemetry.activityLabels[observation.activity]);
+        }
+        if (observation.unit) {
+          details.push(telemetry.unitLabel + " " + observation.unit.current + "/" + observation.unit.total);
+        }
+        if (observation.sourceFile) {
+          details.push(
+            telemetry.sourceFileLabel + " " + observation.sourceFile.current + "/" + observation.sourceFile.total,
+            observation.sourceFile.path,
+          );
+        }
+        return base + " " + details.join(" · ");
+      }
+
+      function validReviewExtractionObservation(value, stage, model) {
+        if (!boundedReviewProgressValue(value)
+          || !value || typeof value !== "object" || value.version !== 1
+          || !value.revision || typeof value.revision !== "object"
+          || (stage !== "extract-head" && stage !== "extract-merge-base")
+          || (stage === "extract-head" && value.revision.kind !== "head")
+          || (stage === "extract-merge-base" && value.revision.kind !== "merge-base")
+          || typeof value.revision.commit !== "string"
+          || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value.revision.commit)
+          || !validPrepareCounts(value.revision.execution, 8)
+          || !["typescript", "python"].includes(value.language)
+          || typeof value.phase !== "string"
+          || !Object.prototype.hasOwnProperty.call(model.telemetry.phaseLabels, value.phase)
+          || (value.activity !== undefined
+            && (typeof value.activity !== "string"
+              || !Object.prototype.hasOwnProperty.call(model.telemetry.activityLabels, value.activity)))
+          || (value.activity !== undefined && value.phase !== "relationships")) {
+          return null;
+        }
+        const unit = validPreparePosition(value.unit, true);
+        const sourceFile = validPreparePosition(value.sourceFile, false);
+        if ((value.unit !== null && !unit)
+          || (value.sourceFile !== null && !sourceFile)
+          || (sourceFile && !unit)) return null;
+        return { ...value, unit, sourceFile };
+      }
+
+      function boundedReviewProgressValue(value) {
+        try {
+          const serialized = JSON.stringify(value);
+          return typeof serialized === "string"
+            && new TextEncoder().encode(serialized).byteLength <= MAX_REVIEW_PROGRESS_BYTES;
+        } catch {
+          return false;
+        }
+      }
+
+      function boundedReviewMessage(value, fallback) {
+        if (typeof value !== "string") return fallback;
+        const message = value.trim();
+        return message
+          && new TextEncoder().encode(message).byteLength <= MAX_REVIEW_MESSAGE_BYTES
+          ? message
+          : fallback;
+      }
+
+      function validPreparePosition(value, allowProjectRoot) {
+        if (value === null) return null;
+        if (!value || typeof value !== "object"
+          || !validPrepareCounts(value, 100000)
+          || typeof value.path !== "string"
+          || typeof value.pathTruncated !== "boolean"
+          || new TextEncoder().encode(value.path).byteLength > 512
+          || (!allowProjectRoot && value.path === ".")
+          || (value.pathTruncated && !value.path.startsWith("…/"))
+          || (value.path !== "." && (
+            value.path.startsWith("/")
+            || value.path.includes("\\")
+            || value.path.includes("\0")
+            || value.path.split("/").some((segment) => !segment || segment === "." || segment === "..")
+          ))) return null;
+        return value;
+      }
+
+      function validPrepareCounts(value, maximum) {
+        return value && typeof value === "object"
+          && Number.isSafeInteger(value.current)
+          && Number.isSafeInteger(value.total)
+          && value.current >= 1
+          && value.total >= value.current
+          && value.total <= maximum;
       }
 
       async function generateBlueprint(request) {
@@ -3300,6 +3817,89 @@
           throw expectedGenerationError("Generation ended without a blueprint.");
         }
         return result;
+      }
+
+      async function preparePrReview(request) {
+        const response = await apiPost("/api/pr/prepare", request, "application/x-ndjson");
+        if (!response.ok || !response.body) {
+          throw expectedGenerationError(await generationResponseError(response));
+        }
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let result = null;
+        try {
+          for (;;) {
+            const chunk = await reader.read();
+            if (chunk.done) break;
+            buffer += decoder.decode(chunk.value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              assertBoundedPrPrepareLine(line);
+              result = applyPrPrepareLine(line) || result;
+            }
+            assertBoundedPrPrepareLine(buffer);
+          }
+          buffer += decoder.decode();
+          assertBoundedPrPrepareLine(buffer);
+          result = applyPrPrepareLine(buffer) || result;
+        } finally {
+          reader.releaseLock();
+        }
+        if (!result) {
+          throw expectedGenerationError("PR preparation ended without an immutable graph pair.");
+        }
+        return result;
+      }
+
+      function assertBoundedPrPrepareLine(line) {
+        if (line.length > MAX_PR_PREPARE_LINE_CHARS) {
+          throw expectedGenerationError("PR preparation returned an oversized progress line.");
+        }
+      }
+
+      function applyPrPrepareLine(line) {
+        if (!line.trim()) return null;
+        let data;
+        try {
+          data = JSON.parse(line);
+        } catch {
+          return null;
+        }
+        if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+        if (["clone", "checkout", "extract", "extract-head", "reuse-head", "extract-merge-base", "reuse-merge-base"].includes(data.stage)) {
+          setReviewPrepareStage(data.stage, data.progress);
+          return null;
+        }
+        if (data.stage === "error") {
+          const message = data.message || "PR preparation failed.";
+          throw expectedGenerationError(message);
+        }
+        if (data.stage !== "done") return null;
+        const pair = data.preparedPair;
+        if (!pair || pair.version !== 1
+          || !Number.isSafeInteger(pair.prNumber)
+          || pair.prNumber < 1
+          || typeof pair.headGraphId !== "string"
+          || typeof pair.mergeBaseGraphId !== "string"
+          || typeof pair.headSha !== "string"
+          || typeof pair.baseSha !== "string"
+          || typeof pair.mergeBaseSha !== "string"
+          || typeof data.viewUrl !== "string") {
+          throw expectedGenerationError("PR preparation returned an invalid immutable graph pair.");
+        }
+        const target = new URL(data.viewUrl, window.location.origin);
+        if (target.origin !== window.location.origin
+          || target.pathname !== "/view"
+          || target.searchParams.get("id") !== pair.headGraphId
+          || target.searchParams.get("prn") !== String(pair.prNumber)
+          || target.searchParams.get("rev") !== "1") {
+          throw expectedGenerationError("PR preparation returned an invalid review destination.");
+        }
+        const destination = target.pathname + target.search;
+        completeReviewPrepareProgress(data.cache, destination);
+        return { ...data, viewUrl: destination };
       }
 
       function applyGenerateLine(line) {
@@ -3356,77 +3956,99 @@
         return Promise.race([painted, fallback]);
       }
 
-      function buildRequest() {
+      function buildBlueprintRequest() {
         if (mode === "path") {
           const path = $("path").value.trim();
           return path ? { kind: "path", value: path } : null;
         }
+        if (githubIntent === "review") return null;
         const repo = $("repo").value.trim();
         if (!repo) {
           return null;
         }
         const body = { kind: "github", value: githubRepoSlug(repo) || repo };
-        if (githubIntent === "review") {
-          const pr = selectedPullRequest();
-          if (!pr) return null;
-          if (pr.baseRef) body.ref = pr.baseRef;
-          return body;
-        }
         const ref = $("ref").value.trim();
         if (ref) body.ref = ref;
         return body;
       }
 
+      function buildPrPrepareRequest(pr) {
+        if (mode !== "github" || githubIntent !== "review") return null;
+        const repository = githubRepoSlug($("repo").value);
+        if (!repository || !pr || !pr.baseRef || !pr.headRef) return null;
+        return {
+          repository,
+          prNumber: pr.number,
+          baseRef: pr.baseRef,
+          headRef: pr.headRef,
+          ...(/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(pr.headSha) ? { headSha: pr.headSha } : {}),
+        };
+      }
+
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        const pullRequestMissing = mode === "github"
-          && githubIntent === "review"
+        const reviewing = mode === "github" && githubIntent === "review";
+        const selectedReview = reviewing ? selectedPullRequest() : null;
+        const pullRequestMissing = reviewing
           && $("repo").value.trim()
-          && selectedPullRequest() === null;
-        const reviewPrNumber = mode === "github" && githubIntent === "review"
-          ? selectedPullRequest()?.number ?? null
-          : null;
-        const request = buildRequest();
+          && selectedReview === null;
+        const reviewRefsMissing = selectedReview !== null && (!selectedReview.baseRef || !selectedReview.headRef);
+        const request = reviewing
+          ? buildPrPrepareRequest(selectedReview)
+          : buildBlueprintRequest();
         if (!request) {
           setStatus(
             pullRequestMissing
                 ? "Choose a pull request."
+              : reviewRefsMissing
+                ? "The selected pull request is missing required branch information."
               : mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.",
             "error",
           );
           if (pullRequestMissing) $("pr-query").focus();
           return;
         }
-        if (request.kind === "github") {
+        if (!reviewing && request.kind === "github") {
           request.value = selectRepository(request.value, { load: false }) || request.value;
         }
         hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
-        const selectedCacheKey = request.kind === "github" && githubIntent === "explore" ? cacheKey(request) : null;
+        const selectedCacheKey = !reviewing && request.kind === "github" ? cacheKey(request) : null;
         const cacheAlreadyChecked = selectedCacheKey !== null && checkedCacheKey === selectedCacheKey;
-        generateProgressSuppressed = request.kind === "github"
+        generateProgressSuppressed = !reviewing
+          && request.kind === "github"
           && githubIntent === "explore"
           && cacheAlreadyChecked
           && checkedCacheStatus === "hit";
         if (generateProgressSuppressed) hidePrepareProgress();
-        else showPrepareProgress(request.kind, cacheAlreadyChecked);
+        else showPrepareProgress(
+          reviewing ? "github" : request.kind,
+          cacheAlreadyChecked,
+          reviewing ? request.prNumber : null,
+        );
         let navigating = false;
         try {
-          const data = await generateBlueprint(request);
+          const data = reviewing
+            ? await preparePrReview(request)
+            : await generateBlueprint(request);
           navigating = true;
           await allowFinalStagePaint();
-          window.location = reviewPrNumber === null
-            ? "/view?id=" + encodeURIComponent(data.id)
-            : "/view?id=" + encodeURIComponent(data.id)
-              + "&view=modules&prn=" + encodeURIComponent(reviewPrNumber)
-              + "&rev=1";
+          window.location = reviewing
+            ? data.viewUrl
+            : "/view?id=" + encodeURIComponent(data.id);
         } catch (error) {
           const message = error && error.expected ? error.message : "Could not reach the server.";
-          setStatus(message, "error");
+          if (reviewing) {
+            failReviewPrepareProgress(message);
+            // The canonical progress announcement is the review error's single live region.
+            setStatus("", null);
+          } else {
+            setStatus(message, "error");
+          }
         } finally {
           if (!navigating) {
-            hidePrepareProgress();
+            if (!reviewing) hidePrepareProgress();
             $("submit").disabled = false;
           }
           generateProgressSuppressed = false;

@@ -12,6 +12,8 @@ import type {
   ExtractOptions,
   ExtractionDiagnostic,
   ExtractionDepth,
+  ExtractionProgressActivity,
+  ExtractionProgressPosition,
   ExtractionResult,
   GraphNode,
   LogicFlows,
@@ -37,7 +39,7 @@ import { collectValueRefEdges } from "./value-ref-pass";
 import { collapseToDepth } from "./depth-collapse";
 import { collectPorts } from "./ports-pass";
 import { collectPromiseResources } from "./promise-resource-pass";
-import { loadUnitProject } from "./project-loader";
+import { loadUnitProject, type LoadedProject } from "./project-loader";
 import { buildResolutionIndex } from "./resolution-index";
 import { buildStats } from "./stats";
 import { buildStructure } from "./structural-pass";
@@ -49,9 +51,14 @@ import {
 import { absoluteRoot, isUnderRoot, relativeToRoot, toPosix } from "./paths";
 import { discoverWorkspaceUnits, type Workspace, type WorkspaceUnit } from "./workspace-units";
 import { dirname, resolve } from "node:path";
+import {
+  createExtractionProgressReporter,
+  createRelationshipFileProgress,
+  type ExtractionProgressReporter,
+} from "./progress";
 
 /** Everything a unit contributes once its project has been dropped — plain data only. */
-interface UnitExtraction {
+export interface UnitExtraction {
   nodes: GraphNode[];
   rawEdges: RawEdge[];
   implementationMembers: ImplementationMember[];
@@ -62,13 +69,38 @@ interface UnitExtraction {
   files: number;
 }
 
-export function extractPerPackage(options: ExtractOptions, workspace?: Workspace): ExtractionResult {
+export function extractPerPackage(
+  options: ExtractOptions,
+  workspace?: Workspace,
+): ExtractionResult {
+  const progressReporter = createExtractionProgressReporter(options);
   const root = absoluteRoot(options.root);
   const resolved = workspace ?? discoverWorkspaceUnits(root);
-  const resolver = crossPackageResolver(resolved, root);
+  const resolver = createCrossPackageResolver(resolved, root);
   const depth = options.depth ?? "function";
-  const units = resolved.units.map((unit) => extractUnit(unit, root, options, resolver, depth, resolved.memberPaths));
-  return stitch(units, options, depth);
+  const units = resolved.units.map((unit, index) => extractUnit(
+    unit,
+    root,
+    options,
+    resolver,
+    depth,
+    resolved.memberPaths,
+    { current: index + 1, total: resolved.units.length, path: unit.dir || "." },
+    progressReporter,
+  ));
+  return stitchUnitExtractions(
+    units,
+    options,
+    depth,
+    progressReporter === undefined
+      ? undefined
+      : (phase) => progressReporter({
+          language: "typescript",
+          phase,
+          unit: null,
+          sourceFile: null,
+        }),
+  );
 }
 
 /**
@@ -78,7 +110,7 @@ export function extractPerPackage(options: ExtractOptions, workspace?: Workspace
  * relative import staying inside the unit, or one escaping the workspace, resolves normally /
  * is left alone here.
  */
-function crossPackageResolver(workspace: Workspace, root: string): CrossPackageResolver {
+export function createCrossPackageResolver(workspace: Workspace, root: string): CrossPackageResolver {
   return {
     matches: (specifier) => workspace.matchSpecifier(specifier) !== null,
     resolveRelative: (fromFileAbsPath, specifier) => {
@@ -130,16 +162,104 @@ function extractUnit(
   resolver: CrossPackageResolver,
   depth: ExtractionDepth,
   memberPaths: ReadonlySet<string> | undefined,
+  progressUnit: ExtractionProgressPosition,
+  progressReporter: ExtractionProgressReporter | undefined,
 ): UnitExtraction {
+  progressReporter?.({
+    language: "typescript",
+    phase: "project-load",
+    unit: progressUnit,
+    sourceFile: null,
+  });
   const loaded = loadUnitProject(root, unit, options, memberPaths);
+  progressReporter?.({
+    language: "typescript",
+    phase: "structure",
+    unit: progressUnit,
+    sourceFile: null,
+  });
+  return extractLoadedUnit(
+    unit,
+    loaded,
+    options,
+    resolver,
+    depth,
+    progressUnit,
+    progressReporter,
+  );
+}
+
+/** POC seam: consume one already-loaded short-lived project and return only immutable plain data. */
+export function extractLoadedUnit(
+  unit: WorkspaceUnit,
+  loaded: LoadedProject,
+  options: ExtractOptions,
+  resolver: CrossPackageResolver,
+  depth: ExtractionDepth,
+  progressUnit?: ExtractionProgressPosition,
+  progressReporter?: ExtractionProgressReporter,
+): UnitExtraction {
   const diagnostics: ExtractionDiagnostic[] = [];
-  const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
+  const { descriptors, moduleByFilePath } = buildStructure(
+    loaded,
+    NODE_ID_LANGUAGE,
+    progressReporter === undefined || progressUnit === undefined
+      ? undefined
+      : (sourceFile, current, total) => progressReporter({
+          language: "typescript",
+          phase: "structure",
+          unit: progressUnit,
+          sourceFile: { current, total, path: loaded.relativePathOf(sourceFile) },
+        }),
+  );
   assignFinalIds(descriptors);
   const index = buildResolutionIndex(descriptors, moduleByFilePath, loaded.root);
-  const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics, resolver);
-  const imports = collectImportEdges(loaded, moduleByFilePath, index, resolver);
-  const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics, resolver) : [];
-  const promiseResources = collectPromiseResources(loaded, index, moduleByFilePath, resolver);
+  if (progressReporter !== undefined && progressUnit !== undefined) {
+    progressReporter({
+      language: "typescript",
+      phase: "relationships",
+      unit: progressUnit,
+      sourceFile: null,
+    });
+  }
+  const relationshipProgress = (activity: ExtractionProgressActivity) =>
+    createRelationshipFileProgress(progressReporter, progressUnit, activity);
+  const behavioural = collectRawEdges(
+    loaded,
+    descriptors,
+    index,
+    moduleByFilePath,
+    diagnostics,
+    resolver,
+    relationshipProgress("calls-and-types"),
+  );
+  const imports = collectImportEdges(
+    loaded,
+    moduleByFilePath,
+    index,
+    resolver,
+    relationshipProgress("imports"),
+  );
+  const valueRefs = options.valueRefs
+    ? collectValueRefEdges(
+        loaded,
+        index,
+        moduleByFilePath,
+        diagnostics,
+        resolver,
+        relationshipProgress("value-references"),
+      )
+    : [];
+  const promiseResources = collectPromiseResources(
+    loaded,
+    index,
+    moduleByFilePath,
+    resolver,
+    {
+      discovery: relationshipProgress("promise-discovery"),
+      links: relationshipProgress("promise-links"),
+    },
+  );
   const keepIds = survivorIdsAtDepth(descriptors, depth);
   const flows = buildLogicFlows(
     descriptors,
@@ -147,6 +267,7 @@ function extractUnit(
     keepIds,
     moduleSourcesById(loaded, moduleByFilePath),
     promiseResources.flowIds,
+    relationshipProgress("logic-flows"),
   );
   const moduleIds = moduleIdsByRelPath(loaded, moduleByFilePath);
   return {
@@ -154,15 +275,34 @@ function extractUnit(
     rawEdges: [...behavioural, ...imports, ...valueRefs, ...promiseResources.edges],
     implementationMembers: implementationMembers(descriptors),
     flows,
-    ports: collectPorts(loaded, index, moduleByFilePath),
-    summary: buildUnitSummary(unit, loaded, index, moduleIds, resolver),
+    ports: collectPorts(
+      loaded,
+      index,
+      moduleByFilePath,
+      undefined,
+      relationshipProgress("ports"),
+    ),
+    summary: buildUnitSummary(
+      unit,
+      loaded,
+      index,
+      moduleIds,
+      resolver,
+      relationshipProgress("exports"),
+    ),
     diagnostics,
     files: loaded.sourceFiles.length,
   };
 }
 
 /** Join pending refs across summaries, then run the ordinary global tail of the pipeline. */
-function stitch(units: UnitExtraction[], options: ExtractOptions, depth: ExtractionDepth): ExtractionResult {
+export function stitchUnitExtractions(
+  units: UnitExtraction[],
+  options: ExtractOptions,
+  depth: ExtractionDepth,
+  onPhase?: (phase: "stitch" | "finalize") => void,
+): ExtractionResult {
+  onPhase?.("stitch");
   const summaries = units.map((unit) => unit.summary);
   const joined = joinCrossPackageEdges(
     units.flatMap((unit) => unit.rawEdges),
@@ -174,6 +314,7 @@ function stitch(units: UnitExtraction[], options: ExtractOptions, depth: Extract
     nodes,
     units.flatMap((unit) => unit.implementationMembers),
   );
+  onPhase?.("finalize");
   const built = buildEdges([...joined, ...implementedBy], options);
   const collapsed = collapseToDepth(nodes, built.edges, depth);
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
@@ -218,7 +359,7 @@ function dedupeSharedAncestors(nodes: GraphNode[]): GraphNode[] {
 
 /** Which of this unit's nodes survive the depth collapse — a per-node rank test, so it can
  * run per unit (flows need it) and still agree exactly with the global collapse. */
-function survivorIdsAtDepth(descriptors: NodeDescriptor[], depth: ExtractionDepth): Set<string> {
+export function survivorIdsAtDepth(descriptors: NodeDescriptor[], depth: ExtractionDepth): Set<string> {
   const maxRank = DEPTH_RANK[depth];
   return new Set(descriptors.filter((descriptor) => rankOfKind(descriptor.kind) <= maxRank).map((descriptor) => descriptor.finalId));
 }

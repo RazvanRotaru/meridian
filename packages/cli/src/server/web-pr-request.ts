@@ -17,6 +17,22 @@ export interface PrAnalyzeRequest {
   prNumber: number;
   baseRef: string;
   headRef: string;
+  /** Internal-only picker snapshot used by direct preparation; never trusted as the resolved SHA. */
+  expectedHeadSha?: string;
+}
+
+/**
+ * Direct landing-page preparation names the repository instead of manufacturing a branch graph
+ * merely to obtain its source descriptor. `headSha` is the picker snapshot when GitHub supplied
+ * one; the server rejects a moved head before extraction rather than silently opening another
+ * revision than the reader selected.
+ */
+export interface PrPrepareRequest {
+  repository: string;
+  prNumber: number;
+  baseRef: string;
+  headRef: string;
+  headSha?: string;
 }
 
 export function parsePrAnalyzeRequest(body: unknown): PrAnalyzeRequest {
@@ -29,6 +45,25 @@ export function parsePrAnalyzeRequest(body: unknown): PrAnalyzeRequest {
     prNumber: requirePositiveInt(raw.prNumber, "prNumber"),
     baseRef: requireRef(raw.baseRef, "baseRef"),
     headRef: requireRef(raw.headRef, "headRef"),
+  };
+}
+
+export function parsePrPrepareRequest(body: unknown): PrPrepareRequest {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw new WebError(400, "request body must be a JSON object");
+  }
+  const raw = body as Record<string, unknown>;
+  const repository = requireString(raw.repository, "repository");
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repository) || repository.endsWith(".git")) {
+    throw new WebError(400, "repository must be an exact owner/repo");
+  }
+  const headSha = optionalCommit(raw.headSha);
+  return {
+    repository,
+    prNumber: requirePositiveInt(raw.prNumber, "prNumber"),
+    baseRef: requireRef(raw.baseRef, "baseRef"),
+    headRef: requireRef(raw.headRef, "headRef"),
+    ...(headSha === undefined ? {} : { headSha }),
   };
 }
 
@@ -52,4 +87,12 @@ function requirePositiveInt(value: unknown, name: string): number {
     throw new WebError(400, `${name} must be a positive integer`);
   }
   return value;
+}
+
+function optionalCommit(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" || !/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(value.trim())) {
+    throw new WebError(400, "headSha must be a 40- or 64-character Git object id");
+  }
+  return value.trim().toLowerCase();
 }

@@ -6,3 +6,15 @@
  */
 
 export { TypeScriptExtractor, createTypeScriptExtractor } from "./extractor";
+export {
+  TYPESCRIPT_REVISION_SHARD_MODES,
+  extractTypeScriptRevisionWithPolicy,
+  requireTypeScriptRevisionShardPolicy,
+  typeScriptRevisionShardDecision,
+} from "./revision-shards";
+export type {
+  TypeScriptRevisionShardDecision,
+  TypeScriptRevisionShardMode,
+  TypeScriptRevisionShardPolicy,
+  TypeScriptRevisionShardRuntimeFingerprint,
+} from "./revision-shards";
