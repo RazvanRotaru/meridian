@@ -104,6 +104,7 @@ export async function handleRepoBranches(
   request: IncomingMessage,
   response: ServerResponse,
   repository: string,
+  query?: string,
 ): Promise<void> {
   const slug = parseRepoSlug(repository);
   if (!slug) {
@@ -111,7 +112,14 @@ export async function handleRepoBranches(
     return;
   }
   const token = githubTokenFor(ctx, request);
-  sendJson(response, 200, { branches: await ctx.github.listBranches({ ...slug, token }) });
+  const search = query?.trim();
+  sendJson(response, 200, {
+    branches: await ctx.github.listBranches({
+      ...slug,
+      token,
+      ...(search ? { query: search } : {}),
+    }),
+  });
 }
 
 /** The session token feeding a clone (cookie → session), or undefined when not signed in. */

@@ -29,11 +29,15 @@ export async function handleRepoPullRequests(
     return;
   }
 
-  const rawPage = query.get("page");
-  const page = rawPage && /^[1-9]\d*$/.test(rawPage) ? Number(rawPage) : 0;
-  if (!Number.isSafeInteger(page) || page <= 0) {
-    sendJson(response, 400, { error: "page must be a positive integer" });
-    return;
+  const search = query.get("q")?.trim() ?? "";
+  let page = 1;
+  if (!search) {
+    const rawPage = query.get("page");
+    page = rawPage && /^[1-9]\d*$/.test(rawPage) ? Number(rawPage) : 0;
+    if (!Number.isSafeInteger(page) || page <= 0) {
+      sendJson(response, 400, { error: "page must be a positive integer" });
+      return;
+    }
   }
 
   const token = githubTokenFor(ctx, request);
@@ -43,6 +47,7 @@ export async function handleRepoPullRequests(
     page,
     token,
     includeViewerStatus: true,
+    ...(search ? { query: search } : {}),
   }));
 }
 

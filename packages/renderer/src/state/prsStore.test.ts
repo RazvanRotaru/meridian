@@ -458,6 +458,81 @@ describe("PR store slice", () => {
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/prs?id=artifact-1&state=open&page=1");
   });
 
+  it("caches priority-search hits outside the paged queue and reuses them for selection", async () => {
+    const loaded = pr(1, "Loaded queue row");
+    const remote = {
+      ...pr(42, "Remote branch match"),
+      body: "Only the priority search returned this summary.",
+      headRef: "feature/needle",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({ prs: [remote], hasMore: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState({
+      prsList: { open: [loaded], closed: null },
+      prsHasMore: { open: true, closed: false },
+    });
+
+    await store.getState().searchPrs("feature/needle");
+
+    expect(fetchMock.mock.calls[0][0].toString()).toBe(
+      "http://meridian.local/api/prs?id=artifact-1&state=open&page=1&q=feature%2Fneedle",
+    );
+    expect(store.getState().prsList.open).toEqual([loaded]);
+    expect(store.getState().prsHasMore.open).toBe(true);
+    expect(store.getState().prSearchResults).toEqual([42]);
+    expect(store.getState().prSearchHasMore).toBe(true);
+    expect(store.getState().prExtraSummaries[42]).toEqual(remote);
+    expect(selectedPrSummary(store.getState(), 42)).toEqual(remote);
+
+    await store.getState().searchPrs("  FEATURE/NEEDLE ");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.getState().prSearchResults).toEqual([42]);
+  });
+
+  it("keeps the latest priority-search response when an older query lands late", async () => {
+    let resolveOld!: (response: Response) => void;
+    const oldResponse = new Promise<Response>((resolve) => {
+      resolveOld = resolve;
+    });
+    const latest = { ...pr(8, "Latest result"), headRef: "latest-query" };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const query = new URL(input.toString()).searchParams.get("q");
+      return query === "old-query"
+        ? oldResponse
+        : Promise.resolve(Response.json({ prs: [latest], hasMore: false }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+
+    const oldSearch = store.getState().searchPrs("old-query");
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await store.getState().searchPrs("latest-query");
+    resolveOld(Response.json({ prs: [pr(7, "Stale result")], hasMore: false }));
+    await oldSearch;
+
+    expect(store.getState().prSearchQuery).toBe("latest-query");
+    expect(store.getState().prSearchResults).toEqual([8]);
+    expect(store.getState().prExtraSummaries[7]).toBeUndefined();
+    expect(store.getState().prSearchLoading).toBe(false);
+  });
+
+  it("reports priority-search failures without discarding the loaded queue", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: "search rate limited" }, { status: 429 }),
+    ));
+    const store = freshStore();
+    const loaded = pr(3);
+    store.setState({ prsList: { open: [loaded], closed: null } });
+
+    await store.getState().searchPrs("missing");
+
+    expect(store.getState().prsList.open).toEqual([loaded]);
+    expect(store.getState().prsError).toBeNull();
+    expect(store.getState().prSearchError).toBe("search rate limited");
+    expect(store.getState().prSearchLoading).toBe(false);
+  });
+
   it("fetches a missing PR summary into the extra cache without loading a page", async () => {
     const summary = { ...pr(42), state: "closed" as const };
     const fetchMock = vi.fn().mockResolvedValue(Response.json({ pr: summary }));

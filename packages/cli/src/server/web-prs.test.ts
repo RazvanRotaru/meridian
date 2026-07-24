@@ -97,6 +97,44 @@ describe("PR routes", () => {
     expect(seenAuth).toEqual(["Bearer gho_secret"]);
   });
 
+  it("accepts an exact priority query without pagination and returns a full PR summary", async () => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
+      seen.push(String(url));
+      return new Response(JSON.stringify({
+        number: 7,
+        title: "Priority result",
+        body: "searchable body",
+        user: { login: "daria" },
+        head: { ref: "feature/search", sha: "abc1234" },
+        base: { ref: "main" },
+        updated_at: "2026-07-24T12:00:00Z",
+        state: "open",
+        html_url: "https://github.com/org/repo/pull/7",
+      }), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invoke(
+      handlePullRequests,
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo" }),
+      requestWith(undefined),
+      new URLSearchParams({ id: "artifact", state: "open", q: "#7" }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toMatchObject({
+      prs: [{
+        number: 7,
+        title: "Priority result",
+        author: "daria",
+        headRef: "feature/search",
+        baseRef: "main",
+      }],
+      hasMore: false,
+    });
+    expect(seen).toEqual(["https://api.github.com/repos/org/repo/pulls/7"]);
+  });
+
   it("falls back to the environment token for PR lists and files", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     vi.stubEnv("GH_TOKEN", "ignored");

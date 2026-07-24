@@ -81,7 +81,7 @@ function repoPage(count: number, offset: number): unknown[] {
   return Array.from({ length: count }, (_unused, index) => ({ full_name: `org/repo-${offset + index}` }));
 }
 
-function prPage(count: number, offset: number): unknown[] {
+function prPage(count: number, offset: number): Array<Record<string, unknown>> {
   return Array.from({ length: count }, (_unused, index) => ({
     number: offset + index + 1,
     title: `PR ${offset + index + 1}`,
@@ -199,6 +199,51 @@ describe("listBranches", () => {
     await expect(client.listBranches({ owner: "org", repo: "project" })).resolves.toHaveLength(4);
     expect(calls).toBe(4);
   });
+
+  it("prioritizes a matching-ref lookup for a branch query", async () => {
+    const seen: string[] = [];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request) => {
+        seen.push(String(url));
+        return new Response(JSON.stringify([
+          { ref: "refs/heads/feature/search" },
+          { ref: "refs/heads/feature/search-v2" },
+        ]), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    await expect(client.listBranches({
+      owner: "org",
+      repo: "project",
+      query: "feature/search",
+    })).resolves.toEqual(["feature/search", "feature/search-v2"]);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toContain("/repos/org/project/git/matching-refs/heads/feature/search");
+  });
+
+  it("falls back to the bounded branch list for a non-prefix query", async () => {
+    const seen: string[] = [];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request) => {
+        seen.push(String(url));
+        return new Response(JSON.stringify(
+          String(url).includes("/matching-refs/")
+            ? []
+            : [{ name: "feature/priority-search" }, { name: "main" }],
+        ), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    await expect(client.listBranches({
+      owner: "org",
+      repo: "project",
+      query: "priority",
+    })).resolves.toEqual(["feature/priority-search"]);
+    expect(seen).toHaveLength(2);
+    expect(seen[1]).toContain("/repos/org/project/branches?");
+  });
 });
 
 describe("listPullRequests", () => {
@@ -283,6 +328,82 @@ describe("listPullRequests", () => {
     expect(result.prs).toHaveLength(1);
     expect(result.prs[0].viewerStatus).toBeUndefined();
     expect(result.viewerLogin).toBeUndefined();
+  });
+
+  it("direct-fetches an exact #number query", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        seen.push({
+          url: String(url),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return new Response(JSON.stringify({
+          ...prPage(1, 41)[0],
+          base: { ref: "main" },
+        }), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const result = await client.listPullRequests({
+      owner: "org",
+      repo: "repo",
+      state: "open",
+      page: 1,
+      query: "#42",
+    });
+
+    expect(result).toMatchObject({
+      prs: [{ number: 42, baseRef: "main" }],
+      hasMore: false,
+    });
+    expect(seen).toEqual([{
+      url: "https://api.github.com/repos/org/repo/pulls/42",
+      authorization: null,
+    }]);
+  });
+
+  it("searches title, body, author, head, and base fields across repository pages without authentication", async () => {
+    const seen: Array<{ url: string; authorization: string | null }> = [];
+    const firstPage = prPage(100, 0);
+    firstPage[0] = { ...firstPage[0], title: "Needle on the first page" };
+    const secondPage = [
+      { ...prPage(1, 100)[0], title: "Needle in title" },
+      { ...prPage(1, 101)[0], user: { login: "needle-author" } },
+      { ...prPage(1, 102)[0], head: { ref: "feature/needle-branch" } },
+      { ...prPage(1, 103)[0], base: { ref: "needle-base" } },
+      { ...prPage(1, 104)[0], body: "Needle in the PR body" },
+    ];
+    const client = createGitHubClient({
+      clientId: "Iv1.test",
+      fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+        const index = seen.length;
+        seen.push({
+          url: String(url),
+          authorization: new Headers(init?.headers).get("authorization"),
+        });
+        return new Response(JSON.stringify(index === 0 ? firstPage : secondPage), {
+          status: 200,
+          headers: index === 0 ? { link: '<https://api.github.com/next>; rel="next"' } : undefined,
+        });
+      }) as typeof fetch,
+    });
+
+    const result = await client.listPullRequests({
+      owner: "org",
+      repo: "repo",
+      state: "open",
+      page: 1,
+      query: "#needle",
+    });
+
+    expect(result.prs.map((pr) => pr.number)).toEqual([1, 101, 102, 103, 104, 105]);
+    expect(result.hasMore).toBe(false);
+    expect(seen).toHaveLength(2);
+    expect(seen[0].url).toContain("per_page=100");
+    expect(seen[0].url).toContain("sort=updated");
+    expect(seen.map((entry) => entry.authorization)).toEqual([null, null]);
   });
 });
 

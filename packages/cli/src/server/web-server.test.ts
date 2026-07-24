@@ -62,11 +62,11 @@ describe("createWebService landing + errors", () => {
     expect(html).toContain("Read your codebase");
     expect(html).toContain("window.__MERIDIAN_PREFILL__=");
     expect(html).toContain("sindresorhus/type-fest");
-    expect(html).toContain('id="ref-trigger"');
-    expect(html).toContain('id="ref-options"');
+    expect(html).toContain('id="ref-query"');
+    expect(html).toContain('id="ref-results"');
     expect(html).toContain("/api/repos/branches?repo=");
-    expect(html).toContain('CUSTOM_BRANCH_VALUE = ":custom"');
-    expect(html).toContain('id="custom-ref"');
+    expect(html).toContain('"&q=" + encodeURIComponent(query)');
+    expect(html).not.toContain('id="custom-ref"');
     expect(html).toContain('id="intent-review"');
     expect(html).toContain('id="pr-author-trigger"');
     expect(html).toContain('id="pr-author-options"');

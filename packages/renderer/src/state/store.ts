@@ -154,6 +154,11 @@ import {
   type RelatedPrsResponse,
   type RelatedPrsState,
 } from "./prTypes";
+import {
+  normalizePrSearchQuery,
+  prSearchCacheKey,
+  type PrSearchCacheEntry,
+} from "./prSearch";
 import { headKindsWithin, headSpanFor } from "./headSpan";
 import {
   reviewNodeStatusEntries,
@@ -678,6 +683,14 @@ export interface BlueprintState {
   prsHasMore: Record<PrsTab, boolean>;
   prsLoading: boolean;
   prsError: string | null;
+  /** Active priority search is independent from paged queues: results name summaries in the
+   * one-off cache, while the query cache avoids repeating a completed lookup in this session. */
+  prSearchQuery: string;
+  prSearchResults: number[];
+  prSearchHasMore: boolean;
+  prSearchCache: Record<string, PrSearchCacheEntry>;
+  prSearchLoading: boolean;
+  prSearchError: string | null;
   /** Session-only related-path filter; persists across page/lens switches until explicitly cleared. */
   relatedPrs: RelatedPrsState | null;
   prSelected: number | null;
@@ -988,6 +1001,8 @@ export interface BlueprintState {
   closeCode(): void;
   setPrsTab(tab: PrsTab): void;
   loadPrs(page?: number): Promise<void>;
+  searchPrs(query: string): Promise<void>;
+  clearPrSearch(): void;
   exploreRelatedPrs(): Promise<void>;
   clearRelatedPrs(): void;
   ensurePrSummary(number: number): Promise<void>;
@@ -1759,6 +1774,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // PR list/file fetches and PR-head preparation are independent async lanes; newer requests win
   // when the reader switches PRs (or re-clicks Review) mid-stream.
   let prsListSeq = 0;
+  let prSearchSeq = 0;
   let relatedPrsSeq = 0;
   let prFilesSeq = 0;
   // Every discussion read (selection, refresh, or post-submit) shares one last-started-wins lane.
@@ -2624,6 +2640,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prsHasMore: { open: false, closed: false },
     prsLoading: false,
     prsError: null,
+    prSearchQuery: "",
+    prSearchResults: [],
+    prSearchHasMore: false,
+    prSearchCache: {},
+    prSearchLoading: false,
+    prSearchError: null,
     relatedPrs: null,
     prSelected: null,
     prFiles: null,
@@ -6453,10 +6475,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       // A tab switch is also a selection reset, so invalidate every selected-PR response lane.
       prFilesSeq += 1;
+      prSearchSeq += 1;
       get().cancelPrReviewPreparation();
       set({
         prsTab: tab,
         prsError: null,
+        prSearchQuery: "",
+        prSearchResults: [],
+        prSearchHasMore: false,
+        prSearchLoading: false,
+        prSearchError: null,
         prSelected: null,
         prFiles: null,
         prDiscussion: null,
@@ -6511,6 +6539,105 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           set({ prsLoading: false, prsError: PRS_UNAVAILABLE_ERROR });
         }
       }
+    },
+
+    async searchPrs(query) {
+      if (!get().githubSource) {
+        return;
+      }
+      const normalized = normalizePrSearchQuery(query);
+      if (normalized === "") {
+        get().clearPrSearch();
+        return;
+      }
+      const tab = get().prsTab;
+      const cacheKey = prSearchCacheKey(tab, normalized);
+      const cached = get().prSearchCache[cacheKey];
+      const sequence = ++prSearchSeq;
+      if (cached) {
+        set({
+          prSearchQuery: normalized,
+          prSearchResults: [...cached.numbers],
+          prSearchHasMore: cached.hasMore,
+          prSearchLoading: false,
+          prSearchError: null,
+        });
+        return;
+      }
+      set({
+        prSearchQuery: normalized,
+        prSearchResults: [],
+        prSearchHasMore: false,
+        prSearchLoading: true,
+        prSearchError: null,
+      });
+      const active = () =>
+        prSearchSeq === sequence
+        && get().prsTab === tab
+        && get().prSearchQuery === normalized;
+      try {
+        const url = new URL(prsUrl, requestOrigin());
+        url.searchParams.set("state", tab);
+        // Keep the existing list contract valid while `q` selects the priority-search path.
+        url.searchParams.set("page", "1");
+        url.searchParams.set("q", query.trim());
+        const response = await fetch(url, { credentials: "same-origin" });
+        if (!active()) {
+          return;
+        }
+        if (!response.ok) {
+          const message = await errorMessage(response);
+          if (!active()) {
+            return;
+          }
+          set({
+            prSearchResults: [],
+            prSearchHasMore: false,
+            prSearchLoading: false,
+            prSearchError: message,
+          });
+          return;
+        }
+        const data = (await response.json()) as PrListResponse;
+        if (!active()) {
+          return;
+        }
+        const summaries = mergePrSummaries([], data.prs);
+        const numbers = summaries.map((pr) => pr.number);
+        const extras = { ...get().prExtraSummaries };
+        for (const pr of summaries) {
+          extras[pr.number] = pr;
+        }
+        const entry: PrSearchCacheEntry = { numbers, hasMore: data.hasMore };
+        set({
+          prExtraSummaries: extras,
+          prSearchResults: numbers,
+          prSearchHasMore: data.hasMore,
+          prSearchCache: { ...get().prSearchCache, [cacheKey]: entry },
+          prSearchLoading: false,
+          prSearchError: null,
+        });
+      } catch {
+        if (active()) {
+          set({
+            prSearchResults: [],
+            prSearchHasMore: false,
+            prSearchLoading: false,
+            prSearchError: PRS_UNAVAILABLE_ERROR,
+          });
+        }
+      }
+    },
+
+    clearPrSearch() {
+      prSearchSeq += 1;
+      set({
+        prSearchQuery: "",
+        prSearchResults: [],
+        prSearchHasMore: false,
+        prSearchLoading: false,
+        prSearchError: null,
+      });
     },
 
     async exploreRelatedPrs() {

@@ -523,7 +523,13 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
     return;
   }
   if (pathname === "/api/repos/branches") {
-    await handleRepoBranches(ctx, request, response, url.searchParams.get("repo") ?? "");
+    await handleRepoBranches(
+      ctx,
+      request,
+      response,
+      url.searchParams.get("repo") ?? "",
+      url.searchParams.get("q") ?? undefined,
+    );
     return;
   }
   if (pathname === "/api/cache/status") {

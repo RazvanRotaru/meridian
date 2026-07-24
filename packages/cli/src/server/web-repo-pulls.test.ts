@@ -106,6 +106,34 @@ describe("handleRepoPullRequests", () => {
     expect(seen[0].token).toBe("gho_session");
   });
 
+  it("accepts a priority query without a page and forwards the full-summary search contract", async () => {
+    const seen: PullRequestsRequest[] = [];
+    const captured = capturedResponse();
+
+    await handleRepoPullRequests(
+      contextListing(RESULT, seen),
+      requestWith(undefined),
+      captured.response,
+      new URLSearchParams({
+        repo: "meridian-app/meridian",
+        state: "open",
+        q: " feature/search ",
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(JSON.parse(captured.body())).toEqual(RESULT);
+    expect(seen).toEqual([{
+      owner: "meridian-app",
+      repo: "meridian",
+      state: "open",
+      page: 1,
+      query: "feature/search",
+      token: undefined,
+      includeViewerStatus: true,
+    }]);
+  });
+
   it.each([
     [{ state: "open", page: "1" }, "repo must be an exact owner/repo"],
     [{ repo: "https://github.com/org/repo", state: "open", page: "1" }, "repo must be an exact owner/repo"],

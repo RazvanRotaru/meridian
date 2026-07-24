@@ -9,6 +9,7 @@ import {
   classifyQuery,
   parseBranchList,
   parseCheckRuns,
+  parseMatchingBranchList,
   parsePullRequestComments,
   parsePullRequestFiles,
   parsePullRequestList,
@@ -54,6 +55,9 @@ const LIST_MAX_PAGES = 4;
 const BRANCH_PER_PAGE = 100;
 const BRANCH_MAX_PAGES = 4;
 const PR_PER_PAGE = 30;
+const PR_SEARCH_PER_PAGE = 100;
+const PR_SEARCH_MAX_PAGES = 10;
+const PR_SEARCH_RESULT_LIMIT = 20;
 const PR_FILE_PER_PAGE = 100;
 const PR_FILE_CAP = 3_000;
 const PR_DISCUSSION_PER_PAGE = 100;
@@ -81,6 +85,7 @@ export interface PullRequestsRequest {
   repo: string;
   state: "open" | "closed";
   page: number;
+  query?: string;
   token?: string;
   includeViewerStatus?: boolean;
 }
@@ -88,6 +93,7 @@ export interface PullRequestsRequest {
 export interface BranchesRequest {
   owner: string;
   repo: string;
+  query?: string;
   token?: string;
 }
 
@@ -343,6 +349,34 @@ async function listOwnRepos(fetchImpl: typeof fetch, token: string): Promise<Rep
  * repository with an extreme branch count cannot make one picker request unbounded.
  */
 async function listBranches(fetchImpl: typeof fetch, request: BranchesRequest): Promise<string[]> {
+  const query = request.query?.trim() ?? "";
+  if (query.length > 0) {
+    return searchBranches(fetchImpl, request, query);
+  }
+  return listAllBranches(fetchImpl, request);
+}
+
+async function searchBranches(fetchImpl: typeof fetch, request: BranchesRequest, query: string): Promise<string[]> {
+  const needle = query.toLowerCase();
+  try {
+    const path = `/git/matching-refs/heads/${encodeRefPath(query)}`;
+    const matches = parseMatchingBranchList(await getApi(
+      fetchImpl,
+      repoApi(request.owner, request.repo, path),
+      request.token,
+    )).filter((branch) => branch.toLowerCase().includes(needle));
+    if (matches.length > 0) {
+      return [...new Set(matches)];
+    }
+  } catch {
+    // Matching refs is the priority path. A rejected/unsupported prefix still falls back to the
+    // ordinary bounded branch listing, which also supports anonymous public repositories.
+  }
+  return (await listAllBranches(fetchImpl, request))
+    .filter((branch) => branch.toLowerCase().includes(needle));
+}
+
+async function listAllBranches(fetchImpl: typeof fetch, request: BranchesRequest): Promise<string[]> {
   const branches: string[] = [];
   for (let page = 1; page <= BRANCH_MAX_PAGES; page++) {
     const params = new URLSearchParams({ per_page: String(BRANCH_PER_PAGE), page: String(page) });
@@ -360,19 +394,118 @@ async function listBranches(fetchImpl: typeof fetch, request: BranchesRequest): 
 }
 
 async function listPullRequestsWithFetch(fetchImpl: typeof fetch, request: PullRequestsRequest): Promise<PullRequestsResult> {
+  const query = request.query?.trim() ?? "";
+  if (query.length > 0) {
+    return searchPullRequestsWithFetch(fetchImpl, request, query);
+  }
   const params = new URLSearchParams({ state: request.state, per_page: String(PR_PER_PAGE), page: String(request.page) });
   const prs = parsePullRequestList(await getApi(fetchImpl, repoApi(request.owner, request.repo, `/pulls?${params}`), request.token));
   const result = { prs, hasMore: prs.length === PR_PER_PAGE };
-  if (!request.includeViewerStatus || !request.token || prs.length === 0) {
+  return enrichPullRequestResult(fetchImpl, request, result);
+}
+
+async function searchPullRequestsWithFetch(
+  fetchImpl: typeof fetch,
+  request: PullRequestsRequest,
+  query: string,
+): Promise<PullRequestsResult> {
+  const exactNumber = exactPullRequestNumber(query);
+  if (exactNumber !== null) {
+    const json = await getApiOrNull(
+      fetchImpl,
+      repoApi(request.owner, request.repo, `/pulls/${exactNumber}`),
+      request.token,
+    );
+    const pr = json === null ? null : toPrSummary(asObject(json));
+    const result = {
+      prs: pr && pr.state === request.state ? [pr] : [],
+      hasMore: false,
+    };
+    return enrichPullRequestResult(fetchImpl, request, result);
+  }
+
+  const matches: PrSummary[] = [];
+  const seen = new Set<number>();
+  for (let page = 1; page <= PR_SEARCH_MAX_PAGES; page++) {
+    const params = new URLSearchParams({
+      state: request.state,
+      per_page: String(PR_SEARCH_PER_PAGE),
+      page: String(page),
+      sort: "updated",
+      direction: "desc",
+    });
+    const result = await getApiPage(
+      fetchImpl,
+      repoApi(request.owner, request.repo, `/pulls?${params}`),
+      request.token,
+    );
+    const pagePrs = parsePullRequestList(result.json, PR_SEARCH_PER_PAGE);
+    for (const pr of pagePrs) {
+      if (!seen.has(pr.number) && matchesPullRequestQuery(pr, query)) {
+        seen.add(pr.number);
+        matches.push(pr);
+      }
+    }
+    if (matches.length >= PR_SEARCH_RESULT_LIMIT) {
+      return enrichPullRequestResult(fetchImpl, request, {
+        prs: matches.slice(0, PR_SEARCH_RESULT_LIMIT),
+        // Search is a bounded priority lane, not a second paginated queue. Never advertise a
+        // continuation the UI cannot request.
+        hasMore: false,
+      });
+    }
+    if (!result.hasNext) {
+      break;
+    }
+  }
+  return enrichPullRequestResult(fetchImpl, request, { prs: matches, hasMore: false });
+}
+
+async function enrichPullRequestResult(
+  fetchImpl: typeof fetch,
+  request: PullRequestsRequest,
+  result: PullRequestsResult,
+): Promise<PullRequestsResult> {
+  if (!request.includeViewerStatus || !request.token || result.prs.length === 0) {
     return result;
   }
   try {
-    return { ...result, ...await enrichPullRequestsForViewer(fetchImpl, request.owner, request.repo, prs, request.token) };
+    return {
+      ...result,
+      ...await enrichPullRequestsForViewer(fetchImpl, request.owner, request.repo, result.prs, request.token),
+    };
   } catch {
     // Personalized status is progressive enhancement: a GraphQL permission/schema failure must
     // never make the ordinary REST-backed PR picker unusable.
     return result;
   }
+}
+
+function exactPullRequestNumber(query: string): number | null {
+  const match = /^#?([1-9]\d*)$/.exec(query.trim());
+  if (!match) {
+    return null;
+  }
+  const number = Number(match[1]);
+  return Number.isSafeInteger(number) ? number : null;
+}
+
+function matchesPullRequestQuery(pr: PrSummary, query: string): boolean {
+  const needle = query.trim().toLowerCase().replace(/^#/, "");
+  if (needle.length === 0) {
+    return false;
+  }
+  return String(pr.number).includes(needle) || [
+    pr.title,
+    pr.body ?? "",
+    pr.author,
+    pr.headRef,
+    pr.baseRef,
+  ].some((value) => value.toLowerCase().includes(needle));
+}
+
+function encodeRefPath(ref: string): string {
+  return ref.split("/").map((segment) => encodeURIComponent(segment)).join("/");
 }
 
 async function fetchPullRequestFilesWithFetch(fetchImpl: typeof fetch, request: PullRequestFilesRequest): Promise<PullRequestFilesResult> {

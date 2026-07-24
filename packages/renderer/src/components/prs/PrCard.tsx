@@ -2,10 +2,28 @@ import type { PrSummary, RelatedPr, PrsTab } from "../../state/prTypes";
 
 type CardPr = PrSummary | RelatedPr;
 
-export function PrCard(props: { pr: CardPr; active: boolean; onSelect: () => void; matchCount?: number }) {
+export function PrCard(props: {
+  pr: CardPr;
+  active: boolean;
+  onSelect: () => void;
+  matchCount?: number;
+  searchOption?: boolean;
+  keyboardActive?: boolean;
+  onPointerMove?: () => void;
+}) {
   const state: PrsTab = "state" in props.pr ? props.pr.state : "open";
   return (
-    <button type="button" style={cardStyle(props.active)} onClick={props.onSelect}>
+    <button
+      type="button"
+      id={props.searchOption ? `pr-search-result-${props.pr.number}` : undefined}
+      role={props.searchOption ? "option" : undefined}
+      aria-selected={props.searchOption ? props.active : undefined}
+      tabIndex={props.searchOption ? -1 : undefined}
+      data-search-active={props.keyboardActive ? "true" : undefined}
+      style={cardStyle(props.active, props.keyboardActive === true)}
+      onPointerMove={props.onPointerMove}
+      onClick={props.onSelect}
+    >
       <div style={CARD_TOP_STYLE}>
         <span style={NUMBER_STYLE}>#{props.pr.number}</span>
         <span style={dotStyle(state)} />
@@ -43,8 +61,22 @@ const MATCH_STYLE: React.CSSProperties = { marginLeft: "auto", color: "#FBBF24",
 const CARD_TITLE_STYLE: React.CSSProperties = { marginTop: 8, color: "#F0F6FC", fontSize: 14, lineHeight: "19px", fontWeight: 650 };
 const META_STYLE: React.CSSProperties = { display: "flex", flexWrap: "wrap", gap: 10, marginTop: 10, color: "#8B949E", fontSize: 12 };
 
-function cardStyle(active: boolean): React.CSSProperties {
-  return { width: "100%", textAlign: "left", border: `1px solid ${active ? "#56C271" : "#2A2F37"}`, borderRadius: 8, padding: 14, background: active ? "#101A15" : "#0E1116", cursor: "pointer", boxShadow: active ? "0 0 0 1px rgba(86,194,113,0.35)" : "none" };
+function cardStyle(active: boolean, keyboardActive: boolean): React.CSSProperties {
+  const border = active ? "#56C271" : keyboardActive ? "#58A6FF" : "#2A2F37";
+  return {
+    width: "100%",
+    textAlign: "left",
+    border: `1px solid ${border}`,
+    borderRadius: 8,
+    padding: 14,
+    background: active ? "#101A15" : keyboardActive ? "#0E1724" : "#0E1116",
+    cursor: "pointer",
+    boxShadow: active
+      ? "0 0 0 1px rgba(86,194,113,0.35)"
+      : keyboardActive
+        ? "0 0 0 1px rgba(88,166,255,0.28)"
+        : "none",
+  };
 }
 
 function dotStyle(state: PrsTab): React.CSSProperties {

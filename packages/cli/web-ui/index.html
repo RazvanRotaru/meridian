@@ -10,8 +10,8 @@
     POST /api/auth/logout  -> { signedIn:false }
     GET  /api/repos/search?q= -> { repos: [{ fullName, isPrivate, defaultBranch, description, ownerAvatarUrl }] }
     GET  /api/repos/mine   -> { repos: [same shape] }              (the signed-in user's repos)
-    GET  /api/repos/branches?repo= -> { branches: [string] }       (public without auth; private when signed in)
-    GET  /api/repos/pulls?repo=&state=&page= -> { prs: [summary + viewerStatus?], hasMore, viewerLogin? }
+    GET  /api/repos/branches?repo=&q= -> { branches: [string] }    (q prioritizes a typed branch)
+    GET  /api/repos/pulls?repo=&state=&page=&q= -> { prs: [summary + viewerStatus?], hasMore, viewerLogin? }
     POST /api/generate     -> { id } | { error }
   On generate success we redirect to /view?id=<id>. Every GitHub-sourced string is written via
   textContent and every URL is https-validated before use — repo names/descriptions are untrusted.
@@ -744,6 +744,16 @@
         margin-top: 2px;
         border-top: 1px solid rgba(255, 255, 255, 0.06);
       }
+      .pr-result-group,
+      .pr-result-group-options {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+      }
+      .pr-result-group:not(:first-child) > .group-label {
+        margin-top: 2px;
+        border-top: 1px solid rgba(255, 255, 255, 0.06);
+      }
       .group-note {
         padding: 4px 12px 8px;
         font-size: 12px;
@@ -1115,9 +1125,15 @@
                     id="repo"
                     name="repo"
                     placeholder="owner/repo  or  https://github.com/owner/repo"
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-expanded="false"
+                    aria-controls="results"
+                    aria-describedby="repo-status"
                   />
-                  <ul class="results dropdown" id="results" hidden></ul>
+                  <ul class="results dropdown" id="results" role="listbox" hidden></ul>
                 </div>
+                <span class="field-note" id="repo-status" role="status" aria-live="polite"></span>
                 <div
                   class="repository-selection"
                   id="repository-selection"
@@ -1136,25 +1152,22 @@
 
               <div class="fieldset" id="explore-fields">
                 <div class="field">
-                  <label for="ref-trigger">Branch</label>
+                  <label for="ref-query">Branch</label>
                   <input type="hidden" id="ref" name="ref" value="" />
-                  <div class="menu-select" id="ref-menu">
-                    <button
-                      type="button"
-                      class="menu-trigger"
-                      id="ref-trigger"
-                      aria-haspopup="listbox"
+                  <div class="search-wrap" id="ref-search-wrap">
+                    <input
+                      id="ref-query"
+                      name="ref-query"
+                      placeholder="Search or enter any branch"
+                      role="combobox"
+                      aria-autocomplete="list"
                       aria-expanded="false"
-                      aria-controls="ref-options"
+                      aria-controls="ref-results"
                       aria-describedby="ref-status"
-                    >
-                      <span class="menu-trigger-label" id="ref-trigger-label">Default branch</span>
-                      <span class="menu-chevron" aria-hidden="true"></span>
-                    </button>
-                    <ul class="results dropdown menu-options" id="ref-options" role="listbox" hidden></ul>
+                      disabled
+                    />
+                    <ul class="results dropdown" id="ref-results" role="listbox" hidden></ul>
                   </div>
-                  <label class="sr-only" for="custom-ref">Other branch</label>
-                  <input id="custom-ref" name="custom-ref" placeholder="Enter a branch name" hidden />
                   <span class="field-note" id="ref-status" role="status" aria-live="polite">Choose a repository to load its branches.</span>
                   <span class="field-note" id="cache-status" role="status" aria-live="polite" hidden></span>
                 </div>
@@ -1196,7 +1209,7 @@
                     <input
                       id="pr-query"
                       name="pr-query"
-                      placeholder="Search by title or #"
+                      placeholder="Search #, title, author, or branch"
                       role="combobox"
                       aria-autocomplete="list"
                       aria-expanded="false"
@@ -1360,6 +1373,8 @@
       let githubIntent = "explore";
       let branchTimer = null;
       let branchRequest = 0;
+      let branchSearchTimer = null;
+      let branchSearchRequest = 0;
       let cacheProbeTimer = null;
       let cacheProbeRequest = 0;
       let pendingCacheKey = null;
@@ -1368,6 +1383,8 @@
       let generateProgressSuppressed = false;
       let prTimer = null;
       let prRequest = 0;
+      let prSearchTimer = null;
+      let prSearchRequest = 0;
 
       function setHeaderCopy(copy) {
         $("card-title").textContent = copy.title;
@@ -1419,11 +1436,15 @@
 
       function cancelGithubDiscovery() {
         clearTimeout(branchTimer);
+        clearTimeout(branchSearchTimer);
         clearTimeout(cacheProbeTimer);
         clearTimeout(prTimer);
+        clearTimeout(prSearchTimer);
         branchRequest++;
+        branchSearchRequest++;
         cacheProbeRequest++;
         prRequest++;
+        prSearchRequest++;
         resetCacheProbe();
       }
 
@@ -1501,6 +1522,14 @@
       }
 
       function showSignedOut() {
+        clearTimeout(searchTimer);
+        clearTimeout(branchSearchTimer);
+        clearTimeout(prSearchTimer);
+        repoSearchRequest++;
+        branchSearchRequest++;
+        prSearchRequest++;
+        myReposRequest++;
+        activeQuery = null;
         signedIn = false;
         currentUserLogin = null;
         devicePending = false;
@@ -1513,10 +1542,40 @@
         labelRepoField(false);
         hideAllPickerPopovers();
         myRepos = [];
+        renderedRepositories.clear();
+        repoSearchWarning = null;
+        branchSearchResults = [];
+        branchSearchLoading = false;
+        branchSearchWarning = null;
+        pullRequestSearchResults = [];
+        pullRequestSearchLoading = false;
+        pullRequestSearchWarning = null;
+        repoSearchCache.clear();
+        branchSearchCache.clear();
+        pullRequestSearchCache.clear();
         refreshGithubDataForAuth();
       }
 
       function showSignedIn(user) {
+        clearTimeout(searchTimer);
+        clearTimeout(branchSearchTimer);
+        clearTimeout(prSearchTimer);
+        repoSearchRequest++;
+        branchSearchRequest++;
+        prSearchRequest++;
+        activeQuery = null;
+        myRepos = [];
+        renderedRepositories.clear();
+        repoSearchWarning = null;
+        branchSearchResults = [];
+        branchSearchLoading = false;
+        branchSearchWarning = null;
+        pullRequestSearchResults = [];
+        pullRequestSearchLoading = false;
+        pullRequestSearchWarning = null;
+        repoSearchCache.clear();
+        branchSearchCache.clear();
+        pullRequestSearchCache.clear();
         signedIn = true;
         if (user && typeof user.login === "string" && user.login.length > 0) {
           currentUserLogin = user.login;
@@ -1677,14 +1736,33 @@
       // (the complete list, fetched once at sign-in and filtered instantly per keystroke) above
       // "All GitHub" (the debounced server-side search) ---
       let myRepos = [];
+      let myReposRequest = 0;
       let activeQuery = null;
+      let repoSearchRequest = 0;
+      let repoSearchWarning = null;
+      const repoSearchCache = new Map();
+      const renderedRepositories = new Map();
       const SELECTED_REPOSITORY_STORAGE_KEY = "meridian.selectedRepository";
       let selectedRepository = null;
       let changingRepository = false;
-      const CUSTOM_BRANCH_VALUE = ":custom";
+      let repoBranches = [];
+      let repoDefaultBranch = "";
+      let branchesLoading = false;
+      let branchSearchResults = [];
+      let branchSearchLoading = false;
+      let branchSearchWarning = null;
+      const branchSearchCache = new Map();
       let pullRequests = [];
       let selectedPrNumber = null;
+      let selectedPrSummary = null;
       let prSearchQuery = "";
+      let pullRequestSearchResults = [];
+      let pullRequestSearchLoading = false;
+      let pullRequestSearchWarning = null;
+      const pullRequestSearchCache = new Map();
+      let pullRequestsLoading = false;
+      let pullRequestLoadWarning = null;
+      let pullRequestAuthorsDirty = false;
 
       // Branch discovery is intentionally GitHub-only even though the clone endpoint accepts a
       // broader set of git URLs. An unrecognised source still generates with its remote default.
@@ -1725,6 +1803,8 @@
         $("repo").value = repository;
         $("selected-repository-name").textContent = repository;
         $("repo-search-wrap").hidden = true;
+        $("repo-status").textContent = "";
+        $("repo").setAttribute("aria-busy", "false");
         $("repository-selection").hidden = false;
         labelRepoField(signedIn);
       }
@@ -1732,12 +1812,13 @@
       function selectRepository(value, options) {
         const repository = githubRepoSlug(value);
         if (!repository) return null;
+        const wasChanging = changingRepository;
         const changed = repository !== selectedRepository;
         if (changed) cancelGithubDiscovery();
         showRepositorySelection(repository);
         writeSelectedRepository(repository);
         hideAllPickerPopovers();
-        if ((!options || options.load !== false) && changed) {
+        if ((!options || options.load !== false) && (changed || wasChanging)) {
           loadGithubRepositoryData(repository, options && options.defaultBranch);
         }
         return repository;
@@ -1782,7 +1863,7 @@
       }
 
       function closeAllMenus(exceptId) {
-        for (const id of ["ref", "pr-author"]) {
+        for (const id of ["pr-author"]) {
           if (id !== exceptId) closeMenu(id, false);
         }
       }
@@ -1792,6 +1873,7 @@
         if (trigger.disabled) return;
         closeAllMenus(id);
         hideResults();
+        hideBranchResults();
         hidePullRequestResults();
         const list = $(id + "-options");
         list.hidden = false;
@@ -1888,11 +1970,63 @@
         closeMenu(id, false);
       }
 
-      function syncCustomBranchInput(focus) {
-        const custom = $("ref").value === CUSTOM_BRANCH_VALUE;
-        $("custom-ref").hidden = !custom;
-        if (!custom) $("custom-ref").value = "";
-        if (custom && focus) $("custom-ref").focus();
+      function pickerResultItems(listId) {
+        return [...$(listId).querySelectorAll('[role="option"]')];
+      }
+
+      function hidePicker(inputId, listId) {
+        $(listId).hidden = true;
+        $(inputId).setAttribute("aria-expanded", "false");
+        $(inputId).removeAttribute("aria-activedescendant");
+      }
+
+      function showPicker(inputId, listId, show) {
+        $(listId).hidden = !show;
+        $(inputId).setAttribute("aria-expanded", String(show));
+        if (!show) $(inputId).removeAttribute("aria-activedescendant");
+      }
+
+      function setActivePickerResult(inputId, listId, index) {
+        const items = pickerResultItems(listId);
+        if (items.length === 0) return;
+        const bounded = (index + items.length) % items.length;
+        items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === bounded));
+        $(inputId).setAttribute("aria-activedescendant", items[bounded].id);
+        items[bounded].scrollIntoView({ block: "nearest" });
+      }
+
+      function handlePickerKeydown(event, inputId, listId, open, pick, escape) {
+        if (event.key === "Escape") {
+          const wasOpen = !$(listId).hidden;
+          hidePicker(inputId, listId);
+          if (!wasOpen && escape) escape();
+          return true;
+        }
+        if (event.key === "Tab") {
+          hidePicker(inputId, listId);
+          return true;
+        }
+        if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return false;
+        if ($(listId).hidden) open();
+        const items = pickerResultItems(listId);
+        if (items.length === 0) return true;
+        const activeId = $(inputId).getAttribute("aria-activedescendant");
+        const activeIndex = items.findIndex((item) => item.id === activeId);
+        if (event.key === "Enter") {
+          if (activeIndex < 0) return true;
+          event.preventDefault();
+          pick(items[activeIndex]);
+          return true;
+        }
+        event.preventDefault();
+        setActivePickerResult(
+          inputId,
+          listId,
+          activeIndex < 0
+            ? event.key === "ArrowDown" ? 0 : items.length - 1
+            : activeIndex + (event.key === "ArrowDown" ? 1 : -1),
+        );
+        return true;
       }
 
       function resetCacheProbe() {
@@ -1919,7 +2053,7 @@
         const serial = ++cacheProbeRequest;
         pendingCacheKey = key;
         $("cache-status").hidden = false;
-        $("cache-status").textContent = "Checking for a cached blueprintâ€¦";
+        $("cache-status").textContent = "Checking for a cached blueprint…";
         cacheProbeTimer = setTimeout(() => void loadCacheStatus(request, key, serial), 250);
       }
 
@@ -1946,36 +2080,190 @@
         if (serial === cacheProbeRequest) resetCacheProbe();
       }
 
+      function normalizeBranches(values) {
+        if (!Array.isArray(values)) return [];
+        return [...new Set(values.filter((branch) => typeof branch === "string" && branch.length > 0))];
+      }
+
+      function branchResultItem(branch, label, description) {
+        const item = document.createElement("li");
+        item.className = "result";
+        item.id = branch ? "ref-result-" + encodeURIComponent(branch).replace(/%/g, "_") : "ref-result-default";
+        item.tabIndex = -1;
+        item.setAttribute("role", "option");
+        item.setAttribute("aria-selected", String(branch === $("ref").value));
+        item.dataset.branch = branch;
+        appendText(item, "result-name", label);
+        if (description) appendText(item, "result-desc", description);
+        item.addEventListener("pointermove", () => {
+          const index = pickerResultItems("ref-results").indexOf(item);
+          if (index >= 0) setActivePickerResult("ref-query", "ref-results", index);
+        });
+        item.addEventListener("click", () => pickBranch(branch));
+        return item;
+      }
+
+      function matchingBranches() {
+        const query = $("ref-query").value.trim();
+        const needle = query.toLowerCase();
+        const candidates = needle
+          ? [...repoBranches, ...branchSearchResults]
+          : repoBranches;
+        const seen = new Set();
+        return candidates.filter((branch) => {
+          const key = branch.toLowerCase();
+          if (seen.has(key) || (needle && !key.includes(needle))) return false;
+          seen.add(key);
+          return true;
+        });
+      }
+
+      function renderBranchStatus(matches) {
+        const query = $("ref-query").value.trim();
+        const suffix = branchSearchLoading
+          ? " · searching GitHub…"
+          : branchSearchWarning ? " · " + branchSearchWarning : branchesLoading ? " · loading more…" : "";
+        $("ref-query").setAttribute("aria-busy", String(branchSearchLoading || branchesLoading));
+        if (query) {
+          $("ref-status").textContent = matches.length
+            ? matches.length + (matches.length === 1 ? " matching branch" : " matching branches") + suffix
+            : "No cached branch matches “" + query + "”; you can still use it" + suffix;
+        } else if (repoBranches.length) {
+          $("ref-status").textContent = repoBranches.length
+            + (repoBranches.length === 1 ? " branch loaded" : " branches loaded")
+            + suffix;
+        } else if (branchesLoading) {
+          $("ref-status").textContent = "Loading branches…";
+        } else {
+          $("ref-status").textContent = repoDefaultBranch
+            ? "Using the default branch (" + repoDefaultBranch + ")."
+            : "Use the repository default or enter any branch.";
+        }
+      }
+
+      function renderBranchResults(show) {
+        const input = $("ref-query");
+        const list = $("ref-results");
+        const activeId = input.getAttribute("aria-activedescendant");
+        const scrollTop = list.scrollTop;
+        const query = input.value.trim();
+        const matches = matchingBranches();
+        list.replaceChildren();
+        if (!query) {
+          list.appendChild(branchResultItem(
+            "",
+            repoDefaultBranch ? "Default branch (" + repoDefaultBranch + ")" : "Default branch",
+            "Use the repository default",
+          ));
+        }
+        for (const branch of matches.slice(0, 50)) {
+          list.appendChild(branchResultItem(branch, branch, "Repository branch"));
+        }
+        if (query && !matches.some((branch) => branch.toLowerCase() === query.toLowerCase())) {
+          list.appendChild(branchResultItem(query, "Use “" + query + "”", "Enter a branch that is not cached yet"));
+        }
+        renderBranchStatus(matches);
+        showPicker("ref-query", "ref-results", show && list.children.length > 0);
+        list.scrollTop = scrollTop;
+        if (!activeId) return;
+        const active = document.getElementById(activeId);
+        if (!active || !list.contains(active)) return;
+        active.classList.add("active");
+        input.setAttribute("aria-activedescendant", activeId);
+      }
+
+      function hideBranchResults() {
+        hidePicker("ref-query", "ref-results");
+      }
+
+      function pickBranch(branch) {
+        clearTimeout(branchSearchTimer);
+        branchSearchRequest++;
+        $("ref").value = branch;
+        $("ref-query").value = branch;
+        branchSearchResults = [];
+        branchSearchLoading = false;
+        branchSearchWarning = null;
+        hideBranchResults();
+        renderBranchStatus(branch ? [branch] : []);
+        scheduleCacheProbe();
+      }
+
       function resetBranches(message) {
+        clearTimeout(branchSearchTimer);
         branchRequest++;
+        branchSearchRequest++;
         resetCacheProbe();
+        repoBranches = [];
+        repoDefaultBranch = "";
+        branchesLoading = false;
+        branchSearchResults = [];
+        branchSearchLoading = false;
+        branchSearchWarning = null;
         $("ref").value = "";
-        renderMenu(
-          "ref",
-          [{ value: "", label: "Default branch" }, { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" }],
-          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
-          false,
-        );
-        syncCustomBranchInput(false);
+        $("ref-query").value = "";
+        $("ref-query").disabled = true;
+        $("ref-query").removeAttribute("aria-busy");
+        $("ref-results").replaceChildren();
+        hideBranchResults();
         $("ref-status").textContent = message || "Choose a repository to load its branches.";
       }
 
-      function renderBranches(branches, defaultBranch, message) {
-        $("ref").value = "";
-        renderMenu(
-          "ref",
-          [
-            { value: "", label: defaultBranch ? "Default (" + defaultBranch + ")" : "Default branch" },
-            ...branches.map((branch) => ({ value: branch, label: branch })),
-            { value: CUSTOM_BRANCH_VALUE, label: "Other branch…" },
-          ],
-          () => { syncCustomBranchInput(true); scheduleCacheProbe(); },
-          false,
-        );
-        syncCustomBranchInput(false);
-        $("ref-status").textContent = message || (branches.length
-          ? branches.length + (branches.length === 1 ? " branch available." : " branches available.") + " Choose Other branch… if needed."
-          : "No branches were returned; use the repository default or choose Other branch…");
+      async function searchRepoBranches(repo, query, request) {
+        const key = repo.toLowerCase() + "\n" + query.toLowerCase();
+        if (branchSearchCache.has(key)) {
+          if (request !== branchSearchRequest) return;
+          branchSearchResults = branchSearchCache.get(key);
+          branchSearchLoading = false;
+          renderBranchResults(!$("ref-results").hidden);
+          return;
+        }
+        try {
+          const response = await apiGet(
+            "/api/repos/branches?repo=" + encodeURIComponent(repo) + "&q=" + encodeURIComponent(query),
+          );
+          const data = await response.json().catch(() => null);
+          if (request !== branchSearchRequest) return;
+          if (!response.ok) {
+            const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
+            branchSearchWarning = "GitHub search failed" + detail;
+          } else {
+            branchSearchResults = normalizeBranches(data && data.branches);
+            branchSearchCache.set(key, branchSearchResults);
+          }
+        } catch {
+          if (request === branchSearchRequest) branchSearchWarning = "Could not reach GitHub";
+        }
+        if (request !== branchSearchRequest) return;
+        branchSearchLoading = false;
+        renderBranchResults(!$("ref-results").hidden);
+      }
+
+      function scheduleBranchSearch() {
+        clearTimeout(branchSearchTimer);
+        branchSearchRequest++;
+        const repo = githubRepoSlug($("repo").value);
+        const query = $("ref-query").value.trim();
+        $("ref").value = query;
+        branchSearchResults = [];
+        branchSearchWarning = null;
+        if (!repo || !query) {
+          branchSearchLoading = false;
+          renderBranchResults(true);
+          scheduleCacheProbe();
+          return;
+        }
+        const key = repo.toLowerCase() + "\n" + query.toLowerCase();
+        if (branchSearchCache.has(key)) {
+          branchSearchResults = branchSearchCache.get(key);
+          branchSearchLoading = false;
+          renderBranchResults(true);
+        } else {
+          branchSearchLoading = true;
+          renderBranchResults(true);
+          const request = branchSearchRequest;
+          branchSearchTimer = setTimeout(() => void searchRepoBranches(repo, query, request), 220);
+        }
         scheduleCacheProbe();
       }
 
@@ -1983,35 +2271,29 @@
         const repo = githubRepoSlug(value);
         if (!repo) return resetBranches("Enter an exact GitHub repository to load its branches.");
         const request = ++branchRequest;
-        $("ref").value = "";
-        renderMenu("ref", [{ value: "", label: "Loading branches…" }], () => {}, true);
-        $("ref-status").textContent = "Loading branches…";
+        repoBranches = [];
+        repoDefaultBranch = typeof defaultBranch === "string" ? defaultBranch : "";
+        branchesLoading = true;
+        branchSearchWarning = null;
+        $("ref-query").disabled = false;
+        renderBranchResults(document.activeElement === $("ref-query"));
         try {
           const response = await apiGet("/api/repos/branches?repo=" + encodeURIComponent(repo));
           const data = await response.json().catch(() => null);
           if (request !== branchRequest) return;
           if (!response.ok) {
             const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
-            renderBranches(
-              [],
-              typeof defaultBranch === "string" ? defaultBranch : "",
-              "Could not load branches" + detail + " Sign in for private repositories, use the default, or choose Other branch…",
-            );
-            return;
+            branchSearchWarning = "Could not load branches" + detail + " Enter any branch to continue";
+          } else {
+            repoBranches = normalizeBranches(data && data.branches);
           }
-          const branches = data && Array.isArray(data.branches)
-            ? data.branches.filter((branch) => typeof branch === "string" && branch.length > 0)
-            : [];
-          renderBranches(branches, typeof defaultBranch === "string" ? defaultBranch : "");
         } catch {
-          if (request === branchRequest) {
-            renderBranches(
-              [],
-              typeof defaultBranch === "string" ? defaultBranch : "",
-              "Could not reach GitHub for branches. Use the default or choose Other branch…",
-            );
-          }
+          if (request === branchRequest) branchSearchWarning = "Could not reach GitHub; enter any branch to continue";
         }
+        if (request !== branchRequest) return;
+        branchesLoading = false;
+        renderBranchResults(!$("ref-results").hidden);
+        scheduleCacheProbe();
       }
 
       function normalizePullRequest(value) {
@@ -2025,6 +2307,7 @@
         return {
           number,
           title: typeof value.title === "string" ? value.title : "PR #" + number,
+          body: typeof value.body === "string" ? value.body : "",
           author: typeof value.author === "string" ? value.author : "unknown",
           headRef: typeof value.headRef === "string" ? value.headRef : "",
           baseRef: typeof value.baseRef === "string" ? value.baseRef : "",
@@ -2038,9 +2321,12 @@
       }
 
       function rememberViewerLogin(value) {
-        if (typeof value !== "string" || value.length === 0) return;
+        if (typeof value !== "string" || value.length === 0) return false;
+        const changed = currentUserLogin === null
+          || currentUserLogin.toLowerCase() !== value.toLowerCase();
         currentUserLogin = value;
         if (signedIn) $("me-login").textContent = value;
+        return changed;
       }
 
       function isCurrentUser(login) {
@@ -2071,7 +2357,8 @@
 
       function selectedPullRequest() {
         return Number.isSafeInteger(selectedPrNumber)
-          ? pullRequests.find((pr) => pr.number === selectedPrNumber) || null
+          && selectedPrSummary?.number === selectedPrNumber
+          ? selectedPrSummary
           : null;
       }
 
@@ -2096,28 +2383,36 @@
 
       function clearPullRequestSelection(clearQuery) {
         selectedPrNumber = null;
+        selectedPrSummary = null;
         if (clearQuery) prSearchQuery = "";
         $("pr-query").value = prSearchQuery;
         $("pr-preview").hidden = true;
       }
 
       function hidePullRequestResults() {
-        const list = $("pr-results");
-        list.hidden = true;
-        $("pr-query").setAttribute("aria-expanded", "false");
-        $("pr-query").removeAttribute("aria-activedescendant");
+        hidePicker("pr-query", "pr-results");
       }
 
       function resetPullRequests(message, clearFilters) {
+        clearTimeout(prSearchTimer);
         prRequest++;
+        prSearchRequest++;
         pullRequests = [];
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = null;
+        pullRequestSearchResults = [];
+        pullRequestSearchLoading = false;
+        pullRequestSearchWarning = null;
+        pullRequestAuthorsDirty = false;
         if (clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
         }
         clearPullRequestSelection(false);
         renderMenu("pr-author", [{ value: "", label: "All authors" }], () => {}, true);
-        $("pr-query").disabled = true;
+        $("pr-query").disabled = githubRepoSlug($("repo").value) === null;
+        $("pr-query").removeAttribute("aria-busy");
+        $("pr-results").replaceChildren();
         hidePullRequestResults();
         $("pr-status").textContent = message || "Choose a repository to load its pull requests.";
       }
@@ -2143,13 +2438,30 @@
           },
           pullRequests.length === 0,
         );
+        pullRequestAuthorsDirty = false;
+      }
+
+      function refreshPullRequestAuthors() {
+        if ($("pr-author-trigger").getAttribute("aria-expanded") === "true") {
+          pullRequestAuthorsDirty = true;
+          return;
+        }
+        renderPullRequestAuthors();
       }
 
       function matchesPullRequest(pr, query, author) {
-        const needle = query.trim().toLowerCase().replace(/^#/, "");
-        const queryMatch = !needle
-          || pr.title.toLowerCase().includes(needle)
-          || String(pr.number).includes(needle);
+        const normalized = query.trim().toLowerCase();
+        const exactNumber = /^#?([1-9]\d*)$/.exec(normalized);
+        const needle = normalized.replace(/^#/, "");
+        const queryMatch = exactNumber
+          ? pr.number === Number(exactNumber[1])
+          : !needle
+            || pr.title.toLowerCase().includes(needle)
+            || String(pr.number).includes(needle)
+            || pr.author.toLowerCase().includes(needle)
+            || pr.headRef.toLowerCase().includes(needle)
+            || pr.baseRef.toLowerCase().includes(needle)
+            || pr.body.toLowerCase().includes(needle);
         return queryMatch && (!author || pr.author === author);
       }
 
@@ -2159,24 +2471,39 @@
       }
 
       function matchingPullRequests() {
-        return pullRequests.filter((pr) => matchesPullRequest(pr, prSearchQuery, $("pr-author").value));
+        const query = prSearchQuery.trim();
+        const selected = selectedPullRequest();
+        const selectedOnly = !query && selected && !pullRequests.some((pr) => pr.number === selected.number)
+          ? [selected]
+          : [];
+        const source = query
+          ? [...pullRequests, ...pullRequestSearchResults]
+          : [...selectedOnly, ...pullRequests];
+        const seen = new Set();
+        return source.filter((pr) => {
+          if (seen.has(pr.number) || !matchesPullRequest(pr, query, $("pr-author").value)) return false;
+          seen.add(pr.number);
+          return true;
+        });
       }
 
       function prResultItems() {
-        return [...$("pr-results").querySelectorAll('[role="option"]')];
+        return pickerResultItems("pr-results");
       }
 
       function setActivePullRequestResult(index) {
-        const items = prResultItems();
-        if (items.length === 0) return;
-        const bounded = (index + items.length) % items.length;
-        items.forEach((item, itemIndex) => item.classList.toggle("active", itemIndex === bounded));
-        $("pr-query").setAttribute("aria-activedescendant", items[bounded].id);
-        items[bounded].scrollIntoView({ block: "nearest" });
+        setActivePickerResult("pr-query", "pr-results", index);
       }
 
       function pickPullRequest(pr) {
+        clearTimeout(prSearchTimer);
+        prSearchRequest++;
+        pullRequestSearchResults = [];
+        pullRequestSearchLoading = false;
+        pullRequestSearchWarning = null;
         selectedPrNumber = pr.number;
+        // Appending or deduplicating later pages must not replace the summary the user selected.
+        selectedPrSummary = Object.freeze({ ...pr });
         prSearchQuery = "";
         $("pr-query").value = pullRequestSearchLabel(pr);
         hidePullRequestResults();
@@ -2187,7 +2514,7 @@
         // dropdown appear to require a second selection click.
       }
 
-      function pullRequestResultItem(pr) {
+      function pullRequestResultItem(pr, groupKey = "all") {
         const item = document.createElement("li");
         item.className = "result";
         item.id = "pr-result-" + pr.number;
@@ -2195,6 +2522,7 @@
         item.setAttribute("role", "option");
         item.setAttribute("aria-selected", String(pr.number === selectedPrNumber));
         item.dataset.prNumber = String(pr.number);
+        item.dataset.prGroup = groupKey;
         const top = document.createElement("div");
         top.className = "pr-result-top";
         appendText(top, "pr-result-number", "#" + pr.number);
@@ -2214,13 +2542,13 @@
 
       function personalPullRequestGroups(filtered) {
         if (!currentUserLogin || $("pr-author").value || prSearchQuery.trim()) {
-          return [{ label: null, prs: filtered }];
+          return [{ key: "all", label: null, prs: filtered }];
         }
         const groups = [
-          { label: "My pull requests", prs: [] },
-          { label: "Needs your review", prs: [] },
-          { label: "Reviewed by you", prs: [] },
-          { label: "Other pull requests", prs: [] },
+          { key: "mine", label: "My pull requests", prs: [] },
+          { key: "requested", label: "Needs your review", prs: [] },
+          { key: "reviewed", label: "Reviewed by you", prs: [] },
+          { key: "other", label: "Other pull requests", prs: [] },
         ];
         for (const pr of filtered) {
           if (isCurrentUser(pr.author)) groups[0].prs.push(pr);
@@ -2231,18 +2559,74 @@
         return groups.filter((group) => group.prs.length > 0);
       }
 
+      function ensurePullRequestGroup(list, group, before) {
+        const existing = [...list.children].find((node) =>
+          node.classList.contains("pr-result-group") && node.dataset.prGroup === group.key,
+        );
+        if (existing) return existing.querySelector(".pr-result-group-options");
+
+        const container = document.createElement("li");
+        container.className = "pr-result-group";
+        container.dataset.prGroup = group.key;
+        container.setAttribute("role", "group");
+        if (group.label) {
+          const label = document.createElement("div");
+          label.className = "group-label";
+          label.id = "pr-result-group-label-" + group.key;
+          label.textContent = group.label;
+          container.setAttribute("aria-labelledby", label.id);
+          container.appendChild(label);
+        } else {
+          container.setAttribute("aria-label", "Pull requests");
+        }
+        const options = document.createElement("ul");
+        options.className = "pr-result-group-options";
+        options.setAttribute("role", "presentation");
+        container.appendChild(options);
+        list.insertBefore(container, before);
+        return options;
+      }
+
+      function firstLaterPullRequestGroupNode(list, key, orderedKeys) {
+        const currentIndex = orderedKeys.indexOf(key);
+        return [...list.children].find((node) => {
+          const nodeIndex = orderedKeys.indexOf(node.dataset.prGroup || "");
+          return nodeIndex > currentIndex;
+        }) || null;
+      }
+
       function renderPullRequestStatus(filtered) {
         const state = $("pr-state").value;
+        const suffix = pullRequestLoadSuffix();
+        const query = prSearchQuery.trim();
+        if (query) {
+          const searchSuffix = pullRequestSearchLoading
+            ? " · searching GitHub…"
+            : pullRequestSearchWarning ? " · " + pullRequestSearchWarning : "";
+          $("pr-status").textContent = filtered.length
+            ? filtered.length + (filtered.length === 1 ? " match" : " matches") + " for “" + query + "”" + searchSuffix
+            : "No pull requests match “" + query + "”" + searchSuffix;
+          $("pr-query").setAttribute("aria-busy", String(pullRequestSearchLoading || pullRequestsLoading));
+          return;
+        }
         if (pullRequests.length === 0) {
-          $("pr-status").textContent = "No " + state + " pull requests.";
+          $("pr-status").textContent = pullRequestsLoading
+            ? "Loading " + state + " pull requests…"
+            : "No " + state + " pull requests." + suffix;
         } else if (filtered.length === 0) {
           const query = prSearchQuery.trim();
-          $("pr-status").textContent = query ? "No PRs match “" + query + "”." : "No PRs match the current filters.";
+          $("pr-status").textContent = (query ? "No loaded PRs match “" + query + "”." : "No loaded PRs match the current filters.") + suffix;
         } else {
           const loaded = pullRequests.length + " " + state + (pullRequests.length === 1 ? " pull request" : " pull requests") + " loaded";
           $("pr-status").textContent = loaded
-            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown");
+            + (filtered.length === pullRequests.length ? "" : " · " + filtered.length + " shown")
+            + suffix;
         }
+      }
+
+      function pullRequestLoadSuffix() {
+        if (pullRequestsLoading) return " · loading more…";
+        return pullRequestLoadWarning ? " · " + pullRequestLoadWarning : "";
       }
 
       function renderPullRequestResults(show) {
@@ -2253,22 +2637,83 @@
         const list = $("pr-results");
         list.replaceChildren();
         if (filtered.length === 0) {
-          appendPlainItem(list, "group-note", "No pull requests match the current filters.");
+          const note = appendPlainItem(
+            list,
+            "group-note",
+            pullRequestsLoading && !prSearchQuery.trim()
+              ? "Loading pull requests…"
+              : "No pull requests match the current filters.",
+          );
+          note.setAttribute("role", "presentation");
         } else {
           for (const group of personalPullRequestGroups(filtered)) {
-            if (group.label) appendPlainItem(list, "group-label", group.label);
-            for (const pr of group.prs) list.appendChild(pullRequestResultItem(pr));
+            const options = ensurePullRequestGroup(list, group, null);
+            for (const pr of group.prs) options.appendChild(pullRequestResultItem(pr, group.key));
           }
         }
         renderPullRequestPreview();
         renderPullRequestStatus(filtered);
-        list.hidden = !show;
-        $("pr-query").setAttribute("aria-expanded", String(show));
-        $("pr-query").removeAttribute("aria-activedescendant");
+        showPicker("pr-query", "pr-results", show);
+      }
+
+      function appendPullRequestResults(requests) {
+        const matching = requests.filter((pr) => matchesPullRequest(pr, prSearchQuery, $("pr-author").value));
+        const list = $("pr-results");
+        if (matching.length > 0 && list.querySelector(".group-note")) list.replaceChildren();
+        const groups = personalPullRequestGroups(matching);
+        const orderedKeys = personalPullRequestGroups(pullRequests).map((group) => group.key);
+        for (const group of groups) {
+          const before = firstLaterPullRequestGroupNode(list, group.key, orderedKeys);
+          const options = ensurePullRequestGroup(list, group, before);
+          for (const pr of group.prs) options.appendChild(pullRequestResultItem(pr, group.key));
+        }
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
+      function regroupPullRequestResults() {
+        const query = $("pr-query");
+        const list = $("pr-results");
+        const activeId = query.getAttribute("aria-activedescendant");
+        const scrollTop = list.scrollTop;
+        renderPullRequestResults(true);
+        list.scrollTop = scrollTop;
+        if (!activeId) return;
+        const active = document.getElementById(activeId);
+        if (!active || !list.contains(active)) return;
+        active.classList.add("active");
+        query.setAttribute("aria-activedescendant", activeId);
       }
 
       function showPullRequestError(message) {
         resetPullRequests(message, false);
+      }
+
+      function showPullRequestPaginationError(message) {
+        if (pullRequests.length === 0) {
+          showPullRequestError(message);
+          return;
+        }
+        pullRequestsLoading = false;
+        pullRequestLoadWarning = message;
+        $("pr-query").setAttribute("aria-busy", "false");
+        renderPullRequestPreview();
+        renderPullRequestStatus(matchingPullRequests());
+      }
+
+      function publishPullRequestPage(byNumber, hasMore, groupingChanged) {
+        const resultsOpen = !$("pr-results").hidden;
+        pullRequests = [...byNumber.values()];
+        pullRequestsLoading = hasMore;
+        pullRequestLoadWarning = null;
+        refreshPullRequestAuthors();
+        $("pr-query").disabled = false;
+        $("pr-query").setAttribute("aria-busy", String(hasMore || pullRequestSearchLoading));
+        if (resultsOpen) regroupPullRequestResults();
+        else {
+          renderPullRequestPreview();
+          renderPullRequestStatus(matchingPullRequests());
+        }
       }
 
       async function loadRepoPullRequests(value, options) {
@@ -2277,6 +2722,13 @@
         const request = ++prRequest;
         const state = $("pr-state").value;
         pullRequests = [];
+        pullRequestsLoading = true;
+        pullRequestLoadWarning = null;
+        clearTimeout(prSearchTimer);
+        prSearchRequest++;
+        pullRequestSearchResults = [];
+        pullRequestSearchLoading = false;
+        pullRequestSearchWarning = null;
         if (options && options.clearFilters) {
           $("pr-author").value = "";
           prSearchQuery = "";
@@ -2284,16 +2736,16 @@
         clearPullRequestSelection(false);
         $("pr-author-trigger").disabled = true;
         closeMenu("pr-author", false);
-        $("pr-query").disabled = true;
+        $("pr-query").disabled = false;
+        $("pr-query").setAttribute("aria-busy", "true");
         hidePullRequestResults();
         $("pr-status").textContent = "Loading " + state + " pull requests…";
         const byNumber = new Map();
         let hasMore = true;
         let page = 1;
         try {
-          // Review mode promises one picker over the whole state-specific queue, so keep following
-          // GitHub's pages until it is exhausted. A repo/intent/auth change increments `prRequest`;
-          // the stale guard after every page then abandons this loop before it can repaint the UI.
+          // Publish each page before asking GitHub for the next one. The first page makes the picker
+          // usable; remaining pages expand the same queue without blocking selection.
           while (hasMore) {
             const response = await apiGet(
               "/api/repos/pulls?repo=" + encodeURIComponent(repo)
@@ -2304,27 +2756,106 @@
             if (request !== prRequest) return;
             if (!response.ok) {
               const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
-              showPullRequestError("Could not load pull requests" + detail + " Sign in for private repositories.");
+              showPullRequestPaginationError(
+                pullRequests.length === 0
+                  ? "Could not load pull requests" + detail + " Sign in for private repositories."
+                  : "Could not load more pull requests" + detail,
+              );
               return;
             }
-            if (data) rememberViewerLogin(data.viewerLogin);
+            const groupingChanged = data ? rememberViewerLogin(data.viewerLogin) : false;
             const pagePrs = data && Array.isArray(data.prs) ? data.prs : [];
             for (const value of pagePrs) {
               const pr = normalizePullRequest(value);
               if (pr) byNumber.set(pr.number, pr);
             }
             hasMore = data && data.hasMore === true;
+            publishPullRequestPage(byNumber, hasMore, groupingChanged);
             page++;
           }
         } catch {
-          if (request === prRequest) showPullRequestError("Could not reach GitHub for pull requests.");
+          if (request === prRequest) {
+            showPullRequestPaginationError(
+              pullRequests.length === 0
+                ? "Could not reach GitHub for pull requests."
+                : "Could not reach GitHub for more pull requests.",
+            );
+          }
           return;
         }
-        if (request !== prRequest) return;
-        pullRequests = [...byNumber.values()];
-        renderPullRequestAuthors();
-        $("pr-query").disabled = pullRequests.length === 0;
-        renderPullRequestResults(false);
+      }
+
+      function pullRequestSearchKey(repo, state, query) {
+        return repo.toLowerCase() + "\n" + state + "\n" + query.trim().toLowerCase();
+      }
+
+      async function searchRepoPullRequests(repo, state, query, request) {
+        const key = pullRequestSearchKey(repo, state, query);
+        if (pullRequestSearchCache.has(key)) {
+          if (request !== prSearchRequest) return;
+          pullRequestSearchResults = pullRequestSearchCache.get(key);
+          pullRequestSearchLoading = false;
+          if (!$("pr-results").hidden) regroupPullRequestResults();
+          else renderPullRequestStatus(matchingPullRequests());
+          return;
+        }
+        try {
+          const response = await apiGet(
+            "/api/repos/pulls?repo=" + encodeURIComponent(repo)
+            + "&state=" + encodeURIComponent(state)
+            + "&q=" + encodeURIComponent(query),
+          );
+          const data = await response.json().catch(() => null);
+          if (request !== prSearchRequest) return;
+          if (!response.ok) {
+            const detail = data && typeof data.error === "string" ? ": " + data.error : ".";
+            pullRequestSearchWarning = "GitHub search failed" + detail;
+          } else {
+            const byNumber = new Map();
+            for (const value of data && Array.isArray(data.prs) ? data.prs : []) {
+              const pr = normalizePullRequest(value);
+              if (pr) byNumber.set(pr.number, pr);
+            }
+            pullRequestSearchResults = [...byNumber.values()];
+            pullRequestSearchCache.set(key, pullRequestSearchResults);
+            if (data) rememberViewerLogin(data.viewerLogin);
+          }
+        } catch {
+          if (request === prSearchRequest) pullRequestSearchWarning = "Could not reach GitHub";
+        }
+        if (request !== prSearchRequest) return;
+        pullRequestSearchLoading = false;
+        if (!$("pr-results").hidden) regroupPullRequestResults();
+        else renderPullRequestStatus(matchingPullRequests());
+      }
+
+      function schedulePullRequestSearch() {
+        clearTimeout(prSearchTimer);
+        prSearchRequest++;
+        const repo = githubRepoSlug($("repo").value);
+        const state = $("pr-state").value;
+        const query = prSearchQuery.trim();
+        pullRequestSearchResults = [];
+        pullRequestSearchWarning = null;
+        if (!repo || !query) {
+          pullRequestSearchLoading = false;
+          renderPullRequestResults(true);
+          return;
+        }
+        const key = pullRequestSearchKey(repo, state, query);
+        if (pullRequestSearchCache.has(key)) {
+          pullRequestSearchResults = pullRequestSearchCache.get(key);
+          pullRequestSearchLoading = false;
+          renderPullRequestResults(true);
+          return;
+        }
+        pullRequestSearchLoading = true;
+        renderPullRequestResults(true);
+        const request = prSearchRequest;
+        prSearchTimer = setTimeout(
+          () => void searchRepoPullRequests(repo, state, query, request),
+          220,
+        );
       }
 
       function scheduleRepoPullRequests() {
@@ -2360,6 +2891,7 @@
         const repo = githubRepoSlug($("repo").value);
         if (!repo) return resetBranches();
         resetBranches("Waiting to load branches…");
+        $("ref-query").disabled = false;
         branchTimer = setTimeout(() => void loadRepoBranches(repo), 350);
       }
 
@@ -2378,7 +2910,26 @@
       // Repository discovery stays on input. A change handler would run when this field blurs on
       // result pointer-down and could remove the result before its click selects the repository.
       $("repo").addEventListener("input", scheduleGithubRepositoryData);
-      $("custom-ref").addEventListener("input", scheduleCacheProbe);
+      $("ref-query").addEventListener("input", scheduleBranchSearch);
+      $("ref-query").addEventListener("focus", () => {
+        if ($("ref-query").disabled) return;
+        closeAllMenus();
+        hideResults();
+        hidePullRequestResults();
+        renderBranchResults(true);
+      });
+      $("ref-query").addEventListener("click", () => {
+        if (!$("ref-query").disabled && $("ref-results").hidden) renderBranchResults(true);
+      });
+      $("ref-query").addEventListener("keydown", (event) => {
+        handlePickerKeydown(
+          event,
+          "ref-query",
+          "ref-results",
+          () => renderBranchResults(true),
+          (item) => pickBranch(item.dataset.branch || ""),
+        );
+      });
 
       function setPullRequestState(next) {
         if ($("pr-state").value === next) return;
@@ -2397,11 +2948,23 @@
       $("pr-state-open").addEventListener("click", () => setPullRequestState("open"));
       $("pr-state-closed").addEventListener("click", () => setPullRequestState("closed"));
 
+      function flushPullRequestAuthorsBeforeOpen() {
+        if (pullRequestAuthorsDirty && $("pr-author-trigger").getAttribute("aria-expanded") !== "true") {
+          renderPullRequestAuthors();
+        }
+      }
+
+      $("pr-author-trigger").addEventListener("click", flushPullRequestAuthorsBeforeOpen, true);
+      $("pr-author-trigger").addEventListener("keydown", (event) => {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") flushPullRequestAuthorsBeforeOpen();
+      }, true);
+
       $("pr-query").addEventListener("input", () => {
         selectedPrNumber = null;
+        selectedPrSummary = null;
         prSearchQuery = $("pr-query").value;
         $("pr-preview").hidden = true;
-        renderPullRequestResults(true);
+        schedulePullRequestSearch();
       });
       $("pr-query").addEventListener("focus", () => {
         if (!$("pr-query").disabled) {
@@ -2410,79 +2973,109 @@
           renderPullRequestResults(true);
         }
       });
+      $("pr-query").addEventListener("click", () => {
+        if (!$("pr-query").disabled && $("pr-results").hidden) renderPullRequestResults(true);
+      });
       $("pr-query").addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          hidePullRequestResults();
-          return;
-        }
-        if (event.key === "Tab") {
-          hidePullRequestResults();
-          return;
-        }
-        if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
-        if ($("pr-results").hidden) renderPullRequestResults(true);
-        const items = prResultItems();
-        if (items.length === 0) return;
-        const activeId = $("pr-query").getAttribute("aria-activedescendant");
-        const activeIndex = items.findIndex((item) => item.id === activeId);
-        if (event.key === "Enter") {
-          if (activeIndex < 0) return;
-          event.preventDefault();
-          const number = Number(items[activeIndex].dataset.prNumber);
-          const pr = pullRequests.find((candidate) => candidate.number === number);
-          if (pr) pickPullRequest(pr);
-          return;
-        }
-        event.preventDefault();
-        const nextIndex = activeIndex < 0
-          ? event.key === "ArrowDown" ? 0 : items.length - 1
-          : activeIndex + (event.key === "ArrowDown" ? 1 : -1);
-        setActivePullRequestResult(nextIndex);
+        handlePickerKeydown(
+          event,
+          "pr-query",
+          "pr-results",
+          () => renderPullRequestResults(true),
+          (item) => {
+            const number = Number(item.dataset.prNumber);
+            const pr = matchingPullRequests().find((candidate) => candidate.number === number);
+            if (pr) pickPullRequest(pr);
+          },
+        );
       });
 
       $("repo").addEventListener("input", () => {
-        if (!signedIn) return;
         clearTimeout(searchTimer);
+        repoSearchRequest++;
+        repoSearchWarning = null;
         const query = $("repo").value.trim();
+        if (!signedIn) {
+          hideResults();
+          $("repo-status").textContent = query && !githubRepoSlug(query)
+            ? "Sign in to search GitHub, or enter an exact owner/repository."
+            : "";
+          return;
+        }
         if (!query) return showRecents();
         activeQuery = query;
+        const cached = repoSearchCache.get(query.toLowerCase());
+        if (cached) {
+          renderGroups(query, cached);
+          return;
+        }
         renderGroups(query, null);
-        searchTimer = setTimeout(() => runSearch(query), 250);
+        const request = repoSearchRequest;
+        searchTimer = setTimeout(() => runSearch(query, request), 220);
       });
 
       // An empty focused field previews your most recently pushed repos.
       $("repo").addEventListener("focus", () => {
-        if (signedIn && !$("repo").value.trim()) showRecents();
+        if (!signedIn) return;
+        const query = $("repo").value.trim();
+        if (!query) showRecents();
+        else renderGroups(query, repoSearchCache.get(query.toLowerCase()) ?? null);
+      });
+      $("repo").addEventListener("click", () => {
+        if (!signedIn || !$("results").hidden) return;
+        const query = $("repo").value.trim();
+        if (!query) showRecents();
+        else renderGroups(query, repoSearchCache.get(query.toLowerCase()) ?? null);
       });
 
       // The whole cached list, recent first — org repos included without having to search;
       // the dropdown scrolls.
       function showRecents() {
         activeQuery = null;
+        repoSearchWarning = null;
         renderList([{ label: "Your repositories — recent first", repos: myRepos }]);
+        $("repo-status").textContent = myRepos.length
+          ? myRepos.length + (myRepos.length === 1 ? " cached repository" : " cached repositories")
+          : "Type any repository name to search GitHub.";
       }
 
       function matchMine(query) {
         const term = query.toLowerCase();
-        return myRepos.filter((repo) => repo.fullName.toLowerCase().includes(term)).slice(0, 5);
+        return myRepos.filter((repo) =>
+          repo.fullName.toLowerCase().includes(term)
+          || (typeof repo.description === "string" && repo.description.toLowerCase().includes(term))
+        ).slice(0, 5);
       }
 
-      async function runSearch(query) {
+      async function runSearch(query, request) {
+        const key = query.toLowerCase();
+        if (repoSearchCache.has(key)) {
+          if (request === repoSearchRequest && activeQuery === query) {
+            renderGroups(query, repoSearchCache.get(key), !$("results").hidden);
+          }
+          return;
+        }
         let global = [];
+        let warning = null;
         try {
           const res = await apiGet("/api/repos/search?q=" + encodeURIComponent(query));
           if (res.ok) {
             const data = await res.json();
             if (Array.isArray(data.repos)) global = data.repos;
+          } else {
+            warning = "GitHub search failed";
           }
         } catch {
-          /* the yours group already rendered; the global group just stays empty */
+          warning = "Could not reach GitHub";
         }
-        if (activeQuery === query) renderGroups(query, global);
+        if (request !== repoSearchRequest || activeQuery !== query) return;
+        repoSearchWarning = warning;
+        if (!warning) repoSearchCache.set(key, global);
+        renderGroups(query, global, !$("results").hidden);
       }
 
       // globalRepos === null means the GitHub search is still in flight.
-      function renderGroups(query, globalRepos) {
+      function renderGroups(query, globalRepos, show = true) {
         const mine = matchMine(query);
         const taken = new Set(mine.map((repo) => repo.fullName));
         const groups = [];
@@ -2493,13 +3086,24 @@
           const rest = globalRepos.filter((repo) => !taken.has(repo.fullName)).slice(0, 6);
           if (rest.length) groups.push({ label: "All GitHub", repos: rest });
         }
-        if (groups.length === 0) return hideResults();
-        renderList(groups);
+        if (groups.length === 0) hideResults();
+        else renderList(groups, show);
+        const count = groups.reduce((total, group) => total + (group.repos?.length || 0), 0);
+        $("repo").setAttribute("aria-busy", String(globalRepos === null));
+        $("repo-status").textContent = globalRepos === null
+          ? (count ? count + " cached matches · searching GitHub…" : "Searching GitHub…")
+          : repoSearchWarning
+            ? (count ? count + " cached matches · " : "") + repoSearchWarning
+            : count + (count === 1 ? " repository matches" : " repositories match");
       }
 
-      function renderList(groups) {
+      function renderList(groups, show = true) {
+        const input = $("repo");
         const list = $("results");
+        const activeId = input.getAttribute("aria-activedescendant");
+        const scrollTop = list.scrollTop;
         list.replaceChildren();
+        renderedRepositories.clear();
         let shown = 0;
         for (const group of groups) {
           const repos = group.repos || [];
@@ -2515,7 +3119,13 @@
             shown++;
           }
         }
-        list.hidden = shown === 0;
+        showPicker("repo", "results", show && shown > 0);
+        list.scrollTop = scrollTop;
+        if (!activeId) return;
+        const active = document.getElementById(activeId);
+        if (!active || !list.contains(active)) return;
+        active.classList.add("active");
+        input.setAttribute("aria-activedescendant", activeId);
       }
 
       function appendPlainItem(list, className, text) {
@@ -2523,22 +3133,29 @@
         item.className = className;
         item.textContent = text;
         list.appendChild(item);
+        return item;
       }
 
       // Built entirely with createElement + textContent: repo names/descriptions are untrusted.
       function resultItem(repo) {
         const item = document.createElement("li");
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "result";
+        item.className = "result";
+        item.id = "repo-result-" + encodeURIComponent(repo.fullName).replace(/%/g, "_");
+        item.tabIndex = -1;
+        item.setAttribute("role", "option");
+        item.dataset.repository = repo.fullName;
+        renderedRepositories.set(repo.fullName, repo);
         const top = document.createElement("div");
         top.className = "result-top";
         appendText(top, "result-name", repo.fullName);
         if (repo.isPrivate) appendText(top, "badge", "private");
-        button.appendChild(top);
-        if (repo.description) appendText(button, "result-desc", repo.description);
-        button.addEventListener("click", () => pickRepo(repo));
-        item.appendChild(button);
+        item.appendChild(top);
+        if (repo.description) appendText(item, "result-desc", repo.description);
+        item.addEventListener("pointermove", () => {
+          const index = pickerResultItems("results").indexOf(item);
+          if (index >= 0) setActivePickerResult("repo", "results", index);
+        });
+        item.addEventListener("click", () => pickRepo(repo));
         return item;
       }
 
@@ -2554,6 +3171,7 @@
         // click would otherwise re-render the dropdown (its query still matched activeQuery), reopening
         // it and appearing to drop the pick. Nulling activeQuery makes that late render a no-op.
         clearTimeout(searchTimer);
+        repoSearchRequest++;
         activeQuery = null;
         const repository = selectRepository(repo.fullName, { defaultBranch: repo.defaultBranch });
         if (repository) requestAnimationFrame(() => $("change-repository").focus());
@@ -2562,11 +3180,12 @@
       function hideResults() {
         const list = $("results");
         list.replaceChildren();
-        list.hidden = true;
+        hidePicker("repo", "results");
       }
 
       function hideAllPickerPopovers() {
         hideResults();
+        hideBranchResults();
         hidePullRequestResults();
         closeAllMenus();
       }
@@ -2575,28 +3194,44 @@
       document.addEventListener("click", (event) => {
         const target = event.target instanceof Element ? event.target : null;
         if (!target?.closest("#repo-search-wrap")) hideResults();
+        if (!target?.closest("#ref-search-wrap")) hideBranchResults();
         if (!target?.closest("#pr-search-wrap")) hidePullRequestResults();
         if (!target?.closest(".menu-select")) closeAllMenus();
       });
       $("repo").addEventListener("keydown", (event) => {
-        if (event.key === "Escape") {
-          const resultsWereOpen = !$("results").hidden;
-          hideAllPickerPopovers();
-          if (!resultsWereOpen) cancelRepositoryChange();
-        }
-        if (event.key === "Tab") hideResults();
+        handlePickerKeydown(
+          event,
+          "repo",
+          "results",
+          () => {
+            if ($("repo").value.trim()) {
+              const query = $("repo").value.trim();
+              renderGroups(query, repoSearchCache.get(query.toLowerCase()) ?? null);
+            }
+            else showRecents();
+          },
+          (item) => {
+            const repo = renderedRepositories.get(item.dataset.repository || "");
+            if (repo) pickRepo(repo);
+          },
+          cancelRepositoryChange,
+        );
       });
 
       // Fetched once per sign-in (the server pages GitHub for the complete owner+collaborator+org
       // list), then searched client-side so the "Your repositories" group answers every keystroke.
       async function loadMyRepos() {
+        const request = ++myReposRequest;
         try {
           const res = await apiGet("/api/repos/mine");
           const data = res.ok ? await res.json() : null;
+          if (request !== myReposRequest || !signedIn) return;
           myRepos = data && Array.isArray(data.repos) ? data.repos : [];
         } catch {
+          if (request !== myReposRequest || !signedIn) return;
           myRepos = [];
         }
+        if (signedIn && document.activeElement === $("repo") && !$("repo").value.trim()) showRecents();
       }
 
       // --- generate (the active toggle decides the source kind) ---
@@ -2737,20 +3372,13 @@
           if (pr.baseRef) body.ref = pr.baseRef;
           return body;
         }
-        const selectedRef = $("ref").value;
-        const ref = selectedRef === CUSTOM_BRANCH_VALUE ? $("custom-ref").value.trim() : selectedRef.trim();
-        if (selectedRef === CUSTOM_BRANCH_VALUE && !ref) return null;
+        const ref = $("ref").value.trim();
         if (ref) body.ref = ref;
         return body;
       }
 
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
-        const customBranchMissing = mode === "github"
-          && githubIntent === "explore"
-          && $("repo").value.trim()
-          && $("ref").value === CUSTOM_BRANCH_VALUE
-          && !$("custom-ref").value.trim();
         const pullRequestMissing = mode === "github"
           && githubIntent === "review"
           && $("repo").value.trim()
@@ -2761,14 +3389,11 @@
         const request = buildRequest();
         if (!request) {
           setStatus(
-            customBranchMissing
-              ? "Enter a branch name."
-              : pullRequestMissing
+            pullRequestMissing
                 ? "Choose a pull request."
               : mode === "path" ? "Enter a path to a local repo." : "Enter a GitHub repository.",
             "error",
           );
-          if (customBranchMissing) $("custom-ref").focus();
           if (pullRequestMissing) $("pr-query").focus();
           return;
         }
