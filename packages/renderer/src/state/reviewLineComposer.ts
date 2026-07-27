@@ -1,8 +1,11 @@
 /**
  * Session-only state for the one line-comment composer shared by every review code surface. The
  * target includes the review revision because a source line is only meaningful in the coordinate
- * space where it was chosen. These helpers are deliberately pure so hosts can all apply the same
- * dirty-draft guard without owning competing copies of the text.
+ * space where it was chosen.
+ *
+ * Draft text lives in its own tiny observable channel. Typing can then update only the textarea
+ * instead of notifying the blueprint store (and every graph, URL, and review selector) per key.
+ * The blueprint state retains only lifecycle metadata needed by navigation and dismissal guards.
  */
 
 import type { PrReviewCommentSide } from "./prTypes";
@@ -15,8 +18,13 @@ export interface ReviewLineComposerTarget {
   readonly side: PrReviewCommentSide;
 }
 
+export interface ReviewLineComposerDraft {
+  getSnapshot(): string;
+  subscribe(listener: () => void): () => void;
+}
+
 export interface ReviewLineComposerState extends ReviewLineComposerTarget {
-  readonly body: string;
+  readonly draft: ReviewLineComposerDraft;
   readonly confirmDiscard: boolean;
   readonly error: string | null;
 }
@@ -43,10 +51,11 @@ export function setReviewLineComposerBody(
   current: ReviewLineComposerState,
   body: string,
 ): ReviewLineComposerState {
-  if (current.body === body && !current.confirmDiscard && current.error === null) {
+  writeDraft(current.draft, body);
+  if (!current.confirmDiscard && current.error === null) {
     return current;
   }
-  return { ...current, body, confirmDiscard: false, error: null };
+  return { ...current, confirmDiscard: false, error: null };
 }
 
 /** Clean composers dismiss immediately; dirty composers remain mounted with explicit choices. */
@@ -68,7 +77,10 @@ export function keepEditingReviewLineComposer(current: ReviewLineComposerState):
 }
 
 /** Confirm the destructive choice. Kept as a helper so every host clears state identically. */
-export function discardReviewLineComposer(): null {
+export function discardReviewLineComposer(current: ReviewLineComposerState | null = null): null {
+  if (current !== null) {
+    writeDraft(current.draft, "");
+  }
   return null;
 }
 
@@ -95,9 +107,44 @@ export {
 };
 
 function freshComposer(target: ReviewLineComposerTarget): ReviewLineComposerState {
-  return { ...target, body: "", confirmDiscard: false, error: null };
+  return {
+    ...target,
+    draft: createReviewLineComposerDraft(),
+    confirmDiscard: false,
+    error: null,
+  };
+}
+
+export function createReviewLineComposerDraft(initialBody = ""): ReviewLineComposerDraft {
+  let body = initialBody;
+  const listeners = new Set<() => void>();
+  const draft: MutableReviewLineComposerDraft = {
+    getSnapshot: () => body,
+    setBody(nextBody) {
+      if (body === nextBody) {
+        return;
+      }
+      body = nextBody;
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+  return draft;
+}
+
+interface MutableReviewLineComposerDraft extends ReviewLineComposerDraft {
+  setBody(body: string): void;
 }
 
 function hasDraft(composer: ReviewLineComposerState): boolean {
-  return composer.body.trim().length > 0;
+  return composer.draft.getSnapshot().trim().length > 0;
+}
+
+function writeDraft(draft: ReviewLineComposerDraft, body: string): void {
+  // Draft instances are created in this module; exposing only the read side keeps renderers from
+  // bypassing the Blueprint action and its confirmation/error lifecycle.
+  (draft as MutableReviewLineComposerDraft).setBody(body);
 }

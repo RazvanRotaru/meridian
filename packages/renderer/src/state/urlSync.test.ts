@@ -216,6 +216,43 @@ describe("restoreFromUrl review exit", () => {
 });
 
 describe("startUrlSync extraction history", () => {
+  it("does not wake Blueprint or URL subscribers while a line-comment draft changes", async () => {
+    const store = freshStore();
+    const browser = stubUrlSyncBrowser();
+    await restoreFromUrl(store, "");
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 1 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "url-sync-draft-isolation",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 1);
+    const composer = store.getState().reviewLineComposer!;
+    const blueprintListener = vi.fn();
+    const stopListening = store.subscribe(blueprintListener);
+    const stopUrlSync = startUrlSync(store);
+
+    store.getState().setReviewLineComposerBody("a");
+    store.getState().setReviewLineComposerBody("ab");
+
+    expect(store.getState().reviewLineComposer).toBe(composer);
+    expect(composer.draft.getSnapshot()).toBe("ab");
+    expect(blueprintListener).not.toHaveBeenCalled();
+    expect(browser.pushState).not.toHaveBeenCalled();
+    expect(browser.replaceState).not.toHaveBeenCalled();
+
+    stopUrlSync();
+    stopListening();
+  });
+
   it("pushes once when extraction opens and replaces nested frames in that entry", async () => {
     const store = freshStore();
     const browser = stubUrlSyncBrowser();

@@ -2,6 +2,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import { describe, expect, it } from "vitest";
 import { buildGraphIndex } from "../graph/graphIndex";
+import {
+  openReviewLineComposer,
+  setReviewLineComposerBody,
+  type ReviewLineComposerState,
+  type ReviewLineComposerTarget,
+} from "../state/reviewLineComposer";
 import type { BlueprintState, CodeView } from "../state/store";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
@@ -193,22 +199,26 @@ describe("SourceDiffBody", () => {
       mode: "modal",
       baseLine: 1,
     };
-    const html = renderBody(view, "70vh", {
+    const exactBody = "Carry this exact text between code views";
+    const composer = composerWithDraft({
+      reviewKey: "source-diff-test",
+      lineRevision: null,
+      path: FILE,
+      line: 20,
+      side: "RIGHT",
+    }, exactBody);
+    const overrides = {
       reviewCommentRangesByFile: { [FILE]: [{ start: 20, end: 20 }] },
-      reviewLineComposer: {
-        reviewKey: "source-diff-test",
-        lineRevision: null,
-        path: FILE,
-        line: 20,
-        side: "RIGHT",
-        body: "Carry this exact text between code views",
-        confirmDiscard: false,
-        error: null,
-      },
-    });
+      reviewLineComposer: composer,
+    };
+    const hoverHtml = renderBody(view, 340, overrides);
+    const modalHtml = renderBody(view, "70vh", overrides);
 
-    expect(html).toContain('placeholder="Comment on line 20…"');
-    expect(html).toContain("Carry this exact text between code views");
+    expect(hoverHtml).toContain('placeholder="Comment on line 20…"');
+    expect(modalHtml).toContain('placeholder="Comment on line 20…"');
+    expect(hoverHtml).toContain(exactBody);
+    expect(modalHtml).toContain(exactBody);
+    expect(composer.draft.getSnapshot()).toBe(exactBody);
   });
 
   it("restores a LEFT composer on the exact deleted row instead of the same-number HEAD row", () => {
@@ -224,16 +234,13 @@ describe("SourceDiffBody", () => {
       sourceSide: "head",
     };
     const html = renderBody(view, "70vh", {
-      reviewLineComposer: {
+      reviewLineComposer: composerWithDraft({
         reviewKey: "source-diff-test",
         lineRevision: null,
         path: FILE,
         line: 20,
         side: "LEFT",
-        body: "Question about the removed behavior",
-        confirmDiscard: false,
-        error: null,
-      },
+      }, "Question about the removed behavior"),
     });
 
     expect(html).toContain('data-review-comment-line="20" data-review-comment-side="LEFT"');
@@ -253,16 +260,13 @@ describe("SourceDiffBody", () => {
     };
     const html = renderBody(view, "70vh", {
       reviewCommentRangesByFile: { [FILE]: [{ start: 20, end: 20 }] },
-      reviewLineComposer: {
+      reviewLineComposer: composerWithDraft({
         reviewKey: "source-diff-test",
         lineRevision: null,
         path: FILE,
         line: 24,
         side: "RIGHT",
-        body: "Preserve this outside-diff thought",
-        confirmDiscard: false,
-        error: null,
-      },
+      }, "Preserve this outside-diff thought"),
     });
 
     expect(html).toContain('placeholder="Comment on line 24…"');
@@ -540,6 +544,15 @@ function renderBody(
       <BodyHarness view={view} maxHeight={maxHeight} />
     </StoreProvider>,
   );
+}
+
+function composerWithDraft(
+  target: ReviewLineComposerTarget,
+  body: string,
+): ReviewLineComposerState {
+  const composer = openReviewLineComposer(null, target);
+  setReviewLineComposerBody(composer, body);
+  return composer;
 }
 
 function BodyHarness({ view, maxHeight }: { view: CodeView; maxHeight: number | string }) {

@@ -3452,15 +3452,56 @@ describe("PR store slice", () => {
 
     expect(store.getState().reviewLineComposer).toMatchObject({
       line: 10,
-      body: "Keep the original line context",
       confirmDiscard: true,
     });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("Keep the original line context");
     store.getState().keepEditingReviewLineComposer();
     expect(store.getState().reviewLineComposer).toMatchObject({ line: 10, confirmDiscard: false });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("Keep the original line context");
 
     store.getState().openReviewLineComposer("src/a.ts", 11);
     store.getState().discardReviewLineComposer();
-    expect(store.getState().reviewLineComposer).toMatchObject({ line: 11, body: "", confirmDiscard: false });
+    expect(store.getState().reviewLineComposer).toMatchObject({ line: 11, confirmDiscard: false });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("");
+  });
+
+  it("publishes every line-composer keystroke only through its draft channel", () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "isolated-line-draft",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    const composer = store.getState().reviewLineComposer!;
+    const blueprintChanged = vi.fn();
+    const draftChanged = vi.fn();
+    const unsubscribeBlueprint = store.subscribe(blueprintChanged);
+    const unsubscribeDraft = composer.draft.subscribe(draftChanged);
+    const stateBeforeTyping = store.getState();
+
+    // Subscribe before the first non-whitespace character: warming the draft before this assertion
+    // would hide the clean-to-dirty Blueprint publication that originally reached URL sync.
+    store.getState().setReviewLineComposerBody("K");
+    store.getState().setReviewLineComposerBody("Keep the original line context");
+
+    expect(composer.draft.getSnapshot()).toBe("Keep the original line context");
+    expect(draftChanged).toHaveBeenCalledTimes(2);
+    expect(blueprintChanged).not.toHaveBeenCalled();
+    expect(store.getState()).toBe(stateBeforeTyping);
+    expect(store.getState().reviewLineComposer).toBe(composer);
+
+    unsubscribeDraft();
+    unsubscribeBlueprint();
   });
 
   it("keeps the old source mounted until a dirty cross-file transition is discarded", async () => {
@@ -3497,9 +3538,9 @@ describe("PR store slice", () => {
     expect(store.getState().codeView).toBe(oldView);
     expect(store.getState().reviewLineComposer).toMatchObject({
       path: "src/a.ts",
-      body: "Do not orphan this draft",
       confirmDiscard: true,
     });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("Do not orphan this draft");
     expect(fetchMock).not.toHaveBeenCalled();
 
     store.getState().discardReviewLineComposer();
@@ -3557,9 +3598,9 @@ describe("PR store slice", () => {
     });
     expect(store.getState().reviewLineComposer).toMatchObject({
       line: 10,
-      body: "Stay with the winning slice",
       confirmDiscard: false,
     });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("Stay with the winning slice");
   });
 
   it("moves an owned composer into the modal but guards an unrelated preview draft", () => {
@@ -3602,9 +3643,9 @@ describe("PR store slice", () => {
     expect(store.getState().reviewLineComposer).toMatchObject({
       path: "src/a.ts",
       line: 10,
-      body: "Follow this row into the modal",
       confirmDiscard: false,
     });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("Follow this row into the modal");
 
     store.getState().discardReviewLineComposer();
     store.setState({ codeView: inlineView });
@@ -3616,9 +3657,9 @@ describe("PR store slice", () => {
     expect(store.getState().codeView).toMatchObject({ mode: "inline" });
     expect(store.getState().reviewLineComposer).toMatchObject({
       path: "src/b.ts",
-      body: "This belongs to the floating preview",
       confirmDiscard: true,
     });
+    expect(store.getState().reviewLineComposer?.draft.getSnapshot()).toBe("This belongs to the floating preview");
     store.getState().discardReviewLineComposer();
     expect(store.getState().codeView).toMatchObject({ mode: "modal" });
     expect(store.getState().reviewLineComposer).toBeNull();

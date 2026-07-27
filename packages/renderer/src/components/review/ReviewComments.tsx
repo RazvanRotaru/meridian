@@ -130,7 +130,7 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
 }
 
 /** The one inline composer: textarea + Add/Cancel. ⌘/ctrl-Enter adds, Escape cancels. */
-export function CommentComposer(props: {
+export interface CommentComposerProps {
   placeholder: string;
   onAdd: (body: string) => void | boolean | Promise<void | boolean>;
   onCancel: () => void;
@@ -147,7 +147,9 @@ export function CommentComposer(props: {
   error?: string | null;
   /** Keep an inline code-panel Escape from reaching the panel's own layer-stack closer. */
   stopEscape?: boolean;
-}) {
+}
+
+export function CommentComposer(props: CommentComposerProps) {
   const [localBody, setLocalBody] = useState(props.initialBody ?? "");
   const [submitting, setSubmitting] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);

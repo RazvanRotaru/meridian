@@ -6616,7 +6616,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setReviewLineComposerBody(body) {
       const current = get().reviewLineComposer;
       if (current === null) return;
-      set({ reviewLineComposer: setReviewLineComposerBodyState(current, body) });
+      const next = setReviewLineComposerBodyState(current, body);
+      if (next !== current) {
+        set({ reviewLineComposer: next });
+      }
     },
 
     requestReviewLineComposerDismiss() {
@@ -6641,7 +6644,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     discardReviewLineComposer() {
       const transition = pendingReviewLineComposerTransition;
       pendingReviewLineComposerTransition = null;
-      set({ reviewLineComposer: discardReviewLineComposerState() });
+      set({ reviewLineComposer: discardReviewLineComposerState(get().reviewLineComposer) });
       transition?.();
     },
 

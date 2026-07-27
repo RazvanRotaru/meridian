@@ -10,9 +10,11 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import type { ChangedDiffLine, ChangedLineKind } from "@meridian/core";
 import type { PrGitHubComment, PrReviewCommentSide } from "../state/prTypes";
+import type { ReviewLineComposerDraft } from "../state/reviewLineComposer";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { ExistingCommentList } from "./review/ExistingReviewComments";
-import { CommentComposer, CommentList } from "./review/ReviewComments";
+import { CommentList } from "./review/ReviewComments";
+import { ReviewLineCommentComposer } from "./review/ReviewLineCommentComposer";
 import { unchangedCodeFoldKey, unchangedCodeFolds } from "./codeFolding";
 import { UnchangedCodeFoldRow } from "./UnchangedCodeFoldRow";
 
@@ -28,8 +30,8 @@ interface CodeLineComposer {
   side: PrReviewCommentSide;
   onAdd: (body: string) => void | boolean | Promise<void | boolean>;
   onCancel: () => void;
-  value?: string;
-  onValueChange?: (value: string) => void;
+  draft: ReviewLineComposerDraft;
+  onValueChange: (value: string) => void;
   confirmDiscard?: boolean;
   error?: string | null;
   onKeepEditing?: () => void;
@@ -709,12 +711,12 @@ function LineReviewRows({
           data-line-comment-composer-side={side}
         >
           <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
-            <CommentComposer
+            <ReviewLineCommentComposer
               key={`${side}-${line}`}
               placeholder={`Comment on ${side === "LEFT" ? "deleted " : ""}line ${line}…`}
               onAdd={composer.onAdd}
               onCancel={composer.onCancel}
-              value={composer.value}
+              draft={composer.draft}
               onValueChange={composer.onValueChange}
               confirmDiscard={composer.confirmDiscard}
               error={composer.error}

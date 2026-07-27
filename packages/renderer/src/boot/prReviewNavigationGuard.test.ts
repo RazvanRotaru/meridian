@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  openReviewLineComposer,
+  setReviewLineComposerBody,
+} from "../state/reviewLineComposer";
 import type { BlueprintState, BlueprintStore } from "../state/store";
 import {
   isHorizontalNavigationWheel,
@@ -15,6 +19,14 @@ const IDLE = {
   prReviewStatus: "idle" as const,
   reviewLineComposer: null,
   minimalSeedIds: [] as string[],
+};
+
+const ARTIFACT_COMPOSER_TARGET = {
+  reviewKey: "artifact-review",
+  lineRevision: null,
+  path: "src/a.ts",
+  line: 10,
+  side: "RIGHT" as const,
 };
 
 describe("PR review navigation gesture lock", () => {
@@ -35,17 +47,43 @@ describe("PR review navigation gesture lock", () => {
   });
 
   it("locks an artifact review only while an unfinished line comment has text", () => {
-    const target = {
-      reviewKey: "artifact-review",
-      lineRevision: null,
-      path: "src/a.ts",
-      line: 10,
-      side: "RIGHT" as const,
-      confirmDiscard: false,
-      error: null,
-    };
-    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: { ...target, body: "unfinished" } })).toBe(true);
-    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: { ...target, body: "   " } })).toBe(false);
+    const composer = openReviewLineComposer(null, ARTIFACT_COMPOSER_TARGET);
+    setReviewLineComposerBody(composer, "unfinished");
+    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: composer })).toBe(true);
+
+    setReviewLineComposerBody(composer, "   ");
+    expect(prReviewNeedsNavigationLock({ ...IDLE, reviewLineComposer: composer })).toBe(false);
+  });
+
+  it("follows draft-only edits without requiring a Blueprint store update", () => {
+    const browser = stubBrowser("");
+    const store = fakeStore(IDLE);
+    const composer = openReviewLineComposer(null, ARTIFACT_COMPOSER_TARGET);
+    store.set({ reviewLineComposer: composer });
+    const blueprintNotification = vi.fn();
+    store.store.subscribe(blueprintNotification);
+    const guard = startPrReviewNavigationGuard();
+    guard.bindStore(store.store);
+
+    expect(browser.classes.has("mrd-pr-review-navigation-lock")).toBe(false);
+    expect(browser.beforeunload).toBeNull();
+
+    expect(setReviewLineComposerBody(composer, "unfinished")).toBe(composer);
+    expect(blueprintNotification).not.toHaveBeenCalled();
+    expect(browser.classes.has("mrd-pr-review-navigation-lock")).toBe(true);
+    expect(browser.beforeunload).not.toBeNull();
+
+    const unload = beforeUnloadEvent();
+    browser.beforeunload!(unload.event);
+    expect(unload.event.returnValue).toBe(REVIEW_COMMENT_LEAVE_MESSAGE);
+
+    expect(setReviewLineComposerBody(composer, "   ")).toBe(composer);
+    expect(blueprintNotification).not.toHaveBeenCalled();
+    expect(browser.classes.has("mrd-pr-review-navigation-lock")).toBe(false);
+    expect(browser.beforeunload).toBeNull();
+    expect(browser.popstate).toBeNull();
+
+    guard.dispose();
   });
 
   it("recognizes horizontal history-wheel input without swallowing pinch or vertical scroll", () => {
@@ -125,19 +163,11 @@ describe("PR review navigation gesture lock", () => {
     browser.popstate!(acceptedBack.event);
     expect(acceptedBack.stopImmediatePropagation).not.toHaveBeenCalled();
 
-    store.set({
-      prReviewed: null,
-      reviewLineComposer: {
-        reviewKey: "artifact-review",
-        lineRevision: null,
-        path: "src/a.ts",
-        line: 10,
-        side: "RIGHT",
-        body: "unfinished",
-        confirmDiscard: false,
-        error: null,
-      },
-    });
+    const composer = setReviewLineComposerBody(
+      openReviewLineComposer(null, ARTIFACT_COMPOSER_TARGET),
+      "unfinished",
+    );
+    store.set({ prReviewed: null, reviewLineComposer: composer });
     browser.confirm.mockReturnValueOnce(false);
     browser.popstate!(popStateEvent().event);
     expect(browser.confirm).toHaveBeenLastCalledWith(REVIEW_COMMENT_LEAVE_MESSAGE);
