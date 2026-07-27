@@ -107,6 +107,7 @@ export class FakeRepositoryMirror implements RepositoryMirror {
     const lease: RepositoryWorkspaceLease = {
       ...workspace,
       cache,
+      isActive: () => !released,
       release,
       [Symbol.dispose]: release,
     };
@@ -152,6 +153,7 @@ export function fakeRepositoryLease(inputs: {
     remoteUrl: inputs.remoteUrl,
     commit: inputs.commit,
     repoDir: inputs.repoDir,
+    isActive: () => !released,
     release,
     [Symbol.dispose]: release,
   };

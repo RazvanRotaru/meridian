@@ -8,6 +8,7 @@ export function fixtureRequest(
   fixture: GitMonorepoFixture,
   revision: GitFixtureRevision,
   cacheDir = fixture.cacheDir,
+  measureCacheBytes = false,
 ): RevisionExtractionRequest {
   return {
     root: fixture.root,
@@ -15,6 +16,7 @@ export function fixtureRequest(
     cacheDir,
     extractorVersion: TEST_EXTRACTOR_VERSION,
     analysisPolicyVersion: TEST_POLICY_VERSION,
+    measureCacheBytes,
     options: {
       depth: "function",
       includeExternal: true,

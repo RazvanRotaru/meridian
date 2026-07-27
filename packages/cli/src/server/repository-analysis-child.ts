@@ -4,7 +4,8 @@ import { fork, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, lstatSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Target } from "@meridian/core";
 import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
@@ -164,12 +165,13 @@ function runRepositoryWorkerProcess(
     "repository analysis worker timeout",
   );
   const workerEntry = options.workerEntry ?? defaultWorkerEntry();
+  const sourceMode = isTypeScriptEntry(workerEntry);
   const execArgv = options.workerExecArgv
     ? [...options.workerExecArgv]
-    : isTypeScriptEntry(workerEntry)
+    : sourceMode
       ? sourceWorkerExecArgv()
       : [];
-  // Keep this last so test/dev argv and inherited NODE_OPTIONS cannot enlarge the reserved heap.
+  // Keep this last so test/dev argv cannot enlarge the reserved heap.
   execArgv.push(repositoryAnalysisWorkerHeapArg(options.workerHeapMb));
 
   return new Promise<RepositoryAnalysisWorkerFileResult>((resolve, reject) => {
@@ -177,7 +179,8 @@ function runRepositoryWorkerProcess(
     try {
       child = fork(workerEntry, {
         detached: process.platform !== "win32",
-        env: repositoryWorkerEnvironment(),
+        ...(sourceMode ? { cwd: sourceWorkerCwd() } : {}),
+        env: repositoryWorkerEnvironment(sourceMode),
         execArgv,
         serialization: "advanced",
         stdio: ["ignore", "ignore", "pipe", "ipc"],
@@ -599,11 +602,27 @@ function sourceWorkerExecArgv(): string[] {
   return ["--import", pathToFileURL(require.resolve("tsx")).href];
 }
 
-function repositoryWorkerEnvironment(): NodeJS.ProcessEnv {
+function repositoryWorkerEnvironment(sourceMode: boolean): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   delete environment.GITHUB_TOKEN;
   delete environment.GH_TOKEN;
+  // Ambient Node hooks are not part of the worker's content-addressed runtime provenance.
+  // Explicit source-mode loaders and the heap reservation remain in execArgv above.
+  delete environment.NODE_OPTIONS;
+  delete environment.NODE_PATH;
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("TSX_")) delete environment[name];
+  }
+  if (sourceMode) environment.TSX_TSCONFIG_PATH = sourceWorkerTsconfig();
   return environment;
+}
+
+function sourceWorkerTsconfig(): string {
+  return fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
+}
+
+function sourceWorkerCwd(): string {
+  return dirname(sourceWorkerTsconfig());
 }
 
 function appendCappedTail(current: Buffer, chunk: Buffer): Buffer {

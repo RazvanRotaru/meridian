@@ -2,11 +2,11 @@ import {
   chmod,
   mkdir,
   mkdtemp,
-  readFile,
   readdir,
   rm,
   stat,
   symlink,
+  truncate,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,15 +64,37 @@ describe("immutable JSON cache", () => {
       .rejects.toBeInstanceOf(ImmutableCacheCollisionError);
   });
 
-  it("detects malformed or non-canonical bytes", async () => {
+  it("detects malformed bytes", async () => {
     const address = sha256Hex("corrupt-input-key");
     const written = await writeImmutableJsonCache(root, address, { shard: 1 });
-    const original = await readFile(written.path, "utf8");
     await chmod(written.path, 0o644);
-    await writeFile(written.path, `${original}\n`);
+    await writeFile(written.path, "{");
 
     await expect(readImmutableJsonCache(root, address))
       .rejects.toBeInstanceOf(ImmutableCacheCorruptionError);
+  });
+
+  it("rejects an oversized sparse entry before allocating or reading its bytes", async () => {
+    const address = sha256Hex("oversized-input-key");
+    const written = await writeImmutableJsonCache(root, address, { shard: 1 });
+    await chmod(written.path, 0o644);
+    await truncate(written.path, 16 * 1024 * 1024);
+
+    await expect(readImmutableJsonCache(root, address, {
+      maxEntryBytes: 1024,
+    })).rejects.toBeInstanceOf(ImmutableCacheCorruptionError);
+  });
+
+  it("bounds immutable address enumeration", async () => {
+    const logicalRoot = join(root, "candidates");
+    await mkdir(logicalRoot);
+    await writeImmutableJsonCache(logicalRoot, sha256Hex("first"), { value: 1 });
+    await writeImmutableJsonCache(logicalRoot, sha256Hex("second"), { value: 2 });
+
+    await expect(listImmutableJsonCacheAddresses(logicalRoot, {
+      trustedRoot: root,
+      maxAddresses: 1,
+    })).rejects.toThrow(/more than 1 addresses/);
   });
 
   it("rejects cache-controlled directory symlinks below the trusted root", async () => {

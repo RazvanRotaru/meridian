@@ -9,12 +9,22 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import type { ExtractOptions, ExtractionResult } from "@meridian/core";
+import {
+  isRevisionShardAdmissionCapability,
+  type RevisionShardAdmissionCapability,
+  type RevisionShardAdmissionSigner,
+  type RevisionShardAdmissionVerifier,
+} from "./incremental-poc/admission";
 import { extractRevisionDifferential } from "./incremental-poc/differential-revision";
-import { extractRevisionWithCache } from "./incremental-poc/extract-revision";
+import {
+  extractRevisionCandidate,
+  extractRevisionWithCache,
+} from "./incremental-poc/extract-revision";
 
 export const TYPESCRIPT_REVISION_SHARD_MODES = [
   "empty",
   "shadow",
+  "admitted",
   "verified-experimental",
 ] as const;
 
@@ -39,6 +49,11 @@ export interface TypeScriptRevisionShardPolicy {
   buildFingerprint: string;
   /** Digest of the fixed repository-analysis policy and its version. */
   analysisPolicyFingerprint: string;
+  /**
+   * Private server capability used only to authenticate cold-oracle admission receipts. It is
+   * absent from cache identity and null for modes that neither issue nor consume admissions.
+   */
+  admission: RevisionShardAdmissionCapability | null;
   /** Stable runtime coordinates; process nonces are intentionally not reusable provenance. */
   runtimeFingerprint: TypeScriptRevisionShardRuntimeFingerprint;
 }
@@ -74,9 +89,21 @@ export function typeScriptRevisionShardDecision(
 }
 
 export function requireTypeScriptRevisionShardPolicy(
-  value: TypeScriptRevisionShardPolicy,
+  value: unknown,
 ): TypeScriptRevisionShardPolicy {
-  if (!hasExactKeys(value, [
+  if (!isTypeScriptRevisionShardPolicy(value)) {
+    throw new TypeError("invalid TypeScript revision-shard policy");
+  }
+  return value;
+}
+
+export function isTypeScriptRevisionShardPolicy(
+  value: unknown,
+): value is TypeScriptRevisionShardPolicy {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false;
+  const policy = value as TypeScriptRevisionShardPolicy;
+  return hasExactKeys(policy, [
+    "admission",
     "analysisPolicyFingerprint",
     "buildFingerprint",
     "cacheDir",
@@ -85,23 +112,22 @@ export function requireTypeScriptRevisionShardPolicy(
     "treeOid",
     "version",
   ])
-    || !hasExactKeys(value.runtimeFingerprint, [
+    && hasExactKeys(policy.runtimeFingerprint, [
       "arch",
       "nodeVersion",
       "platform",
       "tsMorphVersion",
       "typescriptVersion",
     ])
-    || value.version !== 1
-    || !TYPESCRIPT_REVISION_SHARD_MODES.includes(value.mode)
-    || !isAbsolute(value.cacheDir)
-    || !/^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(value.treeOid)
-    || !/^[a-f0-9]{64}$/.test(value.buildFingerprint)
-    || !/^[a-f0-9]{64}$/.test(value.analysisPolicyFingerprint)
-    || !validRuntimeFingerprint(value.runtimeFingerprint)) {
-    throw new TypeError("invalid TypeScript revision-shard policy");
-  }
-  return value;
+    && policy.version === 1
+    && TYPESCRIPT_REVISION_SHARD_MODES.includes(policy.mode)
+    && isAbsolute(policy.cacheDir)
+    && Buffer.byteLength(policy.cacheDir) <= 4_096
+    && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(policy.treeOid)
+    && /^[a-f0-9]{64}$/.test(policy.buildFingerprint)
+    && /^[a-f0-9]{64}$/.test(policy.analysisPolicyFingerprint)
+    && validAdmission(policy.mode, policy.admission)
+    && validRuntimeFingerprint(policy.runtimeFingerprint);
 }
 
 function hasExactKeys(
@@ -142,9 +168,19 @@ export async function extractTypeScriptRevisionWithPolicy(
     return (await extractRevisionWithCache(request)).result;
   }
   if (policy.mode === "shadow") {
-    // The semantic oracle is the exact shard pipeline with an empty cache. Serving the cold result
-    // keeps shadow mode safe even though candidate shards are exercised and compared.
-    return (await extractRevisionDifferential(request)).cold.result;
+    // Shadow compares both the complete graph and every serialized unit contribution, publishes
+    // authenticated admissions only after parity, and continues serving the cold oracle.
+    return (await extractRevisionDifferential(request, {
+      admissionSigner: policy.admission as RevisionShardAdmissionSigner,
+    })).cold.result;
+  }
+  if (policy.mode === "admitted") {
+    // A receipt proves that this exact immutable shard matched an empty-cache cold extraction.
+    // Misses are computed by the canonical pipeline and deliberately remain unpublished until a
+    // later shadow run admits them.
+    return (await extractRevisionCandidate(request, {
+      requiredAdmission: policy.admission as RevisionShardAdmissionVerifier,
+    })).result;
   }
 
   const emptyRunsRoot = resolve(policy.cacheDir, "empty-runs");
@@ -155,6 +191,19 @@ export async function extractTypeScriptRevisionWithPolicy(
   } finally {
     rmSync(emptyCache, { recursive: true, force: true });
   }
+}
+
+function validAdmission(
+  mode: TypeScriptRevisionShardMode,
+  value: RevisionShardAdmissionCapability | null,
+): boolean {
+  if (mode === "shadow") {
+    return isRevisionShardAdmissionCapability(value) && value.kind === "signer";
+  }
+  if (mode === "admitted") {
+    return isRevisionShardAdmissionCapability(value) && value.kind === "verifier";
+  }
+  return value === null;
 }
 
 function extractorVersion(policy: TypeScriptRevisionShardPolicy): string {

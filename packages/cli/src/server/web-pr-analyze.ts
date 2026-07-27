@@ -157,6 +157,7 @@ async function streamAnalysis(
           token,
           refresh: ctx.refreshCache,
           typeScriptRevisionShardMode: ctx.typeScriptRevisionShardMode,
+          experimentalPrRevisionCache: ctx.experimentalPrRevisionCache,
           signal: jobSignal,
           onStage: report,
           onExtractionProgress: (progress) => report({

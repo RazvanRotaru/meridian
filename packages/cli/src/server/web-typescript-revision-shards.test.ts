@@ -13,6 +13,7 @@ vi.mock("./git-exec", () => ({ runGit: vi.fn() }));
 
 const roots: string[] = [];
 const TREE = "a".repeat(40);
+const COMMIT = "d".repeat(40);
 const BUILD = "b".repeat(64);
 
 afterEach(() => {
@@ -23,20 +24,28 @@ afterEach(() => {
 describe("server-owned TypeScript revision shards", () => {
   it("binds an exact Git root/tree to a server-selected cache and stable provenance", async () => {
     const root = temporaryDirectory();
-    vi.mocked(runGit).mockResolvedValue(`${root}\n${TREE}\n`);
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
 
     const decision = await serverTypeScriptRevisionShardDecision({
       cacheRoot: join(root, "server-cache"),
       root,
       mode: "shadow",
+      exactWorkspaces: [activeWorkspace(root)],
       runtimeFingerprint: runtimeFingerprint(),
     });
 
-    expect(decision).toEqual({
+    expect(decision).toMatchObject({
       kind: "enabled",
       policy: {
         version: 1,
         mode: "shadow",
+        admission: {
+          version: 1,
+          kind: "signer",
+          keyId: expect.stringMatching(/^[a-f0-9]{64}$/),
+          publicKeySpki: expect.any(String),
+          privateKeyPkcs8: expect.any(String),
+        },
         cacheDir: join(
           root,
           "server-cache",
@@ -62,7 +71,7 @@ describe("server-owned TypeScript revision shards", () => {
     const root = temporaryDirectory();
     const subdir = join(root, "packages", "app");
     mkdirSync(subdir, { recursive: true });
-    vi.mocked(runGit).mockResolvedValue(`${root}\n${TREE}\n`);
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
 
     await expect(serverTypeScriptRevisionShardDecision({
       cacheRoot: join(root, "server-cache"),
@@ -74,7 +83,7 @@ describe("server-owned TypeScript revision shards", () => {
 
   it("injects the capability out-of-band and leaves the analysis request untouched", async () => {
     const root = temporaryDirectory();
-    vi.mocked(runGit).mockResolvedValue(`${root}\n${TREE}\n`);
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
     const repositoryAnalysis = vi.fn(async () => "result");
     const wrapped = withServerTypeScriptRevisionShards(
       repositoryAnalysis as never,
@@ -101,6 +110,49 @@ describe("server-owned TypeScript revision shards", () => {
     );
   });
 
+  it("requires a matching active RepositoryMirror lease for safe modes", async () => {
+    const root = temporaryDirectory();
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
+    const inputs = {
+      cacheRoot: join(root, "server-cache"),
+      root,
+      mode: "admitted" as const,
+      runtimeFingerprint: runtimeFingerprint(),
+    };
+
+    await expect(serverTypeScriptRevisionShardDecision(inputs)).resolves.toEqual({
+      kind: "fallback",
+      reason: "not-owned-exact-workspace",
+    });
+    await expect(serverTypeScriptRevisionShardDecision({
+      ...inputs,
+      exactWorkspaces: [{ ...activeWorkspace(root), commit: "e".repeat(40) }],
+    })).resolves.toEqual({
+      kind: "fallback",
+      reason: "not-owned-exact-workspace",
+    });
+    await expect(serverTypeScriptRevisionShardDecision({
+      ...inputs,
+      exactWorkspaces: [{ ...activeWorkspace(root), isActive: () => false }],
+    })).resolves.toEqual({
+      kind: "fallback",
+      reason: "not-owned-exact-workspace",
+    });
+    await expect(serverTypeScriptRevisionShardDecision({
+      ...inputs,
+      exactWorkspaces: [activeWorkspace(root)],
+    })).resolves.toMatchObject({
+      kind: "enabled",
+      policy: {
+        mode: "admitted",
+        admission: {
+          kind: "verifier",
+          keyId: expect.stringMatching(/^[a-f0-9]{64}$/),
+        },
+      },
+    });
+  });
+
   it("rejects unknown opt-in modes before server startup", () => {
     expect(parseTypeScriptRevisionShardMode("shadow")).toBe("shadow");
     expect(() => parseTypeScriptRevisionShardMode("on")).toThrow(/must be one of/);
@@ -123,5 +175,13 @@ function runtimeFingerprint() {
     arch: "x64",
     typescriptVersion: "6.0.3",
     tsMorphVersion: "28.0.0",
+  };
+}
+
+function activeWorkspace(repoDir: string) {
+  return {
+    repoDir,
+    commit: COMMIT,
+    isActive: () => true,
   };
 }

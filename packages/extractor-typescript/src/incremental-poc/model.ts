@@ -168,6 +168,8 @@ export interface RevisionExtractionRequest {
   supplementalFiles?: string[];
   /** Observational only. It never participates in shard or manifest identity. */
   onProgress?: (progress: ExtractionProgress) => void;
+  /** Benchmark-only; production avoids recursively scanning the shared cache on the hot path. */
+  measureCacheBytes?: boolean;
   options?: Omit<
     ExtractOptions,
     "root" | "project" | "include" | "supplementalFiles" | "onProgress"
@@ -190,7 +192,7 @@ export interface RevisionExtractionMetrics {
   reuseEligibleUnits: number;
   conservativelyRebuiltUnits: number;
   peakRssBytes: number;
-  cacheBytes: number;
+  cacheBytes: number | null;
 }
 
 export interface RevisionExtractionRun {

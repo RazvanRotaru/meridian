@@ -21,6 +21,13 @@ import { perPackageWorkspace } from "../extractor";
 import { loadUnitProject } from "../project-loader";
 import { createExtractionProgressReporter } from "../progress";
 import {
+  createRevisionShardAdmissionReceipt,
+  verifyRevisionShardAdmissionReceipt,
+  type RevisionShardAdmissionCapability,
+  type RevisionShardAdmissionReceipt,
+  type RevisionShardAdmissionSigner,
+} from "./admission";
+import {
   canonicalJson,
   canonicalJsonSha256,
   compareCanonicalStrings,
@@ -38,10 +45,25 @@ import {
   verifyGitTreeInputs,
 } from "./git-tree";
 import {
+  ImmutableCacheCollisionError,
+  ImmutableCacheCorruptionError,
+  immutableJsonCachePath,
   listImmutableJsonCacheAddresses,
+  quarantineImmutableJsonCacheEntry,
   readImmutableJsonCache,
   writeImmutableJsonCache,
 } from "./immutable-cache";
+import {
+  disposeExtractionDifferentialEvidence,
+  comparePersistedExtractionEvidence,
+  persistExtractionDifferentialEvidence,
+  type PersistedExtractionDifferentialEvidence,
+} from "./differential-evidence";
+import {
+  assertExtractionDifferential,
+  type DifferentialReport,
+} from "./differential";
+import { exactRegularFilesEqual } from "./exact-file-parity";
 import { directoryBytes, elapsedMs, peakRssBytes } from "./metrics";
 import {
   POC_SHARD_VERSION,
@@ -59,6 +81,11 @@ import {
   workspaceResolverTraceMatches,
   type WorkspaceResolverTraceEntry,
 } from "./workspace-resolver-trace";
+
+const MAX_CANDIDATE_REFERENCE_BYTES = 4 * 1024 * 1024;
+const MAX_ADMISSION_RECEIPT_BYTES = 64 * 1024;
+const MAX_UNIT_SHARD_BYTES = 512 * 1024 * 1024;
+const MAX_CANDIDATE_VARIANTS = 128;
 
 export interface StoredUnitShard {
   version: typeof POC_SHARD_VERSION;
@@ -82,6 +109,12 @@ export interface PendingUnitShard {
   value: StoredUnitShard;
 }
 
+export interface RevisionUnitShardEvidence {
+  unitId: string;
+  shardKey: string;
+  value: StoredUnitShard;
+}
+
 export interface PendingRevisionExtraction {
   result: ExtractionResult;
   manifest: RevisionManifest;
@@ -91,6 +124,35 @@ export interface PendingRevisionExtraction {
   headCommitOid: string;
   manifestAddress: string;
   pendingShards: PendingUnitShard[];
+  unitShards: RevisionUnitShardEvidence[];
+  measureCacheBytes: boolean;
+}
+
+export interface StagedRevisionUnitEvidence {
+  unitId: string;
+  shardKey: string;
+  baseInputKey: string;
+  payloadDigest: string;
+  addressKind: StoredUnitShard["addressKind"];
+  receipt: RevisionShardAdmissionReceipt | null;
+}
+
+/**
+ * Disk-backed exact semantic evidence retained between the incremental and cold phases of
+ * authenticated shadow admission. Complete graphs and in-memory serialized unit contributions
+ * are deliberately absent.
+ */
+export interface StagedRevisionAdmission {
+  cacheDir: string;
+  manifest: RevisionManifest;
+  metrics: RevisionExtractionRun["metrics"];
+  root: string;
+  treeOid: string;
+  headCommitOid: string;
+  manifestAddress: string;
+  units: StagedRevisionUnitEvidence[];
+  measureCacheBytes: boolean;
+  semanticEvidence: PersistedExtractionDifferentialEvidence;
 }
 
 export async function extractRevisionWithCache(
@@ -100,12 +162,18 @@ export async function extractRevisionWithCache(
   return publishRevisionCandidate(request.cacheDir, pending);
 }
 
+export interface RevisionShardCacheReadPolicy {
+  /** When present, only a shard authenticated by the cold-oracle admission key may be reused. */
+  requiredAdmission?: RevisionShardAdmissionCapability;
+}
+
 /**
  * Build a revision using admitted immutable shards, but do not publish any newly computed shard or
  * manifest. Differential callers keep this candidate quarantined until a cold oracle agrees.
  */
 export async function extractRevisionCandidate(
   request: RevisionExtractionRequest,
+  cachePolicy: RevisionShardCacheReadPolicy = {},
 ): Promise<PendingRevisionExtraction> {
   const started = process.hrtime.bigint();
   const root = absoluteRoot(request.root);
@@ -133,6 +201,7 @@ export async function extractRevisionCandidate(
   const extractions: UnitExtraction[] = [];
   const manifestUnits: RevisionManifest["units"] = [];
   const pendingShards: PendingUnitShard[] = [];
+  const unitShards: RevisionUnitShardEvidence[] = [];
   let fingerprintMs = 0;
   let unitExtractionMs = 0;
   let reusedUnits = 0;
@@ -179,6 +248,7 @@ export async function extractRevisionCandidate(
           inputs,
           resolver,
           root,
+          cachePolicy.requiredAdmission,
         )
       : null;
     let extraction: UnitExtraction;
@@ -250,6 +320,15 @@ export async function extractRevisionCandidate(
         },
       });
     }
+    const storedShard = cached?.shard ?? pendingShards.at(-1)?.value;
+    if (storedShard === undefined || storedShard.key !== shardKey) {
+      throw new Error(`unit shard evidence was not captured: ${unit.dir || "."}`);
+    }
+    unitShards.push({
+      unitId: unit.dir || ".",
+      shardKey,
+      value: storedShard,
+    });
     if (cached !== null) {
       reusedUnits += 1;
       reusedSourceBytes += sourceBytes;
@@ -301,6 +380,8 @@ export async function extractRevisionCandidate(
     headCommitOid: checkout.headCommitOid,
     manifestAddress,
     pendingShards,
+    unitShards,
+    measureCacheBytes: request.measureCacheBytes === true,
     metrics: {
       processId: process.pid,
       totalMs: elapsedMs(started),
@@ -317,7 +398,7 @@ export async function extractRevisionCandidate(
       reuseEligibleUnits,
       conservativelyRebuiltUnits,
       peakRssBytes: peakRssBytes(),
-      cacheBytes: directoryBytes(cacheDir),
+      cacheBytes: request.measureCacheBytes === true ? directoryBytes(cacheDir) : null,
     },
   };
 }
@@ -333,24 +414,9 @@ export async function publishRevisionCandidate(
     throw new Error("checkout commit changed before incremental cache publication");
   }
   for (const pending of candidate.pendingShards) {
-    await writeImmutableJsonCache<StoredUnitShard>(
-      shardRoot(cacheDir),
-      pending.key,
-      pending.value,
-      { trustedRoot: cacheDir },
-    );
+    await publishPendingUnitShard(cacheDir, pending);
     if (pending.value.addressKind === "input") {
-      await writeImmutableJsonCache<StoredUnitCandidateReference>(
-        candidateRoot(cacheDir, pending.value.baseInputKey),
-        pending.key,
-        {
-          version: POC_SHARD_VERSION,
-          baseInputKey: pending.value.baseInputKey,
-          shardKey: pending.key,
-          workspaceResolverTrace: pending.value.workspaceResolverTrace,
-        },
-        { trustedRoot: cacheDir },
-      );
+      await publishCandidateReference(cacheDir, pending);
     }
   }
   const manifestWrite = await writeImmutableJsonCache(
@@ -365,9 +431,207 @@ export async function publishRevisionCandidate(
     manifestPath: manifestWrite.path,
     metrics: {
       ...candidate.metrics,
-      cacheBytes: directoryBytes(cacheDir),
+      cacheBytes: candidate.measureCacheBytes ? directoryBytes(cacheDir) : null,
     },
   };
+}
+
+/**
+ * Persist immutable bytes without making them reusable.
+ *
+ * No admission receipt or revision manifest is written here. A process failure can therefore
+ * leave only unadmitted content-addressed data, which admitted mode must ignore. The caller may
+ * release the complete incremental graph and unit objects before constructing the cold oracle.
+ */
+export async function stageRevisionCandidateForAdmission(
+  cacheDirInput: string,
+  candidate: PendingRevisionExtraction,
+  signer: RevisionShardAdmissionSigner,
+): Promise<StagedRevisionAdmission> {
+  const cacheDir = await prepareExternalCache(candidate.root, resolve(cacheDirInput));
+  const verified = await verifyCleanCheckoutAtTree(candidate.root, candidate.treeOid);
+  if (verified.headCommitOid !== candidate.headCommitOid) {
+    throw new Error("checkout commit changed before incremental cache staging");
+  }
+  const semanticEvidence = persistExtractionDifferentialEvidence(candidate.result);
+  try {
+    for (const pending of candidate.pendingShards) {
+      await publishPendingUnitShard(cacheDir, pending, signer);
+      if (pending.value.addressKind === "input") {
+        await publishCandidateReference(cacheDir, pending, signer);
+      }
+    }
+    const units = candidate.unitShards.map((unit): StagedRevisionUnitEvidence => {
+      const payloadDigest = canonicalJsonSha256(unit.value);
+      return {
+        unitId: unit.unitId,
+        shardKey: unit.shardKey,
+        baseInputKey: unit.value.baseInputKey,
+        payloadDigest,
+        addressKind: unit.value.addressKind,
+        receipt: unit.value.addressKind === "input"
+          ? createRevisionShardAdmissionReceipt(signer, {
+              shardKey: unit.shardKey,
+              baseInputKey: unit.value.baseInputKey,
+              payloadDigest,
+            })
+          : null,
+      };
+    });
+    return {
+      cacheDir,
+      manifest: candidate.manifest,
+      metrics: candidate.metrics,
+      root: candidate.root,
+      treeOid: candidate.treeOid,
+      headCommitOid: candidate.headCommitOid,
+      manifestAddress: candidate.manifestAddress,
+      units,
+      measureCacheBytes: candidate.measureCacheBytes,
+      semanticEvidence,
+    };
+  } catch (error) {
+    disposeExtractionDifferentialEvidence(semanticEvidence);
+    throw error;
+  }
+}
+
+/** Require exact ordered unit identities and literal canonical shard-envelope bytes. */
+async function assertStagedRevisionUnitParity(
+  staged: StagedRevisionAdmission,
+  coldCacheDirInput: string,
+  cold: PendingRevisionExtraction,
+): Promise<void> {
+  if (staged.units.length !== cold.unitShards.length) {
+    throw new Error("incremental unit shards differ from the empty-cache cold oracle");
+  }
+  const coldCacheDir = await prepareExternalCache(cold.root, resolve(coldCacheDirInput));
+  for (const [index, incrementalUnit] of staged.units.entries()) {
+    const coldUnit = cold.unitShards[index];
+    if (
+      coldUnit === undefined
+      || incrementalUnit.unitId !== coldUnit.unitId
+      || incrementalUnit.shardKey !== coldUnit.shardKey
+      || incrementalUnit.baseInputKey !== coldUnit.value.baseInputKey
+      || incrementalUnit.addressKind !== coldUnit.value.addressKind
+    ) {
+      throw new Error(
+        `incremental unit shard differs from the empty-cache cold oracle: ${incrementalUnit.unitId}`,
+      );
+    }
+    const exact = await exactRegularFilesEqual(
+      immutableJsonCachePath(shardRoot(staged.cacheDir), incrementalUnit.shardKey),
+      immutableJsonCachePath(shardRoot(coldCacheDir), coldUnit.shardKey),
+      MAX_UNIT_SHARD_BYTES,
+    );
+    if (!exact) {
+      throw new Error(
+        `incremental unit shard differs from the empty-cache cold oracle: ${incrementalUnit.unitId}`,
+      );
+    }
+  }
+}
+
+/** Idempotently release private shadow evidence after success or any pre-publication failure. */
+export function discardStagedRevisionAdmissionEvidence(
+  staged: StagedRevisionAdmission,
+): void {
+  try {
+    disposeExtractionDifferentialEvidence(staged.semanticEvidence);
+  } catch (error) {
+    if (filesystemErrorCode(error) !== "ENOENT") throw error;
+  }
+}
+
+export interface StagedRevisionAdmissionPublication {
+  run: RevisionExtractionRun;
+  differential: DifferentialReport;
+}
+
+/**
+ * Prove exact cold-oracle parity and immediately make the same staged bytes reusable.
+ *
+ * Receipt publication is intentionally inseparable from the semantic, manifest, and unit-shard
+ * comparisons. Generic candidate publication has no admission capability.
+ */
+export async function publishStagedRevisionAdmission(
+  cacheDirInput: string,
+  staged: StagedRevisionAdmission,
+  signer: RevisionShardAdmissionSigner,
+  coldCacheDirInput: string,
+  cold: PendingRevisionExtraction,
+): Promise<StagedRevisionAdmissionPublication> {
+  try {
+    if (
+      staged.root !== cold.root
+      || staged.treeOid !== cold.treeOid
+      || staged.headCommitOid !== cold.headCommitOid
+    ) {
+      throw new Error("staged revision identity differs from the empty-cache cold oracle");
+    }
+    const differential = await comparePersistedExtractionEvidence(
+      staged.semanticEvidence,
+      cold.result,
+    );
+    assertExtractionDifferential(differential);
+    if (canonicalJson(staged.manifest) !== canonicalJson(cold.manifest)) {
+      throw new Error("tree-bound revision manifests disagree after semantic differential parity");
+    }
+    await assertStagedRevisionUnitParity(staged, coldCacheDirInput, cold);
+
+    const cacheDir = await prepareExternalCache(staged.root, resolve(cacheDirInput));
+    const verified = await verifyCleanCheckoutAtTree(staged.root, staged.treeOid);
+    if (verified.headCommitOid !== staged.headCommitOid) {
+      throw new Error("checkout commit changed before incremental cache admission");
+    }
+    for (const unit of staged.units) {
+      if (unit.receipt === null) continue;
+      const shard = await readImmutableJsonCache<StoredUnitShard>(
+        shardRoot(cacheDir),
+        unit.shardKey,
+        {
+          trustedRoot: cacheDir,
+          maxEntryBytes: MAX_UNIT_SHARD_BYTES,
+        },
+      );
+      if (
+        shard === null
+        || shard.value.key !== unit.shardKey
+        || shard.value.baseInputKey !== unit.baseInputKey
+        || shard.value.addressKind !== "input"
+        || shard.payloadDigest !== unit.payloadDigest
+        || storedShardAddress(shard.value) !== unit.shardKey
+        || !verifyRevisionShardAdmissionReceipt(signer, unit.receipt, {
+          shardKey: unit.shardKey,
+          baseInputKey: unit.baseInputKey,
+          payloadDigest: unit.payloadDigest,
+        })
+      ) {
+        throw new Error(`staged unit shard changed before admission: ${unit.unitId}`);
+      }
+      await publishAdmissionReceipt(cacheDir, signer, unit.receipt);
+    }
+    const manifestWrite = await writeImmutableJsonCache(
+      manifestRoot(cacheDir, staged.treeOid),
+      staged.manifestAddress,
+      staged.manifest,
+      { trustedRoot: cacheDir },
+    );
+    return {
+      run: {
+        result: cold.result,
+        manifest: staged.manifest,
+        manifestPath: manifestWrite.path,
+        metrics: {
+          ...staged.metrics,
+          cacheBytes: staged.measureCacheBytes ? directoryBytes(cacheDir) : null,
+        },
+      },
+      differential,
+    };
+  } finally {
+    discardStagedRevisionAdmissionEvidence(staged);
+  }
 }
 
 async function readUnitShardCandidate(
@@ -376,22 +640,32 @@ async function readUnitShardCandidate(
   inputs: UnitInputFingerprint,
   resolver: ReturnType<typeof createCrossPackageResolver>,
   root: string,
-): Promise<{ shardKey: string; extraction: UnitExtraction } | null> {
+  requiredAdmission?: RevisionShardAdmissionCapability,
+): Promise<{ shardKey: string; extraction: UnitExtraction; shard: StoredUnitShard } | null> {
   const shardKeys = await candidateShardKeys(cacheDir, baseInputKey);
+  if (shardKeys === null) return null;
   let match: StoredUnitCandidateReference | null = null;
   for (const shardKey of shardKeys) {
-    const reference = await readImmutableJsonCache<StoredUnitCandidateReference>(
-      candidateRoot(cacheDir, baseInputKey),
-      shardKey,
-      { trustedRoot: cacheDir },
-    );
+    let reference;
+    try {
+      reference = await readImmutableJsonCache<StoredUnitCandidateReference>(
+        candidateRoot(cacheDir, baseInputKey),
+        shardKey,
+        {
+          trustedRoot: cacheDir,
+          maxEntryBytes: MAX_CANDIDATE_REFERENCE_BYTES,
+        },
+      );
+    } catch {
+      return null;
+    }
     if (reference === null
       || reference.value.version !== POC_SHARD_VERSION
       || reference.value.baseInputKey !== baseInputKey
       || reference.value.shardKey !== shardKey
       || !isCanonicalWorkspaceResolverTrace(reference.value.workspaceResolverTrace)
       || reusableShardAddress(inputs, reference.value.workspaceResolverTrace) !== shardKey) {
-      throw new Error(`immutable unit candidate identity mismatch: ${shardKey}`);
+      return null;
     }
     if (!workspaceResolverTraceMatches(
       reference.value.workspaceResolverTrace,
@@ -401,20 +675,27 @@ async function readUnitShardCandidate(
       continue;
     }
     if (match !== null && match.shardKey !== shardKey) {
-      throw new Error(`multiple immutable unit candidates match base input: ${baseInputKey}`);
+      return null;
     }
     match = reference.value;
   }
   if (match === null) return null;
 
-  const hit = await readImmutableJsonCache<StoredUnitShard>(
-    shardRoot(cacheDir),
-    match.shardKey,
-    { trustedRoot: cacheDir },
-  );
-  if (hit === null) {
-    throw new Error(`immutable unit candidate points to a missing shard: ${match.shardKey}`);
+  let hit;
+  try {
+    hit = await readImmutableJsonCache<StoredUnitShard>(
+      shardRoot(cacheDir),
+      match.shardKey,
+      {
+        trustedRoot: cacheDir,
+        maxEntryBytes: MAX_UNIT_SHARD_BYTES,
+      },
+    );
+  } catch (error) {
+    if (requiredAdmission === undefined) throw error;
+    return null;
   }
+  if (hit === null) return null;
   const shard = hit.value;
   if (shard.version !== POC_SHARD_VERSION
     || shard.key !== match.shardKey
@@ -426,11 +707,48 @@ async function readUnitShardCandidate(
     || storedShardAddress(shard) !== match.shardKey
     || canonicalJsonSha256(shard.inputs) !== baseInputKey
     || canonicalJson(shard.inputs) !== canonicalJson(inputs)) {
-    throw new Error(`immutable unit shard identity mismatch: ${match.shardKey}`);
+    if (requiredAdmission === undefined) {
+      throw new Error(`immutable unit shard identity mismatch: ${match.shardKey}`);
+    }
+    return null;
+  }
+  if (requiredAdmission !== undefined) {
+    let receipt;
+    try {
+      receipt = await readImmutableJsonCache<RevisionShardAdmissionReceipt>(
+        admissionRoot(cacheDir, requiredAdmission),
+        match.shardKey,
+        {
+          trustedRoot: cacheDir,
+          maxEntryBytes: MAX_ADMISSION_RECEIPT_BYTES,
+        },
+      );
+    } catch {
+      return null;
+    }
+    if (receipt === null || !verifyRevisionShardAdmissionReceipt(
+      requiredAdmission,
+      receipt.value,
+      {
+        shardKey: match.shardKey,
+        baseInputKey,
+        payloadDigest: hit.payloadDigest,
+      },
+    )) {
+      return null;
+    }
+  }
+  let extraction: UnitExtraction;
+  try {
+    extraction = decodeUnitExtraction(shard.extraction);
+  } catch (error) {
+    if (requiredAdmission === undefined) throw error;
+    return null;
   }
   return {
     shardKey: match.shardKey,
-    extraction: decodeUnitExtraction(shard.extraction),
+    extraction,
+    shard,
   };
 }
 
@@ -473,11 +791,18 @@ function nonReusableShardAddress(
 async function candidateShardKeys(
   cacheDir: string,
   baseInputKey: string,
-): Promise<string[]> {
-  return listImmutableJsonCacheAddresses(
-    candidateRoot(cacheDir, baseInputKey),
-    { trustedRoot: cacheDir },
-  );
+): Promise<string[] | null> {
+  try {
+    return await listImmutableJsonCacheAddresses(
+      candidateRoot(cacheDir, baseInputKey),
+      {
+        trustedRoot: cacheDir,
+        maxAddresses: MAX_CANDIDATE_VARIANTS,
+      },
+    );
+  } catch {
+    return null;
+  }
 }
 
 async function prepareExternalCache(root: string, cacheDir: string): Promise<string> {
@@ -550,6 +875,144 @@ function candidateRoot(cacheDir: string, baseInputKey: string): string {
 
 function manifestRoot(cacheDir: string, treeOid: string): string {
   return resolve(cacheDir, "manifests", treeOid);
+}
+
+function admissionRoot(
+  cacheDir: string,
+  admission: RevisionShardAdmissionCapability,
+): string {
+  return resolve(cacheDir, "admissions", admission.keyId);
+}
+
+async function publishPendingUnitShard(
+  cacheDir: string,
+  pending: PendingUnitShard,
+  signer?: RevisionShardAdmissionSigner,
+): Promise<void> {
+  try {
+    await writeImmutableJsonCache<StoredUnitShard>(
+      shardRoot(cacheDir),
+      pending.key,
+      pending.value,
+      { trustedRoot: cacheDir },
+    );
+    return;
+  } catch (error) {
+    if (signer === undefined || !isRepairableImmutableEntryError(error)) throw error;
+    if (await hasValidAdmissionForStoredShard(cacheDir, signer, pending.key)) {
+      throw error;
+    }
+  }
+  await quarantineImmutableJsonCacheEntry(
+    shardRoot(cacheDir),
+    pending.key,
+    {
+      trustedRoot: cacheDir,
+      quarantineRoot: repairTrashRoot(cacheDir),
+    },
+  );
+  await quarantineImmutableJsonCacheEntry(
+    admissionRoot(cacheDir, signer!),
+    pending.key,
+    {
+      trustedRoot: cacheDir,
+      quarantineRoot: repairTrashRoot(cacheDir),
+    },
+  );
+  await writeImmutableJsonCache<StoredUnitShard>(
+    shardRoot(cacheDir),
+    pending.key,
+    pending.value,
+    { trustedRoot: cacheDir },
+  );
+}
+
+async function publishCandidateReference(
+  cacheDir: string,
+  pending: PendingUnitShard,
+  signer?: RevisionShardAdmissionSigner,
+): Promise<void> {
+  const root = candidateRoot(cacheDir, pending.value.baseInputKey);
+  const value: StoredUnitCandidateReference = {
+    version: POC_SHARD_VERSION,
+    baseInputKey: pending.value.baseInputKey,
+    shardKey: pending.key,
+    workspaceResolverTrace: pending.value.workspaceResolverTrace,
+  };
+  try {
+    await writeImmutableJsonCache(root, pending.key, value, { trustedRoot: cacheDir });
+    return;
+  } catch (error) {
+    if (signer === undefined || !isRepairableImmutableEntryError(error)) throw error;
+  }
+  await quarantineImmutableJsonCacheEntry(root, pending.key, {
+    trustedRoot: cacheDir,
+    quarantineRoot: repairTrashRoot(cacheDir),
+  });
+  await writeImmutableJsonCache(root, pending.key, value, { trustedRoot: cacheDir });
+}
+
+async function publishAdmissionReceipt(
+  cacheDir: string,
+  signer: RevisionShardAdmissionSigner,
+  receipt: RevisionShardAdmissionReceipt,
+): Promise<void> {
+  const root = admissionRoot(cacheDir, signer);
+  try {
+    await writeImmutableJsonCache(root, receipt.shardKey, receipt, {
+      trustedRoot: cacheDir,
+    });
+    return;
+  } catch (error) {
+    if (!isRepairableImmutableEntryError(error)) throw error;
+  }
+  await quarantineImmutableJsonCacheEntry(root, receipt.shardKey, {
+    trustedRoot: cacheDir,
+    quarantineRoot: repairTrashRoot(cacheDir),
+  });
+  await writeImmutableJsonCache(root, receipt.shardKey, receipt, {
+    trustedRoot: cacheDir,
+  });
+}
+
+async function hasValidAdmissionForStoredShard(
+  cacheDir: string,
+  signer: RevisionShardAdmissionSigner,
+  shardKey: string,
+): Promise<boolean> {
+  try {
+    const shard = await readImmutableJsonCache<StoredUnitShard>(
+      shardRoot(cacheDir),
+      shardKey,
+      { trustedRoot: cacheDir, maxEntryBytes: MAX_UNIT_SHARD_BYTES },
+    );
+    if (shard === null) return false;
+    const receipt = await readImmutableJsonCache<RevisionShardAdmissionReceipt>(
+      admissionRoot(cacheDir, signer),
+      shardKey,
+      { trustedRoot: cacheDir, maxEntryBytes: MAX_ADMISSION_RECEIPT_BYTES },
+    );
+    return receipt !== null && verifyRevisionShardAdmissionReceipt(
+      signer,
+      receipt.value,
+      {
+        shardKey,
+        baseInputKey: shard.value.baseInputKey,
+        payloadDigest: shard.payloadDigest,
+      },
+    );
+  } catch {
+    return false;
+  }
+}
+
+function isRepairableImmutableEntryError(error: unknown): boolean {
+  return error instanceof ImmutableCacheCollisionError
+    || error instanceof ImmutableCacheCorruptionError;
+}
+
+function repairTrashRoot(cacheDir: string): string {
+  return resolve(cacheDir, ".retention-trash", "repair");
 }
 
 function filesystemErrorCode(error: unknown): string | undefined {

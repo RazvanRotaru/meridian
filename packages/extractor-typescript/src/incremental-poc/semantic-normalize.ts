@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   CallSite,
   ExtractionDiagnostic,
@@ -8,7 +9,7 @@ import type {
   LogicFlows,
   Port,
 } from "@meridian/core";
-import { canonicalJson, canonicalJsonSha256 } from "./canonical-json";
+import { canonicalJson, canonicalJsonBytes } from "./canonical-json";
 
 /**
  * The semantic extraction surface used by the differential oracle.
@@ -28,16 +29,59 @@ export interface SemanticExtractionSnapshot {
   ports: Port[] | null;
 }
 
+export const CANONICAL_SEMANTIC_CATEGORY_ORDER = [
+  "diagnostics",
+  "edges",
+  "flows",
+  "language",
+  "nodes",
+  "ports",
+  "stats",
+] as const satisfies readonly (keyof SemanticExtractionSnapshot)[];
+
+export type SemanticExtractionCategory = keyof SemanticExtractionSnapshot;
+
+/** Normalize one category so disk-backed differential evidence need not clone the whole graph. */
+export function semanticExtractionCategory<Category extends SemanticExtractionCategory>(
+  result: ExtractionResult,
+  category: Category,
+): SemanticExtractionSnapshot[Category] {
+  switch (category) {
+    case "language":
+      return result.language as SemanticExtractionSnapshot[Category];
+    case "nodes":
+      return result.nodes
+        .map(cloneNode)
+        .sort((left, right) => compareText(left.id, right.id)) as SemanticExtractionSnapshot[Category];
+    case "edges":
+      return result.edges
+        .map(cloneEdge)
+        .sort((left, right) => compareText(left.id, right.id)) as SemanticExtractionSnapshot[Category];
+    case "stats":
+      return normalizeStats(result.stats) as SemanticExtractionSnapshot[Category];
+    case "diagnostics":
+      return result.diagnostics
+        .map(cloneSemanticValue)
+        .sort(compareDiagnostic) as SemanticExtractionSnapshot[Category];
+    case "flows":
+      return (result.flows === undefined ? null : normalizeFlows(result.flows)) as
+        SemanticExtractionSnapshot[Category];
+    case "ports":
+      return (result.ports === undefined ? null : normalizePorts(result.ports)) as
+        SemanticExtractionSnapshot[Category];
+  }
+}
+
 /** Return a detached, canonically ordered snapshot without mutating the extraction result. */
 export function semanticExtractionSnapshot(result: ExtractionResult): SemanticExtractionSnapshot {
   return {
-    language: result.language,
-    nodes: result.nodes.map(cloneNode).sort((left, right) => compareText(left.id, right.id)),
-    edges: result.edges.map(cloneEdge).sort((left, right) => compareText(left.id, right.id)),
-    stats: normalizeStats(result.stats),
-    diagnostics: result.diagnostics.map(cloneSemanticValue).sort(compareDiagnostic),
-    flows: result.flows === undefined ? null : normalizeFlows(result.flows),
-    ports: result.ports === undefined ? null : normalizePorts(result.ports),
+    language: semanticExtractionCategory(result, "language"),
+    nodes: semanticExtractionCategory(result, "nodes"),
+    edges: semanticExtractionCategory(result, "edges"),
+    stats: semanticExtractionCategory(result, "stats"),
+    diagnostics: semanticExtractionCategory(result, "diagnostics"),
+    flows: semanticExtractionCategory(result, "flows"),
+    ports: semanticExtractionCategory(result, "ports"),
   };
 }
 
@@ -48,7 +92,16 @@ export function semanticExtractionJson(result: ExtractionResult): string {
 
 /** SHA-256 of the complete semantic snapshot. */
 export function semanticExtractionDigest(result: ExtractionResult): string {
-  return canonicalJsonSha256(semanticExtractionSnapshot(result));
+  const digest = createHash("sha256");
+  digest.update("{");
+  for (const [index, category] of CANONICAL_SEMANTIC_CATEGORY_ORDER.entries()) {
+    if (index > 0) digest.update(",");
+    digest.update(JSON.stringify(category));
+    digest.update(":");
+    digest.update(canonicalJsonBytes(semanticExtractionCategory(result, category)));
+  }
+  digest.update("}");
+  return digest.digest("hex");
 }
 
 function cloneNode(node: GraphNode): GraphNode {

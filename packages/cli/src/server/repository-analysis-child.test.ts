@@ -11,6 +11,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { SCHEMA_VERSION, type GraphArtifact } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
+import { analysisRuntimeFingerprint } from "../analysis-runtime-fingerprint";
 import {
   runRepositoryAnalysisChild,
   runRepositoryArtifactRestampChild,
@@ -116,6 +118,41 @@ describe("repository analysis child", () => {
       result.summary,
       controller.signal,
     )).rejects.toBe(reason);
+  }, 30_000);
+
+  it("rejects shard execution when the fresh child runtime differs from parent provenance", async () => {
+    const directory = temporaryDirectory();
+    const root = join(REPO, "examples", "orders-api");
+    const runtime = analysisRuntimeFingerprint();
+    const policy: TypeScriptRevisionShardPolicy = {
+      version: 1,
+      mode: "verified-experimental",
+      admission: null,
+      cacheDir: join(directory, "shards"),
+      treeOid: "a".repeat(40),
+      buildFingerprint: runtime.buildFingerprint === "f".repeat(64)
+        ? "e".repeat(64)
+        : "f".repeat(64),
+      analysisPolicyFingerprint: "b".repeat(64),
+      runtimeFingerprint: {
+        nodeVersion: runtime.nodeVersion,
+        platform: runtime.platform,
+        arch: runtime.arch,
+        typescriptVersion: runtime.typescriptVersion,
+        tsMorphVersion: runtime.tsMorphVersion,
+      },
+    };
+
+    await expect(runRepositoryAnalysisChild({
+      absoluteRoot: root,
+      cwd: root,
+    }, {
+      artifactOutputPath: join(directory, "artifact.json"),
+      typeScriptRevisionShards: policy,
+      timeoutMs: 30_000,
+    })).rejects.toThrow(
+      "TypeScript revision-shard runtime provenance differs before extraction",
+    );
   }, 30_000);
 
   it("validates and restamps branch provenance entirely in a one-shot child", async () => {
@@ -359,6 +396,123 @@ describe("repository analysis child", () => {
     await expect(pending).rejects.toBe(reason);
   }, 15_000);
 
+  it("strips ambient Node injection while preserving explicit worker arguments", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const environmentPath = `${artifactOutputPath}.environment`;
+    const workerEntry = customWorker(directory, `
+      const { writeFileSync } = require("node:fs");
+      process.once("message", (message) => {
+        writeFileSync(message.artifactOutputPath + ".environment", JSON.stringify({
+          nodeOptions: process.env.NODE_OPTIONS ?? null,
+          nodePath: process.env.NODE_PATH ?? null,
+          tsxTsconfig: process.env.TSX_TSCONFIG_PATH ?? null,
+          tsxAmbient: process.env.TSX_AMBIENT_SETTING ?? null,
+          execArgv: process.execArgv,
+        }));
+        setInterval(() => {}, 1000);
+      });
+    `);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    const previousNodePath = process.env.NODE_PATH;
+    const previousTsxTsconfig = process.env.TSX_TSCONFIG_PATH;
+    const previousTsxAmbient = process.env.TSX_AMBIENT_SETTING;
+    process.env.NODE_OPTIONS = "--no-warnings";
+    process.env.NODE_PATH = join(directory, "ambient-modules");
+    process.env.TSX_TSCONFIG_PATH = join(directory, "ambient-tsconfig.json");
+    process.env.TSX_AMBIENT_SETTING = "must-not-reach-worker";
+    const controller = new AbortController();
+    const reason = new Error("environment probe complete");
+    const pending = runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      signal: controller.signal,
+      workerEntry,
+      workerExecArgv: ["--trace-warnings"],
+      workerHeapMb: 1_024,
+    });
+    try {
+      await waitForFile(environmentPath);
+      expect(JSON.parse(readFileSync(environmentPath, "utf8"))).toEqual({
+        nodeOptions: null,
+        nodePath: null,
+        tsxTsconfig: null,
+        tsxAmbient: null,
+        execArgv: [
+          "--trace-warnings",
+          "--max-old-space-size=1024",
+        ],
+      });
+    } finally {
+      controller.abort(reason);
+      try {
+        await expect(pending).rejects.toBe(reason);
+      } finally {
+        if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = previousNodeOptions;
+        if (previousNodePath === undefined) delete process.env.NODE_PATH;
+        else process.env.NODE_PATH = previousNodePath;
+        if (previousTsxTsconfig === undefined) delete process.env.TSX_TSCONFIG_PATH;
+        else process.env.TSX_TSCONFIG_PATH = previousTsxTsconfig;
+        if (previousTsxAmbient === undefined) delete process.env.TSX_AMBIENT_SETTING;
+        else process.env.TSX_AMBIENT_SETTING = previousTsxAmbient;
+      }
+    }
+  }, 15_000);
+
+  it("pins source workers to the CLI cwd and tsconfig while stripping ambient TSX settings", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const environmentPath = `${artifactOutputPath}.environment`;
+    const workerEntry = customTypeScriptWorker(directory, `
+      import { writeFileSync } from "node:fs";
+      process.once("message", (message: { artifactOutputPath: string }) => {
+        writeFileSync(message.artifactOutputPath + ".environment", JSON.stringify({
+          cwd: process.cwd(),
+          tsxTsconfig: process.env.TSX_TSCONFIG_PATH ?? null,
+          tsxAmbient: process.env.TSX_AMBIENT_SETTING ?? null,
+        }));
+        setInterval(() => {}, 1000);
+      });
+    `);
+    const previousTsxTsconfig = process.env.TSX_TSCONFIG_PATH;
+    const previousTsxAmbient = process.env.TSX_AMBIENT_SETTING;
+    process.env.TSX_TSCONFIG_PATH = join(directory, "ambient-tsconfig.json");
+    process.env.TSX_AMBIENT_SETTING = "must-not-reach-worker";
+    const controller = new AbortController();
+    const reason = new Error("source environment probe complete");
+    const pending = runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      signal: controller.signal,
+      workerEntry,
+      workerHeapMb: 1_024,
+    });
+    try {
+      await waitForFile(environmentPath);
+      const expectedTsconfig = join(REPO, "packages", "cli", "tsconfig.json");
+      expect(JSON.parse(readFileSync(environmentPath, "utf8"))).toEqual({
+        cwd: dirname(expectedTsconfig),
+        tsxTsconfig: expectedTsconfig,
+        tsxAmbient: null,
+      });
+    } finally {
+      controller.abort(reason);
+      try {
+        await expect(pending).rejects.toBe(reason);
+      } finally {
+        if (previousTsxTsconfig === undefined) delete process.env.TSX_TSCONFIG_PATH;
+        else process.env.TSX_TSCONFIG_PATH = previousTsxTsconfig;
+        if (previousTsxAmbient === undefined) delete process.env.TSX_AMBIENT_SETTING;
+        else process.env.TSX_AMBIENT_SETTING = previousTsxAmbient;
+      }
+    }
+  }, 15_000);
+
   it("stream-verifies the child digest before creating a verified-file proof", async () => {
     const directory = temporaryDirectory();
     const artifactOutputPath = join(directory, "artifact.json");
@@ -448,6 +602,12 @@ function temporaryDirectory(): string {
 
 function customWorker(directory: string, source: string): string {
   const path = join(directory, `worker-${Math.random().toString(16).slice(2)}.cjs`);
+  writeFileSync(path, source, { mode: 0o600 });
+  return path;
+}
+
+function customTypeScriptWorker(directory: string, source: string): string {
+  const path = join(directory, `worker-${Math.random().toString(16).slice(2)}.ts`);
   writeFileSync(path, source, { mode: 0o600 });
   return path;
 }

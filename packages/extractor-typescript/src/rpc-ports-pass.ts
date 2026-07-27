@@ -300,7 +300,11 @@ function concreteReceiverMethods(
     const nodeId = index.targetByDeclKey.get(nodeKey(implementation));
     if (nodeId) methods.set(method.getName(), { name: method.getName(), nodeId });
   }
-  return [...methods.values()].sort((left, right) => left.name.localeCompare(right.name));
+  return [...methods.values()].sort((left, right) => compareText(left.name, right.name));
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function implementationMethod(method: MethodDeclaration, owner: ClassDeclaration): MethodDeclaration {

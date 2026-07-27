@@ -104,32 +104,41 @@ function mismatchFor(
     coldDigest,
     message: [
       `${category} differ`,
-      `(incremental ${describeCategory(category, incremental)}, sha256=${incrementalDigest};`,
-      `cold ${describeCategory(category, cold)}, sha256=${coldDigest})`,
+      `(incremental ${describeDifferentialCategory(category, incremental)}, sha256=${incrementalDigest};`,
+      `cold ${describeDifferentialCategory(category, cold)}, sha256=${coldDigest})`,
     ].join(" "),
   }];
 }
 
-function describeCategory(
+export function describeDifferentialCategory(
   category: DifferentialCategory,
   snapshot: SemanticExtractionSnapshot,
 ): string {
+  return describeDifferentialCategoryValue(category, snapshot[category]);
+}
+
+export function describeDifferentialCategoryValue(
+  category: DifferentialCategory,
+  value: SemanticExtractionSnapshot[DifferentialCategory],
+): string {
   switch (category) {
     case "language":
-      return JSON.stringify(snapshot.language);
+      return JSON.stringify(value);
     case "nodes":
-      return `${snapshot.nodes.length} node(s)`;
+      return `${(value as SemanticExtractionSnapshot["nodes"]).length} node(s)`;
     case "edges":
-      return `${snapshot.edges.length} edge(s)`;
+      return `${(value as SemanticExtractionSnapshot["edges"]).length} edge(s)`;
     case "stats":
-      return `${snapshot.stats.files} file(s)`;
+      return `${(value as SemanticExtractionSnapshot["stats"]).files} file(s)`;
     case "diagnostics":
-      return `${snapshot.diagnostics.length} diagnostic(s)`;
+      return `${(value as SemanticExtractionSnapshot["diagnostics"]).length} diagnostic(s)`;
     case "flows":
-      return snapshot.flows === null
+      return value === null
         ? "absent"
-        : `${Object.keys(snapshot.flows).length} flow owner(s)`;
+        : `${Object.keys(value as Exclude<SemanticExtractionSnapshot["flows"], null>).length} flow owner(s)`;
     case "ports":
-      return snapshot.ports === null ? "absent" : `${snapshot.ports.length} port(s)`;
+      return value === null
+        ? "absent"
+        : `${(value as Exclude<SemanticExtractionSnapshot["ports"], null>).length} port(s)`;
   }
 }

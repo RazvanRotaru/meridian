@@ -3,9 +3,10 @@
  *
  * Artifact headers deliberately keep their release-facing generator version stable. Cache
  * identities use this stricter fingerprint instead: a build-time digest of the analysis
- * implementation and lock/config inputs, the exact JS/TypeScript runtime coordinates, and a
- * process nonce. The nonce is an intentional fail-closed boundary while inputs outside the Node
- * process (notably Python and Git behavior) are not yet captured completely.
+ * implementation and lock/config inputs, a runtime digest of the actual worker and resolved
+ * dependency bytes, exact JS/TypeScript runtime coordinates, and a process nonce. The nonce is an
+ * intentional fail-closed boundary while inputs outside the Node process (notably Python and Git
+ * behavior) are not yet captured completely.
  */
 
 import { createHash, randomBytes } from "node:crypto";
@@ -17,10 +18,12 @@ import {
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { join, relative, resolve, sep } from "node:path";
+import { computeAnalysisExecutionFingerprint } from "./analysis-execution-fingerprint";
 
 declare const __MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__: string | undefined;
 
 const BUILD_FINGERPRINT_VERSION = 1;
+const COMBINED_BUILD_FINGERPRINT_VERSION = 2;
 const RUNTIME_FINGERPRINT_VERSION = 1;
 const SHA256 = /^[a-f0-9]{64}$/;
 const PROCESS_INSTANCE_NONCE = randomBytes(16).toString("hex");
@@ -32,13 +35,16 @@ export const ANALYSIS_BUILD_INPUTS = [
   "tsconfig.base.json",
   "packages/core/package.json",
   "packages/core/tsconfig.json",
+  "packages/core/tsup.config.ts",
   "packages/core/src",
   "packages/extractor-python/package.json",
   "packages/extractor-python/tsconfig.json",
+  "packages/extractor-python/tsup.config.ts",
   "packages/extractor-python/python",
   "packages/extractor-python/src",
   "packages/extractor-typescript/package.json",
   "packages/extractor-typescript/tsconfig.json",
+  "packages/extractor-typescript/tsup.config.ts",
   "packages/extractor-typescript/src",
   "packages/cli/package.json",
   "packages/cli/tsconfig.json",
@@ -58,7 +64,6 @@ export interface AnalysisRuntimeFingerprint {
 }
 
 let cachedDefaultFingerprint: AnalysisRuntimeFingerprint | undefined;
-let cachedSourceBuildFingerprint: string | undefined;
 
 /**
  * Used by tsup to inject an immutable digest and by source-mode tests/tsx as a safe fallback.
@@ -85,15 +90,43 @@ export function computeAnalysisBuildFingerprint(
   return hash.digest("hex");
 }
 
+export function combineAnalysisBuildFingerprints(
+  sourceBuildFingerprint: string,
+  executionFingerprint: string,
+): string {
+  if (!SHA256.test(sourceBuildFingerprint) || !SHA256.test(executionFingerprint)) {
+    throw new TypeError("analysis build fingerprints must be SHA-256 digests");
+  }
+  const hash = createHash("sha256");
+  hash.update(`meridian-analysis-combined-build-v${COMBINED_BUILD_FINGERPRINT_VERSION}\0`);
+  hash.update(sourceBuildFingerprint);
+  hash.update("\0");
+  hash.update(executionFingerprint);
+  return hash.digest("hex");
+}
+
 /**
  * The optional override is dependency injection for identity tests. Production callers omit it.
  */
 export function analysisRuntimeFingerprint(
   override: Partial<AnalysisRuntimeFingerprint> = {},
 ): AnalysisRuntimeFingerprint {
-  const base = cachedDefaultFingerprint ??= Object.freeze({
+  const base = cachedDefaultFingerprint ??= computeCurrentAnalysisRuntimeFingerprint();
+  if (Object.keys(override).length === 0) return base;
+  return Object.freeze({ ...base, ...override });
+}
+
+/**
+ * Recompute the executable identity from current on-disk bytes.
+ *
+ * Repository-analysis children call this immediately before and after shard-enabled extraction.
+ * The parent may remain alive across a rebuild, so its cached startup identity is not sufficient
+ * evidence for the bytes a newly spawned child actually executes.
+ */
+export function computeCurrentAnalysisRuntimeFingerprint(): AnalysisRuntimeFingerprint {
+  return Object.freeze({
     formatVersion: RUNTIME_FINGERPRINT_VERSION,
-    buildFingerprint: analysisBuildFingerprint(),
+    buildFingerprint: computeCurrentAnalysisBuildFingerprint(),
     processInstanceNonce: PROCESS_INSTANCE_NONCE,
     nodeVersion: process.versions.node,
     platform: process.platform,
@@ -101,29 +134,48 @@ export function analysisRuntimeFingerprint(
     typescriptVersion: embeddedTypeScriptVersion(),
     tsMorphVersion: installedPackageVersion("ts-morph"),
   });
-  if (Object.keys(override).length === 0) return base;
-  return Object.freeze({ ...base, ...override });
 }
 
-function analysisBuildFingerprint(): string {
+function computeCurrentAnalysisBuildFingerprint(): string {
+  let sourceBuildFingerprint: string;
   if (
     typeof __MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__ === "string"
     && SHA256.test(__MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__)
   ) {
-    return __MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__;
+    sourceBuildFingerprint = __MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__;
+  } else {
+    try {
+      const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
+      sourceBuildFingerprint = computeAnalysisBuildFingerprint(workspaceRoot);
+    } catch {
+      // Never let two source-mode processes share analysis artifacts when complete source
+      // provenance cannot be calculated.
+      sourceBuildFingerprint = createHash("sha256")
+        .update(`unavailable-source-build:${PROCESS_INSTANCE_NONCE}`)
+        .digest("hex");
+    }
   }
-  if (cachedSourceBuildFingerprint !== undefined) return cachedSourceBuildFingerprint;
   try {
-    const workspaceRoot = fileURLToPath(new URL("../../../", import.meta.url));
-    cachedSourceBuildFingerprint = computeAnalysisBuildFingerprint(workspaceRoot);
+    const sourceMode = fileURLToPath(import.meta.url).endsWith(".ts");
+    const executionFingerprint = computeAnalysisExecutionFingerprint({
+      rootPackageManifest: fileURLToPath(new URL("../package.json", import.meta.url)),
+      workerEntry: fileURLToPath(new URL(
+        sourceMode ? "./repository-analysis-worker.ts" : "./repository-analysis-worker.js",
+        import.meta.url,
+      )),
+      additionalRootDependencies: sourceMode ? ["tsx"] : [],
+    });
+    return combineAnalysisBuildFingerprints(
+      sourceBuildFingerprint,
+      executionFingerprint,
+    );
   } catch {
-    // Never let two source-mode processes share analysis artifacts when complete source
-    // provenance cannot be calculated.
-    cachedSourceBuildFingerprint = createHash("sha256")
-      .update(`unavailable-source-build:${PROCESS_INSTANCE_NONCE}`)
+    // Shard reuse deliberately crosses process boundaries. If the exact executable closure cannot
+    // be proven, bind the build identity to this process and fail closed across restarts.
+    return createHash("sha256")
+      .update(`unavailable-execution-build:${sourceBuildFingerprint}:${PROCESS_INSTANCE_NONCE}`)
       .digest("hex");
   }
-  return cachedSourceBuildFingerprint;
 }
 
 function installedPackageVersion(packageName: "ts-morph"): string {

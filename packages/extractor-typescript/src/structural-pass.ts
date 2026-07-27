@@ -118,5 +118,9 @@ function addAncestors(directory: string, paths: Set<string>): void {
 
 function byDepthThenName(left: string, right: string): number {
   const depth = left.split("/").length - right.split("/").length;
-  return depth !== 0 ? depth : left.localeCompare(right);
+  return depth !== 0 ? depth : compareText(left, right);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

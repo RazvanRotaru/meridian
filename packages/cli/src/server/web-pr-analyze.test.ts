@@ -877,7 +877,7 @@ describe("handlePrAnalyze", () => {
   });
 
   it("rebuilds stale pair metadata from separately verified immutable revision artifacts", async () => {
-    const firstCtx = githubCtx();
+    const firstCtx = githubCtx(undefined, undefined, undefined, true);
     const first = (await invoke(firstCtx, BODY)).lines();
     const firstDone = first.at(-1)!;
     expect(firstDone.cache).toBe("miss");
@@ -891,7 +891,7 @@ describe("handlePrAnalyze", () => {
       analysisVersion: LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES,
     }));
 
-    const restarted = githubCtx();
+    const restarted = githubCtx(undefined, undefined, undefined, true);
     const second = (await invoke(restarted, BODY)).lines();
     const secondDone = second.at(-1)!;
 
@@ -993,7 +993,7 @@ describe("handlePrAnalyze", () => {
       mkdirSync(join(workspace.comparisonDir, subdir), { recursive: true });
     };
     const source = { kind: "github", owner: "org", repo: "repo", subdir } as const;
-    const ctx = githubCtx(source);
+    const ctx = githubCtx(source, undefined, undefined, true);
     const lines = (await invoke(ctx, BODY)).lines();
     const done = lines.at(-1)!;
 
@@ -1018,7 +1018,7 @@ describe("handlePrAnalyze", () => {
       changedSince: MERGE_BASE_SHA,
     });
 
-    const restarted = githubCtx(source);
+    const restarted = githubCtx(source, undefined, undefined, true);
     const cached = (await invoke(restarted, BODY)).lines();
     expect(cached.map((line) => line.stage)).toEqual(["done"]);
     expect(cached.at(-1)?.cache).toBe("hit");
@@ -1026,7 +1026,7 @@ describe("handlePrAnalyze", () => {
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
 
     mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
-    const movedBase = (await invoke(githubCtx(source), BODY)).lines();
+    const movedBase = (await invoke(githubCtx(source, undefined, undefined, true), BODY)).lines();
     expect(movedBase.map((line) => line.stage)).toEqual([
       "clone", "checkout", "reuse-merge-base", "extract", "extract-head", "done",
     ]);
@@ -1123,7 +1123,7 @@ describe("handlePrAnalyze", () => {
       mkdirSync(join(workspace.comparisonDir, subdir), { recursive: true });
     };
     const source = { kind: "github", owner: "org", repo: "repo", subdir } as const;
-    const firstCtx = githubCtx(source);
+    const firstCtx = githubCtx(source, undefined, undefined, true);
     const firstDone = (await invoke(firstCtx, BODY)).lines().at(-1)!;
     expect(firstDone.cache).toBe("miss");
 
@@ -1133,7 +1133,7 @@ describe("handlePrAnalyze", () => {
     rmSync(poisonedSourceDir, { recursive: true, force: true });
     symlinkSync(outside, poisonedSourceDir, process.platform === "win32" ? "junction" : "dir");
 
-    const restarted = githubCtx(source);
+    const restarted = githubCtx(source, undefined, undefined, true);
     const secondLines = (await invoke(restarted, BODY)).lines();
     expect(secondLines.map((line) => line.stage)).toEqual([
       "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
@@ -1167,7 +1167,7 @@ describe("handlePrAnalyze", () => {
   });
 
   it("rebuilds a moved-base pair while reusing both unchanged revision artifacts", async () => {
-    const ctx = githubCtx();
+    const ctx = githubCtx(undefined, undefined, undefined, true);
     const firstLines = (await invoke(ctx, BODY)).lines();
     const first = firstLines.at(-1)!;
     mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
@@ -1344,6 +1344,7 @@ function githubCtx(
   source: ArtifactSource | undefined = { kind: "github", owner: "org", repo: "repo" },
   coordinatorOptions: AnalysisCoordinatorOptions = { maxConcurrentAnalyses: 2 },
   graphRetention: Partial<GraphRetentionOptions> = {},
+  experimentalPrRevisionCache = false,
 ): Context {
   const graphStore = new WebGraphStore(graphRetention);
   const analysisCoordinator = new AnalysisCoordinator(coordinatorOptions);
@@ -1374,6 +1375,7 @@ function githubCtx(
     github: createGitHubClient({ clientId: "Iv1.test" }),
     cacheRoot,
     refreshCache: false,
+    experimentalPrRevisionCache,
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: false,
     syntheticPrSandboxRuntimeSupported: () => false,

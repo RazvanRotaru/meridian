@@ -167,6 +167,8 @@ export async function cachedPrGraph(inputs: {
   runAnalysis: PhaseAdmission;
   /** Server startup policy; no field in the PR analysis HTTP request can override it. */
   typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
+  /** Explicit loopback-only opt-in for cross-pair exact revision artifact reuse. */
+  experimentalPrRevisionCache?: boolean;
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
 }): Promise<CachedPrGraph> {
   prepareWebCache(inputs.cacheRoot);
@@ -191,6 +193,7 @@ export async function cachedPrGraph(inputs: {
     inputs.body,
     remoteUrl,
     inputs.repositories,
+    inputs.experimentalPrRevisionCache === true,
     inputs.signal,
   );
   if (cached) {
@@ -268,14 +271,18 @@ async function createCachedGraph(
           targetName: `${inputs.source.owner}/${inputs.source.repo}`,
           subdir: inputs.source.subdir,
         });
-    const cachedHead = inputs.refresh || headIdentity === null
+    const cachedHead = inputs.refresh
+      || inputs.experimentalPrRevisionCache !== true
+      || headIdentity === null
       ? null
       : await readPrRevisionArtifact({
           cacheRoot: inputs.cacheRoot,
           identity: headIdentity,
           signal: inputs.signal,
         });
-    const cachedComparison = inputs.refresh || comparisonIdentity === null
+    const cachedComparison = inputs.refresh
+      || inputs.experimentalPrRevisionCache !== true
+      || comparisonIdentity === null
       ? null
       : await readPrRevisionArtifact({
           cacheRoot: inputs.cacheRoot,
@@ -297,6 +304,7 @@ async function createCachedGraph(
           inputs.repositoryAnalysis ?? runRepositoryAnalysisChild,
           inputs.cacheRoot,
           inputs.typeScriptRevisionShardMode,
+          [workspace.head, workspace.comparison],
         );
         if (roots.headMaterialized) {
           // A whole-subtree deletion has no HEAD files to detect. Analyze the populated comparison
@@ -304,6 +312,8 @@ async function createCachedGraph(
           comparisonResult ??= await extractCanonicalComparisonArtifact({
             cacheRoot: inputs.cacheRoot,
             identity: comparisonIdentity!,
+            publishSharedRevision: inputs.experimentalPrRevisionCache === true,
+            artifactOutputPath: comparisonArtifactPath,
             repositoryAnalysis,
             root: roots.comparison,
             source: inputs.source,
@@ -338,6 +348,8 @@ async function createCachedGraph(
           headResult ??= await extractPopulatedHeadArtifact({
             cacheRoot: inputs.cacheRoot,
             identity: headIdentity!,
+            publishSharedRevision: inputs.experimentalPrRevisionCache === true,
+            artifactOutputPath: artifactPath,
             repositoryAnalysis,
             root: roots.head,
             source: inputs.source,
@@ -376,6 +388,8 @@ async function createCachedGraph(
             comparisonResult = await extractCanonicalComparisonArtifact({
               cacheRoot: inputs.cacheRoot,
               identity: comparisonIdentity!,
+              publishSharedRevision: inputs.experimentalPrRevisionCache === true,
+              artifactOutputPath: comparisonArtifactPath,
               repositoryAnalysis,
               root: comparisonRoot.root,
               source: inputs.source,
@@ -484,6 +498,7 @@ async function createCachedGraph(
           inputs.body,
           remoteUrl,
           inputs.repositories,
+          inputs.experimentalPrRevisionCache === true,
           inputs.signal,
     );
     if (!published) throw new WebError(422, "cached PR analysis failed verification");
@@ -530,6 +545,7 @@ async function readCached(
   body: PrAnalyzeRequest,
   remoteUrl: string,
   repositories: RepositoryMirror,
+  allowSharedRevisionArtifacts: boolean,
   signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
   try {
@@ -547,6 +563,7 @@ async function readCached(
       body,
       remoteUrl,
       repositories,
+      allowSharedRevisionArtifacts,
       signal,
     );
     if (!cached) return null;
@@ -569,6 +586,7 @@ async function readSnapshot(
   body: PrAnalyzeRequest,
   remoteUrl: string,
   repositories: RepositoryMirror,
+  allowSharedRevisionArtifacts: boolean,
   signal?: AbortSignal,
 ): Promise<Omit<CachedPrGraph, "cache"> | null> {
   let workspace: Awaited<ReturnType<RepositoryMirror["acquirePreparedPullRequest"]>> | undefined;
@@ -582,6 +600,13 @@ async function readSnapshot(
       snapshotId,
       snapshotDigest,
     )) return null;
+    if (
+      !allowSharedRevisionArtifacts
+      && (metadata.headStorage.kind === "shared"
+        || metadata.comparisonStorage.kind === "shared")
+    ) {
+      return null;
+    }
     requireExactArtifactCoordinates(
       metadata.artifactFacts,
       metadata.comparisonFacts,
@@ -1011,6 +1036,8 @@ async function extractPrComparison(
 async function extractPopulatedHeadArtifact(inputs: {
   cacheRoot: string;
   identity: ReturnType<typeof populatedPrHeadRevisionIdentity>;
+  publishSharedRevision: boolean;
+  artifactOutputPath: string;
   repositoryAnalysis: typeof runRepositoryAnalysisChild;
   root: string;
   source: GitHubSource;
@@ -1025,6 +1052,25 @@ async function extractPopulatedHeadArtifact(inputs: {
   onExtractionProgress?: (progress: RepositoryAnalysisProgress) => void;
 }): Promise<CompletedRevisionArtifact> {
   await inputs.onStage("extract-head");
+  if (!inputs.publishSharedRevision) {
+    return localRevisionArtifact(await extractPrHead(
+      inputs.repositoryAnalysis,
+      inputs.root,
+      inputs.source,
+      inputs.body,
+      inputs.remoteUrl,
+      inputs.revisions,
+      inputs.mergeBaseSha,
+      inputs.artifactOutputPath,
+      inputs.token,
+      undefined,
+      inputs.signal,
+      {
+        execution: inputs.execution,
+        onProgress: inputs.onExtractionProgress,
+      },
+    ));
+  }
   const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
   try {
     const result = await extractPrHead(
@@ -1061,6 +1107,8 @@ async function extractPopulatedHeadArtifact(inputs: {
 async function extractCanonicalComparisonArtifact(inputs: {
   cacheRoot: string;
   identity: ReturnType<typeof canonicalPrRevisionIdentity>;
+  publishSharedRevision: boolean;
+  artifactOutputPath: string;
   repositoryAnalysis: typeof runRepositoryAnalysisChild;
   root: string;
   source: GitHubSource;
@@ -1073,6 +1121,24 @@ async function extractCanonicalComparisonArtifact(inputs: {
   onExtractionProgress?: (progress: RepositoryAnalysisProgress) => void;
 }): Promise<CompletedRevisionArtifact> {
   await inputs.onStage("extract-merge-base");
+  if (!inputs.publishSharedRevision) {
+    return localRevisionArtifact(await extractPrComparison(
+      inputs.repositoryAnalysis,
+      inputs.root,
+      inputs.source,
+      inputs.remoteUrl,
+      inputs.mergeBaseSha,
+      inputs.artifactOutputPath,
+      inputs.token,
+      inputs.signal,
+      undefined,
+      null,
+      {
+        execution: inputs.execution,
+        onProgress: inputs.onExtractionProgress,
+      },
+    ));
+  }
   const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
   try {
     const result = await extractPrComparison(

@@ -1,9 +1,16 @@
+import { readFileSync, writeFileSync } from "node:fs";
 import type { ExtractionResult } from "@meridian/core";
 import { describe, expect, it } from "vitest";
 import {
   compareExtractionResults,
   type DifferentialCategory,
 } from "./differential";
+import {
+  comparePersistedExtractionEvidence,
+  disposeExtractionDifferentialEvidence,
+  persistExtractionDifferentialEvidence,
+} from "./differential-evidence";
+import { semanticExtractionDigest } from "./semantic-normalize";
 
 const NODE_ID = "ts:src/service.ts#run";
 
@@ -40,6 +47,39 @@ describe("compareExtractionResults negative controls", () => {
     expectOnlyMismatch("diagnostics", (incremental) => {
       incremental.diagnostics[0]!.message = "changed diagnostic";
     });
+  });
+
+  it("compares exact persisted bytes after releasing the complete incremental graph", async () => {
+    let incremental: ExtractionResult | null = fixtureResult();
+    const evidence = persistExtractionDifferentialEvidence(incremental);
+    try {
+      expect(evidence.digest).toBe(semanticExtractionDigest(incremental));
+      incremental = null;
+      const cold = fixtureResult();
+
+      expect(await comparePersistedExtractionEvidence(evidence, cold)).toMatchObject({
+        equal: true,
+        incrementalDigest: evidence.digest,
+        coldDigest: evidence.digest,
+        mismatches: [],
+      });
+
+      // Keep all advisory digest metadata unchanged and mutate one same-length canonical byte.
+      // Literal comparison, rather than digest equality, must still reject the evidence.
+      const edgeBytes = readFileSync(evidence.categories.edges.path, "utf8");
+      expect(edgeBytes).toContain('"line":3');
+      writeFileSync(
+        evidence.categories.edges.path,
+        edgeBytes.replace('"line":3', '"line":9'),
+      );
+      expect(await comparePersistedExtractionEvidence(evidence, cold)).toMatchObject({
+        equal: false,
+        mismatches: [{ category: "edges" }],
+      });
+      expect(incremental).toBeNull();
+    } finally {
+      disposeExtractionDifferentialEvidence(evidence);
+    }
   });
 });
 

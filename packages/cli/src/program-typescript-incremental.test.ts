@@ -21,6 +21,24 @@ describe("web TypeScript incremental opt-in", () => {
     }));
   });
 
+  it("passes the trusted-admission and cross-pair cache opt-ins explicitly", async () => {
+    await buildProgram().parseAsync([
+      "node",
+      "meridian",
+      "web",
+      "--no-open",
+      "--typescript-incremental",
+      "admitted",
+      "--experimental-pr-revision-cache",
+    ]);
+
+    expect(runWeb).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      experimentalPrRevisionCache: true,
+      open: false,
+      typescriptIncremental: "admitted",
+    }));
+  });
+
   it("rejects unknown modes at the CLI boundary", async () => {
     await expect(buildProgram().parseAsync([
       "node",
@@ -29,7 +47,7 @@ describe("web TypeScript incremental opt-in", () => {
       "--typescript-incremental",
       "on",
     ])).rejects.toThrow(
-      "TypeScript incremental mode must be empty, shadow, or verified-experimental",
+      "TypeScript incremental mode must be empty, shadow, admitted, or verified-experimental",
     );
   });
 });

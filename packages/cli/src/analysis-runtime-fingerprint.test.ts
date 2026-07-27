@@ -1,4 +1,11 @@
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -6,8 +13,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ANALYSIS_BUILD_INPUTS,
   analysisRuntimeFingerprint,
+  combineAnalysisBuildFingerprints,
   computeAnalysisBuildFingerprint,
+  computeCurrentAnalysisRuntimeFingerprint,
 } from "./analysis-runtime-fingerprint";
+import { computeAnalysisExecutionFingerprint } from "./analysis-execution-fingerprint";
 import { prAnalysisKey } from "./server/web-pr-cache";
 import {
   canonicalPrRevisionIdentity,
@@ -46,6 +56,138 @@ describe("analysis runtime fingerprint", () => {
     expect(ANALYSIS_BUILD_INPUTS).toContain("packages/extractor-python/python");
   });
 
+  it.each([
+    "packages/core/tsup.config.ts",
+    "packages/extractor-python/tsup.config.ts",
+    "packages/extractor-typescript/tsup.config.ts",
+  ])("covers executable build configuration %s", (input) => {
+    expect(ANALYSIS_BUILD_INPUTS).toContain(input);
+  });
+
+  it("changes cache identities when worker or resolved dependency bytes change", () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-analysis-execution-"));
+    temporaryRoots.push(root);
+    const cliRoot = join(root, "cli");
+    const runtimeRoot = join(root, "runtime");
+    mkdirSync(join(cliRoot, "dist"), { recursive: true });
+    mkdirSync(runtimeRoot);
+    const cliManifest = join(cliRoot, "package.json");
+    const worker = join(cliRoot, "dist", "repository-analysis-worker.js");
+    const runtimeManifest = join(runtimeRoot, "package.json");
+    const runtimeEntry = join(runtimeRoot, "runtime.js");
+    writeFileSync(cliManifest, JSON.stringify({
+      name: "@meridian/cli",
+      version: "0.1.0",
+      dependencies: { "@meridian/fake-runtime": "0.1.0" },
+    }));
+    writeFileSync(worker, "export const worker = 1;\n");
+    writeFileSync(runtimeManifest, JSON.stringify({
+      name: "@meridian/fake-runtime",
+      version: "0.1.0",
+    }));
+    writeFileSync(runtimeEntry, "export const runtime = 1;\n");
+    const executionFingerprint = () => computeAnalysisExecutionFingerprint({
+      rootPackageManifest: cliManifest,
+      workerEntry: worker,
+      resolveDependencyManifest: (name) => (
+        name === "@meridian/fake-runtime" ? runtimeManifest : undefined
+      ),
+    });
+    const sourceFingerprint = "a".repeat(64);
+    const first = combineAnalysisBuildFingerprints(
+      sourceFingerprint,
+      executionFingerprint(),
+    );
+
+    writeFileSync(worker, "export const worker = 2;\n");
+    const changedWorker = combineAnalysisBuildFingerprints(
+      sourceFingerprint,
+      executionFingerprint(),
+    );
+    expect(changedWorker).not.toBe(first);
+
+    writeFileSync(worker, "export const worker = 1;\n");
+    writeFileSync(runtimeEntry, "export const runtime = 2;\n");
+    const changedDependency = combineAnalysisBuildFingerprints(
+      sourceFingerprint,
+      executionFingerprint(),
+    );
+    expect(changedDependency).not.toBe(first);
+
+    const source = { kind: "github", owner: "org", repo: "repo" } as const;
+    const body = {
+      id: "graph",
+      prNumber: 41,
+      baseRef: "main",
+      headRef: "feature/runtime-bytes",
+    };
+    expect(prAnalysisKey(
+      source,
+      body,
+      analysisRuntimeFingerprint({ buildFingerprint: changedWorker }),
+    )).not.toBe(prAnalysisKey(
+      source,
+      body,
+      analysisRuntimeFingerprint({ buildFingerprint: first }),
+    ));
+    expect(prAnalysisKey(
+      source,
+      body,
+      analysisRuntimeFingerprint({ buildFingerprint: changedDependency }),
+    )).not.toBe(prAnalysisKey(
+      source,
+      body,
+      analysisRuntimeFingerprint({ buildFingerprint: first }),
+    ));
+  });
+
+  it("rejects links inside a resolved runtime package", () => {
+    if (process.platform === "win32") return;
+    const root = mkdtempSync(join(tmpdir(), "meridian-analysis-execution-link-"));
+    temporaryRoots.push(root);
+    const cliRoot = join(root, "cli");
+    const runtimeRoot = join(root, "runtime");
+    mkdirSync(join(cliRoot, "dist"), { recursive: true });
+    mkdirSync(runtimeRoot);
+    const cliManifest = join(cliRoot, "package.json");
+    const worker = join(cliRoot, "dist", "repository-analysis-worker.js");
+    const runtimeManifest = join(runtimeRoot, "package.json");
+    writeFileSync(cliManifest, JSON.stringify({
+      name: "@meridian/cli",
+      version: "0.1.0",
+      dependencies: { "@meridian/fake-runtime": "0.1.0" },
+    }));
+    writeFileSync(worker, "export const worker = 1;\n");
+    writeFileSync(runtimeManifest, JSON.stringify({
+      name: "@meridian/fake-runtime",
+      version: "0.1.0",
+    }));
+    writeFileSync(join(runtimeRoot, "runtime.js"), "export const runtime = 1;\n");
+    symlinkSync("runtime.js", join(runtimeRoot, "linked-runtime.js"));
+
+    expect(() => computeAnalysisExecutionFingerprint({
+      rootPackageManifest: cliManifest,
+      workerEntry: worker,
+      resolveDependencyManifest: () => runtimeManifest,
+    })).toThrow("must not contain links");
+  });
+
+  it("fails closed when the execution closure exceeds its bounds", () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-analysis-execution-limit-"));
+    temporaryRoots.push(root);
+    mkdirSync(join(root, "dist"), { recursive: true });
+    const manifest = join(root, "package.json");
+    const worker = join(root, "dist", "repository-analysis-worker.js");
+    writeFileSync(manifest, JSON.stringify({ name: "@meridian/cli", version: "0.1.0" }));
+    writeFileSync(worker, "export const worker = 1;\n");
+
+    expect(() => computeAnalysisExecutionFingerprint({
+      rootPackageManifest: manifest,
+      workerEntry: worker,
+      limits: { maxFiles: 1 },
+    })).toThrow("runtime file limit exceeded");
+  });
+
   it("records the exact process and installed TypeScript toolchain", () => {
     const fingerprint = analysisRuntimeFingerprint();
     const require = createRequire(import.meta.url);
@@ -64,6 +206,7 @@ describe("analysis runtime fingerprint", () => {
       typescriptVersion: (require("ts-morph") as { ts: { version: string } }).ts.version,
       tsMorphVersion: packageVersion("ts-morph"),
     });
+    expect(computeCurrentAnalysisRuntimeFingerprint()).toEqual(fingerprint);
   });
 
   it("invalidates both pair and canonical revision identities when provenance changes", () => {

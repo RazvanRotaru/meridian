@@ -1,3 +1,7 @@
+import {
+  createHash,
+  generateKeyPairSync,
+} from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
   EXTRACTION_PROGRESS_ACTIVITIES,
@@ -61,6 +65,37 @@ describe("repository analysis worker protocol", () => {
       typeScriptRevisionShards: {
         ...request.typeScriptRevisionShards,
         unexpected: true,
+      },
+    })).toBe(false);
+
+    const signer = admissionSigner();
+    expect(isRepositoryAnalysisWorkerRequest({
+      ...request,
+      typeScriptRevisionShards: {
+        ...request.typeScriptRevisionShards,
+        mode: "shadow",
+        admission: signer,
+      },
+    })).toBe(true);
+    expect(isRepositoryAnalysisWorkerRequest({
+      ...request,
+      typeScriptRevisionShards: {
+        ...request.typeScriptRevisionShards,
+        mode: "admitted",
+        admission: {
+          version: 1,
+          kind: "verifier",
+          keyId: signer.keyId,
+          publicKeySpki: signer.publicKeySpki,
+        },
+      },
+    })).toBe(true);
+    expect(isRepositoryAnalysisWorkerRequest({
+      ...request,
+      typeScriptRevisionShards: {
+        ...request.typeScriptRevisionShards,
+        mode: "shadow",
+        admission: { ...signer, keyId: "0".repeat(64) },
       },
     })).toBe(false);
   });
@@ -410,7 +445,8 @@ describe("repository analysis worker protocol", () => {
 function shardPolicy() {
   return {
     version: 1 as const,
-    mode: "shadow" as const,
+    mode: "empty" as const,
+    admission: null,
     cacheDir: "/cache/typescript-revision-shards-v1",
     treeOid: "c".repeat(40),
     buildFingerprint: "d".repeat(64),
@@ -422,6 +458,22 @@ function shardPolicy() {
       typescriptVersion: "6.0.3",
       tsMorphVersion: "28.0.0",
     },
+  };
+}
+
+function admissionSigner() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" });
+  const privateDer = privateKey.export({ format: "der", type: "pkcs8" });
+  if (!Buffer.isBuffer(publicDer) || !Buffer.isBuffer(privateDer)) {
+    throw new Error("could not serialize test admission authority");
+  }
+  return {
+    version: 1 as const,
+    kind: "signer" as const,
+    keyId: createHash("sha256").update(publicDer).digest("hex"),
+    publicKeySpki: publicDer.toString("base64"),
+    privateKeyPkcs8: privateDer.toString("base64"),
   };
 }
 

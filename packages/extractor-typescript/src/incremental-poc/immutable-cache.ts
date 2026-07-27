@@ -5,7 +5,8 @@ import {
   lstat,
   mkdir,
   open,
-  readdir,
+  opendir,
+  rename,
   unlink,
   writeFile,
 } from "node:fs/promises";
@@ -20,6 +21,8 @@ import {
 import { canonicalJson, canonicalJsonBytes, canonicalJsonSha256 } from "./canonical-json";
 
 const CACHE_FORMAT = "meridian.incremental-poc.immutable-json.v1";
+const DEFAULT_MAX_ENTRY_BYTES = 512 * 1024 * 1024;
+const DEFAULT_MAX_ADDRESSES = 128;
 
 interface CacheEnvelope<T> {
   format: typeof CACHE_FORMAT;
@@ -46,6 +49,10 @@ export interface ImmutableJsonCacheAccess {
    * Defaults to the logical cache root for standalone callers and tests.
    */
   trustedRoot?: string;
+  /** Hard allocation bound applied before any entry bytes are read. */
+  maxEntryBytes?: number;
+  /** Hard enumeration bound for one logical immutable-address directory. */
+  maxAddresses?: number;
 }
 
 export class ImmutableCacheCorruptionError extends Error {
@@ -92,9 +99,17 @@ export async function readImmutableJsonCache<T>(
     if (!entry.isFile() || entry.isSymbolicLink()) {
       throw new Error("entry is not a regular no-follow file");
     }
+    const maxEntryBytes = positiveLimit(
+      access.maxEntryBytes,
+      DEFAULT_MAX_ENTRY_BYTES,
+      "immutable cache entry byte limit",
+    );
+    if (!Number.isSafeInteger(entry.size) || entry.size > maxEntryBytes) {
+      throw new Error(`entry exceeds the ${maxEntryBytes}-byte read limit`);
+    }
     const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
     try {
-      bytes = await handle.readFile();
+      bytes = await readExactBounded(handle, maxEntryBytes);
     } finally {
       await handle.close();
     }
@@ -113,9 +128,6 @@ export async function readImmutableJsonCache<T>(
   try {
     const source = bytes.toString("utf8");
     const decoded: unknown = JSON.parse(source);
-    if (canonicalJson(decoded) !== source) {
-      throw new Error("entry is not canonical JSON");
-    }
     if (!isEnvelope(decoded, address)) {
       throw new Error("entry envelope is invalid");
     }
@@ -187,6 +199,39 @@ export async function writeImmutableJsonCache<T>(
 }
 
 /**
+ * Atomically remove one exact logical entry from service while preserving its bytes for bounded
+ * background cleanup. Callers use this only after proving the entry is untrusted or unreadable.
+ */
+export async function quarantineImmutableJsonCacheEntry(
+  root: string,
+  address: string,
+  access: ImmutableJsonCacheAccess & { quarantineRoot: string },
+): Promise<string | null> {
+  const path = immutableJsonCachePath(root, address);
+  const trustedRoot = resolve(access.trustedRoot ?? root);
+  if (!await ensureTrustedDirectoryPath(trustedRoot, dirname(path), false)) return null;
+  try {
+    await lstat(path);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null;
+    throw error;
+  }
+  const quarantineRoot = resolve(access.quarantineRoot);
+  await ensureTrustedDirectoryPath(trustedRoot, quarantineRoot, true);
+  const destination = join(
+    quarantineRoot,
+    `${address}.${process.pid}.${randomUUID()}.json`,
+  );
+  try {
+    await rename(path, destination);
+    return destination;
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/**
  * Enumerate canonical immutable entries without following a cache-controlled directory or file
  * symlink. Temporary files from an in-flight atomic publication are ignored.
  */
@@ -197,16 +242,31 @@ export async function listImmutableJsonCacheAddresses(
   const logicalRoot = resolve(root);
   const trustedRoot = resolve(access.trustedRoot ?? root);
   if (!await ensureTrustedDirectoryPath(trustedRoot, logicalRoot, false)) return [];
-  const prefixes = await readdir(logicalRoot, { withFileTypes: true });
+  const maxAddresses = positiveLimit(
+    access.maxAddresses,
+    DEFAULT_MAX_ADDRESSES,
+    "immutable cache address limit",
+  );
+  const maxDirectoryEntries = maxAddresses + 512;
   const addresses: string[] = [];
-  for (const prefix of prefixes.sort((left, right) => compareNames(left.name, right.name))) {
+  let scannedEntries = 0;
+  const prefixes = await opendir(logicalRoot);
+  for await (const prefix of prefixes) {
+    scannedEntries += 1;
+    if (scannedEntries > maxDirectoryEntries) {
+      throw new Error("immutable cache directory exceeds its bounded entry limit");
+    }
     if (!/^[a-f0-9]{2}$/.test(prefix.name) || !prefix.isDirectory() || prefix.isSymbolicLink()) {
       throw new Error(`immutable cache prefix is not a trusted directory: ${prefix.name}`);
     }
     const prefixPath = join(logicalRoot, prefix.name);
     await ensureTrustedDirectoryPath(trustedRoot, prefixPath, false);
-    const entries = await readdir(prefixPath, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => compareNames(left.name, right.name))) {
+    const entries = await opendir(prefixPath);
+    for await (const entry of entries) {
+      scannedEntries += 1;
+      if (scannedEntries > maxDirectoryEntries) {
+        throw new Error("immutable cache directory exceeds its bounded entry limit");
+      }
       if (entry.name.includes(".tmp")) continue;
       const match = /^([a-f0-9]{64})\.json$/.exec(entry.name);
       if (
@@ -218,9 +278,12 @@ export async function listImmutableJsonCacheAddresses(
         throw new Error(`immutable cache entry is not a trusted regular file: ${entry.name}`);
       }
       addresses.push(match[1]!);
+      if (addresses.length > maxAddresses) {
+        throw new Error(`immutable cache contains more than ${maxAddresses} addresses`);
+      }
     }
   }
-  return addresses;
+  return addresses.sort(compareNames);
 }
 
 function cacheResult<T>(
@@ -311,6 +374,46 @@ async function ensureTrustedDirectoryPath(
 
 function compareNames(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
+}
+
+async function readExactBounded(
+  handle: Awaited<ReturnType<typeof open>>,
+  maxBytes: number,
+): Promise<Buffer> {
+  const entry = await handle.stat();
+  if (
+    !entry.isFile()
+    || !Number.isSafeInteger(entry.size)
+    || entry.size < 0
+    || entry.size > maxBytes
+  ) {
+    throw new Error(`entry exceeds the ${maxBytes}-byte read limit`);
+  }
+  const bytes = Buffer.allocUnsafe(entry.size);
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const { bytesRead } = await handle.read(
+      bytes,
+      offset,
+      bytes.byteLength - offset,
+      offset,
+    );
+    if (bytesRead === 0) throw new Error("entry changed size while it was read");
+    offset += bytesRead;
+  }
+  const overflow = Buffer.allocUnsafe(1);
+  if ((await handle.read(overflow, 0, 1, offset)).bytesRead !== 0) {
+    throw new Error("entry changed size while it was read");
+  }
+  return bytes;
+}
+
+function positiveLimit(value: number | undefined, fallback: number, label: string): number {
+  const resolved = value ?? fallback;
+  if (!Number.isSafeInteger(resolved) || resolved <= 0) {
+    throw new TypeError(`${label} must be a positive safe integer`);
+  }
+  return resolved;
 }
 
 function errorCode(error: unknown): string | undefined {

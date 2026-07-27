@@ -3,6 +3,10 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { validateArtifact, type GraphArtifact } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
+import {
+  computeCurrentAnalysisRuntimeFingerprint,
+} from "./analysis-runtime-fingerprint";
 import { CliError, EXIT } from "./errors";
 import { analyzeRepository, type RepositoryAnalysisRequest } from "./repository-analysis";
 import { runGit } from "./server/git-exec";
@@ -60,8 +64,14 @@ async function handleRequest(value: unknown): Promise<void> {
 async function analyzeToFile(
   message: Extract<RepositoryAnalysisWorkerRequest, { type: "analyze" }>,
 ): Promise<RepositoryAnalysisWorkerFileResult> {
+  if (message.typeScriptRevisionShards !== null) {
+    requireCurrentShardRuntime(message.typeScriptRevisionShards, "before");
+  }
   const request = analysisRequest(message);
   const analyzed = await analyzeRepository(request);
+  if (message.typeScriptRevisionShards !== null) {
+    requireCurrentShardRuntime(message.typeScriptRevisionShards, "after");
+  }
   const artifact = message.reviewFingerprints !== null
     ? withReviewFingerprints(analyzed.artifact, request.absoluteRoot, message.reviewFingerprints)
     : analyzed.artifact;
@@ -89,6 +99,26 @@ async function analyzeToFile(
     changedSinceBaseRef: changed.changedSinceBaseRef,
     warnings: boundedRepositoryWorkerWarnings(warnings, message.token),
   };
+}
+
+function requireCurrentShardRuntime(
+  policy: TypeScriptRevisionShardPolicy,
+  phase: "before" | "after",
+): void {
+  const current = computeCurrentAnalysisRuntimeFingerprint();
+  if (
+    current.buildFingerprint !== policy.buildFingerprint
+    || current.nodeVersion !== policy.runtimeFingerprint.nodeVersion
+    || current.platform !== policy.runtimeFingerprint.platform
+    || current.arch !== policy.runtimeFingerprint.arch
+    || current.typescriptVersion !== policy.runtimeFingerprint.typescriptVersion
+    || current.tsMorphVersion !== policy.runtimeFingerprint.tsMorphVersion
+  ) {
+    throw new CliError(
+      EXIT.validation,
+      `TypeScript revision-shard runtime provenance differs ${phase} extraction`,
+    );
+  }
 }
 
 function analysisRequest(

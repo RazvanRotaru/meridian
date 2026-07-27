@@ -156,13 +156,21 @@ function findImplementation(
     if (declared.length > 0) {
       const candidates = declared
         .filter((member) => member.hasBody && callableCovers(member.shape, contract.shape))
-        .sort((left, right) => candidateRank(left, contract) - candidateRank(right, contract) || left.id.localeCompare(right.id));
+        .sort((left, right) => (
+          candidateRank(left, contract) - candidateRank(right, contract)
+          || compareText(left.id, right.id)
+        ));
       // A declared instance member shadows the base even when it is abstract/incompatible.
       return candidates[0] ?? null;
     }
     current = classBase.get(current);
   }
   return null;
+}
+
+/** Locale-independent UTF-16 ordering keeps graph semantics stable across worker environments. */
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /** The implementation must accept every argument count admitted by the contract. */

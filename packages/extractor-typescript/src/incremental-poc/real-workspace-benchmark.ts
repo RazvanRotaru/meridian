@@ -1,15 +1,19 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
 import { extractRevisionWithCache } from "./extract-revision";
+import {
+  loadBenchmarkSupplementalFiles,
+  parseRealWorkspaceBenchmarkArguments,
+} from "./real-workspace-benchmark-input";
 
-const [rootInput, treeOid, cacheDirInput, benchmarkVersion = "local-source"] =
-  process.argv.slice(2);
-
-if (rootInput === undefined || treeOid === undefined || cacheDirInput === undefined) {
-  throw new Error(
-    "usage: tsx real-workspace-benchmark.ts <root> <tree-oid> <cache-dir> [benchmark-version]",
-  );
-}
+const {
+  rootInput,
+  treeOid,
+  cacheDirInput,
+  benchmarkVersion,
+  supplementalFilesJsonPath,
+} = parseRealWorkspaceBenchmarkArguments(process.argv.slice(2));
+const supplementalFiles = loadBenchmarkSupplementalFiles(supplementalFilesJsonPath);
 
 const root = resolve(rootInput);
 const cacheDir = resolve(cacheDirInput);
@@ -25,7 +29,9 @@ const analysisPolicyVersion = createHash("sha256")
   .digest("hex");
 
 process.stderr.write(
-  `extracting ${treeOid} from ${root} with cache ${cacheDir} in process ${process.pid}\n`,
+  `extracting ${treeOid} from ${root} with cache ${cacheDir} in process ${process.pid}; `
+  + `${supplementalFiles.paths.length} supplemental files `
+  + `(${supplementalFiles.digest})\n`,
 );
 
 const run = await extractRevisionWithCache({
@@ -34,6 +40,10 @@ const run = await extractRevisionWithCache({
   cacheDir,
   extractorVersion: `real-workspace-benchmark:${benchmarkVersion}`,
   analysisPolicyVersion,
+  measureCacheBytes: true,
+  ...(supplementalFiles.paths.length === 0
+    ? {}
+    : { supplementalFiles: [...supplementalFiles.paths] }),
   options: {
     depth: "function",
     includeExternal: true,
@@ -62,6 +72,11 @@ process.stdout.write(`${JSON.stringify({
   treeOid,
   cacheDir,
   benchmarkVersion,
+  supplementalFiles: {
+    sourcePath: supplementalFiles.sourcePath,
+    count: supplementalFiles.paths.length,
+    digest: supplementalFiles.digest,
+  },
   normalizedResultDigest: run.manifest.normalizedResultDigest,
   manifestPath: run.manifestPath,
   metrics: run.metrics,

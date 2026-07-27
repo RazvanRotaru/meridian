@@ -9,6 +9,13 @@ import { runWeb, type WebOptions } from "./web";
 
 vi.mock("./view", () => ({ runView: vi.fn() }));
 
+const typeScriptIncrementalModes = [
+  "empty",
+  "shadow",
+  "admitted",
+  "verified-experimental",
+] as const;
+
 describe("web launcher", () => {
   const roots: string[] = [];
 
@@ -37,4 +44,47 @@ describe("web launcher", () => {
 
     expect(runView).toHaveBeenCalledWith("graph.json", options);
   });
+
+  it.each([
+    ...typeScriptIncrementalModes.map((mode) => ({
+      name: `TypeScript incremental ${mode}`,
+      options: { typescriptIncremental: mode },
+      flag: `--typescript-incremental ${mode}`,
+    })),
+    {
+      name: "cross-PR revision artifacts",
+      options: { experimentalPrRevisionCache: true },
+      flag: "--experimental-pr-revision-cache",
+    },
+  ])("rejects $name on a non-loopback host", async ({ options, flag }) => {
+    await expect(runWeb(undefined, {
+      cwd: process.cwd(),
+      host: "0.0.0.0",
+      port: 4180,
+      open: false,
+      ...options,
+    })).rejects.toThrow(`${flag} requires a loopback --host`);
+  });
+
+  it.each(typeScriptIncrementalModes)(
+    "accepts TypeScript incremental %s on a loopback host",
+    async (typescriptIncremental) => {
+      const root = mkdtempSync(join(tmpdir(), "meridian-web-incremental-loopback-"));
+      roots.push(root);
+      const graph = join(root, "graph.json");
+      writeFileSync(graph, "{}", "utf8");
+      vi.mocked(runView).mockResolvedValue();
+      const options: WebOptions = {
+        cwd: root,
+        host: "127.0.0.1",
+        port: 4180,
+        open: false,
+        typescriptIncremental,
+      };
+
+      await runWeb("graph.json", options);
+
+      expect(runView).toHaveBeenCalledWith("graph.json", options);
+    },
+  );
 });

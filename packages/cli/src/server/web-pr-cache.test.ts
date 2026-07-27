@@ -264,6 +264,69 @@ describe("persistent PR graph artifact paths", () => {
     expect(repositories.acquirePreparedCalls).toHaveLength(1);
   });
 
+  it("keeps cross-pair revision reuse disabled unless the server opts in", async () => {
+    const repositoryAnalysis = vi.fn(runRepositoryAnalysisChildInProcess);
+    const firstStages: string[] = [];
+    const first = await generate(
+      false,
+      BODY,
+      firstStages,
+      SOURCE,
+      repositoryAnalysis,
+      undefined,
+      undefined,
+      false,
+    );
+    const siblingStages: string[] = [];
+    const sibling = await generate(
+      false,
+      SECOND_BODY,
+      siblingStages,
+      SOURCE,
+      repositoryAnalysis,
+      undefined,
+      undefined,
+      false,
+    );
+
+    expect(first.cache).toBe("miss");
+    expect(sibling.cache).toBe("miss");
+    expect(first.comparisonMaterial.path).not.toBe(sibling.comparisonMaterial.path);
+    expect(firstStages).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base",
+    ]);
+    expect(siblingStages).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base",
+    ]);
+    expect(repositoryAnalysis).toHaveBeenCalledTimes(4);
+  });
+
+  it("does not traverse an older shared pair snapshot after the server disables the feature", async () => {
+    const repositoryAnalysis = vi.fn(runRepositoryAnalysisChildInProcess);
+    const shared = await generate(false, BODY, [], SOURCE, repositoryAnalysis);
+    const localStages: string[] = [];
+    const local = await generate(
+      false,
+      BODY,
+      localStages,
+      SOURCE,
+      repositoryAnalysis,
+      undefined,
+      undefined,
+      false,
+    );
+
+    expect(shared.artifactMaterial.path).toContain(join("pr-revision-artifacts", "objects"));
+    expect(local.cache).toBe("miss");
+    expect(local.artifactMaterial.path).toContain(`${join("pr-artifacts", "")}`);
+    expect(local.artifactMaterial.path).toContain(`${join("snapshots", "")}`);
+    expect(local.artifactMaterial.path).not.toContain("pr-revision-artifacts");
+    expect(localStages).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base",
+    ]);
+    expect(repositoryAnalysis).toHaveBeenCalledTimes(4);
+  });
+
   it("injects server-owned shard policy for both exact PR roots without reading it from the PR body", async () => {
     const treeOid = "e".repeat(64);
     vi.mocked(runGit).mockImplementation(async (args, options) => {
@@ -271,7 +334,8 @@ describe("persistent PR graph artifact paths", () => {
         return `${BASE_SHA}\trefs/heads/main\n${HEAD_SHA}\trefs/pull/41/head\n`;
       }
       if (args[0] === "rev-parse") {
-        return `${options.cwd}\n${treeOid}\n`;
+        const commit = basename(options.cwd) === "head" ? HEAD_SHA : MERGE_BASE_SHA;
+        return `${options.cwd}\n${commit}\n${treeOid}\n`;
       }
       return "";
     });
@@ -292,6 +356,10 @@ describe("persistent PR graph artifact paths", () => {
       expect(options.typeScriptRevisionShards).toMatchObject({
         version: 1,
         mode: "shadow",
+        admission: expect.objectContaining({
+          kind: "signer",
+          keyId: expect.stringMatching(/^[a-f0-9]{64}$/),
+        }),
         cacheDir: join(cacheRoot, "typescript-revision-shards-v1", "shadow-admitted"),
         treeOid,
         buildFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/),
@@ -550,7 +618,8 @@ function generate(
   source: typeof SOURCE | (typeof SOURCE & { subdir: string }) = SOURCE,
   repositoryAnalysis: typeof runRepositoryAnalysisChildInProcess = runRepositoryAnalysisChildInProcess,
   runAnalysis: PhaseAdmission = async (work) => work(new AbortController().signal),
-  typeScriptRevisionShardMode?: "empty" | "shadow" | "verified-experimental",
+  typeScriptRevisionShardMode?: "empty" | "shadow" | "admitted" | "verified-experimental",
+  experimentalPrRevisionCache = true,
 ) {
   return cachedPrGraph({
     cacheRoot,
@@ -563,6 +632,7 @@ function generate(
     runPreparation: async (work) => work(new AbortController().signal),
     runAnalysis,
     typeScriptRevisionShardMode,
+    experimentalPrRevisionCache,
     repositoryAnalysis,
   });
 }

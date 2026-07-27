@@ -72,6 +72,7 @@ import { WebRepositoryMirror, type RepositoryMirror } from "./web-repository-mir
 import type { RepositoryRetentionOptions } from "./web-repository-retention";
 import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript";
+import { startTypeScriptRevisionShardRetentionScheduler } from "./web-typescript-revision-shard-retention-scheduler";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -95,6 +96,8 @@ export interface WebServerConfig {
   refreshCache?: boolean;
   /** Explicit server-owned opt-in for revision-safe TypeScript shards during PR analysis. */
   typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
+  /** Loopback-only opt-in for sharing exact populated revision artifacts across PR pairs. */
+  experimentalPrRevisionCache?: boolean;
   /** Explicit opt-in; individual graph ids are still restricted to local `kind:path` sources. */
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
@@ -121,6 +124,8 @@ export interface WebServerConfig {
   onRepositoryRetentionError?: (error: unknown) => void;
   /** Optional process-private graph-registry cleanup diagnostic sink. */
   onGraphRetentionError?: (error: unknown) => void;
+  /** Optional revision-shard cleanup diagnostic sink. */
+  onTypeScriptRevisionShardRetentionError?: (error: unknown) => void;
 }
 
 export interface Context {
@@ -141,6 +146,7 @@ export interface Context {
   cacheRoot: string;
   refreshCache: boolean;
   typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
+  experimentalPrRevisionCache?: boolean;
   rendererIndex: string;
   landingHtml: string;
   staticAssets: StaticAssets;
@@ -192,6 +198,13 @@ export function createWebService(config: WebServerConfig): WebService {
     throw error;
   }
   let ctx!: Context;
+  const shardRetention = config.typeScriptRevisionShardMode === "shadow"
+    || config.typeScriptRevisionShardMode === "admitted"
+    ? startTypeScriptRevisionShardRetentionScheduler({
+        cacheRoot,
+        onError: config.onTypeScriptRevisionShardRetentionError,
+      })
+    : undefined;
   const service = createHttpService({
     handle: (request, response) => handle(ctx, request, response),
     handleError: (response, error) => sendError(response, error),
@@ -204,6 +217,7 @@ export function createWebService(config: WebServerConfig): WebService {
     beginShutdown: [
       () => analysisCoordinator.close(),
       () => repositories.close(),
+      () => shardRetention?.close(),
     ],
     finishShutdown: () => {
       ctx.prFilesCache.clear();
@@ -254,6 +268,7 @@ function buildContext(
     cacheRoot,
     refreshCache: config.refreshCache === true,
     typeScriptRevisionShardMode: config.typeScriptRevisionShardMode,
+    experimentalPrRevisionCache: config.experimentalPrRevisionCache === true,
     rendererIndex: staticContext.rendererIndex,
     landingHtml: staticContext.landingHtml,
     // Stray routes fall back to the front door rather than the renderer shell.

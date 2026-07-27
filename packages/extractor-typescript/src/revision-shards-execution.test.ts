@@ -1,16 +1,24 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ExtractionProgress, ExtractionResult } from "@meridian/core";
 import { extractRevisionDifferential } from "./incremental-poc/differential-revision";
-import { extractRevisionWithCache } from "./incremental-poc/extract-revision";
-import { extractTypeScriptRevisionWithPolicy } from "./revision-shards";
+import {
+  extractRevisionCandidate,
+  extractRevisionWithCache,
+} from "./incremental-poc/extract-revision";
+import {
+  extractTypeScriptRevisionWithPolicy,
+  type TypeScriptRevisionShardPolicy,
+} from "./revision-shards";
 
 vi.mock("./incremental-poc/differential-revision", () => ({
   extractRevisionDifferential: vi.fn(),
 }));
 vi.mock("./incremental-poc/extract-revision", () => ({
+  extractRevisionCandidate: vi.fn(),
   extractRevisionWithCache: vi.fn(),
 }));
 
@@ -63,6 +71,22 @@ describe("TypeScript revision-shard execution modes", () => {
     expect(extractRevisionWithCache).not.toHaveBeenCalled();
   });
 
+  it("serves admitted shards plus canonical misses without publishing", async () => {
+    vi.mocked(extractRevisionCandidate).mockResolvedValue({ result: INCREMENTAL } as never);
+
+    await expect(extractTypeScriptRevisionWithPolicy(
+      { root: "/repo" },
+      shardPolicy("admitted"),
+    )).resolves.toBe(INCREMENTAL);
+
+    expect(extractRevisionCandidate).toHaveBeenCalledWith(
+      expect.objectContaining({ root: "/repo" }),
+      { requiredAdmission: expect.objectContaining({ kind: "verifier" }) },
+    );
+    expect(extractRevisionDifferential).not.toHaveBeenCalled();
+    expect(extractRevisionWithCache).not.toHaveBeenCalled();
+  });
+
   it("runs the same shard pipeline against a disposable empty cache", async () => {
     const owner = mkdtempSync(join(tmpdir(), "meridian-shard-mode-test-"));
     roots.push(owner);
@@ -80,9 +104,10 @@ describe("TypeScript revision-shard execution modes", () => {
 });
 
 function shardPolicy(
-  mode: "empty" | "shadow" | "verified-experimental",
+  mode: "empty" | "shadow" | "admitted" | "verified-experimental",
   cacheDir = "/cache/typescript-revision-shards-v1",
-) {
+): TypeScriptRevisionShardPolicy {
+  const authority = admissionAuthority();
   return {
     version: 1 as const,
     mode,
@@ -90,12 +115,39 @@ function shardPolicy(
     treeOid: "a".repeat(40),
     buildFingerprint: "b".repeat(64),
     analysisPolicyFingerprint: "c".repeat(64),
+    admission: mode === "shadow"
+      ? authority.signer
+      : mode === "admitted"
+        ? authority.verifier
+        : null,
     runtimeFingerprint: {
       nodeVersion: "v26.0.0",
       platform: "linux",
       arch: "x64",
       typescriptVersion: "6.0.3",
       tsMorphVersion: "28.0.0",
+    },
+  };
+}
+
+function admissionAuthority() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  const keyId = createHash("sha256").update(publicDer).digest("hex");
+  return {
+    signer: {
+      version: 1 as const,
+      kind: "signer" as const,
+      keyId,
+      publicKeySpki: publicDer.toString("base64"),
+      privateKeyPkcs8: (privateKey.export({ format: "der", type: "pkcs8" }) as Buffer)
+        .toString("base64"),
+    },
+    verifier: {
+      version: 1 as const,
+      kind: "verifier" as const,
+      keyId,
+      publicKeySpki: publicDer.toString("base64"),
     },
   };
 }

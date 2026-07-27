@@ -1,5 +1,12 @@
 /** Strict, bounded messages for the disposable repository-analysis process. */
 
+import {
+  createHash,
+  createPrivateKey,
+  createPublicKey,
+  sign,
+  verify,
+} from "node:crypto";
 import { isAbsolute } from "node:path";
 import {
   SCHEMA_VERSION,
@@ -13,7 +20,12 @@ import {
   type LanguageExtractor,
   type Target,
 } from "@meridian/core";
-import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
+import type {
+  RevisionShardAdmissionCapability,
+  RevisionShardAdmissionSigner,
+  TypeScriptRevisionShardMode,
+  TypeScriptRevisionShardPolicy,
+} from "@meridian/extractor-typescript";
 import { CliError, EXIT, type ExitCode } from "../errors";
 import type { RepositoryAnalysisRequest } from "../repository-analysis-contract";
 import type { WebGraphArtifactSummary } from "./web-graph-store";
@@ -271,10 +283,15 @@ export function isRepositoryAnalysisWorkerRequest(
     && (value.branch === null || isBoundedNonEmptyString(value.branch));
 }
 
+/**
+ * Mirror the extractor's policy envelope at the private IPC boundary without evaluating the
+ * extractor package in the long-lived web process. The worker validates it again before use.
+ */
 function isTypeScriptRevisionShardPolicy(
   value: unknown,
 ): value is TypeScriptRevisionShardPolicy {
   if (!isRecord(value) || !hasExactKeys(value, [
+    "admission",
     "analysisPolicyFingerprint",
     "buildFingerprint",
     "cacheDir",
@@ -290,29 +307,117 @@ function isTypeScriptRevisionShardPolicy(
     "tsMorphVersion",
     "typescriptVersion",
   ])) return false;
-  return value.version === 1
-    && (value.mode === "empty"
-      || value.mode === "shadow"
-      || value.mode === "verified-experimental")
-    && isAbsolute(asString(value.cacheDir))
-    && Buffer.byteLength(value.cacheDir as string) <= MAX_PATH_BYTES
-    && typeof value.treeOid === "string"
-    && GIT_TREE_OID.test(value.treeOid)
-    && typeof value.buildFingerprint === "string"
-    && SHA256.test(value.buildFingerprint)
-    && typeof value.analysisPolicyFingerprint === "string"
-    && SHA256.test(value.analysisPolicyFingerprint)
-    && [
-      value.runtimeFingerprint.nodeVersion,
-      value.runtimeFingerprint.platform,
-      value.runtimeFingerprint.arch,
-      value.runtimeFingerprint.typescriptVersion,
-      value.runtimeFingerprint.tsMorphVersion,
-    ].every((part) => (
-      typeof part === "string"
-      && part.length > 0
-      && Buffer.byteLength(part) <= 128
-    ));
+  if (
+    value.version !== 1
+    || !isTypeScriptRevisionShardMode(value.mode)
+    || !isAbsolute(asString(value.cacheDir))
+    || Buffer.byteLength(value.cacheDir as string) > MAX_PATH_BYTES
+    || typeof value.treeOid !== "string"
+    || !GIT_TREE_OID.test(value.treeOid)
+    || typeof value.buildFingerprint !== "string"
+    || !SHA256.test(value.buildFingerprint)
+    || typeof value.analysisPolicyFingerprint !== "string"
+    || !SHA256.test(value.analysisPolicyFingerprint)
+    || !isModeAdmission(value.mode, value.admission)
+  ) {
+    return false;
+  }
+  return [
+    value.runtimeFingerprint.nodeVersion,
+    value.runtimeFingerprint.platform,
+    value.runtimeFingerprint.arch,
+    value.runtimeFingerprint.typescriptVersion,
+    value.runtimeFingerprint.tsMorphVersion,
+  ].every((part) => (
+    typeof part === "string"
+    && part.length > 0
+    && Buffer.byteLength(part) <= 128
+  ));
+}
+
+function isTypeScriptRevisionShardMode(value: unknown): value is TypeScriptRevisionShardMode {
+  return value === "empty"
+    || value === "shadow"
+    || value === "admitted"
+    || value === "verified-experimental";
+}
+
+function isModeAdmission(
+  mode: TypeScriptRevisionShardMode,
+  value: unknown,
+): value is RevisionShardAdmissionCapability | null {
+  if (mode === "shadow") {
+    return isRevisionShardAdmissionCapability(value) && value.kind === "signer";
+  }
+  if (mode === "admitted") {
+    return isRevisionShardAdmissionCapability(value) && value.kind === "verifier";
+  }
+  return value === null;
+}
+
+function isRevisionShardAdmissionCapability(
+  value: unknown,
+): value is RevisionShardAdmissionCapability {
+  if (!isRecord(value) || (value.kind !== "signer" && value.kind !== "verifier")) {
+    return false;
+  }
+  const expectedKeys = value.kind === "signer"
+    ? ["keyId", "kind", "privateKeyPkcs8", "publicKeySpki", "version"]
+    : ["keyId", "kind", "publicKeySpki", "version"];
+  if (
+    !hasExactKeys(value, expectedKeys)
+    || value.version !== 1
+    || typeof value.keyId !== "string"
+    || !SHA256.test(value.keyId)
+    || typeof value.publicKeySpki !== "string"
+  ) {
+    return false;
+  }
+  const publicDer = canonicalBase64(value.publicKeySpki);
+  if (publicDer === null || publicDer.byteLength > 1024) return false;
+  try {
+    const publicKey = createPublicKey({ key: publicDer, format: "der", type: "spki" });
+    if (
+      publicKey.asymmetricKeyType !== "ed25519"
+      || createHash("sha256").update(publicDer).digest("hex") !== value.keyId
+    ) {
+      return false;
+    }
+    if (value.kind === "signer") {
+      return isMatchingAdmissionSigner(value as unknown as RevisionShardAdmissionSigner, publicKey);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isMatchingAdmissionSigner(
+  signer: RevisionShardAdmissionSigner,
+  publicKey: ReturnType<typeof createPublicKey>,
+): boolean {
+  const privateDer = canonicalBase64(signer.privateKeyPkcs8);
+  if (privateDer === null || privateDer.byteLength > 2048) return false;
+  try {
+    const privateKey = createPrivateKey({ key: privateDer, format: "der", type: "pkcs8" });
+    const proof = Buffer.from("meridian.typescript-revision-shard-admission.keypair.v1", "utf8");
+    return privateKey.asymmetricKeyType === "ed25519"
+      && verify(null, proof, publicKey, sign(null, proof, privateKey));
+  } catch {
+    return false;
+  }
+}
+
+function canonicalBase64(value: string): Buffer | null {
+  if (
+    value.length === 0
+    || value.length > 4096
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)
+  ) {
+    return null;
+  }
+  const bytes = Buffer.from(value, "base64");
+  return bytes.toString("base64") === value ? bytes : null;
 }
 
 function isReviewFingerprintSelection(value: unknown): value is ReviewFingerprintSelection | null {

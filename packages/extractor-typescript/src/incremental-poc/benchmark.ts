@@ -17,7 +17,7 @@ import {
 const fixture = createGitMonorepoFixture();
 try {
   const requestPath = join(dirname(fixture.cacheDir), "benchmark-request.json");
-  const baselineRequest = fixtureRequest(fixture, fixture.seedRevision);
+  const baselineRequest = fixtureRequest(fixture, fixture.seedRevision, fixture.cacheDir, true);
   const cold = runWorker(requestPath, baselineRequest);
   const warm = runWorker(requestPath, baselineRequest);
   requireSameDigest("baseline", warm, cold);
@@ -29,7 +29,7 @@ try {
     "normalizeOrder(normalizeOrder(raw))",
   );
   const headARevision = fixture.commit("benchmark head a");
-  const headARequest = fixtureRequest(fixture, headARevision);
+  const headARequest = fixtureRequest(fixture, headARevision, fixture.cacheDir, true);
   const headA = runWorker(requestPath, headARequest);
   const headACold = runWorker(requestPath, {
     ...headARequest,
@@ -40,7 +40,7 @@ try {
   fixture.checkoutExact(fixture.seedRevision);
   replaceInFixture(fixture, "packages/provider/src/normalize.ts", "toUpperCase()", "toLowerCase()");
   const headBRevision = fixture.commit("benchmark head b");
-  const headBRequest = fixtureRequest(fixture, headBRevision);
+  const headBRequest = fixtureRequest(fixture, headBRevision, fixture.cacheDir, true);
   const headB = runWorker(requestPath, headBRequest);
   const headBCold = runWorker(requestPath, {
     ...headBRequest,

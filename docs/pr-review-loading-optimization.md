@@ -2,16 +2,13 @@
 
 Status: **implemented and validated locally; revise before production admission**  
 Baseline inspected before implementation: `origin/main`
-`44cb54a29d03e28f9971e7f1902bc28a8200a7f4` (2026-07-23)
+`72c38728cc5d6bb2bef98899ff82546f400b54f7` (2026-07-24)
 
 This note is intentionally separate from the TypeScript incremental-extraction POC. This change
-reuses a complete, immutable graph for an exact comparison revision; it does not yet admit
-per-package shards into PR serving.
-
-During final validation `origin/main` advanced to
-`49724ad3a8b1ba61e67685d28542c70d021b3134` (“Make graph registry capacity a soft target”).
-That commit's graph-retention changes were forward-ported into the dirty POC worktree without
-resetting or discarding the validated changes.
+can reuse a complete immutable graph for an exact revision. The per-package TypeScript shard
+pipeline is now available inside exact PR extraction only through explicit server-owned
+`empty`, `shadow`, `admitted`, or `verified-experimental` modes; it does not change the whole-graph
+pair/revision cache's lifecycle or make either cache a production default.
 
 ## Current-main diagnosis
 
@@ -37,7 +34,7 @@ selected PR snapshot
   -> resolve exact remote HEAD and base; reject if selected HEAD already moved
   -> run the ordinary PR pair pipeline
        exact HEAD artifact
-       exact merge-base artifact (extract or verified revision-cache hit)
+       exact merge-base artifact (extract, or experimental verified revision-cache hit)
   -> publish/register the immutable pair
   -> navigate to /view?id=<HEAD graph id>&prn=<number>&rev=1
   -> boot and index that exact HEAD artifact
@@ -60,7 +57,13 @@ load/swap path. Graph-view leases cover the pair before either new artifact is i
 
 ## Canonical revision caches
 
-Two strict immutable roles are eligible:
+The cross-pair whole-revision cache is now separately gated by
+`--experimental-pr-revision-cache`. It is off by default, may be enabled only on a loopback host,
+and cannot be selected by an HTTP request. With the flag off, new pair snapshots keep both artifacts
+pair-local, and the read path rejects an older pair snapshot that contains shared-revision
+references rather than silently traversing an earlier experimental store.
+
+When that flag is explicitly enabled, two strict immutable roles are eligible:
 
 - A normal, populated comparison revision is branch-neutral: `changedSince: null`, no empty-side
   hints, and complete review fingerprints (`mode: "all"`).
@@ -75,7 +78,7 @@ can reference the same verified immutable HEAD bytes without running analysis ag
 that requires empty-side hints remains pair-local. A populated comparison for a whole-subtree
 deletion can still be canonical and shared; a materialized empty side cannot.
 
-The version-1 input identity is SHA-256-addressed over:
+The version-2 input identity is SHA-256-addressed over:
 
 - repository key and normalized remote URL;
 - exact role-specific commits (comparison commit, or HEAD plus merge-base), target name, HEAD
@@ -103,15 +106,15 @@ returning a file-backed artifact.
 | Analysis policy or analysis/schema/generator/fingerprint/cache version changes | Different input identity; extract |
 | Explicit cache refresh | Bypass the shared read and publish a new immutable result |
 | Missing, malformed, mismatched, or corrupt pointer/metadata/artifact bytes | Fail closed to extraction |
-| Populated sibling PRs with the same complete identity in one server process | Reuse the verified merge-base artifact |
+| Populated sibling PRs with the same complete identity in one server process and the experimental flag enabled | Reuse the verified merge-base artifact |
 | Server restart, including an otherwise identical build and environment | New process nonce; extract |
 | Hinted or materialized empty-side artifact | Never admitted to this shared cache |
 
-Cold and warm use one canonical pipeline. A cold miss calls the ordinary comparison extractor with
-the canonical inputs and publishes its exact bytes; a warm hit returns those same bytes only after
-verification. No prior `GraphArtifact` is patched or semantically restamped. The cold extractor
-therefore remains the semantic oracle, while the warm path is byte-preserving reuse of one of its
-published results.
+Cold and warm use one canonical pipeline. With the experimental flag enabled, a cold miss calls the
+ordinary comparison extractor with the canonical inputs and publishes its exact bytes; a warm hit
+returns those same bytes only after verification. No prior `GraphArtifact` is patched or
+semantically restamped. The cold extractor therefore remains the semantic oracle, while the warm
+path is byte-preserving reuse of one of its published results.
 
 ## Visible progress
 
@@ -140,7 +143,14 @@ and do not participate in cache identity.
 
 ## Known limits
 
-- Immutable revision objects and input entries have no garbage collector yet.
+- `pr-artifacts` pair snapshots and opt-in `pr-revision-artifacts` objects/input entries have no
+  quota, idle policy, retention scheduler, or garbage collector. This is separate from the bounded
+  TypeScript `shadow-admitted` shard namespace.
+- Pair/revision cache reads return a verified file path but do not acquire an artifact-byte lease.
+  Exact RepositoryMirror source workspaces remain lease-protected through graph publication, and
+  `WebGraphStore` copies graph bytes into its process-private store, but a future persistent-cache
+  sweeper could otherwise delete a verified artifact between verification and that copy. Retention
+  must ship with a cross-process byte handoff lease or equivalent atomic ownership boundary.
 - There is no cross-pair in-flight singleflight for a first-time revision miss. Concurrent sibling
   requests can duplicate HEAD or comparison extraction; immutable publication and verification
   preserve correctness.
@@ -154,8 +164,9 @@ and do not participate in cache identity.
   reuse persisted PR artifacts after restart.
 - A new process nonce makes old pair and revision entries unreachable, while those immutable
   entries currently have no garbage collector. Repeated server restarts therefore duplicate disk
-  use. Keep this cache experimental or isolate it behind bounded ephemeral retention until quota,
-  age, and reference-aware cleanup exist.
+  use. The TypeScript admission authority is stable across restarts, but that does not make these
+  whole-artifact identities reusable. Keep cross-pair whole-artifact reuse loopback-only and
+  experimental until quota, age, reference-aware cleanup, and byte leases exist.
 - This cache is whole-artifact reuse, not the incremental TypeScript shard POC. Any future semantic
   input is not assumed to be covered by the deterministic digest. Python interpreter/package
   state, Git implementation/configuration, filesystem behavior, and the full transitive analysis
@@ -163,8 +174,8 @@ and do not participate in cache identity.
   that provenance remains incomplete.
 - An external interpreter, dependency, or Git configuration mutated while the same server process
   remains alive is not detected. Operational validation must restart the server after such changes.
-- No production PR-serving rollout, admission policy, operational cache sizing, or eviction policy
-  is decided by this implementation.
+- No production PR-serving rollout, whole-artifact admission policy, operational sizing, or
+  eviction policy is decided by this implementation.
 
 ## Validation
 
@@ -176,34 +187,47 @@ Recorded commands and outcomes:
 | From `packages/cli`: `./node_modules/.bin/vitest run src/server/web-pr-cache.test.ts --pool=forks --maxWorkers=1` | 1 file, 9 tests passed |
 | `pnpm --filter @meridian/cli exec vitest run src/server/web-pr-analyze.test.ts` | 1 file, 41 tests passed in 1.07 s |
 | `pnpm --filter @meridian/cli exec vitest run src/server/web-server.test.ts` | 1 file, 27 tests passed in 4.26 s with localhost sandbox escalation |
-| `pnpm --filter @meridian/cli exec vitest run --exclude src/server/folder-dialog.test.ts --testTimeout=30000` | 67 files, 652 passed and 3 skipped |
+| `pnpm --filter @meridian/cli exec vitest run --exclude src/server/folder-dialog.test.ts --testTimeout=30000` | 72 files, 748 passed and 3 skipped |
 | `pnpm --filter @meridian/cli exec vitest run src/server/folder-dialog.test.ts --testTimeout=30000` | 1 file, 5 tests passed |
-| Focused incremental policy/worker/cache suites | 4 files, 31 tests passed |
-| `pnpm --filter @meridian/core test` | 23 files, 204 tests passed |
-| `pnpm --filter @meridian/extractor-typescript test` | 35 files, 280 tests passed |
+| Focused exact differential/admitted-reuse/file-parity suites | 3 files, 24 tests passed |
+| Focused worker/runtime/shard-policy suites | 4 files, 38 tests passed |
+| Focused CLI authority/global-lock/retention/scheduler suites | 4 files, 39 tests passed |
+| Focused CLI mode/default-off PR-cache suites | 3 files, 22 tests passed |
+| `pnpm --filter @meridian/core test` | 23 files, 205 tests passed |
+| `pnpm --filter @meridian/extractor-typescript test` | 39 files, 316 tests passed |
 | `pnpm --filter @meridian/extractor-python test` | 9 files, 54 tests passed |
+| `pnpm --filter @meridian/extractor-typescript typecheck` | Passed |
 | `pnpm --filter @meridian/cli typecheck` | Passed |
 | Focused renderer boot/navigation/PR suites | 7 files, 139 tests passed |
 | `pnpm --filter @meridian/renderer typecheck` | Passed |
-| `pnpm --filter @meridian/renderer test` | 234 files, 2,108 tests passed |
+| `pnpm --filter @meridian/renderer test` | 236 files, 2,204 tests passed |
 | `pnpm --filter @meridian/cli exec vitest run --config vitest.e2e.config.ts e2e/pr-review-progress-layout.e2e.ts` | 1 file, 2 headless-browser geometry tests passed; short, pictured, maximum unbroken, and reused states retained the same reserved geometry with no horizontal overflow |
 | `pnpm typecheck` | All 6 workspace packages passed |
 | `pnpm build` | All package builds and renderer copy passed; existing renderer large-chunk warning remains |
 | `git diff --check` | Passed |
 
+The focused hardened suites, complete extractor and partitioned CLI suites, all workspace
+typechecks, browser geometry E2E, build, and final Autopilot runtime matrix were rerun against the
+frozen current worktree. Core, Python, and renderer full-suite rows are the preceding unchanged-
+package gate.
+
 Sandboxed CLI/E2E attempts could not bind loopback listeners (`EPERM`). Running the complete CLI
 suite and focused browser suite with localhost permission produced the passing results above; the
 sandbox failures were environmental, not assertion failures.
 
-The first full TypeScript run had one process-sharing fixture exceed its former 20-second
-per-test timeout under suite contention (24.6 seconds). The exact test passed alone in 7.2 seconds
-and the complete retry passed; its fixture timeout is now 30 seconds. No product timeout changed.
+The unpartitioned CLI pool twice had only the folder-dialog child-start fixture miss its fixed
+2-second deadline. It passed alone in 0.36 seconds; all other 72 files passed together with a
+30-second test timeout. No product timeout changed.
 
 Focused coverage includes direct preparation, selected-HEAD movement rejection, live ref
 revalidation, exact-ID boot HEAD/index reuse with no second HEAD artifact/metadata fetch, moved-ID
 replacement, sibling merge-base reuse, refresh bypass, corruption fallback, subdirectory
 separation, stage streaming, landing-page routing without `/api/generate`, and cancellation of an
-accepted Back navigation during initial review restoration.
+accepted Back navigation during initial review restoration. The hardened suites additionally cover
+default-off shared-reference rejection, Ed25519 receipt forgery/key rotation/pre-receipt misses,
+admitted non-publication and shadow repair, authority persistence/permissions, exact active-workspace
+lease matching, global-lock fencing/recovery/host isolation, bounded cache reads/enumeration,
+orphan/idle/LRU retention, no-follow quarantine, and scheduler shutdown.
 
 ## Runtime results
 
@@ -213,6 +237,11 @@ Environment: macOS arm64, Node 26.2.0, persistent server
 and was closed; before the measured run, both `pr-artifacts` and `pr-revision-artifacts` contained
 zero files. The Git mirror and unrelated generic artifact cache were warm, so this is a cold PR
 pair/revision extraction, not a cold network clone.
+
+These whole-revision reuse measurements predate the final default-off split. Reproducing sibling
+HEAD/merge-base reuse now requires the explicit loopback-only
+`--experimental-pr-revision-cache` flag; they are performance evidence for the experiment, not the
+default server behavior or a production-readiness claim.
 
 The live fixtures were open PRs in `RazvanRotaru/meridian`:
 
@@ -418,41 +447,99 @@ second browser-selected PR after the final rebuild.
 ### Revision-shard follow-up
 
 The revision-safe TypeScript POC is now connected behind the server-owned
-`--typescript-incremental empty|shadow|verified-experimental` option; it remains disabled by
-default. The client cannot choose the cache directory, tree, build/runtime fingerprint, or policy.
-Shadow mode compares against the same pipeline with a new empty cache and serves the cold result.
-No production cache admission or default serving behavior changed.
+`--typescript-incremental empty|shadow|admitted|verified-experimental` option; it remains disabled
+by default. The client cannot choose the cache directory, tree, build/runtime fingerprint, policy,
+or admission authority.
+
+- `empty` exercises the same pipeline in a disposable cache.
+- `shadow` uses a host-local Ed25519 signer, writes canonical semantic evidence one category at a
+  time, stages immutable shard bytes without making them reusable, releases the incremental graph,
+  and literally compares the evidence plus each staged shard envelope with an empty-cache oracle.
+  It serves the cold result, and the sole parity-enforcing publication API only then publishes
+  admission receipts plus the revision manifest that make those exact staged shards reusable.
+- `admitted` receives only the public verifier, reuses exact receipt-authenticated shards, computes
+  canonical misses, and does not publish those misses.
+- `verified-experimental` reads/writes its direct cache without an oracle receipt and remains a
+  loopback-only performance mode outside the safety claim.
+
+`shadow` and `admitted` require the canonical Git root and HEAD commit to match an active exact
+RepositoryMirror workspace lease. They share one namespace and a fenced host-local global build
+lock, so separate Meridian processes cannot concurrently build or mutate that admitted cache. A
+separate recovery claim is checked before and after owner establishment; recovery revalidates the
+exact quarantined generation and leaves ambiguous or interrupted recovery fenced for explicit
+repair rather than stealing a replacement.
+Repository subdirectories and materialized empty roots conservatively use the ordinary extractor
+rather than weakening that exact-root ownership proof.
+Retention uses a non-blocking attempt at the same lock and skips an active build. The scheduled
+pass uses 8/6 GiB hysteresis, a 30-day idle limit, a 500,000-entry scan cap, deterministic
+support-before-shard quarantine, no-follow crash-trash cleanup, exact interrupted-publication
+temporary cleanup, and an hourly cadence after the initial delay. Symlink and lookalike temporary
+names remain untouched, and receipt-less failed shadow staging is reclaimed as orphaned. Individual
+reads and candidate enumeration are also size/count bounded. Shadow can
+quarantine and repair corrupt unadmitted data after cold parity; admitted mode treats corruption,
+missing/invalid receipts, and an overloaded candidate set as misses.
+
+Population is deliberately two-step: run an exact revision in `shadow` to establish per-unit cold
+parity and issue receipts, then use `admitted` for that revision or related revisions. New admitted
+misses do not self-promote; a later shadow run must prove and sign them. No production cache
+admission or default serving behavior changed.
 
 On the exact PR #4472 revisions above, the final schema-v6 controlled runs produced:
 
 | Scenario | Total | Unit reuse | Source-byte reuse | Semantic digest |
 |---|---:|---:|---:|---|
-| Merge base cold | 230.9 s | 0/27 | 0% | `24ef0007…` |
-| Merge base warm, new process | 48.8 s | 27/27 | 100% | `24ef0007…` |
-| HEAD using the warm base cache | 203.2 s | 25/28 | 21.8% | `cbe4625e…` |
-| HEAD isolated empty-cache oracle | 283.2 s | 0/28 | 0% | `cbe4625e…` |
-| HEAD warm, new process | 64.0 s | 28/28 | 100% | `cbe4625e…` |
+| Merge base cold | 258.37 s | 0/27 | 0% | `24ef0007…` |
+| Merge base warm, new process | 54.08 s | 27/27 | 100% | `24ef0007…` |
+| HEAD using the warm base cache | 262.09 s | 25/28 | 21.817% | `cbe4625e…` |
+| HEAD isolated empty-cache oracle | 295.76 s | 0/28 | 0% | `cbe4625e…` |
+| HEAD warm, new process | 61.98 s | 28/28 | 100% | `cbe4625e…` |
 
-The cross-revision run and isolated oracle also produced the same manifest address and the same 28
-unit shard keys. The three rebuilt units were the changed 4,528-file app, the iframe package whose
-compiler program observed changed app inputs, and the newly admitted delegate-web package. The
-other 25 existing units reused immutable merge-base contributions.
+The cross-revision run and isolated oracle also produced literal-identical manifest files, the same
+manifest address, the same ordered 28 unit shard keys, and the same semantic digest. The three
+rebuilt units were the changed 4,528-file app, the iframe package whose compiler program observed
+changed app inputs, and the newly admitted delegate-web package. The other 25 existing units reused
+immutable merge-base contributions.
 
-This improves first-time HEAD extraction by 28.3% for this PR and repeat HEAD extraction by 77.4%.
-It does not make the first review instant: the changed app alone contains about 74% of selected
-source bytes. The next performance boundary is a smaller compiler-derived semantic unit inside
-that package, plus a hit path that proves inputs without constructing the full TypeScript Project.
+This improves first-time HEAD extraction by only 11.38% for this PR, while repeat HEAD extraction is
+79.04% faster. It does not make the first review instant: the changed app alone contains about 74%
+of selected source bytes. The next performance boundary is a smaller compiler-derived semantic unit
+inside that package, plus a hit path that proves inputs without constructing the full TypeScript
+Project. Even a 100%-reused warm run currently constructs each short-lived
+`ts-morph`/TypeScript Project to prove its realized program, configuration, and resolution
+fingerprint: the measured warm runs still took 38.9-46.0 seconds of fingerprint work and peaked at
+6.49-6.52 GB maximum RSS. The isolated cold HEAD peaked at 8.07 GB. The global lock bounds
+concurrent memory pressure but does not reduce that per-build cost.
+
+A final real service/browser pass used open Autopilot PR #4472. Forced-refresh `shadow` completed
+both exact revisions and their cold TypeScript oracles in 22m 05s with 988 progress events.
+Forced-refresh `admitted` then completed in 3m 18s with 63 events and no TypeScript
+structure/relationship traversal. After a server restart, normal-policy `admitted` reused the same
+30 unique receipt-authenticated shards in 2m 34s; an exact pair repeat returned only `done`,
+`cache:"hit"` in 1.38s. All runs produced 59,970 nodes and 230,792 edges.
+
+Renderer restoration showed the same five-step model and revision lanes as landing preparation,
+including commit/unit/file/activity progress for TypeScript and Python. The reserved card remained
+stable while long paths and separate semantic traversals changed. It then rendered the complete
+21-file PR graph review with affected flows and submission controls. The final app remains in
+`meridian-app-99f9` on port 4187 using `admitted` without forced refresh.
+
 The complete model, parity matrix, disk/RSS measurements, risks, and production sequence are in
 `docs/revision-safe-incremental-extraction-poc.md`.
 
 ## Recommendation
 
-- **Proceed** with direct selected-PR preparation, exact-ID boot HEAD/index reuse, stage-aware
-  progress, PR-identity-safe Back/Forward resets, and strict process-local populated-HEAD reuse
-  after an unchanged exact merge-base is proven.
-- **Revise before production** for the whole-revision cache. Keep it process-scoped and
-  experimental until cache retention/GC, cross-pair miss singleflight, full external-runtime
-  provenance, and broader controlled concurrency/restart benchmarks are complete.
-- Keep the cold extractor as the semantic oracle. The runtime run proves exact byte-reference reuse
-  for these two revisions; it does not prove arbitrary environment soundness or replace the
-  differential/shadow requirements in the incremental-extraction POC.
+**Revise; do not cut this POC over to production PR serving.**
+
+- Keep direct selected-PR preparation, exact-ID boot HEAD/index reuse, stage-aware progress, and
+  PR-identity-safe Back/Forward resets as separable improvements.
+- Keep cross-pair whole-revision reuse off by default and loopback-only. It still needs bounded
+  retention/GC, a cross-process artifact-byte handoff lease, cross-pair miss singleflight, fuller
+  external-runtime provenance, and controlled concurrency/restart benchmarks.
+- Evaluate TypeScript shards through `shadow`, then explicitly populated `admitted` runs. Receipt
+  authentication, lease-bound Git identity, the global lock, repair/quarantine, and bounded
+  retention materially improve the POC, but warm Project construction, 6-7 GiB RSS, coarse large
+  units, and limited corpus evidence remain.
+- Keep the cold extractor as the semantic oracle. The runtime runs prove exact byte/reference or
+  semantic parity only for the recorded revisions; they do not prove arbitrary environment
+  soundness or authorize graph registration, renderer hydration, cache admission, or PR-serving
+  production wiring.

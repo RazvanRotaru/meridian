@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import {
   requireTypeScriptRevisionShardPolicy,
   typeScriptRevisionShardDecision,
@@ -39,6 +40,7 @@ describe("TypeScript revision-shard policy", () => {
   });
 
   it("rejects mutable refs and incomplete provenance", () => {
+    const admission = admissionSigner();
     const policy = {
       version: 1 as const,
       mode: "shadow" as const,
@@ -46,6 +48,7 @@ describe("TypeScript revision-shard policy", () => {
       treeOid: "a".repeat(40),
       buildFingerprint: "b".repeat(64),
       analysisPolicyFingerprint: "c".repeat(64),
+      admission,
       runtimeFingerprint: {
         nodeVersion: "v26.0.0",
         platform: "linux",
@@ -59,5 +62,22 @@ describe("TypeScript revision-shard policy", () => {
       ...policy,
       treeOid: "main",
     })).toThrow("invalid TypeScript revision-shard policy");
+    expect(() => requireTypeScriptRevisionShardPolicy({
+      ...policy,
+      mode: "admitted",
+    })).toThrow("invalid TypeScript revision-shard policy");
   });
 });
+
+function admissionSigner() {
+  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const publicDer = publicKey.export({ format: "der", type: "spki" }) as Buffer;
+  return {
+    version: 1 as const,
+    kind: "signer" as const,
+    keyId: createHash("sha256").update(publicDer).digest("hex"),
+    publicKeySpki: publicDer.toString("base64"),
+    privateKeyPkcs8: (privateKey.export({ format: "der", type: "pkcs8" }) as Buffer)
+      .toString("base64"),
+  };
+}
