@@ -9,7 +9,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { validateArtifact, type ExtractionResult, type GraphArtifact, type GraphEdge } from "@meridian/core";
+import {
+  validateArtifact,
+  type ExtractionProgress,
+  type ExtractionResult,
+  type GraphArtifact,
+  type GraphEdge,
+} from "@meridian/core";
 import { createPythonExtractor } from "./index";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -47,6 +53,60 @@ function artifactFrom(result: ExtractionResult): GraphArtifact {
 }
 
 describe("PythonExtractor over orders-service-py", () => {
+  it("reports real selected and parsed files without changing graph output", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-pyprogress-"));
+    try {
+      await writeFile(join(root, "a.py"), "def ready():\n    return 1\n");
+      await writeFile(join(root, "b.py"), "def broken(:\n    pass\n");
+      const baseline = await createPythonExtractor().extract({ root });
+      const progress: ExtractionProgress[] = [];
+      const observed = await createPythonExtractor().extract({
+        root,
+        onProgress: (event) => progress.push(event),
+      });
+      const resilient = await createPythonExtractor().extract({
+        root,
+        onProgress: () => {
+          throw new Error("presentation failed");
+        },
+      });
+      const asyncResilient = await createPythonExtractor().extract({
+        root,
+        onProgress: async () => {
+          throw new Error("async presentation failed");
+        },
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      const loaded = progress.filter((event) => event.phase === "project-load" && event.sourceFile !== null);
+      const structured = progress.filter((event) => event.phase === "structure" && event.sourceFile !== null);
+
+      expect(observed).toEqual(baseline);
+      expect(resilient).toEqual(baseline);
+      expect(asyncResilient).toEqual(baseline);
+      expect(loaded.map((event) => event.sourceFile)).toEqual([
+        { current: 1, total: 2, path: "a.py" },
+        { current: 2, total: 2, path: "b.py" },
+      ]);
+      expect(structured.map((event) => event.sourceFile)).toEqual([
+        { current: 1, total: 1, path: "a.py" },
+      ]);
+      expect(progress[0]).toMatchObject({
+        language: "python",
+        phase: "project-load",
+        unit: { current: 1, total: 1, path: "." },
+        sourceFile: null,
+      });
+      expect(progress.map((event) => event.phase).slice(-3)).toEqual([
+        "relationships",
+        "stitch",
+        "finalize",
+      ]);
+      expect(structured.every((event) => event.unit?.path === ".")).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("resolves the OrderRoutes handlers", async () => {
     const result = await extractFixture();
     expect(hasEdge(result, "calls", "OrderRoutes.handle_create_order", "OrderService.place_order")).toBe(true);

@@ -19,6 +19,47 @@ export interface DetectionResult {
 /** The drill-down level below which structure is collapsed away at extraction time. */
 export type ExtractionDepth = "package" | "module" | "class" | "function";
 
+/**
+ * Presentation-neutral progress from an extractor's real work. Callers may sample or discard
+ * these observations; they are never part of graph identity or artifact materialization.
+ */
+export type ExtractionProgressPhase =
+  | "project-load"
+  | "structure"
+  | "relationships"
+  | "stitch"
+  | "finalize";
+
+/** Optional detail for long-running TypeScript relationship work. */
+export const EXTRACTION_PROGRESS_ACTIVITIES = [
+  "calls-and-types",
+  "imports",
+  "value-references",
+  "promise-discovery",
+  "promise-links",
+  "logic-flows",
+  "ports",
+  "exports",
+] as const;
+
+export type ExtractionProgressActivity = typeof EXTRACTION_PROGRESS_ACTIVITIES[number];
+
+export interface ExtractionProgressPosition {
+  current: number;
+  total: number;
+  /** Extraction-root-relative path (`.` names the single-project unit). */
+  path: string;
+}
+
+export interface ExtractionProgress {
+  language: "typescript" | "python";
+  phase: ExtractionProgressPhase;
+  /** A bounded, presentation-only relationship substage. Omitted outside that phase. */
+  activity?: ExtractionProgressActivity;
+  unit: ExtractionProgressPosition | null;
+  sourceFile: ExtractionProgressPosition | null;
+}
+
 export interface ExtractOptions {
   root: string;
   project?: string;
@@ -37,6 +78,8 @@ export interface ExtractOptions {
    * featureless `imports` wires into traceable dependency edges. Off by default (extra type-checker
    * work); the extractor no-ops when unset. */
   valueRefs?: boolean;
+  /** Optional observation hook. It cannot affect cache identity or graph output. */
+  onProgress?: (progress: ExtractionProgress) => void;
 }
 
 export interface ExtractionStats {

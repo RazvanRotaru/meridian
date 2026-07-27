@@ -1,7 +1,11 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import type { LogicFlows } from "@meridian/core";
+import type {
+  ExtractOptions,
+  ExtractionProgress,
+  LogicFlows,
+} from "@meridian/core";
 import { createTypeScriptExtractor } from "./index";
 import {
   AWAITS_PROMISE_KIND,
@@ -14,9 +18,13 @@ import {
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
 
-async function extractFixture() {
+async function extractFixture(overrides: Partial<ExtractOptions> = {}) {
   const root = join(REPO, "packages", "extractor-typescript", "fixtures", "promise-resources");
-  return createTypeScriptExtractor().extract({ root, project: join(root, "tsconfig.json") });
+  return createTypeScriptExtractor().extract({
+    root,
+    project: join(root, "tsconfig.json"),
+    ...overrides,
+  });
 }
 
 async function extractShadowedFixture() {
@@ -25,6 +33,43 @@ async function extractShadowedFixture() {
 }
 
 describe("Promise resource pass", () => {
+  it("reports ordered file-granular relationship activities without changing graph output", async () => {
+    const baseline = await extractFixture({ valueRefs: true });
+    const progress: ExtractionProgress[] = [];
+    const observed = await extractFixture({
+      valueRefs: true,
+      onProgress: (event) => progress.push(event),
+    });
+    const relationshipEvents = progress.filter(
+      (event) =>
+        event.phase === "relationships"
+        && event.activity !== undefined
+        && event.sourceFile !== null,
+    );
+
+    expect(observed).toEqual(baseline);
+    expect([...new Set(relationshipEvents.map((event) => event.activity))]).toEqual([
+      "calls-and-types",
+      "imports",
+      "value-references",
+      "promise-discovery",
+      "promise-links",
+      "logic-flows",
+      "ports",
+    ]);
+    for (const activity of new Set(relationshipEvents.map((event) => event.activity))) {
+      const files = relationshipEvents.filter((event) => event.activity === activity);
+      expect(files.map((event) => event.sourceFile?.current)).toEqual(
+        Array.from({ length: files.length }, (_value, index) => index + 1),
+      );
+      expect(files.every((event) => (
+        event.sourceFile?.total === files.length
+        && event.sourceFile.path === "src/barrier.ts"
+      ))).toBe(true);
+    }
+    expect(progress.map((event) => event.phase).slice(-2)).toEqual(["stitch", "finalize"]);
+  });
+
   it("joins a stored Promise to its creator, return aliases, awaiters, and settlers", async () => {
     const result = await extractFixture();
     const resources = result.nodes.filter(

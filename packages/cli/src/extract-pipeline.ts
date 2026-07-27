@@ -16,11 +16,13 @@ import type {
   ChangedRanges,
   ExtractOptions,
   ExtractionDiagnostic,
+  ExtractionProgress,
   ExtractionResult,
   GraphArtifact,
   LanguageExtractor,
 } from "@meridian/core";
 import { TypeScriptExtractor } from "@meridian/extractor-typescript";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import { PythonExtractor } from "@meridian/extractor-python";
 import { CliError, EXIT } from "./errors";
 import { changedSinceMetadata, type GitDiffExecutor } from "./git-diff";
@@ -59,6 +61,10 @@ export interface PipelineRequest {
   hintedFiles?: readonly string[];
   /** Permit selected extractors to return an empty artifact for an intentionally absent PR side. */
   allowEmpty?: boolean;
+  /** Non-semantic extractor observations; graph materialization never depends on this hook. */
+  onExtractionProgress?: (progress: ExtractionProgress) => void;
+  /** Internal server-owned execution policy; never derived from a repository or HTTP body. */
+  typeScriptRevisionShards?: TypeScriptRevisionShardPolicy;
 }
 
 export interface PipelineResult {
@@ -83,7 +89,11 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
     ...(changedSince?.manifest.map((file) => file.path) ?? []),
     ...(request.hintedFiles ?? []),
   ];
-  const selectedExtractors = await selectExtractors(request.absoluteRoot, selectionHints);
+  const selectedExtractors = await selectExtractors(
+    request.absoluteRoot,
+    selectionHints,
+    request.typeScriptRevisionShards,
+  );
   const run = await runExtractors(selectedExtractors, request, changedFiles.length > 0 ? changedFiles : undefined);
   const raw = run.extraction;
   const classified = channelize(
@@ -120,9 +130,13 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
   };
 }
 
-export async function selectExtractors(absoluteRoot: string, hintedFiles: readonly string[] = []): Promise<LanguageExtractor[]> {
+export async function selectExtractors(
+  absoluteRoot: string,
+  hintedFiles: readonly string[] = [],
+  typeScriptRevisionShards?: TypeScriptRevisionShardPolicy,
+): Promise<LanguageExtractor[]> {
   const registry = new ExtractorRegistry()
-    .register(new TypeScriptExtractor())
+    .register(new TypeScriptExtractor(typeScriptRevisionShards))
     .register(new PythonExtractor());
   const detected = await registry.matching(absoluteRoot);
   const selectedLanguages = new Set(detected.map((extractor) => extractor.language));
@@ -230,6 +244,7 @@ async function runExtractors(
         includeExternal: request.includeExternal,
         includeUnresolved: request.includeUnresolved,
         valueRefs: request.valueRefs,
+        onProgress: request.onExtractionProgress,
       });
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);

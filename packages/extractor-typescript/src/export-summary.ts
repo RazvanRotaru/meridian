@@ -13,6 +13,10 @@ import type { CrossPackageResolver } from "./edge-resolve";
 import { resolvedModuleFile } from "./import-reference";
 import { nodeKey } from "./model";
 import type { LoadedProject } from "./project-loader";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 import type { ResolutionIndex } from "./resolution-index";
 import type { WorkspaceUnit } from "./workspace-units";
 
@@ -22,11 +26,18 @@ export function buildUnitSummary(
   index: ResolutionIndex,
   moduleIdByRelPath: Map<string, string>,
   resolver: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
 ): UnitSummary {
   const exportsByFile = new Map<string, Map<string, string>>();
   const pendingReexports: PendingReexport[] = [];
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relPath = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onSourceFile,
+      relPath,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     exportsByFile.set(relPath, exportTable(sourceFile, index));
     collectPendingReexports(sourceFile, relPath, index, resolver, pendingReexports);
   }

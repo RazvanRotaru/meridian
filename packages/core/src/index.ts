@@ -24,6 +24,7 @@ export * from "./ports";
 export * from "./link";
 export * from "./review";
 export * from "./review-fingerprints";
+export * from "./pr-review-progress";
 export * from "./affected-nodes";
 export * from "./affected-flows";
 export * from "./causal-flow";

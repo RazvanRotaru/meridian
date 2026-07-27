@@ -1,4 +1,13 @@
 import { defineConfig } from "tsup";
+import { fileURLToPath } from "node:url";
+import { computeAnalysisBuildFingerprint } from "./src/analysis-runtime-fingerprint";
+
+const analysisBuildFingerprint = computeAnalysisBuildFingerprint(
+  fileURLToPath(new URL("../../", import.meta.url)),
+);
+const analysisBuildDefine = {
+  __MERIDIAN_ANALYSIS_BUILD_FINGERPRINT__: JSON.stringify(analysisBuildFingerprint),
+};
 
 export default defineConfig([
   {
@@ -10,6 +19,7 @@ export default defineConfig([
     sourcemap: true,
     target: "es2022",
     banner: { js: "#!/usr/bin/env node" },
+    define: analysisBuildDefine,
   },
   {
     entry: ["src/synthetic-oci-worker.ts"],
@@ -19,6 +29,7 @@ export default defineConfig([
     splitting: false,
     sourcemap: false,
     target: "es2022",
+    define: analysisBuildDefine,
     // The container receives this one file only: never mount host node_modules into the sandbox.
     noExternal: [/.*/],
     // ts-morph includes CommonJS TypeScript internals that dynamically require Node built-ins.

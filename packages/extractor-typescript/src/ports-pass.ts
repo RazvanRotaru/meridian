@@ -40,6 +40,10 @@ import {
 } from "./port-static-values";
 import { collectStaticRpcPorts } from "./rpc-ports-pass";
 import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
+import {
   collectMessageDispatcherPorts,
   type MessageListenerBoundary,
 } from "./postmessage-dispatcher-ports";
@@ -86,12 +90,19 @@ export function collectPorts(
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
   models: PortModelCatalog = BUILTIN_PORT_MODELS,
+  onSourceFile?: RelationshipFileProgress,
 ): Port[] {
   const ports: Port[] = [];
   const messageListeners: MessageListenerBoundary[] = [];
   const argumentIndex = buildStaticArgumentIndex(loaded, index);
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relPath = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onSourceFile,
+      relPath,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     const context = fileContext(sourceFile, models.factories, relPath);
     for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const listenerSurface = matchingMessageListenerSurface(call, context, models.surfaces);

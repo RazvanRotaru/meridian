@@ -1,6 +1,7 @@
 /** Lightweight product-analysis contract shared by the web parent and disposable worker. */
 
-import type { GraphArtifact } from "@meridian/core";
+import type { ExtractionProgress, GraphArtifact } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import type { GitDiffExecutor } from "./git-diff";
 
 /**
@@ -34,4 +35,11 @@ export interface RepositoryAnalysisRequest {
   hintedFiles?: readonly string[];
   /** Allow a deliberately empty immutable PR side to produce a valid zero-node artifact. */
   allowEmpty?: boolean;
+  /** Non-semantic extractor observations; never serialized or included in cache identity. */
+  onExtractionProgress?: (progress: ExtractionProgress) => void;
+  /**
+   * Internal worker capability selected by the server. Public HTTP requests never populate it;
+   * the private worker protocol transfers and strictly validates it out-of-band.
+   */
+  typeScriptRevisionShards?: TypeScriptRevisionShardPolicy;
 }

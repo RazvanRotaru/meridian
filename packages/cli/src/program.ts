@@ -69,6 +69,15 @@ function registerWeb(program: Command): void {
     .option("--host <host>", "host to bind", "127.0.0.1")
     .option("--no-open", "do not open a browser")
     .option("--refresh-cache", "re-extract remote graphs while reusing cached checkouts")
+    .option(
+      "--typescript-incremental <mode>",
+      "opt into revision-safe TypeScript shards: empty, shadow, admitted, or verified-experimental",
+      parseTypeScriptIncrementalMode,
+    )
+    .option(
+      "--experimental-pr-revision-cache",
+      "reuse exact HEAD/base artifacts across different PR pairs (loopback-only experimental)",
+    )
     .option("--github-client-id <id>", "GitHub OAuth app client id for sign-in (default: the project's app; also read from MERIDIAN_GITHUB_CLIENT_ID)")
     .option("--overlay <source>", "existing-graph overlay source: a file path or 'mock'")
     .option("--env <env>", "existing-graph environment (also read from BLUEPRINT_ENV)")
@@ -114,4 +123,20 @@ function parsePort(value: string): number {
     throw new InvalidArgumentError("port must be an integer in 1..65535");
   }
   return port;
+}
+
+function parseTypeScriptIncrementalMode(
+  value: string,
+): "empty" | "shadow" | "admitted" | "verified-experimental" {
+  if (
+    value === "empty"
+    || value === "shadow"
+    || value === "admitted"
+    || value === "verified-experimental"
+  ) {
+    return value;
+  }
+  throw new InvalidArgumentError(
+    "TypeScript incremental mode must be empty, shadow, admitted, or verified-experimental",
+  );
 }

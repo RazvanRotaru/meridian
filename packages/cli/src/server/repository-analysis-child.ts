@@ -4,17 +4,22 @@ import { fork, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { createReadStream, existsSync, lstatSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { dirname } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import type { Target } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import { CliError, EXIT } from "../errors";
 import {
   errorFromRepositoryAnalysisWorker,
   isRepositoryAnalysisWorkerRequest,
   isRepositoryAnalysisWorkerResponse,
+  MAX_REPOSITORY_WORKER_PROGRESS_EVENTS,
   MAX_REPOSITORY_WORKER_STDERR_BYTES,
   normalizeRepositoryAnalysisRequest,
   type RepositoryAnalysisFacts,
+  type RepositoryAnalysisProgress,
+  type RepositoryAnalysisProgressContext,
   type RepositoryAnalysisWorkerBranchVariantResult,
   type RepositoryAnalysisWorkerFileResult,
   type RepositoryAnalysisWorkerRequest,
@@ -31,7 +36,11 @@ import { repositoryAnalysisWorkerHeapArg } from "./repository-analysis-memory";
 
 export type { SerializableRepositoryAnalysisRequest } from "./repository-analysis-worker-job";
 export { isRepositoryAnalysisFacts } from "./repository-analysis-worker-job";
-export type { RepositoryAnalysisFacts } from "./repository-analysis-worker-job";
+export type {
+  RepositoryAnalysisFacts,
+  RepositoryAnalysisProgress,
+  RepositoryAnalysisProgressContext,
+} from "./repository-analysis-worker-job";
 
 const DEFAULT_TERMINATE_GRACE_MS = 5_000;
 const DEFAULT_PROCESS_TREE_KILL_WAIT_MS = 5_000;
@@ -68,6 +77,13 @@ export interface RepositoryAnalysisChildOptions {
   branchVariant?: { artifactOutputPath: string; branch: string };
   /** Produce a bounded PR-review fingerprint sidecar inside the disposable worker. */
   reviewFingerprints?: ReviewFingerprintSelection;
+  /** Optional non-semantic progress channel, scoped to one exact PR revision. */
+  progress?: {
+    context: RepositoryAnalysisProgressContext;
+    onProgress(progress: RepositoryAnalysisProgress): void;
+  };
+  /** Server-owned immutable TypeScript shard execution policy transferred over private IPC. */
+  typeScriptRevisionShards?: TypeScriptRevisionShardPolicy;
   signal?: AbortSignal;
   /** Test/dev override; production resolves the colocated built worker. */
   workerEntry?: string | URL;
@@ -92,6 +108,8 @@ export async function runRepositoryAnalysisChild(
     artifactOutputPath: options.artifactOutputPath,
     branchVariant: options.branchVariant ?? null,
     reviewFingerprints: options.reviewFingerprints ?? null,
+    progressContext: options.progress?.context ?? null,
+    typeScriptRevisionShards: options.typeScriptRevisionShards ?? null,
     ...(options.token ? { token: options.token } : {}),
   };
   return publicResult(await runRepositoryWorkerProcess(message, options), options.artifactOutputPath);
@@ -147,12 +165,13 @@ function runRepositoryWorkerProcess(
     "repository analysis worker timeout",
   );
   const workerEntry = options.workerEntry ?? defaultWorkerEntry();
+  const sourceMode = isTypeScriptEntry(workerEntry);
   const execArgv = options.workerExecArgv
     ? [...options.workerExecArgv]
-    : isTypeScriptEntry(workerEntry)
+    : sourceMode
       ? sourceWorkerExecArgv()
       : [];
-  // Keep this last so test/dev argv and inherited NODE_OPTIONS cannot enlarge the reserved heap.
+  // Keep this last so test/dev argv cannot enlarge the reserved heap.
   execArgv.push(repositoryAnalysisWorkerHeapArg(options.workerHeapMb));
 
   return new Promise<RepositoryAnalysisWorkerFileResult>((resolve, reject) => {
@@ -160,7 +179,8 @@ function runRepositoryWorkerProcess(
     try {
       child = fork(workerEntry, {
         detached: process.platform !== "win32",
-        env: repositoryWorkerEnvironment(),
+        ...(sourceMode ? { cwd: sourceWorkerCwd() } : {}),
+        env: repositoryWorkerEnvironment(sourceMode),
         execArgv,
         serialization: "advanced",
         stdio: ["ignore", "ignore", "pipe", "ipc"],
@@ -170,7 +190,8 @@ function runRepositoryWorkerProcess(
       return;
     }
 
-    let response: RepositoryAnalysisWorkerResponse | undefined;
+    let response: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }> | undefined;
+    let progressMessages = 0;
     let terminalReason: unknown;
     let transportFailure: CliError | undefined;
     let killTimer: ReturnType<typeof setTimeout> | undefined;
@@ -228,8 +249,35 @@ function runRepositoryWorkerProcess(
     });
     child.on("message", (value: unknown) => {
       if (settled || terminalReason !== undefined) return;
-      if (response !== undefined || !isRepositoryAnalysisWorkerResponse(value)) {
+      if (!isRepositoryAnalysisWorkerResponse(value)) {
         failTransport("repository analysis worker sent an invalid response");
+        return;
+      }
+      if (value.type === "progress") {
+        progressMessages += 1;
+        if (progressMessages > MAX_REPOSITORY_WORKER_PROGRESS_EVENTS) {
+          failTransport("repository analysis worker exceeded the progress event limit");
+          return;
+        }
+        if (response !== undefined
+          || message.type !== "analyze"
+          || message.progressContext === null
+          || value.id !== message.id
+          || !isDeepStrictEqual(value.progress.version, message.progressContext.version)
+          || !isDeepStrictEqual(value.progress.revision, message.progressContext.revision)) {
+          failTransport("repository analysis worker sent progress for an invalid revision");
+          return;
+        }
+        try {
+          const result = options.progress?.onProgress(value.progress);
+          sinkPromiseLike(result);
+        } catch {
+          // Progress is observational; a consumer cannot change or fail graph extraction.
+        }
+        return;
+      }
+      if (response !== undefined) {
+        failTransport("repository analysis worker sent more than one terminal response");
         return;
       }
       response = value;
@@ -301,6 +349,22 @@ function runRepositoryWorkerProcess(
       failTransport("could not send repository analysis worker request");
     }
   });
+}
+
+function sinkPromiseLike(value: unknown): void {
+  if (
+    (typeof value !== "object" || value === null)
+    && typeof value !== "function"
+  ) {
+    return;
+  }
+  try {
+    if (typeof (value as { then?: unknown }).then === "function") {
+      void Promise.resolve(value).catch(() => {});
+    }
+  } catch {
+    // Progress observers cannot fail repository analysis.
+  }
 }
 
 async function verifyWorkerResult(
@@ -538,11 +602,27 @@ function sourceWorkerExecArgv(): string[] {
   return ["--import", pathToFileURL(require.resolve("tsx")).href];
 }
 
-function repositoryWorkerEnvironment(): NodeJS.ProcessEnv {
+function repositoryWorkerEnvironment(sourceMode: boolean): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   delete environment.GITHUB_TOKEN;
   delete environment.GH_TOKEN;
+  // Ambient Node hooks are not part of the worker's content-addressed runtime provenance.
+  // Explicit source-mode loaders and the heap reservation remain in execArgv above.
+  delete environment.NODE_OPTIONS;
+  delete environment.NODE_PATH;
+  for (const name of Object.keys(environment)) {
+    if (name.startsWith("TSX_")) delete environment[name];
+  }
+  if (sourceMode) environment.TSX_TSCONFIG_PATH = sourceWorkerTsconfig();
   return environment;
+}
+
+function sourceWorkerTsconfig(): string {
+  return fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
+}
+
+function sourceWorkerCwd(): string {
+  return dirname(sourceWorkerTsconfig());
 }
 
 function appendCappedTail(current: Buffer, chunk: Buffer): Buffer {

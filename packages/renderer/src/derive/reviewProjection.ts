@@ -44,6 +44,7 @@ export function deriveReviewProjection(
     artifact,
     index,
     options.baseArtifact ?? null,
+    options.baseIndex,
   );
   const review: ReviewData = {
     ...visibleReview,

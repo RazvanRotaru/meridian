@@ -181,7 +181,7 @@ describe("deriveReviewProjection", () => {
     expect(projection.review.rows.some((row) => row.flow.flowId === placeOrderId)).toBe(false);
   });
 
-  it("classifies affected flow trees against the exact merge-base artifact", () => {
+  it("classifies against the exact merge base without rebuilding its prepared index", () => {
     const file = "src/registration.ts";
     const moduleId = "ts:src/registration.ts";
     const changedId = `${moduleId}#bootstrap`;
@@ -226,9 +226,18 @@ describe("deriveReviewProjection", () => {
       warnings: [],
     };
 
+    const baseIndex = buildGraphIndex(base);
+    const comparisonArtifact = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === "nodes") {
+          throw new Error("prepared comparison nodes must not be indexed twice");
+        }
+        return Reflect.get(target, property, receiver);
+      },
+    });
     const projection = deriveReviewProjection(context, head, buildGraphIndex(head), {
-      baseIndex: buildGraphIndex(base),
-      baseArtifact: base,
+      baseIndex,
+      baseArtifact: comparisonArtifact,
       showTests: true,
     });
 

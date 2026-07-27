@@ -5,14 +5,30 @@
  */
 
 import { buildGraphIndex } from "../graph/graphIndex";
+import {
+  createPrReviewProgressSnapshot,
+  reducePrReviewProgress,
+  type PrReviewProgressSnapshot,
+} from "@meridian/core";
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetrySourceDescriptor, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
+import {
+  progressStageFromReviewState,
+  readStoredPrReviewProgressHandoff,
+  type BootProgressPath,
+  type BootProgressStage,
+  type BootstrapProgressOptions,
+} from "./bootProgress";
 import { prApiUrlsFromGraphUrl, readBootConfig, type BootConfig } from "./bootConfig";
 import { loadArtifact } from "./loadArtifact";
 import { loadEnvironments } from "./loadEnvironments";
-import { startPrReviewNavigationGuard } from "./prReviewNavigationGuard";
+import {
+  reviewRestorePrNumber,
+  reviewRestoreRequested,
+  startPrReviewNavigationGuard,
+} from "./prReviewNavigationGuard";
 import { startGraphViewLease } from "./graphViewLease";
 
 export interface BootResult {
@@ -20,12 +36,67 @@ export interface BootResult {
   boot: BootConfig;
 }
 
-export async function bootstrap(): Promise<BootResult> {
+export async function bootstrap(options: BootstrapProgressOptions = {}): Promise<BootResult> {
+  let initialRestoreActive = true;
+  let initialRestoreGeneration = 0;
+  let pendingInitialRestoreSearch: string | null = null;
+  let initialRestoreStore: BlueprintStore | null = null;
   // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
   // from its first splash frame, including the time before a store exists to say `preparing`.
-  const navigationGuard = startPrReviewNavigationGuard();
+  const navigationGuard = startPrReviewNavigationGuard({
+    onAcceptedPopState(search) {
+      if (!initialRestoreActive) {
+        return;
+      }
+      initialRestoreGeneration += 1;
+      pendingInitialRestoreSearch = search;
+      const state = initialRestoreStore?.getState();
+      if (state?.prReviewStatus === "preparing") {
+        state.cancelPrReviewPreparation();
+      }
+    },
+  });
   let graphViewLease: ReturnType<typeof startGraphViewLease> | null = null;
+  const restoringReview = typeof window !== "undefined" && reviewRestoreRequested(window.location.search);
+  const restoringPrNumber = typeof window === "undefined"
+    ? null
+    : reviewRestorePrNumber(window.location.search);
+  let progressPath: BootProgressPath = restoringReview ? "review-analysis" : "graph";
+  let activeRestorePrNumber = restoringPrNumber;
+  const storedReviewProgress = restoringReview
+    ? options.reviewProgressHandoff ?? readStoredPrReviewProgressHandoff(true)
+    : null;
+  let activeReviewProgress: PrReviewProgressSnapshot | null = restoringReview
+    ? reducePrReviewProgress(
+        storedReviewProgress ?? createPrReviewProgressSnapshot(restoringPrNumber),
+        {
+        type: "stage",
+        stage: "load-artifacts",
+        },
+      )
+    : null;
+  let lastProgress: {
+    stage: BootProgressStage;
+    path: BootProgressPath;
+    reviewProgress: PrReviewProgressSnapshot | null;
+  } | null = null;
+  const report = (
+    stage: BootProgressStage,
+    reviewProgress: PrReviewProgressSnapshot | null = activeReviewProgress,
+  ) => {
+    if (
+      lastProgress?.stage === stage
+      && lastProgress.path === progressPath
+      && lastProgress.reviewProgress === reviewProgress
+    ) {
+      return;
+    }
+    activeReviewProgress = reviewProgress;
+    lastProgress = { stage, path: progressPath, reviewProgress };
+    options.onProgress?.({ stage, path: progressPath, reviewProgress });
+  };
   try {
+    report("graph");
     const boot = readBootConfig();
     const prApi = prApiUrlsFromGraphUrl(boot.graphUrl);
     if (prApi.graphId !== null && boot.graphViewLease === null) {
@@ -38,7 +109,9 @@ export async function bootstrap(): Promise<BootResult> {
       graphViewLease = startGraphViewLease(boot.graphViewLease, prApi.graphId);
     }
     const artifact = await loadArtifact(boot.graphUrl);
+    report("index");
     const index = buildGraphIndex(artifact);
+    report("services");
     const telemetrySources = await buildTelemetrySources(boot);
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
@@ -70,6 +143,9 @@ export async function bootstrap(): Promise<BootResult> {
       graphId: boot.githubSource ? prApi.graphId : null,
       graphViewLease,
     });
+    if (activeReviewProgress !== null) {
+      store.setState({ prReviewProgress: activeReviewProgress });
+    }
     if (graphViewLease !== null) {
       const lease = graphViewLease;
       store.subscribe((state, previous) => {
@@ -85,13 +161,83 @@ export async function bootstrap(): Promise<BootResult> {
       });
     }
     navigationGuard.bindStore(store);
+    initialRestoreStore = store;
+    const stopProgress = restoringReview
+      ? store.subscribe((state) => {
+          if (activeRestorePrNumber === null) {
+            report("initial-layout", null);
+            return;
+          }
+          const stage = progressStageFromReviewState(state);
+          const progress = stage === "review-details" && state.prReviewProgress.status === "idle"
+            ? reducePrReviewProgress(state.prReviewProgress, { type: "stage", stage: "details" })
+            : state.prReviewProgress;
+          report(stage ?? lastProgress?.stage ?? "review-resolve", progress);
+        })
+      : () => {};
     // Restore the navigation state carried in the URL (or fall through to defaults) and run the
     // first layout, then start reflecting the store back into the URL for reload/back/forward.
-    await restoreFromUrl(store);
+    report("initial-layout");
+    try {
+      for (;;) {
+        const generation = initialRestoreGeneration;
+        const search = pendingInitialRestoreSearch ?? undefined;
+        pendingInitialRestoreSearch = null;
+        const targetPrNumber = reviewRestorePrNumber(search ?? window.location.search);
+        activeRestorePrNumber = targetPrNumber;
+        progressPath = targetPrNumber === null ? "graph" : "review-analysis";
+        if (targetPrNumber === null) {
+          report("initial-layout", null);
+        }
+        const currentProgress = store.getState().prReviewProgress;
+        if (
+          targetPrNumber === null
+          || currentProgress.prNumber !== targetPrNumber
+        ) {
+          const resetProgress = createPrReviewProgressSnapshot(targetPrNumber);
+          if (targetPrNumber !== null) {
+            report("initial-layout", resetProgress);
+          }
+          store.setState({
+            prReviewProgress: resetProgress,
+          });
+        }
+        try {
+          await restoreFromUrl(store, search, {
+            onReviewDetails() {
+              store.setState((state) => ({
+                prReviewProgress: reducePrReviewProgress(state.prReviewProgress, {
+                  type: "stage",
+                  stage: "details",
+                }),
+              }));
+            },
+            isCurrent() {
+              return generation === initialRestoreGeneration;
+            },
+          });
+        } catch (error) {
+          // A stale restore may reject while its cancellation is settling. The accepted history
+          // entry is still authoritative; only a failure from its own generation aborts bootstrap.
+          if (generation === initialRestoreGeneration) {
+            throw error;
+          }
+        }
+        if (pendingInitialRestoreSearch === null) {
+          break;
+        }
+      }
+    } finally {
+      initialRestoreActive = false;
+      initialRestoreStore = null;
+      stopProgress();
+    }
     navigationGuard.completeInitialRestore();
     startUrlSync(store);
     return { store, boot };
   } catch (error) {
+    initialRestoreActive = false;
+    initialRestoreStore = null;
     graphViewLease?.dispose();
     navigationGuard.dispose();
     throw error;

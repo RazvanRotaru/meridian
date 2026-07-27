@@ -3,6 +3,10 @@
 import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { validateArtifact, type GraphArtifact } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
+import {
+  computeCurrentAnalysisRuntimeFingerprint,
+} from "./analysis-runtime-fingerprint";
 import { CliError, EXIT } from "./errors";
 import { analyzeRepository, type RepositoryAnalysisRequest } from "./repository-analysis";
 import { runGit } from "./server/git-exec";
@@ -10,6 +14,7 @@ import { writeValidatedRepositoryArtifact } from "./server/repository-analysis-a
 import {
   boundedRepositoryWorkerWarnings,
   changedMetadataForWorker,
+  createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
   isRepositoryAnalysisWorkerRequest,
   repositoryAnalysisWorkerFailure,
@@ -59,8 +64,14 @@ async function handleRequest(value: unknown): Promise<void> {
 async function analyzeToFile(
   message: Extract<RepositoryAnalysisWorkerRequest, { type: "analyze" }>,
 ): Promise<RepositoryAnalysisWorkerFileResult> {
+  if (message.typeScriptRevisionShards !== null) {
+    requireCurrentShardRuntime(message.typeScriptRevisionShards, "before");
+  }
   const request = analysisRequest(message);
   const analyzed = await analyzeRepository(request);
+  if (message.typeScriptRevisionShards !== null) {
+    requireCurrentShardRuntime(message.typeScriptRevisionShards, "after");
+  }
   const artifact = message.reviewFingerprints !== null
     ? withReviewFingerprints(analyzed.artifact, request.absoluteRoot, message.reviewFingerprints)
     : analyzed.artifact;
@@ -90,6 +101,26 @@ async function analyzeToFile(
   };
 }
 
+function requireCurrentShardRuntime(
+  policy: TypeScriptRevisionShardPolicy,
+  phase: "before" | "after",
+): void {
+  const current = computeCurrentAnalysisRuntimeFingerprint();
+  if (
+    current.buildFingerprint !== policy.buildFingerprint
+    || current.nodeVersion !== policy.runtimeFingerprint.nodeVersion
+    || current.platform !== policy.runtimeFingerprint.platform
+    || current.arch !== policy.runtimeFingerprint.arch
+    || current.typescriptVersion !== policy.runtimeFingerprint.typescriptVersion
+    || current.tsMorphVersion !== policy.runtimeFingerprint.tsMorphVersion
+  ) {
+    throw new CliError(
+      EXIT.validation,
+      `TypeScript revision-shard runtime provenance differs ${phase} extraction`,
+    );
+  }
+}
+
 function analysisRequest(
   message: Extract<RepositoryAnalysisWorkerRequest, { type: "analyze" }>,
 ): RepositoryAnalysisRequest {
@@ -104,6 +135,15 @@ function analysisRequest(
     ...(input.changedSince === null ? {} : { changedSince: input.changedSince }),
     ...(input.changedSinceTimeoutMs === null ? {} : {
       changedSinceTimeoutMs: input.changedSinceTimeoutMs,
+    }),
+    ...(message.progressContext === null ? {} : {
+      onExtractionProgress: createRepositoryAnalysisProgressReporter(
+        message.progressContext,
+        (progress) => sendProgress(message.id, progress),
+      ),
+    }),
+    ...(message.typeScriptRevisionShards === null ? {} : {
+      typeScriptRevisionShards: message.typeScriptRevisionShards,
     }),
   };
   if (message.token && input.changedSince) {
@@ -195,7 +235,26 @@ function withBranch(artifact: GraphArtifact, branch: string | null): GraphArtifa
   return { ...artifact, target: { ...artifact.target, vcs: { ...vcs, branch } } };
 }
 
-function reply(message: RepositoryAnalysisWorkerResponse): void {
+function sendProgress(
+  id: string,
+  progress: Extract<RepositoryAnalysisWorkerResponse, { type: "progress" }>["progress"],
+): void {
+  if (finished || typeof process.send !== "function" || !process.connected) return;
+  try {
+    process.send({ type: "progress", id, progress } satisfies RepositoryAnalysisWorkerResponse, (error) => {
+      if (!error || finished) return;
+      finished = true;
+      process.exitCode = 1;
+      if (process.connected) process.disconnect?.();
+    });
+  } catch {
+    // The parent transport owns cancellation/failure. Progress cannot fail extraction logic.
+  }
+}
+
+function reply(
+  message: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }>,
+): void {
   if (finished || typeof process.send !== "function" || !process.connected) {
     process.exitCode = 1;
     return;

@@ -30,6 +30,11 @@ export interface PrReviewNavigationGuard {
   dispose(): void;
 }
 
+export interface PrReviewNavigationGuardOptions {
+  /** Same-document history navigation was explicitly accepted and may now be restored. */
+  onAcceptedPopState?: (search: string) => void;
+}
+
 /** True while preparation is cancelable or a live (possibly parked/resumable) review exists. */
 export function prReviewNeedsNavigationLock(state: GuardState): boolean {
   return state.prReviewStatus === "preparing"
@@ -43,7 +48,9 @@ export function isHorizontalNavigationWheel(event: Pick<WheelEvent, "ctrlKey" | 
 }
 
 /** Install the root CSS lock and Safari wheel fallback for the lifetime of the renderer. */
-export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
+export function startPrReviewNavigationGuard(
+  options: PrReviewNavigationGuardOptions = {},
+): PrReviewNavigationGuard {
   if (typeof window === "undefined" || typeof document === "undefined") {
     return { bindStore() {}, completeInitialRestore() {}, dispose() {} };
   }
@@ -73,6 +80,7 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
       return;
     }
     if (window.confirm(leaveMessage(store))) {
+      options.onAcceptedPopState?.(window.location.search);
       return;
     }
     // popstate cannot be canceled. Stop the URL-sync listener before it tears down the review, then
@@ -198,9 +206,16 @@ function leaveMessage(store: BlueprintStore | null): string {
 
 /** Match the URL decoder's review contract; a stray `rev=1` without a valid PR is not a lock. */
 export function reviewRestoreRequested(search: string): boolean {
+  return reviewRestorePrNumber(search) !== null;
+}
+
+/** Exact review identity carried by a valid `rev=1` destination. */
+export function reviewRestorePrNumber(search: string): number | null {
   const params = new URLSearchParams(search);
   const prNumber = Number(params.get("prn"));
-  return params.get("rev") === "1" && Number.isInteger(prNumber) && prNumber > 0;
+  return params.get("rev") === "1" && Number.isSafeInteger(prNumber) && prNumber > 0
+    ? prNumber
+    : null;
 }
 
 /** Let a real horizontal scroller consume the gesture until it reaches its own boundary. */

@@ -7,7 +7,14 @@
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { validateArtifact, type ExtractionResult, type GraphArtifact, type GraphEdge } from "@meridian/core";
+import {
+  validateArtifact,
+  type ExtractOptions,
+  type ExtractionProgress,
+  type ExtractionResult,
+  type GraphArtifact,
+  type GraphEdge,
+} from "@meridian/core";
 import { createTypeScriptExtractor } from "./index";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
@@ -60,6 +67,61 @@ function artifactFrom(result: ExtractionResult): GraphArtifact {
 }
 
 describe("TypeScriptExtractor over orders-service", () => {
+  it("reports the actual loaded files and phases without changing graph output", async () => {
+    const baseline = await extractFixture();
+    const progress: ExtractionProgress[] = [];
+    const observed = await extractFixture({ onProgress: (event: ExtractionProgress) => progress.push(event) });
+    const resilient = await extractFixture({ onProgress: () => { throw new Error("presentation failed"); } });
+    const asyncResilient = await extractFixture({
+      onProgress: async () => { throw new Error("async presentation failed"); },
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    const sourceFiles = progress.filter(
+      (event) => event.phase === "structure" && event.sourceFile !== null,
+    );
+
+    expect(observed).toEqual(baseline);
+    expect(resilient).toEqual(baseline);
+    expect(asyncResilient).toEqual(baseline);
+    expect(sourceFiles).toHaveLength(observed.stats.files);
+    expect(sourceFiles.map((event) => event.sourceFile?.current)).toEqual(
+      Array.from({ length: observed.stats.files }, (_value, index) => index + 1),
+    );
+    expect(sourceFiles.every((event) => (
+      event.unit?.current === 1
+      && event.unit.total === 1
+      && event.sourceFile?.total === observed.stats.files
+    ))).toBe(true);
+    expect(progress[0]).toMatchObject({
+      language: "typescript",
+      phase: "project-load",
+      unit: { current: 1, total: 1, path: "." },
+      sourceFile: null,
+    });
+    expect(progress.map((event) => event.phase).slice(-3)).toEqual([
+      "relationships",
+      "stitch",
+      "finalize",
+    ]);
+  });
+
+  it("captures an absent progress observer once instead of probing it during file passes", async () => {
+    const extractor = createTypeScriptExtractor();
+    const options: ExtractOptions = { root: FIXTURE_ROOT, project: FIXTURE_PROJECT };
+    let observerReads = 0;
+    Object.defineProperty(options, "onProgress", {
+      get: () => {
+        observerReads += 1;
+        return undefined;
+      },
+    });
+
+    const observed = await extractor.extract(options);
+
+    expect(observed).toEqual(await extractFixture());
+    expect(observerReads).toBe(1);
+  });
+
   it("extracts every focused execution-graph gallery exhibit", async () => {
     const result = await extractFixture({ includeExternal: true });
     const exhibitNames = [

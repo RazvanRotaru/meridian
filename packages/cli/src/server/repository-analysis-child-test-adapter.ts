@@ -23,6 +23,7 @@ import type {
 import {
   boundedRepositoryWorkerWarnings,
   changedMetadataForWorker,
+  createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
   syntheticSourceFilesForWorker,
 } from "./repository-analysis-worker-job";
@@ -35,7 +36,12 @@ export async function runRepositoryAnalysisChildInProcess(
   options: RepositoryAnalysisChildOptions,
 ): Promise<RepositoryAnalysisChildResult> {
   throwIfTestAborted(options.signal);
-  const request = analysisRequest(input, options.token);
+  const request = analysisRequest(
+    input,
+    options.token,
+    options.progress,
+    options.typeScriptRevisionShards,
+  );
   const analyzed = await analyzeRepository(request);
   const artifact = options.reviewFingerprints !== undefined
     ? withReviewFingerprints(analyzed.artifact, request.absoluteRoot, options.reviewFingerprints)
@@ -126,6 +132,8 @@ export async function runRepositoryArtifactRestampChildInProcess(
 function analysisRequest(
   input: SerializableRepositoryAnalysisRequest,
   token: string | undefined,
+  progress: RepositoryAnalysisChildOptions["progress"],
+  typeScriptRevisionShards: RepositoryAnalysisChildOptions["typeScriptRevisionShards"],
 ): RepositoryAnalysisRequest {
   const request: RepositoryAnalysisRequest = {
     absoluteRoot: input.absoluteRoot,
@@ -138,6 +146,13 @@ function analysisRequest(
     ...(input.changedSinceTimeoutMs === undefined ? {} : {
       changedSinceTimeoutMs: input.changedSinceTimeoutMs,
     }),
+    ...(progress === undefined ? {} : {
+      onExtractionProgress: createRepositoryAnalysisProgressReporter(
+        progress.context,
+        progress.onProgress,
+      ),
+    }),
+    ...(typeScriptRevisionShards === undefined ? {} : { typeScriptRevisionShards }),
   };
   if (token && input.changedSince) {
     request.changedSinceGitExecutor = async (absoluteRoot, args, timeoutMs) => {

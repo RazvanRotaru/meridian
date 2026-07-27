@@ -57,6 +57,43 @@ afterEach(() => {
 });
 
 describe("restoreFromUrl review exit", () => {
+  it("reports the blocking PR-detail lane after the initial layout starts", async () => {
+    const store = freshStore();
+    const onReviewDetails = vi.fn();
+    stubWindow();
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(
+      Response.json({ error: "not found" }, { status: 404 }),
+    ));
+
+    await restoreFromUrl(store, "view=modules&prn=7&rev=1", { onReviewDetails });
+
+    expect(onReviewDetails).toHaveBeenCalledOnce();
+  });
+
+  it("does not start review preparation after a newer history restore supersedes detail loading", async () => {
+    const store = freshStore();
+    let current = true;
+    const ensurePrSummary = vi.fn(async () => {
+      current = false;
+    });
+    const selectPr = vi.fn();
+    const reviewPrInGraph = vi.fn();
+    store.setState({
+      ensurePrSummary,
+      selectPr,
+      reviewPrInGraph,
+    });
+    stubWindow();
+
+    await restoreFromUrl(store, "view=modules&prn=7&rev=1", {
+      isCurrent: () => current,
+    });
+
+    expect(ensurePrSummary).toHaveBeenCalledWith(7);
+    expect(selectPr).not.toHaveBeenCalled();
+    expect(reviewPrInGraph).not.toHaveBeenCalled();
+  });
+
   it("restores an extracted review's boot graph before applying a pre-review Map URL", async () => {
     const store = freshStore();
     const bootIndex = store.getState().index;

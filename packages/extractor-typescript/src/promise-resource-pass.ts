@@ -14,6 +14,10 @@ import { resolveTarget, type CrossPackageResolver, type TargetResolution } from 
 import { nodeKey, type NodeDescriptor } from "./model";
 import { staticCallable } from "./port-static-values";
 import type { LoadedProject } from "./project-loader";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 import type { ResolutionIndex } from "./resolution-index";
 
 export const PROMISE_RESOURCE_KIND = "promise";
@@ -61,13 +65,19 @@ interface ResourceFacts {
   unknown: boolean;
 }
 
+export interface PromiseResourceProgress {
+  discovery?: RelationshipFileProgress;
+  links?: RelationshipFileProgress;
+}
+
 export function collectPromiseResources(
   loaded: LoadedProject,
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
   resolver?: CrossPackageResolver,
+  onProgress?: PromiseResourceProgress,
 ): PromiseResourceResult {
-  const resources = discoverResources(loaded, index, moduleByFilePath);
+  const resources = discoverResources(loaded, index, moduleByFilePath, onProgress?.discovery);
   if (resources.length === 0) return { nodes: [], edges: [], flowIds: new Set() };
 
   const byCreation = new Map(resources.map((resource) => [nodeKey(resource.creation), resource]));
@@ -93,8 +103,14 @@ export function collectPromiseResources(
     edges.push(resourceEdge(site.source, resource, RETURNS_PROMISE_KIND, site.statement, site.relativeFile));
   }
 
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relativeFile = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onProgress?.links,
+      relativeFile,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     for (const awaitExpression of sourceFile.getDescendantsOfKind(SyntaxKind.AwaitExpression)) {
       const resource = resourceForExpression(
         awaitExpression.getExpression(),
@@ -146,11 +162,18 @@ function discoverResources(
   loaded: LoadedProject,
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
+  onSourceFile?: RelationshipFileProgress,
 ): PromiseResource[] {
   const resources: PromiseResource[] = [];
   const ordinalByBase = new Map<string, number>();
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relativeFile = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onSourceFile,
+      relativeFile,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     for (const expression of sourceFile.getDescendantsOfKind(SyntaxKind.NewExpression)) {
       if (!isGlobalPromise(expression)) continue;
       const anchor = resourceAnchor(expression, index, moduleByFilePath);

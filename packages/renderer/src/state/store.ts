@@ -17,6 +17,8 @@ import {
   computeAffectedNodes,
   computeChangeGroups,
   computeCoverage,
+  createPrReviewProgressSnapshot,
+  reducePrReviewProgress,
 } from "@meridian/core";
 import type {
   AffectedNode,
@@ -37,6 +39,7 @@ import type {
   NodeMetrics,
   RequestTrace,
   ReviewContext,
+  PrReviewProgressSnapshot,
   SyntheticExecution,
   SyntheticFieldWatcher,
   SyntheticInputOverride,
@@ -170,7 +173,7 @@ import {
   reviewNodeStatusSourcesFromKinds,
   reviewSourceChangeStatus,
 } from "./reviewNodeStatus";
-import { streamPrAnalysis, type PrAnalyzeStage } from "./prAnalysis";
+import { streamPrAnalysis, type PrPrepareStage } from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   discardReviewLineComposer as discardReviewLineComposerState,
@@ -785,8 +788,11 @@ export interface BlueprintState {
   /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
    * analysis of the PR head; "error" when that stream failed (Retry or base fallback); else "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
-  /** The analyze stage currently running server-side; null outside "preparing". */
-  prPrepareStage: PrAnalyzeStage | null;
+  /** The current server analysis or renderer artifact/projection stage. Projection briefly remains
+   * set while successful entry disarms cancellation before its synchronous PRs → Map transition. */
+  prPrepareStage: PrPrepareStage | null;
+  /** Presentation-neutral, revision-aware progress shared by boot and every in-app PR surface. */
+  prReviewProgress: PrReviewProgressSnapshot;
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
   /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
@@ -4049,6 +4055,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewRemovedTruncatedByFile: {},
     prReviewStatus: "idle",
     prPrepareStage: null,
+    prReviewProgress: createPrReviewProgressSnapshot(),
     prPrepareError: null,
     prPreparedGraphId: null,
     prPreparedComparisonGraphId: null,
@@ -8214,7 +8221,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         void get().relayout();
       }
-      const prepareReset = { prReviewStatus: "idle" as const, prPrepareStage: null, prPrepareError: null };
+      const progressAfterCancel = get().prReviewProgress;
+      const retainBootReviewProgress = progressAfterCancel.status === "running"
+        && progressAfterCancel.activeStage === "details"
+        && progressAfterCancel.prNumber === number
+        && (
+          progressAfterCancel.steps.artifacts === "active"
+          || progressAfterCancel.steps.artifacts === "done"
+        )
+        && progressAfterCancel.steps.projection === "pending";
+      const prepareReset = {
+        prReviewStatus: "idle" as const,
+        prPrepareStage: null,
+        prReviewProgress: retainBootReviewProgress
+          ? progressAfterCancel
+          : createPrReviewProgressSnapshot(number),
+        prPrepareError: null,
+      };
       if (number === null) {
         set({
           prSelected: null,
@@ -8421,7 +8444,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       };
       const sequence = ++prReviewRefreshSeq;
       const active = () => prReviewRefreshSeq === sequence && sameReviewRefresh(get(), number, revision);
-      set({ prReviewRefreshing: true, prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      set({
+        prReviewRefreshing: true,
+        prReviewStatus: "idle",
+        prPrepareStage: null,
+        prReviewProgress: createPrReviewProgressSnapshot(number),
+        prPrepareError: null,
+      });
       try {
         const latest = await fetchPrSummary(prOneUrl, number);
         if (!active()) {
@@ -8478,6 +8507,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             // The refreshed PR no longer intersects this extraction. Keep the old review rather than
             // silently replacing it with an empty/base canvas; the stale control remains retryable.
             invalidateArtifactCaches();
+            const message = "The refreshed pull request no longer matches this graph.";
             set({
               artifact: previous.artifact,
               index: previous.index,
@@ -8485,7 +8515,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               codeView: null,
               prReviewBlocked: null,
               prReviewStatus: "error",
-              prPrepareError: "The refreshed pull request no longer matches this graph.",
+              prReviewProgress: reducePrReviewProgress(get().prReviewProgress, {
+                type: "error",
+                message,
+              }),
+              prPrepareError: message,
             });
             restoreRetainedReviewFiles();
           } else {
@@ -8495,7 +8529,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       } catch (error) {
         restoreRetainedReviewFiles();
         if (active()) {
-          set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: refreshErrorMessage(error) });
+          const message = refreshErrorMessage(error);
+          set((current) => ({
+            prReviewStatus: "error",
+            prPrepareStage: null,
+            prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+              type: "error",
+              message,
+            }),
+            prPrepareError: message,
+          }));
         }
       } finally {
         if (prReviewRefreshSeq === sequence && get().prReviewed === number) {
@@ -8644,7 +8687,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           });
         }
         clearResumeFlow();
-        set({ prReviewStatus: "preparing", prPrepareStage: null, prPrepareError: null });
+        const initialResumeStage: PrPrepareStage = prPreparedGraphId === null
+          ? "projection"
+          : "load-artifacts";
+        set({
+          prReviewStatus: "preparing",
+          prPrepareStage: initialResumeStage,
+          prReviewProgress: reducePrReviewProgress(createPrReviewProgressSnapshot(prReviewed), {
+            type: "stage",
+            stage: initialResumeStage,
+          }),
+          prPrepareError: null,
+        });
         try {
           if (prPreparedGraphId !== null) {
             const [prepared, comparison] = await Promise.all([
@@ -8670,6 +8724,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             clearResumeFlow();
             invalidateSyntheticArtifactBoundary();
             swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
+            set((current) => ({
+              prPrepareStage: "projection",
+              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                type: "stage",
+                stage: "projection",
+              }),
+            }));
           }
           const resumed = applyPrReviewToMap(
             get,
@@ -8691,10 +8752,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             if (prPreparedGraphId !== null) {
               restorePreparedReviewBaseline(get, set, { endSession: false });
             }
+            const message = "The retained pull request no longer matches this graph.";
             set({
               prReviewStatus: "error",
               prPrepareStage: null,
-              prPrepareError: "The retained pull request no longer matches this graph.",
+              prReviewProgress: reducePrReviewProgress(get().prReviewProgress, {
+                type: "error",
+                message,
+              }),
+              prPrepareError: message,
             });
             return;
           }
@@ -8705,11 +8771,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           get().selectReviewGroup(resumeGroupId);
           get().selectReviewPathScope(resumePathScope);
           if (get().prReviewed === prReviewed) {
-            set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+            set((current) => ({
+              prReviewStatus: "idle",
+              prPrepareStage: null,
+              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, { type: "success" }),
+              prPrepareError: null,
+            }));
           }
         } catch (error) {
           if (get().prReviewed === prReviewed && get().minimalSeedIds.length === 0) {
-            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: resumeErrorMessage(error) });
+            const message = resumeErrorMessage(error);
+            set((current) => ({
+              prReviewStatus: "error",
+              prPrepareStage: null,
+              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                type: "error",
+                message,
+              }),
+              prPrepareError: message,
+            }));
           }
         }
       })();
@@ -8790,9 +8870,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && (!refreshingExistingReview
             || (current.prReviewRefreshing && current.viewMode === "modules" && current.minimalSeedIds.length > 0));
       };
+      const progressBase = state.prReviewProgress.status === "running"
+        && state.prReviewProgress.prNumber === prNumber
+        && (
+          state.prReviewProgress.steps.artifacts === "active"
+          || state.prReviewProgress.steps.artifacts === "done"
+        )
+        && state.prReviewProgress.steps.projection === "pending"
+        ? state.prReviewProgress
+        : createPrReviewProgressSnapshot(prNumber);
       set({
         prReviewStatus: "preparing",
-        prPrepareStage: "clone",
+        // Ref resolution and verified cache reads happen before a miss can truthfully report clone.
+        prPrepareStage: "resolve",
+        prReviewProgress: reducePrReviewProgress(progressBase, {
+          type: "stage",
+          stage: "resolve",
+        }),
         prPrepareError: null,
         ...(previousPrepared === null
           ? {
@@ -8847,14 +8941,36 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const work = (async () => {
         try {
           const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage) => {
+          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage, progress) => {
             if (active()) {
-              set({ prPrepareStage: stage });
+              set((current) => ({
+                prPrepareStage: stage,
+                prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                  type: "stage",
+                  stage,
+                  progress,
+                }),
+              }));
             }
           });
           if (!active()) {
             return;
           }
+          set((current) => ({
+            prPrepareStage: "handoff",
+            prReviewProgress: reducePrReviewProgress(reducePrReviewProgress(
+              current.prReviewProgress,
+              {
+                type: "analysis-done",
+                cache: analysis.cache,
+              },
+            ), {
+              // Lease admission is part of the cross-page artifact handoff. Keep a truthful active
+              // step (and error target) while the lease controller protects the immutable pair.
+              type: "stage",
+              stage: "handoff",
+            }),
+          }));
           // Protect the new pair before either artifact fetch begins. The controller unions it with
           // the currently mounted pair, so a refresh can still roll back until the new graph commits.
           graphHandoff = await graphViewLease?.beginPreparedGraphHandoff([
@@ -8866,13 +8982,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             await settleGraphHandoff("release");
             return;
           }
+          set((current) => ({
+            prPrepareStage: "load-artifacts",
+            prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+              type: "stage",
+              stage: "load-artifacts",
+            }),
+          }));
           // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
           // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
+          const reusesBootHead = analysis.graphId === analyzeGraphId;
           const [prepared, comparison] = await Promise.all([
-            fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
-              repository: dependencies.prSessionSource?.repository ?? null,
-              headSha: analysis.headSha,
-            }),
+            reusesBootHead
+              ? Promise.resolve({
+                  artifact: dependencies.artifact,
+                  syntheticExecutionUrl: initialSyntheticExecutionUrl,
+                  syntheticExecutionTrust: initialSyntheticExecutionTrust,
+                  syntheticScenarios: [...initialSyntheticScenarios],
+                })
+              : fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
+                  repository: dependencies.prSessionSource?.repository ?? null,
+                  headSha: analysis.headSha,
+                }),
             analysis.comparisonGraphId === null
               ? Promise.resolve(null)
               : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
@@ -8882,11 +9013,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             return;
           }
           invalidateSyntheticArtifactBoundary();
-          swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
+          swapToPreparedArtifact(
+            get,
+            set,
+            prepared.artifact,
+            invalidateArtifactCaches,
+            prepared,
+            comparison,
+            reusesBootHead ? dependencies.index : undefined,
+          );
           swappedNewArtifact = true;
           set({
+            // applyPrReviewToMap transitions from PRs to Map. It must not observe a cancelable
+            // server-preparation lane and release the already-installed graph handoff.
             prReviewStatus: "idle",
-            prPrepareStage: null,
+            prPrepareStage: "projection",
+            prReviewProgress: reducePrReviewProgress(get().prReviewProgress, {
+              type: "stage",
+              stage: "projection",
+            }),
             prPrepareError: null,
             prPreparedGraphId: analysis.graphId,
             prPreparedComparisonGraphId: analysis.comparisonGraphId,
@@ -8913,14 +9058,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               });
             }
             if (get().prReviewRefreshing) {
+              const message = "The refreshed pull request no longer matches this graph.";
               set({
                 prReviewStatus: "error",
                 prPrepareStage: null,
-                prPrepareError: "The refreshed pull request no longer matches this graph.",
+                prReviewProgress: reducePrReviewProgress(get().prReviewProgress, {
+                  type: "error",
+                  message,
+                }),
+                prPrepareError: message,
               });
+            } else {
+              set((current) => ({
+                prReviewStatus: "idle",
+                prPrepareStage: null,
+                prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                  type: "error",
+                  message: "The pull request no longer matches this graph.",
+                }),
+                prPrepareError: null,
+              }));
             }
             await settleGraphHandoff("release");
           } else {
+            set((current) => ({
+              prReviewStatus: "idle",
+              prPrepareStage: null,
+              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, { type: "success" }),
+              prPrepareError: null,
+            }));
             await settleGraphHandoff("commit");
             await loadViewedFiles(prNumber);
           }
@@ -8941,7 +9107,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                 });
               }
             }
-            set({ prReviewStatus: "error", prPrepareStage: null, prPrepareError: prepareErrorMessage(error) });
+            const message = prepareErrorMessage(error);
+            set((current) => ({
+              prReviewStatus: "error",
+              prPrepareStage: null,
+              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                type: "error",
+                message,
+              }),
+              prPrepareError: message,
+            }));
           }
         }
       })();
@@ -8957,6 +9132,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     cancelPrReviewPreparation() {
+      const wasPreparing = get().prReviewStatus === "preparing";
       prAnalyzeSeq += 1;
       const cancellation = prAnalyzeCancellation;
       prAnalyzeCancellation = null;
@@ -8964,11 +9140,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const handoff = prGraphHandoff;
       prGraphHandoff = null;
       void handoff?.release().catch(() => undefined);
-      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      set((current) => ({
+        prReviewStatus: "idle",
+        prPrepareStage: null,
+        prReviewProgress: wasPreparing
+          ? reducePrReviewProgress(current.prReviewProgress, { type: "canceled" })
+          : current.prReviewProgress,
+        prPrepareError: null,
+      }));
     },
 
     dismissPrepareError() {
-      set({ prReviewStatus: "idle", prPrepareStage: null, prPrepareError: null });
+      const state = get();
+      set({
+        prReviewStatus: "idle",
+        prPrepareStage: null,
+        prReviewProgress: createPrReviewProgressSnapshot(state.prReviewed ?? state.prSelected),
+        prPrepareError: null,
+      });
     },
 
     async relayout() {

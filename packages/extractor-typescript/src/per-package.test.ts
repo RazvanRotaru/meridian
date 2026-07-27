@@ -10,7 +10,12 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import type { ExtractionResult, GraphEdge } from "@meridian/core";
+import type {
+  ExtractOptions,
+  ExtractionProgress,
+  ExtractionResult,
+  GraphEdge,
+} from "@meridian/core";
 import { extractPerPackage } from "./extract-per-package";
 import { createTypeScriptExtractor } from "./index";
 import { absoluteRoot } from "./paths";
@@ -98,6 +103,69 @@ function resolvedEdge(from: ExtractionResult, kind: string, source: string, targ
 }
 
 describe("extractPerPackage", () => {
+  it("reports unit-local loaded files and global tail phases without changing graph output", () => {
+    const progress: ExtractionProgress[] = [];
+    const observed = extractPerPackage({ root, onProgress: (event) => progress.push(event) });
+    const loads = progress.filter((event) => event.phase === "project-load");
+    const files = progress.filter(
+      (event) => event.phase === "structure" && event.sourceFile !== null,
+    );
+
+    expect(observed).toEqual(result);
+    expect(loads.map((event) => event.unit?.current)).toEqual(
+      Array.from({ length: loads.length }, (_value, index) => index + 1),
+    );
+    expect(loads.every((event) => event.unit?.total === loads.length)).toBe(true);
+    for (const load of loads) {
+      const unitFiles = files.filter((event) => event.unit?.current === load.unit?.current);
+      expect(unitFiles.map((event) => event.sourceFile?.current)).toEqual(
+        Array.from({ length: unitFiles.length }, (_value, index) => index + 1),
+      );
+      expect(unitFiles.every((event) => event.sourceFile?.total === unitFiles.length)).toBe(true);
+
+      const relationshipEvents = progress.filter(
+        (event) =>
+          event.phase === "relationships"
+          && event.activity !== undefined
+          && event.sourceFile !== null
+          && event.unit?.current === load.unit?.current,
+      );
+      expect([...new Set(relationshipEvents.map((event) => event.activity))]).toEqual([
+        "calls-and-types",
+        "imports",
+        "promise-discovery",
+        "logic-flows",
+        "ports",
+        "exports",
+      ]);
+      for (const activity of new Set(relationshipEvents.map((event) => event.activity))) {
+        const activityFiles = relationshipEvents.filter((event) => event.activity === activity);
+        expect(activityFiles.map((event) => event.sourceFile?.current)).toEqual(
+          Array.from({ length: activityFiles.length }, (_value, index) => index + 1),
+        );
+        expect(activityFiles.every((event) => (
+          event.sourceFile?.total === activityFiles.length
+          && event.sourceFile.path.length > 0
+        ))).toBe(true);
+      }
+    }
+    expect(progress.map((event) => event.phase).slice(-2)).toEqual(["stitch", "finalize"]);
+  });
+
+  it("captures an absent progress observer once for the whole workspace", () => {
+    const options: ExtractOptions = { root };
+    let observerReads = 0;
+    Object.defineProperty(options, "onProgress", {
+      get: () => {
+        observerReads += 1;
+        return undefined;
+      },
+    });
+
+    expect(extractPerPackage(options)).toEqual(result);
+    expect(observerReads).toBe(1);
+  });
+
   it("resolves a direct cross-package named-import call", () => {
     expect(
       resolvedEdge(result, "calls", "ts:packages/core/src/orders.ts#parseOrder", "ts:packages/util/src/index.ts#normalize"),

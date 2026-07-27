@@ -27,6 +27,10 @@ import { callSiteOf, type NodeDescriptor } from "./model";
 import type { RawEdge } from "./edge-pass";
 import { externalImportTarget, type CrossPackageResolver, type TargetResolution } from "./edge-resolve";
 import type { LoadedProject } from "./project-loader";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 import type { ResolutionIndex } from "./resolution-index";
 
 export function collectImportEdges(
@@ -34,10 +38,18 @@ export function collectImportEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   index: ResolutionIndex,
   resolver?: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
 ): RawEdge[] {
   const edges: RawEdge[] = [];
-  for (const sourceFile of loaded.sourceFiles) {
-    collectFileImports(sourceFile, loaded.relativePathOf(sourceFile), moduleByFilePath, index, edges, resolver);
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
+    const relPath = loaded.relativePathOf(sourceFile);
+    reportRelationshipFileProgress(
+      onSourceFile,
+      relPath,
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
+    collectFileImports(sourceFile, relPath, moduleByFilePath, index, edges, resolver);
   }
   return edges;
 }

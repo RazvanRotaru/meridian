@@ -15,7 +15,7 @@ import type { AddressInfo } from "node:net";
 import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
-import type { GraphArtifact } from "@meridian/core";
+import { PR_REVIEW_PROGRESS_MODEL, type GraphArtifact } from "@meridian/core";
 import { createWebService, handleSyntheticExecution } from "./web-server";
 import type { Context, WebService } from "./web-server";
 import { WebGraphStore } from "./web-graph-store";
@@ -61,6 +61,8 @@ describe("createWebService landing + errors", () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain("Read your codebase");
     expect(html).toContain("window.__MERIDIAN_PREFILL__=");
+    const injectedModel = injectedPrReviewProgressModel(html);
+    expect(injectedModel).toEqual(PR_REVIEW_PROGRESS_MODEL);
     expect(html).toContain("sindresorhus/type-fest");
     expect(html).toContain('id="ref-query"');
     expect(html).toContain('id="ref-results"');
@@ -75,7 +77,9 @@ describe("createWebService landing + errors", () => {
     expect(html).toContain('aria-controls="pr-results"');
     expect(html).toContain('id="pr-results"');
     expect(html).toContain("/api/repos/pulls?repo=");
-    expect(html).toContain('"&view=modules&prn="');
+    expect(html).toContain('apiPost("/api/pr/prepare"');
+    expect(html).toContain("preparedPair");
+    expect(html).not.toContain('"&view=modules&prn="');
     expect(html).toContain('id="repository-selection"');
     expect(html).toContain('id="selected-repository-name"');
     expect(html).toContain('id="change-repository"');
@@ -93,11 +97,23 @@ describe("createWebService landing + errors", () => {
   it("ships the staged, accessible blueprint preparation indicator", async () => {
     const html = await (await fetch(`${base}/`)).text();
     expect(html).toContain('id="prepare-progress"');
+    expect(html).toContain('id="prepare-detail" data-reserved-lines="7"');
     expect(html).toContain('role="status"');
     expect(html).toContain('aria-live="polite"');
+    expect(html).toContain("min-height: calc(var(--prepare-detail-line-height) * var(--prepare-detail-lines))");
+    expect(html).toContain("height: calc(var(--prepare-detail-line-height) * var(--prepare-detail-lines))");
+    expect(html).toContain("-webkit-line-clamp: 7");
+    expect(html).toContain("revisions.dataset.reservedRows = \"2\"");
+    expect(html).toContain("min-height: 32px");
     expect(html).toContain("Fetch repository");
     expect(html).toContain("Generate code graph");
+    expect(html).toContain(PR_REVIEW_PROGRESS_MODEL.title);
+    for (const step of PR_REVIEW_PROGRESS_MODEL.steps) {
+      expect(html).toContain(step.label);
+    }
     expect(html).toContain("Open blueprint");
+    expect(html).not.toContain("Generate PR HEAD graph");
+    expect(html).not.toContain("Generate merge-base graph");
     expect(html).not.toContain("Cloning + analyzing…");
   });
 
@@ -348,7 +364,15 @@ describe("createWebService landing + errors", () => {
     }
   }, 10_000);
 
-  it("wires POST /api/pr/analyze: validates refs, then 404s an unknown session id, before any git", async () => {
+  it("validates direct PR preparation and session-bound analysis before touching git", async () => {
+    const badDirect = await post("/api/pr/prepare", {
+      repository: "not-a-repository",
+      prNumber: 1,
+      baseRef: "main",
+      headRef: "x",
+    });
+    expect(badDirect.status).toBe(400);
+
     const badRef = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "--evil", headRef: "x" });
     expect(badRef.status).toBe(400);
     const unknownId = await post("/api/pr/analyze", { id: "nope", prNumber: 1, baseRef: "main", headRef: "x" });
@@ -653,6 +677,15 @@ describe("GitHub synthetic execution admission", () => {
     expect(empty.runInOci).not.toHaveBeenCalled();
   });
 });
+
+function injectedPrReviewProgressModel(html: string): unknown {
+  const prefix = "<script>window.__MERIDIAN_PR_REVIEW_PROGRESS_MODEL__=";
+  const start = html.indexOf(prefix);
+  expect(start).toBeGreaterThanOrEqual(0);
+  const end = html.indexOf("</script>", start);
+  expect(end).toBeGreaterThan(start);
+  return JSON.parse(html.slice(start + prefix.length, end));
+}
 
 function statusWithOrigin(path: string, origin: string): Promise<number> {
   return new Promise((resolveStatus) => {

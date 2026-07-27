@@ -186,8 +186,10 @@ export class FakePrRepositoryMirror implements RepositoryMirror {
     cache: "hit" | "miss",
   ): RepositoryWorkspaceLease {
     let releaseCount = 0;
+    let released = false;
     const release = () => {
       releaseCount += 1;
+      released = true;
     };
     const lease: RepositoryWorkspaceLease = {
       cache,
@@ -195,6 +197,7 @@ export class FakePrRepositoryMirror implements RepositoryMirror {
       remoteUrl: stored.remoteUrl,
       commit: side === "head" ? stored.headSha : stored.mergeBaseSha,
       repoDir: side === "head" ? stored.headDir : stored.comparisonDir,
+      isActive: () => !released,
       release,
       [Symbol.dispose]: release,
     };

@@ -21,7 +21,11 @@ export interface StructuralResult {
   moduleByFilePath: Map<string, NodeDescriptor>;
 }
 
-export function buildStructure(loaded: LoadedProject, lang: string): StructuralResult {
+export function buildStructure(
+  loaded: LoadedProject,
+  lang: string,
+  onSourceFile?: (sourceFile: SourceFile, current: number, total: number) => void,
+): StructuralResult {
   const descriptors: NodeDescriptor[] = [];
   const emit = (descriptor: NodeDescriptor) => {
     descriptors.push(descriptor);
@@ -29,7 +33,7 @@ export function buildStructure(loaded: LoadedProject, lang: string): StructuralR
   };
   const relativePaths = loaded.sourceFiles.map(loaded.relativePathOf);
   const packageByPath = emitPackages(relativePaths, loaded.root, lang, emit, loaded.memberPaths);
-  const moduleByFilePath = emitModules(loaded, lang, packageByPath, emit);
+  const moduleByFilePath = emitModules(loaded, lang, packageByPath, emit, onSourceFile);
   return { descriptors, moduleByFilePath };
 }
 
@@ -76,9 +80,11 @@ function emitModules(
   lang: string,
   packageByPath: Map<string, NodeDescriptor>,
   emit: (descriptor: NodeDescriptor) => NodeDescriptor,
+  onSourceFile?: (sourceFile: SourceFile, current: number, total: number) => void,
 ): Map<string, NodeDescriptor> {
   const moduleByFilePath = new Map<string, NodeDescriptor>();
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [index, sourceFile] of loaded.sourceFiles.entries()) {
+    onSourceFile?.(sourceFile, index + 1, loaded.sourceFiles.length);
     const relPath = loaded.relativePathOf(sourceFile);
     const context = { lang, modulePath: relPath, relPath };
     const parent = packageByPath.get(posixDirname(relPath)) ?? null;
@@ -112,5 +118,9 @@ function addAncestors(directory: string, paths: Set<string>): void {
 
 function byDepthThenName(left: string, right: string): number {
   const depth = left.split("/").length - right.split("/").length;
-  return depth !== 0 ? depth : left.localeCompare(right);
+  return depth !== 0 ? depth : compareText(left, right);
+}
+
+function compareText(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }

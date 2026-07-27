@@ -29,6 +29,10 @@ import { callSiteOf, enclosingCallable, recordThrow, type RawEdge } from "./edge
 import { resolveTarget, type CrossPackageResolver } from "./edge-resolve";
 import type { ResolutionIndex } from "./resolution-index";
 import type { LoadedProject } from "./project-loader";
+import {
+  reportRelationshipFileProgress,
+  type RelationshipFileProgress,
+} from "./progress";
 
 export function collectValueRefEdges(
   loaded: LoadedProject,
@@ -36,9 +40,16 @@ export function collectValueRefEdges(
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
   resolver?: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
 ): RawEdge[] {
   const edges: RawEdge[] = [];
-  for (const sourceFile of loaded.sourceFiles) {
+  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
+    reportRelationshipFileProgress(
+      onSourceFile,
+      loaded.relativePathOf(sourceFile),
+      fileIndex + 1,
+      loaded.sourceFiles.length,
+    );
     const names = importedLocalNames(sourceFile);
     if (names.size === 0) {
       continue; // no imports → no value references to surface; skip the identifier walk entirely

@@ -82,11 +82,12 @@ export function deriveReviewDataFromContext(
   artifact: GraphArtifact,
   index: GraphIndex,
   comparisonArtifact: GraphArtifact | null = null,
+  comparisonIndex: GraphIndex | null = null,
 ): ReviewData {
   const flows = readLogicFlows(artifact);
   const comparison = comparisonArtifact === null
     ? null
-    : prepareFlowComparison(context, index, comparisonArtifact);
+    : prepareFlowComparison(context, index, comparisonArtifact, comparisonIndex);
   const affected = computeAffectedFlows(artifact.nodes, flows, context.changedFiles);
   const decorated = affected.map((flow) => decorate(flow, flows, comparison, index));
   const rows = groupPromiseResourceRows(decorated, artifact, index);
@@ -374,6 +375,7 @@ function prepareFlowComparison(
   context: ReviewContext,
   headIndex: GraphIndex,
   baseArtifact: GraphArtifact,
+  preparedBaseIndex: GraphIndex | null,
 ): FlowComparison | null {
   const flows = readLogicFlowsOrNull(baseArtifact);
   if (flows === null) {
@@ -386,7 +388,10 @@ function prepareFlowComparison(
     uncertainHeadIds: new Set(),
     headSourcePathByBasePath: new Map(),
   };
-  const baseIndex = buildGraphIndex(baseArtifact);
+  // A prepared PR session already owns the immutable comparison artifact and its index. Reusing
+  // that index avoids a second set of large maps while the browser is also retaining the HEAD
+  // graph. Callers without a prepared session keep the same pure fallback.
+  const baseIndex = preparedBaseIndex ?? buildGraphIndex(baseArtifact);
   for (const changed of context.changedFiles) {
     if (changed.status !== "renamed" || changed.previousPath === undefined) {
       continue;

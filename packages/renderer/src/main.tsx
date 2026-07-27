@@ -6,26 +6,64 @@
  */
 
 import "@xyflow/react/dist/style.css";
+import { createPrReviewProgressSnapshot, reducePrReviewProgress } from "@meridian/core";
 import { StrictMode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { bootstrap } from "./boot/bootstrap";
+import {
+  readStoredPrReviewProgressHandoff,
+  type BootProgressUpdate,
+} from "./boot/bootProgress";
+import {
+  reviewRestorePrNumber,
+  reviewRestoreRequested,
+} from "./boot/prReviewNavigationGuard";
 import { App } from "./App";
+import { BootProgress } from "./components/BootProgress";
 import { BootSplash } from "./components/BootSplash";
 
 const root = createRoot(mountElement());
-root.render(<BootSplash message="Loading blueprint…" />);
+const restoringReview = reviewRestoreRequested(window.location.search);
+const restoringPrNumber = reviewRestorePrNumber(window.location.search);
+const storedReviewProgress = restoringReview ? readStoredPrReviewProgressHandoff(true) : null;
+const initialProgress: BootProgressUpdate = {
+  stage: "graph",
+  path: restoringReview ? "review-analysis" : "graph",
+  reviewProgress: storedReviewProgress ?? (restoringReview
+    ? reducePrReviewProgress(createPrReviewProgressSnapshot(restoringPrNumber), {
+        type: "stage",
+        stage: "load-artifacts",
+      })
+    : null),
+};
+root.render(<BootProgress progress={initialProgress} />);
 start(root);
 
 async function start(target: Root): Promise<void> {
+  let latestProgress = initialProgress;
   try {
-    const { store, boot } = await bootstrap();
+    const { store, boot } = await bootstrap({
+      reviewProgressHandoff: storedReviewProgress,
+      onProgress(progress) {
+        latestProgress = progress;
+        target.render(<BootProgress progress={progress} />);
+      },
+    });
     target.render(
       <StrictMode>
         <App store={store} boot={boot} />
       </StrictMode>,
     );
   } catch (error) {
-    target.render(<BootSplash tone="error" message={describe(error)} />);
+    if (restoringReview && latestProgress.reviewProgress !== null) {
+      const reviewProgress = reducePrReviewProgress(latestProgress.reviewProgress, {
+        type: "error",
+        message: reviewError(error),
+      });
+      target.render(<BootProgress progress={{ ...latestProgress, reviewProgress }} />);
+    } else {
+      target.render(<BootSplash tone="error" message={describe(error)} />);
+    }
   }
 }
 
@@ -39,4 +77,8 @@ function mountElement(): HTMLElement {
 
 function describe(error: unknown): string {
   return error instanceof Error ? `Failed to load blueprint: ${error.message}` : "Failed to load blueprint.";
+}
+
+function reviewError(error: unknown): string | null {
+  return error instanceof Error ? error.message : null;
 }

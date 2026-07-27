@@ -37,6 +37,7 @@ import {
   startSmartGitServer,
   verifySmartHttpRemote,
 } from "./harness";
+import { isRepositoryAnalysisProgress } from "../src/server/repository-analysis-worker-job";
 
 const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
@@ -55,7 +56,14 @@ let viewUrl = "";
 let restoreGitRedirect: (() => void) | undefined;
 const unexpectedGitHubRequests: string[] = [];
 
-type PrAnalysisProgressStage = "clone" | "checkout" | "extract";
+type PrAnalysisProgressStage =
+  | "clone"
+  | "checkout"
+  | "extract"
+  | "extract-head"
+  | "extract-merge-base"
+  | "reuse-head"
+  | "reuse-merge-base";
 
 interface PrAnalysisProgress {
   stage: PrAnalysisProgressStage;
@@ -66,6 +74,7 @@ interface PrAnalysisDone {
   graphId: string;
   comparisonGraphId: string;
   headSha: string;
+  baseSha: string;
   mergeBaseSha: string;
   counts: { nodes: number; edges: number };
   changedFiles: ChangedFileManifestEntry[];
@@ -115,11 +124,14 @@ async function setup(): Promise<void> {
     "clone",
     "checkout",
     "extract",
+    "extract-head",
+    "extract-merge-base",
     "done",
   ]);
   const coldDone = terminalAnalysis(coldAnalysis);
   expect(coldDone.cache).toBe("miss");
   expect(coldDone.headSha).toBe(statusPr.headSha);
+  expect(coldDone.baseSha).toBe(statusPr.baseSha);
   expect(coldDone.mergeBaseSha).toBe(statusPr.mergeBaseSha);
   expect(coldDone.changedFiles).toEqual(statusPr.expectedCanonicalManifest);
   await assertStoredGraphs(cold.baseUrl, coldDone, statusPr, statusSpec);
@@ -637,13 +649,33 @@ async function analyzePr(baseUrl: string, sessionId: string, pr: DiffParityPr): 
       throw new Error(`PR #${pr.number} analysis record ${index + 1} is not JSON`, { cause: error });
     }
     return parsePrAnalysisRecord(value, index + 1);
-  });
+  }).filter((record): record is PrAnalysisRecord => record !== null);
 }
 
-function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord {
+function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord | null {
   const record = requireRecord(value, `analysis record ${line}`);
   const stage = record.stage;
-  if (stage === "clone" || stage === "checkout" || stage === "extract") {
+  if (
+    stage === "clone"
+    || stage === "checkout"
+    || stage === "extract"
+    || stage === "extract-head"
+    || stage === "extract-merge-base"
+    || stage === "reuse-head"
+    || stage === "reuse-merge-base"
+  ) {
+    if (record.progress !== undefined) {
+      if (stage !== "extract-head" && stage !== "extract-merge-base") {
+        throw new Error(`analysis ${stage} record cannot carry extraction progress`);
+      }
+      requireExactKeys(record, ["progress", "stage"], `analysis ${stage} progress record`);
+      if (!isRepositoryAnalysisProgress(record.progress)) {
+        throw new Error(`analysis ${stage} progress record is invalid`);
+      }
+      // This suite validates graph/diff parity, not presentation telemetry. Validate the bounded
+      // progress envelope, then omit it from the high-level stage transaction asserted below.
+      return null;
+    }
     requireExactKeys(record, ["stage"], `analysis ${stage} record`);
     return { stage };
   }
@@ -657,6 +689,7 @@ function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord {
     "comparisonGraphId",
     "counts",
     "graphId",
+    "baseSha",
     "headSha",
     "mergeBaseSha",
     "stage",
@@ -675,6 +708,7 @@ function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord {
     graphId: requireNonEmptyString(record.graphId, "analysis done graphId"),
     comparisonGraphId: requireNonEmptyString(record.comparisonGraphId, "analysis done comparisonGraphId"),
     headSha: requireSha(record.headSha, "analysis done headSha"),
+    baseSha: requireSha(record.baseSha, "analysis done baseSha"),
     mergeBaseSha: requireSha(record.mergeBaseSha, "analysis done mergeBaseSha"),
     counts: {
       nodes: requireCount(counts.nodes, "analysis done node count"),
@@ -716,6 +750,7 @@ function analysisIdentity(done: PrAnalysisDone): Omit<PrAnalysisDone, "stage" | 
     graphId: done.graphId,
     comparisonGraphId: done.comparisonGraphId,
     headSha: done.headSha,
+    baseSha: done.baseSha,
     mergeBaseSha: done.mergeBaseSha,
     counts: done.counts,
     changedFiles: done.changedFiles,

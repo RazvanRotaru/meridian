@@ -41,6 +41,7 @@ describe("canonical repository analysis", () => {
       allowEmpty: true,
       targetName: "repo",
       vcs: undefined,
+      typeScriptRevisionShards: undefined,
     });
     const request = vi.mocked(extractToArtifact).mock.calls[0][0];
     expect(request).not.toHaveProperty("language");

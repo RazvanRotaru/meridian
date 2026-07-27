@@ -11,6 +11,8 @@ import type {
   DetectionResult,
   ExtractOptions,
   ExtractionDiagnostic,
+  ExtractionProgressActivity,
+  ExtractionProgressPosition,
   ExtractionResult,
   LanguageExtractor,
   LanguageTag,
@@ -36,10 +38,21 @@ import {
   moduleSourcesById,
   portsWithin,
 } from "./extract-common";
-import { extractPerPackage } from "./extract-per-package";
+import { extractPerPackage, survivorIdsAtDepth } from "./extract-per-package";
 import { absoluteRoot } from "./paths";
 import { discoverWorkspaceUnits, workspaceFromMemberDirs, type Workspace } from "./workspace-units";
 import { manifestMemberDirs } from "./workspace-scope";
+import {
+  createExtractionProgressReporter,
+  createRelationshipFileProgress,
+  type ExtractionProgressReporter,
+} from "./progress";
+import {
+  extractTypeScriptRevisionWithPolicy,
+  type TypeScriptRevisionShardDecision,
+  type TypeScriptRevisionShardPolicy,
+  typeScriptRevisionShardDecision,
+} from "./revision-shards";
 
 // Match the extractor's default source scope without capping directory depth. Once languages are
 // selected automatically, a deep workspace must not silently lose TypeScript just because its first
@@ -50,12 +63,28 @@ export class TypeScriptExtractor implements LanguageExtractor {
   readonly language: LanguageTag = "typescript";
   readonly displayName = "TypeScript";
   readonly extensions = [".ts", ".tsx"];
+  #lastRevisionShardDecision: TypeScriptRevisionShardDecision | null = null;
+
+  constructor(private readonly revisionShardPolicy?: TypeScriptRevisionShardPolicy) {}
+
+  /** Non-semantic observation for focused tests and worker diagnostics. */
+  get lastRevisionShardDecision(): TypeScriptRevisionShardDecision | null {
+    return this.#lastRevisionShardDecision;
+  }
 
   async detect(root: string): Promise<DetectionResult> {
     return detectTypeScript(root);
   }
 
   async extract(options: ExtractOptions): Promise<ExtractionResult> {
+    if (this.revisionShardPolicy !== undefined) {
+      const workspace = perPackageWorkspace(options);
+      const decision = typeScriptRevisionShardDecision(options, workspace !== null);
+      this.#lastRevisionShardDecision = decision;
+      if (decision.useShards) {
+        return extractTypeScriptRevisionWithPolicy(options, this.revisionShardPolicy);
+      }
+    }
     return runExtraction(options);
   }
 }
@@ -104,11 +133,11 @@ export function createTypeScriptExtractor(): TypeScriptExtractor {
 }
 
 async function runExtraction(options: ExtractOptions): Promise<ExtractionResult> {
-  const workspace = multiPackageWorkspace(options);
+  const workspace = perPackageWorkspace(options);
   if (workspace) {
     return extractPerPackage(options, workspace);
   }
-  return runSingleProjectExtraction(options);
+  return runSingleProjectExtraction(options, createExtractionProgressReporter(options));
 }
 
 /**
@@ -118,7 +147,7 @@ async function runExtraction(options: ExtractOptions): Promise<ExtractionResult>
  * present (the SAME scope the single-project path uses); otherwise from a package.json scan, so
  * manifest-less monorepos still get the memory bound. `null` = stay on the single-project path.
  */
-function multiPackageWorkspace(options: ExtractOptions): Workspace | null {
+export function perPackageWorkspace(options: ExtractOptions): Workspace | null {
   if (options.project || options.include) {
     return null; // an explicit program definition wins; the caller asked for exactly that scope
   }
@@ -131,18 +160,114 @@ function multiPackageWorkspace(options: ExtractOptions): Workspace | null {
   return scanned.units.filter((unit) => unit.name !== null).length >= 2 ? scanned : null;
 }
 
-function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
+function runSingleProjectExtraction(
+  options: ExtractOptions,
+  progressReporter: ExtractionProgressReporter | undefined,
+): ExtractionResult {
+  const unit: ExtractionProgressPosition = { current: 1, total: 1, path: "." };
+  progressReporter?.({
+    language: "typescript",
+    phase: "project-load",
+    unit,
+    sourceFile: null,
+  });
   const loaded = loadProject(options);
   const diagnostics: ExtractionDiagnostic[] = [];
-  const { descriptors, moduleByFilePath } = buildStructure(loaded, NODE_ID_LANGUAGE);
+  progressReporter?.({
+    language: "typescript",
+    phase: "structure",
+    unit,
+    sourceFile: null,
+  });
+  const { descriptors, moduleByFilePath } = buildStructure(
+    loaded,
+    NODE_ID_LANGUAGE,
+    progressReporter === undefined
+      ? undefined
+      : (sourceFile, current, total) => progressReporter({
+          language: "typescript",
+          phase: "structure",
+          unit,
+          sourceFile: { current, total, path: loaded.relativePathOf(sourceFile) },
+        }),
+  );
   assignFinalIds(descriptors);
   const index = buildResolutionIndex(descriptors, moduleByFilePath, loaded.root);
-  const behavioural = collectRawEdges(loaded, descriptors, index, moduleByFilePath, diagnostics);
-  const imports = collectImportEdges(loaded, moduleByFilePath, index);
-  const valueRefs = options.valueRefs ? collectValueRefEdges(loaded, index, moduleByFilePath, diagnostics) : [];
-  const promiseResources = collectPromiseResources(loaded, index, moduleByFilePath);
+  progressReporter?.({
+    language: "typescript",
+    phase: "relationships",
+    unit,
+    sourceFile: null,
+  });
+  const relationshipProgress = (activity: ExtractionProgressActivity) =>
+    createRelationshipFileProgress(progressReporter, unit, activity);
+  const behavioural = collectRawEdges(
+    loaded,
+    descriptors,
+    index,
+    moduleByFilePath,
+    diagnostics,
+    undefined,
+    relationshipProgress("calls-and-types"),
+  );
+  const imports = collectImportEdges(
+    loaded,
+    moduleByFilePath,
+    index,
+    undefined,
+    relationshipProgress("imports"),
+  );
+  const valueRefs = options.valueRefs
+    ? collectValueRefEdges(
+        loaded,
+        index,
+        moduleByFilePath,
+        diagnostics,
+        undefined,
+        relationshipProgress("value-references"),
+      )
+    : [];
+  const promiseResources = collectPromiseResources(
+    loaded,
+    index,
+    moduleByFilePath,
+    undefined,
+    {
+      discovery: relationshipProgress("promise-discovery"),
+      links: relationshipProgress("promise-links"),
+    },
+  );
+  const depth = options.depth ?? "function";
+  const flowKeepIds = survivorIdsAtDepth(descriptors, depth);
+  const flows = buildLogicFlows(
+    descriptors,
+    index,
+    flowKeepIds,
+    moduleSourcesById(loaded, moduleByFilePath),
+    promiseResources.flowIds,
+    relationshipProgress("logic-flows"),
+  );
+  const collectedPorts = collectPorts(
+    loaded,
+    index,
+    moduleByFilePath,
+    undefined,
+    relationshipProgress("ports"),
+  );
   const nodes = [...buildGraphNodes(descriptors), ...promiseResources.nodes];
+  progressReporter?.({
+    language: "typescript",
+    phase: "stitch",
+    unit: null,
+    sourceFile: null,
+  });
   const implementedBy = deriveImplementedByEdges(behavioural, nodes, implementationMembers(descriptors));
+  progressReporter?.({
+    language: "typescript",
+    phase: "finalize",
+    unit: null,
+    sourceFile: null,
+  });
   const built = buildEdges([
     ...behavioural,
     ...implementedBy,
@@ -150,16 +275,13 @@ function runSingleProjectExtraction(options: ExtractOptions): ExtractionResult {
     ...valueRefs,
     ...promiseResources.edges,
   ], options);
-  const collapsed = collapseToDepth(nodes, built.edges, options.depth ?? "function");
+  const collapsed = collapseToDepth(nodes, built.edges, depth);
   const keepIds = new Set(collapsed.nodes.map((node) => node.id));
-  const flows = buildLogicFlows(
-    descriptors,
-    index,
+  const ports = portsWithin(
+    collectedPorts,
     keepIds,
-    moduleSourcesById(loaded, moduleByFilePath),
-    promiseResources.flowIds,
+    moduleIdsByRelPath(loaded, moduleByFilePath),
   );
-  const ports = portsWithin(collectPorts(loaded, index, moduleByFilePath), keepIds, moduleIdsByRelPath(loaded, moduleByFilePath));
   appendDropDiagnostics(diagnostics, built);
   const stats = buildStats({
     files: loaded.sourceFiles.length,

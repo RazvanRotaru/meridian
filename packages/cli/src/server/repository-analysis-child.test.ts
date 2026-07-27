@@ -11,9 +11,12 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { SCHEMA_VERSION, type GraphArtifact } from "@meridian/core";
+import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
+import { analysisRuntimeFingerprint } from "../analysis-runtime-fingerprint";
 import {
   runRepositoryAnalysisChild,
   runRepositoryArtifactRestampChild,
+  type RepositoryAnalysisProgress,
   verifyRepositoryArtifactFile,
 } from "./repository-analysis-child";
 
@@ -32,6 +35,7 @@ describe("repository analysis child", () => {
     const artifactOutputPath = join(directory, "artifact.json");
     const branchOutputPath = join(directory, "artifact-main.json");
     const root = join(REPO, "examples", "orders-api");
+    const progress: RepositoryAnalysisProgress[] = [];
 
     const result = await runRepositoryAnalysisChild({
       absoluteRoot: root,
@@ -41,8 +45,23 @@ describe("repository analysis child", () => {
     }, {
       artifactOutputPath,
       branchVariant: { artifactOutputPath: branchOutputPath, branch: "main" },
+      progress: {
+        context: {
+          version: 1,
+          revision: {
+            kind: "head",
+            commit: "a".repeat(40),
+            execution: { current: 1, total: 2 },
+          },
+        },
+        onProgress: async (event) => {
+          progress.push(event);
+          throw new Error("async parent progress consumer failed");
+        },
+      },
       timeoutMs: 30_000,
     });
+    await new Promise<void>((resolve) => setImmediate(resolve));
 
     const artifact = JSON.parse(readFileSync(artifactOutputPath, "utf8")) as GraphArtifact;
     expect(result.material).toMatchObject({
@@ -61,6 +80,22 @@ describe("repository analysis child", () => {
     expect(result).not.toHaveProperty("artifact");
     expect(result).not.toHaveProperty("nodes");
     expect(result).not.toHaveProperty("edges");
+    expect(progress[0]).toMatchObject({
+      version: 1,
+      revision: {
+        kind: "head",
+        commit: "a".repeat(40),
+        execution: { current: 1, total: 2 },
+      },
+      language: "typescript",
+      phase: "project-load",
+    });
+    expect(progress.map((event) => event.phase)).toEqual(expect.arrayContaining([
+      "structure",
+      "relationships",
+      "stitch",
+      "finalize",
+    ]));
     expect(await verifyRepositoryArtifactFile(
       artifactOutputPath,
       result.byteLength,
@@ -83,6 +118,41 @@ describe("repository analysis child", () => {
       result.summary,
       controller.signal,
     )).rejects.toBe(reason);
+  }, 30_000);
+
+  it("rejects shard execution when the fresh child runtime differs from parent provenance", async () => {
+    const directory = temporaryDirectory();
+    const root = join(REPO, "examples", "orders-api");
+    const runtime = analysisRuntimeFingerprint();
+    const policy: TypeScriptRevisionShardPolicy = {
+      version: 1,
+      mode: "verified-experimental",
+      admission: null,
+      cacheDir: join(directory, "shards"),
+      treeOid: "a".repeat(40),
+      buildFingerprint: runtime.buildFingerprint === "f".repeat(64)
+        ? "e".repeat(64)
+        : "f".repeat(64),
+      analysisPolicyFingerprint: "b".repeat(64),
+      runtimeFingerprint: {
+        nodeVersion: runtime.nodeVersion,
+        platform: runtime.platform,
+        arch: runtime.arch,
+        typescriptVersion: runtime.typescriptVersion,
+        tsMorphVersion: runtime.tsMorphVersion,
+      },
+    };
+
+    await expect(runRepositoryAnalysisChild({
+      absoluteRoot: root,
+      cwd: root,
+    }, {
+      artifactOutputPath: join(directory, "artifact.json"),
+      typeScriptRevisionShards: policy,
+      timeoutMs: 30_000,
+    })).rejects.toThrow(
+      "TypeScript revision-shard runtime provenance differs before extraction",
+    );
   }, 30_000);
 
   it("validates and restamps branch provenance entirely in a one-shot child", async () => {
@@ -126,6 +196,54 @@ describe("repository analysis child", () => {
       workerEntry: "/does/not/exist.cjs",
     })).rejects.toBe(reason);
   });
+
+  it("fails closed when a worker sends a 513th progress event", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const workerEntry = customWorker(directory, `
+      process.once("message", (message) => {
+        const progress = {
+          version: 1,
+          revision: message.progressContext.revision,
+          language: "typescript",
+          phase: "structure",
+          unit: { current: 1, total: 1, path: ".", pathTruncated: false },
+          sourceFile: null,
+        };
+        for (let current = 0; current < 513; current += 1) {
+          process.send({ type: "progress", id: message.id, progress });
+        }
+        setInterval(() => {}, 1000);
+      });
+    `);
+    let observations = 0;
+
+    await expect(runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      workerEntry,
+      terminateGraceMs: 40,
+      processTreeKillWaitMs: 2_000,
+      progress: {
+        context: {
+          version: 1,
+          revision: {
+            kind: "head",
+            commit: "a".repeat(40),
+            execution: { current: 1, total: 2 },
+          },
+        },
+        onProgress: () => { observations += 1; },
+      },
+    })).rejects.toMatchObject({
+      exitCode: 1,
+      message: "repository analysis worker exceeded the progress event limit",
+    });
+    expect(observations).toBe(512);
+    expect(existsSync(artifactOutputPath)).toBe(false);
+  }, 15_000);
 
   it("kills the complete process group and rejects only after descendants disappear", async () => {
     const directory = temporaryDirectory();
@@ -278,6 +396,123 @@ describe("repository analysis child", () => {
     await expect(pending).rejects.toBe(reason);
   }, 15_000);
 
+  it("strips ambient Node injection while preserving explicit worker arguments", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const environmentPath = `${artifactOutputPath}.environment`;
+    const workerEntry = customWorker(directory, `
+      const { writeFileSync } = require("node:fs");
+      process.once("message", (message) => {
+        writeFileSync(message.artifactOutputPath + ".environment", JSON.stringify({
+          nodeOptions: process.env.NODE_OPTIONS ?? null,
+          nodePath: process.env.NODE_PATH ?? null,
+          tsxTsconfig: process.env.TSX_TSCONFIG_PATH ?? null,
+          tsxAmbient: process.env.TSX_AMBIENT_SETTING ?? null,
+          execArgv: process.execArgv,
+        }));
+        setInterval(() => {}, 1000);
+      });
+    `);
+    const previousNodeOptions = process.env.NODE_OPTIONS;
+    const previousNodePath = process.env.NODE_PATH;
+    const previousTsxTsconfig = process.env.TSX_TSCONFIG_PATH;
+    const previousTsxAmbient = process.env.TSX_AMBIENT_SETTING;
+    process.env.NODE_OPTIONS = "--no-warnings";
+    process.env.NODE_PATH = join(directory, "ambient-modules");
+    process.env.TSX_TSCONFIG_PATH = join(directory, "ambient-tsconfig.json");
+    process.env.TSX_AMBIENT_SETTING = "must-not-reach-worker";
+    const controller = new AbortController();
+    const reason = new Error("environment probe complete");
+    const pending = runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      signal: controller.signal,
+      workerEntry,
+      workerExecArgv: ["--trace-warnings"],
+      workerHeapMb: 1_024,
+    });
+    try {
+      await waitForFile(environmentPath);
+      expect(JSON.parse(readFileSync(environmentPath, "utf8"))).toEqual({
+        nodeOptions: null,
+        nodePath: null,
+        tsxTsconfig: null,
+        tsxAmbient: null,
+        execArgv: [
+          "--trace-warnings",
+          "--max-old-space-size=1024",
+        ],
+      });
+    } finally {
+      controller.abort(reason);
+      try {
+        await expect(pending).rejects.toBe(reason);
+      } finally {
+        if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS;
+        else process.env.NODE_OPTIONS = previousNodeOptions;
+        if (previousNodePath === undefined) delete process.env.NODE_PATH;
+        else process.env.NODE_PATH = previousNodePath;
+        if (previousTsxTsconfig === undefined) delete process.env.TSX_TSCONFIG_PATH;
+        else process.env.TSX_TSCONFIG_PATH = previousTsxTsconfig;
+        if (previousTsxAmbient === undefined) delete process.env.TSX_AMBIENT_SETTING;
+        else process.env.TSX_AMBIENT_SETTING = previousTsxAmbient;
+      }
+    }
+  }, 15_000);
+
+  it("pins source workers to the CLI cwd and tsconfig while stripping ambient TSX settings", async () => {
+    const directory = temporaryDirectory();
+    const artifactOutputPath = join(directory, "artifact.json");
+    const environmentPath = `${artifactOutputPath}.environment`;
+    const workerEntry = customTypeScriptWorker(directory, `
+      import { writeFileSync } from "node:fs";
+      process.once("message", (message: { artifactOutputPath: string }) => {
+        writeFileSync(message.artifactOutputPath + ".environment", JSON.stringify({
+          cwd: process.cwd(),
+          tsxTsconfig: process.env.TSX_TSCONFIG_PATH ?? null,
+          tsxAmbient: process.env.TSX_AMBIENT_SETTING ?? null,
+        }));
+        setInterval(() => {}, 1000);
+      });
+    `);
+    const previousTsxTsconfig = process.env.TSX_TSCONFIG_PATH;
+    const previousTsxAmbient = process.env.TSX_AMBIENT_SETTING;
+    process.env.TSX_TSCONFIG_PATH = join(directory, "ambient-tsconfig.json");
+    process.env.TSX_AMBIENT_SETTING = "must-not-reach-worker";
+    const controller = new AbortController();
+    const reason = new Error("source environment probe complete");
+    const pending = runRepositoryAnalysisChild({
+      absoluteRoot: "/unused",
+      cwd: "/unused",
+    }, {
+      artifactOutputPath,
+      signal: controller.signal,
+      workerEntry,
+      workerHeapMb: 1_024,
+    });
+    try {
+      await waitForFile(environmentPath);
+      const expectedTsconfig = join(REPO, "packages", "cli", "tsconfig.json");
+      expect(JSON.parse(readFileSync(environmentPath, "utf8"))).toEqual({
+        cwd: dirname(expectedTsconfig),
+        tsxTsconfig: expectedTsconfig,
+        tsxAmbient: null,
+      });
+    } finally {
+      controller.abort(reason);
+      try {
+        await expect(pending).rejects.toBe(reason);
+      } finally {
+        if (previousTsxTsconfig === undefined) delete process.env.TSX_TSCONFIG_PATH;
+        else process.env.TSX_TSCONFIG_PATH = previousTsxTsconfig;
+        if (previousTsxAmbient === undefined) delete process.env.TSX_AMBIENT_SETTING;
+        else process.env.TSX_AMBIENT_SETTING = previousTsxAmbient;
+      }
+    }
+  }, 15_000);
+
   it("stream-verifies the child digest before creating a verified-file proof", async () => {
     const directory = temporaryDirectory();
     const artifactOutputPath = join(directory, "artifact.json");
@@ -367,6 +602,12 @@ function temporaryDirectory(): string {
 
 function customWorker(directory: string, source: string): string {
   const path = join(directory, `worker-${Math.random().toString(16).slice(2)}.cjs`);
+  writeFileSync(path, source, { mode: 0o600 });
+  return path;
+}
+
+function customTypeScriptWorker(directory: string, source: string): string {
+  const path = join(directory, `worker-${Math.random().toString(16).slice(2)}.ts`);
   writeFileSync(path, source, { mode: 0o600 });
   return path;
 }

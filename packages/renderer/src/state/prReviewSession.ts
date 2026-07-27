@@ -115,6 +115,8 @@ export function swapToPreparedArtifact(
   invalidateArtifactCaches: () => void,
   capability: PreparedSyntheticCapability = currentSyntheticCapability(get()),
   comparison: GraphArtifact | null = null,
+  /** Reuse the already-built boot index when direct preparation booted this exact HEAD graph. */
+  preparedIndex?: GraphIndex,
 ): void {
   const state = get();
   // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
@@ -131,7 +133,7 @@ export function swapToPreparedArtifact(
   invalidateArtifactCaches();
   set({
     artifact: prepared,
-    index: buildGraphIndex(prepared),
+    index: preparedIndex ?? buildGraphIndex(prepared),
     prReviewComparison: comparison === null ? null : { artifact: comparison, index: buildGraphIndex(comparison) },
     prReviewBaseline: baseline,
     prPreparedArtifactCurrent: true,

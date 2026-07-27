@@ -9,6 +9,7 @@ import {
   PR_REVIEW_LEAVE_MESSAGE,
   REVIEW_COMMENT_LEAVE_MESSAGE,
   prReviewNeedsNavigationLock,
+  reviewRestorePrNumber,
   reviewRestoreRequested,
   startPrReviewNavigationGuard,
 } from "./prReviewNavigationGuard";
@@ -98,12 +99,15 @@ describe("PR review navigation gesture lock", () => {
     expect(reviewRestoreRequested("?rev=1")).toBe(false);
     expect(reviewRestoreRequested("?prn=0&rev=1")).toBe(false);
     expect(reviewRestoreRequested("?prn=nope&rev=1")).toBe(false);
+    expect(reviewRestorePrNumber("?view=modules&prn=7&rev=1")).toBe(7);
+    expect(reviewRestorePrNumber("?view=modules&prn=8")).toBeNull();
   });
 
   it("installs early, follows store transitions, cancels horizontal wheel, and cleans up", () => {
     const browser = stubBrowser("?view=modules&prn=7&rev=1");
     const store = fakeStore(IDLE);
-    const guard = startPrReviewNavigationGuard();
+    const onAcceptedPopState = vi.fn();
+    const guard = startPrReviewNavigationGuard({ onAcceptedPopState });
 
     // URL restoration is protected synchronously, before a store is bound.
     expect(browser.classes.has("mrd-pr-review-navigation-lock")).toBe(true);
@@ -151,6 +155,7 @@ describe("PR review navigation gesture lock", () => {
     expect(browser.confirm).toHaveBeenCalledWith(PR_REVIEW_LEAVE_MESSAGE);
     expect(canceledBack.stopImmediatePropagation).toHaveBeenCalledOnce();
     expect(browser.forward).toHaveBeenCalledOnce();
+    expect(onAcceptedPopState).not.toHaveBeenCalled();
 
     // The compensating Forward event is swallowed without prompting or restoring store state.
     const compensatingForward = popStateEvent();
@@ -162,6 +167,7 @@ describe("PR review navigation gesture lock", () => {
     const acceptedBack = popStateEvent();
     browser.popstate!(acceptedBack.event);
     expect(acceptedBack.stopImmediatePropagation).not.toHaveBeenCalled();
+    expect(onAcceptedPopState).toHaveBeenCalledWith("?view=modules&prn=7&rev=1");
 
     const composer = setReviewLineComposerBody(
       openReviewLineComposer(null, ARTIFACT_COMPOSER_TARGET),

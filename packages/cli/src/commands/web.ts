@@ -20,6 +20,7 @@ import { CliError, EXIT } from "../errors";
 import { isLoopbackHost } from "../server/web-guards";
 import { repositoryRetentionOptionsFromEnv } from "../server/web-repository-retention";
 import { graphRetentionOptionsFromEnv } from "../server/web-graph-retention";
+import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript";
 
 export interface WebOptions extends GlobalOptions {
   port: number;
@@ -27,6 +28,8 @@ export interface WebOptions extends GlobalOptions {
   open: boolean;
   githubClientId?: string;
   refreshCache?: boolean;
+  typescriptIncremental?: TypeScriptRevisionShardMode;
+  experimentalPrRevisionCache?: boolean;
   overlay?: string;
   env?: string;
   sourceRoot?: string;
@@ -41,6 +44,18 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     const flag = options.allowSyntheticPrExecution === true
       ? "--allow-synthetic-pr-execution"
       : "--allow-synthetic-execution";
+    throw new CliError(EXIT.usage, `${flag} requires a loopback --host`);
+  }
+  if (
+    (
+      options.typescriptIncremental !== undefined
+      || options.experimentalPrRevisionCache === true
+    )
+    && !isLoopbackHost(options.host)
+  ) {
+    const flag = options.experimentalPrRevisionCache === true
+      ? "--experimental-pr-revision-cache"
+      : `--typescript-incremental ${options.typescriptIncremental}`;
     throw new CliError(EXIT.usage, `${flag} requires a loopback --host`);
   }
   const cwd = resolveCwd(options.cwd);
@@ -76,6 +91,8 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
       `Graph cache maintenance failed: ${error instanceof Error ? error.message : String(error)}`,
     ),
     refreshCache: options.refreshCache,
+    typeScriptRevisionShardMode: options.typescriptIncremental,
+    experimentalPrRevisionCache: options.experimentalPrRevisionCache === true,
     allowSyntheticExecution: options.allowSyntheticExecution === true,
     allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
   });

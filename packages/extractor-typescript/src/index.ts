@@ -6,3 +6,22 @@
  */
 
 export { TypeScriptExtractor, createTypeScriptExtractor } from "./extractor";
+export {
+  TYPESCRIPT_REVISION_SHARD_MODES,
+  extractTypeScriptRevisionWithPolicy,
+  isTypeScriptRevisionShardPolicy,
+  requireTypeScriptRevisionShardPolicy,
+  typeScriptRevisionShardDecision,
+} from "./revision-shards";
+export type {
+  RevisionShardAdmissionCapability,
+  RevisionShardAdmissionSigner,
+  RevisionShardAdmissionVerifier,
+} from "./incremental-poc/admission";
+export { isRevisionShardAdmissionCapability } from "./incremental-poc/admission";
+export type {
+  TypeScriptRevisionShardDecision,
+  TypeScriptRevisionShardMode,
+  TypeScriptRevisionShardPolicy,
+  TypeScriptRevisionShardRuntimeFingerprint,
+} from "./revision-shards";

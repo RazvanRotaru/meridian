@@ -116,6 +116,8 @@ export interface RepositoryWorkspaceLease {
   readonly remoteUrl: string;
   readonly commit: string;
   readonly repoDir: string;
+  /** True only while this process still owns the cross-process workspace lease marker. */
+  isActive(): boolean;
   release(): void;
   [Symbol.dispose](): void;
 }
@@ -2022,6 +2024,7 @@ export class WebRepositoryMirror implements RepositoryMirror {
       remoteUrl: workspace.remoteUrl,
       commit: workspace.commit,
       repoDir: workspace.repoDir,
+      isActive: () => !released,
       release,
       [Symbol.dispose]: release,
     };
