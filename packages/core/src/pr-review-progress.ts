@@ -170,7 +170,7 @@ export const PR_REVIEW_PROGRESS_MODEL = Object.freeze({
       ports: "ports",
       exports: "exports",
     },
-    executionLabel: "commit",
+    executionLabel: "review graph",
     unitLabel: "unit",
     sourceFileLabel: "file",
   },

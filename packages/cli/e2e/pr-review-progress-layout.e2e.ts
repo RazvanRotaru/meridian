@@ -87,6 +87,8 @@ describe.skipIf(!chromiumInstalled())("PR review progress layout (headless chrom
     expect(maximum.detailText).toContain(maximumUnbrokenPath);
     expect(maximum.detailTitle).toContain(maximumUnbrokenPath);
     expect(maximum.lineClamp).toBe("7");
+    expect(shortPath.detailText).toContain("review graph 1/2");
+    expect(shortPath.detailText).not.toContain("commit 1/2");
   });
 
   it("preserves a reused HEAD received from the preparation stream", async () => {

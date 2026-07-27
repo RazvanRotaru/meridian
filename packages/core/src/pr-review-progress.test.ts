@@ -105,7 +105,7 @@ describe("canonical PR-review progress", () => {
     });
     expect(observed.progress).toMatchObject({ futureField: { safely: "retained" } });
     expect(prReviewProgressStatusText(observed)).toBe(
-      "Extracting PR HEAD graph… PR HEAD abcdef0 · TypeScript · commit 1/2 · structure · unit 2/4 · file 3/9 · …/src/index.ts",
+      "Extracting PR HEAD graph… PR HEAD abcdef0 · TypeScript · review graph 1/2 · structure · unit 2/4 · file 3/9 · …/src/index.ts",
     );
 
     const malformed = reducePrReviewProgress(createPrReviewProgressSnapshot(), {
@@ -158,7 +158,7 @@ describe("canonical PR-review progress", () => {
     });
 
     expect(prReviewProgressStatusText(observed)).toBe(
-      "Extracting merge-base graph… merge base 0123456 · Python · commit 2/2 · relationships · unit 3/5",
+      "Extracting merge-base graph… merge base 0123456 · Python · review graph 2/2 · relationships · unit 3/5",
     );
   });
 
@@ -187,7 +187,7 @@ describe("canonical PR-review progress", () => {
     });
 
     expect(prReviewProgressStatusText(observed)).toBe(
-      "Extracting PR HEAD graph… PR HEAD abcdef0 · TypeScript · commit 1/2 · relationships"
+      "Extracting PR HEAD graph… PR HEAD abcdef0 · TypeScript · review graph 1/2 · relationships"
       + " · logic flows · unit 2/29 · file 1250/4535 · src/aria/app/assistant/index.ts",
     );
   });

@@ -4618,14 +4618,9 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/meta"))).toBe(false);
   });
 
-  it.each([
-    ["HEAD moved", "pr-head-new-head", "pr-base-new-head"],
-    ["base moved", "pr-head-new-base", "pr-base-boot"],
-  ])("does not reuse the boot pair when %s changes its immutable head graph id", async (
-    _reason,
-    nextHeadGraphId,
-    nextComparisonGraphId,
-  ) => {
+  it("does not reuse the boot pair when HEAD moves to a new immutable graph id", async () => {
+    const nextHeadGraphId = "pr-head-new-head";
+    const nextComparisonGraphId = "pr-base-new-head";
     const bootHeadGraphId = "pr-head-boot";
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = new URL(input.toString(), "http://meridian.local");

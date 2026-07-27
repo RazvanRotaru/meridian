@@ -72,11 +72,15 @@ When that flag is explicitly enabled, two strict immutable roles are eligible:
   fingerprints (`mode: "changed"`). The moving base-tip commit is deliberately absent: once the
   exact merge-base is resolved, it is not an input to HEAD extraction.
 
-Pair slots and graph IDs remain base-tip-sensitive. A base update therefore still resolves a new
-pair and obtains its own workspace and lease set, but an unchanged HEAD plus unchanged merge-base
-can reference the same verified immutable HEAD bytes without running analysis again. Any artifact
-that requires empty-side hints remains pair-local. A populated comparison for a whole-subtree
-deletion can still be canonical and shared; a materialized empty side cannot.
+Pair slots remain base-tip-sensitive so every request re-resolves and records the current target
+branch. Semantic graph IDs do not: the HEAD ID is bound to the exact HEAD, exact merge-base, graph
+bytes, and synthetic overlay, while the comparison ID is bound to the exact merge-base artifact.
+A base update therefore obtains a new workspace and pair snapshot, but an unchanged HEAD plus
+unchanged merge-base can reuse both verified immutable artifacts and preserve both graph IDs. This
+also lets renderer restoration retain its already-decoded HEAD graph and index. The moving base-tip
+SHA remains explicit response and pair provenance. Any artifact that requires empty-side hints
+remains pair-local. A populated comparison for a whole-subtree deletion can still be canonical and
+shared; a materialized empty side cannot.
 
 The version-2 input identity is SHA-256-addressed over:
 
@@ -185,9 +189,9 @@ Recorded commands and outcomes:
 |---|---|
 | `pnpm --filter @meridian/cli exec vitest run src/analysis-runtime-fingerprint.test.ts src/server/web-pr-cache.test.ts src/server/web-pr-analyze.test.ts --testTimeout=30000` | 3 files, 54 tests passed |
 | From `packages/cli`: `./node_modules/.bin/vitest run src/server/web-pr-cache.test.ts --pool=forks --maxWorkers=1` | 1 file, 9 tests passed |
-| `pnpm --filter @meridian/cli exec vitest run src/server/web-pr-analyze.test.ts` | 1 file, 41 tests passed in 1.07 s |
+| `pnpm --filter @meridian/cli exec vitest run src/server/web-pr-analyze.test.ts src/server/web-pr-cache.test.ts` | 2 files, 59 tests passed |
 | `pnpm --filter @meridian/cli exec vitest run src/server/web-server.test.ts` | 1 file, 27 tests passed in 4.26 s with localhost sandbox escalation |
-| `pnpm --filter @meridian/cli exec vitest run --exclude src/server/folder-dialog.test.ts --testTimeout=30000` | 72 files, 748 passed and 3 skipped |
+| `pnpm --filter @meridian/cli exec vitest run --exclude src/server/folder-dialog.test.ts --testTimeout=30000` | 72 files, 749 passed and 3 skipped |
 | `pnpm --filter @meridian/cli exec vitest run src/server/folder-dialog.test.ts --testTimeout=30000` | 1 file, 5 tests passed |
 | Focused exact differential/admitted-reuse/file-parity suites | 3 files, 24 tests passed |
 | Focused worker/runtime/shard-policy suites | 4 files, 38 tests passed |
@@ -200,7 +204,7 @@ Recorded commands and outcomes:
 | `pnpm --filter @meridian/cli typecheck` | Passed |
 | Focused renderer boot/navigation/PR suites | 7 files, 139 tests passed |
 | `pnpm --filter @meridian/renderer typecheck` | Passed |
-| `pnpm --filter @meridian/renderer test` | 236 files, 2,204 tests passed |
+| `pnpm --filter @meridian/renderer test` | 236 files, 2,203 tests passed |
 | `pnpm --filter @meridian/cli exec vitest run --config vitest.e2e.config.ts e2e/pr-review-progress-layout.e2e.ts` | 1 file, 2 headless-browser geometry tests passed; short, pictured, maximum unbroken, and reused states retained the same reserved geometry with no horizontal overflow |
 | `pnpm typecheck` | All 6 workspace packages passed |
 | `pnpm build` | All package builds and renderer copy passed; existing renderer large-chunk warning remains |
@@ -220,10 +224,11 @@ The unpartitioned CLI pool twice had only the folder-dialog child-start fixture 
 30-second test timeout. No product timeout changed.
 
 Focused coverage includes direct preparation, selected-HEAD movement rejection, live ref
-revalidation, exact-ID boot HEAD/index reuse with no second HEAD artifact/metadata fetch, moved-ID
-replacement, sibling merge-base reuse, refresh bypass, corruption fallback, subdirectory
-separation, stage streaming, landing-page routing without `/api/generate`, and cancellation of an
-accepted Back navigation during initial review restoration. The hardened suites additionally cover
+revalidation, unchanged semantic IDs when only the base tip advances, exact-ID boot HEAD/index reuse
+with no second HEAD artifact/metadata fetch, moved-ID replacement, sibling merge-base reuse, refresh
+bypass, corruption fallback, subdirectory separation, stage streaming, landing-page routing without
+`/api/generate`, and cancellation of an accepted Back navigation during initial review restoration.
+The hardened suites additionally cover
 default-off shared-reference rejection, Ed25519 receipt forgery/key rotation/pre-receipt misses,
 admitted non-publication and shadow repair, authority persistence/permissions, exact active-workspace
 lease matching, global-lock fencing/recovery/host isolation, bounded cache reads/enumeration,
@@ -388,6 +393,17 @@ conservative misses for a changed merge-base, changed HEAD ref, changed subdirec
 refresh, corruption, and empty-side hints. The new path is test-proven but was not re-seeded with
 another eight-minute live run after the final process restart.
 
+A later operational reproduction isolated the remaining duplicate. Two pair snapshots started at
+14:00:07 and 14:10:11 with the same HEAD
+`b0319d2020e6d23355fce91f79ce20b7ce50baac`, the same merge base
+`2edfc205a2669c0dd02488ebbf443800f7e81bd5`, and byte-identical HEAD/base artifacts of
+344,406,684 and 360,102,448 bytes. Only the selected base tip changed, from `1770ca2…` to
+`7d77860…`. The running service did not have `--experimental-pr-revision-cache`, so the new
+base-tip pair slot performed both semantic extractions again. The fix keeps the pair slot and
+reported base SHA current while deriving the HEAD graph ID from the semantic merge base. A
+landing-prepare to live-analyze regression now proves `reuse-head` plus `reuse-merge-base`, stable
+graph IDs, and no additional analysis for that transition.
+
 The post-navigation lane was profiled independently for the same pair:
 
 | Artifact | Loopback transfer (3 runs) | Read | JSON parse | Index | Standalone max RSS |
@@ -405,7 +421,7 @@ until private-code retention has an explicit security policy.
 
 Progress now travels through the extractor and worker as presentation-only telemetry. Each detailed
 event identifies the exact 40- or 64-character revision OID, whether it is HEAD or merge-base, its
-position in the two-commit execution, and real language work. TypeScript reports package/unit
+position in the two-review-graph execution, and real language work. TypeScript reports package/unit
 position plus source-file position within the actually loaded project. Python separately reports
 all discovered files while parsing and all successfully parsed files while building structure, so
 a syntax-error file is never presented as structurally analyzed. TypeScript cannot truthfully know
@@ -518,10 +534,11 @@ structure/relationship traversal. After a server restart, normal-policy `admitte
 `cache:"hit"` in 1.38s. All runs produced 59,970 nodes and 230,792 edges.
 
 Renderer restoration showed the same five-step model and revision lanes as landing preparation,
-including commit/unit/file/activity progress for TypeScript and Python. The reserved card remained
+including review-graph/unit/file/activity progress for TypeScript and Python. The reserved card remained
 stable while long paths and separate semantic traversals changed. It then rendered the complete
 21-file PR graph review with affected flows and submission controls. The final app remains in
-`meridian-app-99f9` on port 4187 using `admitted` without forced refresh.
+`meridian-app-99f9` on port 4187 using `admitted` plus the loopback-only exact-revision cache,
+without forced refresh.
 
 The complete model, parity matrix, disk/RSS measurements, risks, and production sequence are in
 `docs/revision-safe-incremental-extraction-poc.md`.

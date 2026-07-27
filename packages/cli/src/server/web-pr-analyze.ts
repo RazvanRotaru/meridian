@@ -184,7 +184,7 @@ async function streamAnalysis(
             cached.sourceLease,
             body,
             cached.headSha,
-            cached.baseSha,
+            cached.mergeBaseSha,
             cached.artifactMaterial,
           );
           if (head.existingPin !== undefined) existingPins.push(head.existingPin);
@@ -274,7 +274,7 @@ async function prepareHeadPublication(
   sourceLease: RepositoryWorkspaceLease,
   body: PrAnalyzeRequest,
   headSha: string,
-  baseSha: string,
+  mergeBaseSha: string,
   material: VerifiedFileArtifactMaterial,
 ): Promise<{
   graphId: string;
@@ -313,7 +313,7 @@ async function prepareHeadPublication(
       : null,
   };
   const syntheticDigest = createHash("sha256").update(JSON.stringify(synthetic)).digest("hex");
-  const graphId = prGraphId(source, body, headSha, baseSha, material.byteDigest, syntheticDigest);
+  const graphId = prGraphId(source, body, headSha, mergeBaseSha, material.byteDigest, syntheticDigest);
   const existingPin = ctx.graphStore.acquire(graphId);
   const sourceRoot = existingPin?.descriptor.sourceRoot ?? sourceDir;
   return {
@@ -419,12 +419,18 @@ function directPreparationDone(
   };
 }
 
-/** Immutable snapshot id: neither a force-push nor an explicit cache refresh can rebind a client. */
+/**
+ * Immutable semantic snapshot id.
+ *
+ * The moving base-tip SHA is revalidated and returned as provenance, but the extracted HEAD graph
+ * depends on the exact merge base. Advancing the target branch without changing that merge base
+ * must therefore preserve this id so the already-decoded boot graph can be reused.
+ */
 function prGraphId(
   source: GitHubSource,
   body: PrAnalyzeRequest,
   headSha: string,
-  baseSha: string,
+  mergeBaseSha: string,
   artifactDigest: string,
   syntheticDigest: string,
 ): string {
@@ -436,7 +442,7 @@ function prGraphId(
     body.prNumber,
     body.headRef,
     headSha,
-    baseSha,
+    mergeBaseSha,
     artifactDigest,
     syntheticDigest,
   ].join(" ");

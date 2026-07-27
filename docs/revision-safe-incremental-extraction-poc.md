@@ -366,15 +366,25 @@ browser:
 | New server process, `admitted`, normal cache policy | 2m 34s | 62 | Persisted authority and 30 receipts reused all 30 unique base/HEAD TypeScript shards across restart; same counts |
 | Exact pair repeat in that final process | 1.38s | 1 | Single `done` event, `cache:"hit"`, identical HEAD and comparison graph IDs |
 
+Pair cache slots continue to include the current base-tip SHA so live target movement is always
+revalidated. The materialized graph identity instead uses the exact semantic merge base: when only
+the target tip advances and both HEAD and merge base remain unchanged, verified immutable
+whole-revision objects are republished into the current pair without analysis, and both graph IDs
+remain stable. A landing-prepare to live-analyze regression covers that handoff. This prevents both
+duplicate extraction and a redundant renderer HEAD decode/index pass while retaining the new base
+tip in pair metadata and the streamed result.
+
 The shadow-admitted namespace contains exactly 30 shard files, 30 admission receipts, and two
 revision manifests: 27 base units plus 28 HEAD units minus 25 shared shards. It occupies 819 MiB by
 `du`. The final persistent process runs on `127.0.0.1:4187` in tmux session
-`meridian-app-99f9` with `--typescript-incremental admitted` and no forced refresh.
+`meridian-app-99f9` with `--typescript-incremental admitted`,
+`--experimental-pr-revision-cache`, and no forced refresh. The latter remains loopback-only and
+process-scoped; it is evidence for this POC, not a production default.
 
 The in-app browser observed one canonical five-step model on renderer restoration and the same
 HEAD/merge-base lanes and formatter used by landing preparation. Live examples included
-`PR HEAD 91ad7ee · TypeScript · commit 1/2 · unit 2/28 · file 3303/4528` and merge-base Python
-`commit 2/2 · file 849/1043`. The fixed-height card did not jump when paths or activities changed.
+`PR HEAD 91ad7ee · TypeScript · review graph 1/2 · unit 2/28 · file 3303/4528` and merge-base Python
+`review graph 2/2 · file 849/1043`. The fixed-height card did not jump when paths or activities changed.
 The final review rendered 21 changed graph files, affected logic flows, added/deleted symbols,
 blast-radius counts, and submission controls.
 
@@ -482,7 +492,7 @@ pnpm --filter @meridian/extractor-typescript test
 
 pnpm --filter @meridian/cli exec vitest run \
   --exclude src/server/folder-dialog.test.ts --testTimeout=30000
-  72 files, 748 tests passed and 3 intentionally skipped
+  72 files, 749 tests passed and 3 intentionally skipped
 
 pnpm --filter @meridian/cli exec vitest run \
   src/server/folder-dialog.test.ts --testTimeout=30000
@@ -509,7 +519,7 @@ with a 30-second test timeout. This is recorded as a test scheduling flake, not 
 reason to change the unrelated picker contract.
 
 Earlier unchanged-package coverage in this worktree also passed core (23 files/205 tests), Python
-extractor (9 files/54 tests), and renderer (236 files/2,204 tests). The frozen-source gates above
+extractor (9 files/54 tests), and renderer (236 files/2,203 tests). The frozen-source gates above
 cover every package modified by the final hardening.
 
 The complete workspace validation commands and outcomes are also recorded in

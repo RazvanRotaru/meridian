@@ -103,6 +103,7 @@ export interface RepositoryAnalysisProgressContext {
     kind: "head" | "merge-base";
     /** Exact lowercase SHA-1 or SHA-256 Git object id. */
     commit: string;
+    /** Extraction order within the HEAD/merge-base graph pair, not a Git commit-history walk. */
     execution: {
       current: number;
       total: number;

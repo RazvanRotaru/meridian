@@ -1166,23 +1166,66 @@ describe("handlePrAnalyze", () => {
     });
   });
 
-  it("rebuilds a moved-base pair while reusing both unchanged revision artifacts", async () => {
+  it("keeps the landing-prepared immutable pair when only the live base tip moves", async () => {
     const ctx = githubCtx(undefined, undefined, undefined, true);
-    const firstLines = (await invoke(ctx, BODY)).lines();
+    const firstLines = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
     const first = firstLines.at(-1)!;
-    mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
-    const secondLines = (await invoke(ctx, BODY)).lines();
+    const movedBaseSha = "eee1234def5678900000aaaabbbbccccddddeeee";
+    mockGitRevisions(HEAD_SHA, "main", movedBaseSha);
+    const secondLines = (await invoke(ctx, { ...BODY, id: first.graphId as string })).lines();
     const second = secondLines.at(-1)!;
 
     expect(secondLines.map((line) => line.stage)).toEqual([
       "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
     ]);
     expect(second.cache).toBe("miss");
+    expect(second.baseSha).toBe(movedBaseSha);
     expect(second.headSha).toBe(first.headSha);
-    expect(second.graphId).not.toBe(first.graphId);
+    expect(second.mergeBaseSha).toBe(first.mergeBaseSha);
+    expect(second.graphId).toBe(first.graphId);
     expect(second.comparisonGraphId).toBe(first.comparisonGraphId);
     expect(repositories.prepareCalls).toHaveLength(2);
     expect(analyzeRepository).toHaveBeenCalledTimes(2);
+  });
+
+  it("changes the immutable HEAD id and rebuilds when the live merge base changes", async () => {
+    const ctx = githubCtx(undefined, undefined, undefined, true);
+    const first = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines().at(-1)!;
+    const movedBaseSha = "eee1234def5678900000aaaabbbbccccddddeeee";
+    const movedMergeBaseSha = "fedcba9876543210fedcba9876543210fedcba98";
+    repositories.mergeBaseSha = movedMergeBaseSha;
+    mockGitRevisions(HEAD_SHA, "main", movedBaseSha);
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      const extensions = request.changedSince
+        ? {
+            ...template.extensions,
+            changedSince: {
+              ...(template.extensions as { changedSince: Record<string, unknown> }).changedSince,
+              baseRef: request.changedSince,
+            },
+          }
+        : template.extensions;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs }, extensions },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+
+    const secondLines = (await invoke(ctx, { ...BODY, id: first.graphId as string })).lines();
+    const second = secondLines.at(-1)!;
+
+    expect(secondLines.map((line) => line.stage)).toEqual([
+      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+    ]);
+    expect(second.cache).toBe("miss");
+    expect(second.baseSha).toBe(movedBaseSha);
+    expect(second.headSha).toBe(first.headSha);
+    expect(second.mergeBaseSha).toBe(movedMergeBaseSha);
+    expect(second.graphId).not.toBe(first.graphId);
+    expect(second.comparisonGraphId).not.toBe(first.comparisonGraphId);
+    expect(repositories.prepareCalls).toHaveLength(2);
+    expect(analyzeRepository).toHaveBeenCalledTimes(4);
   });
 
   it("uses the mirror's exact merge base for both comparison source and canonical diff", async () => {
