@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { GraphArtifact } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { PrGitHubComment } from "../state/prTypes";
+import { createReviewLineComposerDraft } from "../state/reviewLineComposer";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
@@ -269,7 +270,8 @@ describe("CodeBlock canonical diff rows", () => {
       lineComposer: {
         line: 10,
         side: "LEFT",
-        value: "Unfinished deleted-line thought",
+        draft: createReviewLineComposerDraft("Unfinished deleted-line thought"),
+        onValueChange: () => undefined,
         onAdd: () => undefined,
         onCancel: () => undefined,
       },
@@ -284,6 +286,7 @@ describe("CodeBlock canonical diff rows", () => {
     expect(html).toContain('aria-label="Comment on line 10"');
     expect(html).toContain('data-line-comment-composer="10" data-line-comment-composer-side="LEFT"');
     expect(html).toContain('placeholder="Comment on deleted line 10…"');
+    expect(html).toContain("Unfinished deleted-line thought");
     expect(html.indexOf("Existing deleted discussion")).toBeLessThan(html.indexOf('data-source-line="10"'));
     expect(html.indexOf("Pending deleted draft")).toBeLessThan(html.indexOf('data-source-line="10"'));
     expect(html.indexOf("Existing head discussion")).toBeGreaterThan(html.indexOf('data-source-line="10"'));

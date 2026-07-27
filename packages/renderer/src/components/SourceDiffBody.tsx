@@ -357,7 +357,7 @@ export function SourceDiffBody({
           lineComposer={activeComposer === null ? null : {
             line: activeComposer.line,
             side: activeComposer.side,
-            value: activeComposer.body,
+            draft: activeComposer.draft,
             onValueChange: setReviewLineComposerBody,
             confirmDiscard: activeComposer.confirmDiscard,
             error: activeComposer.error,

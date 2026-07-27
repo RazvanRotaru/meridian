@@ -10,6 +10,7 @@
  */
 
 import type { BlueprintState, BlueprintStore } from "../state/store";
+import type { ReviewLineComposerDraft } from "../state/reviewLineComposer";
 
 const ROOT_LOCK_CLASS = "mrd-pr-review-navigation-lock";
 const WHEEL_OPTIONS: AddEventListenerOptions = { capture: true, passive: false };
@@ -33,7 +34,7 @@ export interface PrReviewNavigationGuard {
 export function prReviewNeedsNavigationLock(state: GuardState): boolean {
   return state.prReviewStatus === "preparing"
     || state.prReviewed !== null
-    || (state.reviewLineComposer?.body.trim().length ?? 0) > 0;
+    || (state.reviewLineComposer?.draft.getSnapshot().trim().length ?? 0) > 0;
 }
 
 /** Trackpad history swipes are horizontal wheel sequences; ctrl+wheel is pinch zoom, not Back. */
@@ -54,6 +55,8 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
   let disposed = false;
   let store: BlueprintStore | null = null;
   let unsubscribe: (() => void) | null = null;
+  let unsubscribeDraft: (() => void) | null = null;
+  let subscribedDraft: ReviewLineComposerDraft | null = null;
   let restoringCanceledHistory = false;
 
   const onBeforeUnload = (event: BeforeUnloadEvent) => {
@@ -114,6 +117,25 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
     }
   };
 
+  const syncDraftSubscription = (state: GuardState) => {
+    const nextDraft = state.reviewLineComposer?.draft ?? null;
+    if (nextDraft === subscribedDraft) {
+      return;
+    }
+    unsubscribeDraft?.();
+    subscribedDraft = nextDraft;
+    unsubscribeDraft = nextDraft?.subscribe(() => {
+      if (store !== null) {
+        sync(store.getState());
+      }
+    }) ?? null;
+  };
+
+  const syncStore = (state: GuardState) => {
+    syncDraftSubscription(state);
+    sync(state);
+  };
+
   // Apply the URL-derived lock synchronously, before bootstrap's first graph/provider await.
   sync(IDLE_GUARD_STATE);
 
@@ -123,9 +145,12 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
         return;
       }
       unsubscribe?.();
+      unsubscribeDraft?.();
+      unsubscribeDraft = null;
+      subscribedDraft = null;
       store = nextStore;
-      unsubscribe = store.subscribe(sync);
-      sync(store.getState());
+      unsubscribe = store.subscribe(syncStore);
+      syncStore(store.getState());
     },
     completeInitialRestore() {
       if (disposed) {
@@ -141,6 +166,9 @@ export function startPrReviewNavigationGuard(): PrReviewNavigationGuard {
       disposed = true;
       unsubscribe?.();
       unsubscribe = null;
+      unsubscribeDraft?.();
+      unsubscribeDraft = null;
+      subscribedDraft = null;
       store = null;
       restoringReviewUrl = false;
       if (active) {
@@ -163,7 +191,7 @@ const IDLE_GUARD_STATE: GuardState = {
 };
 
 function leaveMessage(store: BlueprintStore | null): string {
-  return (store?.getState().reviewLineComposer?.body.trim().length ?? 0) > 0
+  return (store?.getState().reviewLineComposer?.draft.getSnapshot().trim().length ?? 0) > 0
     ? REVIEW_COMMENT_LEAVE_MESSAGE
     : PR_REVIEW_LEAVE_MESSAGE;
 }
