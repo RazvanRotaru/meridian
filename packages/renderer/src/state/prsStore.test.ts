@@ -63,6 +63,7 @@ const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const CLASS_ID = `${FILE_ID}#Svc`;
 const METHOD_ID = `${CLASS_ID}.run`;
+const SECOND_METHOD_ID = `${CLASS_ID}.stop`;
 const UNCHANGED_METHOD_ID = `${CLASS_ID}.idle`;
 const TEST_FILE_ID = "ts:src/a.test.ts";
 const TEST_METHOD_ID = `${TEST_FILE_ID}#coversRun`;
@@ -220,10 +221,10 @@ function activeViewedFilesStore(options: {
         depth: 1,
         isTest: false,
         fingerprint: "unit-fingerprint",
-        address: null,
+        address: `unit:v1\0${VIEWED_FILES_PATH}\0method\0${METHOD_ID}`,
       }],
       fingerprint: "file-fingerprint",
-      address: null,
+      address: `file:v1\0${VIEWED_FILES_PATH}`,
       blastRadius: 0,
       deletedImpact: null,
     }],
@@ -346,7 +347,7 @@ describe("PR store slice", () => {
     first.getState().addReviewComment("src/a.ts", METHOD_ID, "Keep this draft");
     const regenerated = await open("graph-b");
 
-    expect(regenerated.getState().reviewUnitTicks).toEqual({});
+    expect(regenerated.getState().reviewUnitTicks).toEqual(first.getState().reviewUnitTicks);
     expect(regenerated.getState().reviewFileTicks[reviewedPath]).toEqual(first.getState().reviewFileTicks[reviewedPath]);
     expect(regenerated.getState().reviewComments.map((comment) => comment.body)).toEqual(["Keep this draft"]);
     regenerated.getState().resetReviewTicks();
@@ -528,6 +529,144 @@ describe("PR store slice", () => {
     expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toBe(localTick);
   });
 
+  it("preserves an established GitHub VIEWED baseline when an ordinary refresh returns 401", async () => {
+    stubReviewStorage();
+    const store = activeViewedFilesStore({ canonicalState: "VIEWED" });
+    store.setState({ reviewViewedFilesError: "refresh canonical state" });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(
+      { error: "GitHub authentication required" },
+      { status: 401 },
+    )));
+
+    await store.getState().retryReviewViewedFiles();
+
+    expect(store.getState().reviewFileViewedStates).toBeNull();
+    expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toMatchObject({
+      fingerprint: "file-fingerprint",
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+      viewed: true,
+      headSha: VIEWED_FILES_HEAD,
+    });
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toMatchObject({
+      fingerprint: "unit-fingerprint",
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      headSha: VIEWED_FILES_HEAD,
+    });
+  });
+
+  it("preserves a hidden GitHub-viewed test file when an ordinary refresh returns 401", async () => {
+    stubReviewStorage();
+    const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS, {
+      prViewedFilesUrl: "/api/prs/viewed-files?id=artifact-1",
+    });
+    store.setState({
+      prSelected: 7,
+      prReviewed: 7,
+      prReviewRevision: {
+        number: 7,
+        headRef: "feature",
+        baseRef: "main",
+        headSha: VIEWED_FILES_HEAD,
+        updatedAt: "2026-07-24T00:00:00.000Z",
+      },
+      reviewFileViewedStates: {
+        "src/a.ts": "UNVIEWED",
+        "src/a.test.ts": "VIEWED",
+      },
+      reviewViewedFilesViewerId: VIEWED_FILES_VIEWER_ID,
+      reviewViewedFilesViewerLogin: "Astrid",
+      reviewViewedFilesError: "refresh canonical state",
+    });
+    expect(store.getState().reviewFiles.some((file) => file.path === "src/a.test.ts")).toBe(false);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(
+      { error: "GitHub authentication required" },
+      { status: 401 },
+    )));
+
+    await store.getState().retryReviewViewedFiles();
+
+    expect(store.getState().reviewFileViewedStates).toBeNull();
+    expect(store.getState().reviewFileTicks["src/a.test.ts"]).toMatchObject({
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewed: true,
+      headSha: VIEWED_FILES_HEAD,
+    });
+    expect(store.getState().reviewUnitTicks[TEST_METHOD_ID]).toMatchObject({
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      headSha: VIEWED_FILES_HEAD,
+    });
+  });
+
+  it("toggles an address-less unit locally using the active PR head", () => {
+    stubReviewStorage();
+    const store = activeViewedFilesStore({ canonicalState: null });
+    const file = store.getState().reviewFiles[0]!;
+    store.setState({
+      reviewFiles: [{
+        ...file,
+        units: [{ ...file.units[0]!, address: null }],
+      }],
+    });
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toMatchObject({
+      fingerprint: "unit-fingerprint",
+      headSha: VIEWED_FILES_HEAD,
+    });
+    expect(store.getState().reviewUnitTicks[METHOD_ID]?.viewerId).toBeUndefined();
+    expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toBeDefined();
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeUndefined();
+    expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toBeUndefined();
+  });
+
+  it("keeps content-valid signed-out partial progress when GitHub authentication returns", async () => {
+    stubReviewStorage();
+    const store = activeViewedFilesStore({ canonicalState: null });
+    const file = store.getState().reviewFiles[0]!;
+    store.setState({
+      reviewFiles: [{
+        ...file,
+        units: [
+          ...file.units,
+          {
+            ...file.units[0]!,
+            nodeId: SECOND_METHOD_ID,
+            displayName: "stop",
+            fingerprint: "second-unit-fingerprint",
+            address: `unit:v1\0${VIEWED_FILES_PATH}\0method\0${SECOND_METHOD_ID}`,
+          },
+        ],
+      }],
+    });
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toMatchObject({
+      address: file.units[0]!.address,
+      headSha: VIEWED_FILES_HEAD,
+    });
+    store.setState({ reviewViewedFilesError: "GitHub signed in" });
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      files: [{ path: VIEWED_FILES_PATH, state: "UNVIEWED" }],
+      headSha: VIEWED_FILES_HEAD,
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().retryReviewViewedFiles();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toEqual({
+      at: expect.any(String),
+      fingerprint: "unit-fingerprint",
+      address: file.units[0]!.address,
+    });
+    expect(store.getState().reviewUnitTicks[SECOND_METHOD_ID]).toBeUndefined();
+  });
+
   it("keeps non-401 viewed-file failures visible and retryable", async () => {
     stubReviewStorage();
     const store = activeViewedFilesStore({ canonicalState: null });
@@ -615,7 +754,7 @@ describe("PR store slice", () => {
     expect(store.getState().reviewFileViewedStates).toEqual({
       [VIEWED_FILES_PATH]: "VIEWED",
     });
-    expect(store.getState().reviewUnitTicks).toEqual({});
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeDefined();
     expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toMatchObject({
       fingerprint: "file-fingerprint",
       viewerId: VIEWED_FILES_VIEWER_ID,
@@ -626,6 +765,7 @@ describe("PR store slice", () => {
     await vi.waitFor(() => {
       expect(store.getState().reviewViewedFileSyncPending.size).toBe(0);
     });
+    expect(store.getState().reviewUnitTicks).toEqual({});
     expect(store.getState().reviewViewedFilesViewerLogin).toBe("AstridRenamed");
     expect(store.getState().reviewFileTicks).toEqual({});
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -641,6 +781,195 @@ describe("PR store slice", () => {
       viewed: true,
       expectedHeadSha: VIEWED_FILES_HEAD,
       expectedViewerId: VIEWED_FILES_VIEWER_ID,
+    });
+  });
+
+  it("keeps GitHub and the parent file unviewed until every changed unit is viewed", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      path: VIEWED_FILES_PATH,
+      state: "VIEWED",
+      headSha: VIEWED_FILES_HEAD,
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = activeViewedFilesStore();
+    const file = store.getState().reviewFiles[0]!;
+    store.setState({
+      reviewFiles: [{
+        ...file,
+        units: [
+          { ...file.units[0]!, address: null },
+          {
+            ...file.units[0]!,
+            nodeId: SECOND_METHOD_ID,
+            displayName: "stop",
+            startLine: 14,
+            endLine: 16,
+            fingerprint: "second-unit-fingerprint",
+            address: null,
+          },
+        ],
+      }],
+    });
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+
+    expect(store.getState().reviewFileViewedStates?.[VIEWED_FILES_PATH]).toBe("UNVIEWED");
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewUnitTicks[SECOND_METHOD_ID]).toBeUndefined();
+    expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    store.getState().toggleReviewUnitTick(SECOND_METHOD_ID);
+
+    expect(store.getState().reviewFileViewedStates?.[VIEWED_FILES_PATH]).toBe("VIEWED");
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeDefined();
+    expect(store.getState().reviewUnitTicks[SECOND_METHOD_ID]).toBeDefined();
+    await vi.waitFor(() => expect(store.getState().reviewViewedFileSyncPending.size).toBe(0));
+    expect(store.getState().reviewUnitTicks).toEqual({});
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toMatchObject({
+      path: VIEWED_FILES_PATH,
+      viewed: true,
+    });
+  });
+
+  it("does not carry partial unit progress into another GitHub viewer", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      files: [{ path: VIEWED_FILES_PATH, state: "UNVIEWED" }],
+      headSha: VIEWED_FILES_HEAD,
+      viewerId: "U_Bob",
+      viewerLogin: "Bob",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = activeViewedFilesStore();
+    const file = store.getState().reviewFiles[0]!;
+    store.setState({
+      reviewFiles: [{
+        ...file,
+        units: [
+          { ...file.units[0]!, address: null },
+          {
+            ...file.units[0]!,
+            nodeId: SECOND_METHOD_ID,
+            displayName: "stop",
+            startLine: 14,
+            endLine: 16,
+            fingerprint: "second-unit-fingerprint",
+            address: null,
+          },
+        ],
+      }],
+    });
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toMatchObject({
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+      headSha: VIEWED_FILES_HEAD,
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    store.setState({ reviewViewedFilesError: "viewer changed" });
+    await store.getState().retryReviewViewedFiles();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(store.getState().reviewViewedFilesViewerId).toBe("U_Bob");
+    expect(store.getState().reviewUnitTicks).toEqual({});
+    expect(store.getState().reviewFileViewedStates?.[VIEWED_FILES_PATH]).toBe("UNVIEWED");
+  });
+
+  it("retains semantically revalidated unit progress when its file intent belongs to an older head", async () => {
+    stubReviewStorage();
+    const nextHead = "b".repeat(40);
+    const store = activeViewedFilesStore({ canonicalState: null });
+    const file = store.getState().reviewFiles[0]!;
+    const unit = file.units[0]!;
+    store.setState({
+      prReviewRevision: {
+        ...store.getState().prReviewRevision!,
+        headSha: nextHead,
+      },
+      reviewUnitTicks: {
+        [unit.nodeId]: {
+          at: "old-head",
+          fingerprint: unit.fingerprint,
+          address: unit.address!,
+          viewerId: VIEWED_FILES_VIEWER_ID,
+          viewerLogin: "Astrid",
+          headSha: VIEWED_FILES_HEAD,
+        },
+      },
+      reviewFileTicks: {
+        [file.path]: {
+          at: "old-head",
+          fingerprint: file.fingerprint,
+          address: file.address!,
+          viewerId: VIEWED_FILES_VIEWER_ID,
+          viewerLogin: "Astrid",
+          viewed: true,
+          headSha: VIEWED_FILES_HEAD,
+        },
+      },
+      reviewViewedFilesError: "load the new head",
+    });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({
+      files: [{ path: VIEWED_FILES_PATH, state: "UNVIEWED" }],
+      headSha: nextHead,
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+    })));
+
+    await store.getState().retryReviewViewedFiles();
+
+    expect(store.getState().reviewFileTicks[VIEWED_FILES_PATH]).toBeUndefined();
+    expect(store.getState().reviewUnitTicks[unit.nodeId]).toEqual({
+      at: "old-head",
+      fingerprint: unit.fingerprint,
+      address: unit.address,
+    });
+    expect(store.getState().reviewFileViewedStates?.[VIEWED_FILES_PATH]).toBe("UNVIEWED");
+  });
+
+  it("unviewing one unit from a GitHub-viewed file preserves its viewed siblings", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(Response.json({
+      path: VIEWED_FILES_PATH,
+      state: "UNVIEWED",
+      headSha: VIEWED_FILES_HEAD,
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      viewerLogin: "Astrid",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const store = activeViewedFilesStore({ canonicalState: "VIEWED" });
+    const file = store.getState().reviewFiles[0]!;
+    store.setState({
+      reviewFiles: [{
+        ...file,
+        units: [
+          { ...file.units[0]!, address: null },
+          {
+            ...file.units[0]!,
+            nodeId: SECOND_METHOD_ID,
+            displayName: "stop",
+            startLine: 14,
+            endLine: 16,
+            fingerprint: "second-unit-fingerprint",
+            address: null,
+          },
+        ],
+      }],
+    });
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+
+    expect(store.getState().reviewFileViewedStates?.[VIEWED_FILES_PATH]).toBe("UNVIEWED");
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeUndefined();
+    expect(store.getState().reviewUnitTicks[SECOND_METHOD_ID]).toBeDefined();
+    await vi.waitFor(() => expect(store.getState().reviewViewedFileSyncPending.size).toBe(0));
+    expect(JSON.parse(String(fetchMock.mock.calls[0]![1]?.body))).toMatchObject({
+      path: VIEWED_FILES_PATH,
+      viewed: false,
     });
   });
 
@@ -1326,6 +1655,25 @@ describe("PR store slice", () => {
     expect(store.getState().reviewViewedFileSyncErrors).toEqual({});
     await store.getState().retryReviewViewedFiles();
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains completed unit history when the final viewed write detects a stale head", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json(
+      { error: "pull request head changed", conflict: "head" },
+      { status: 409 },
+    )));
+    const store = activeViewedFilesStore();
+
+    store.getState().toggleReviewUnitTick(METHOD_ID);
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toBeDefined();
+    await vi.waitFor(() => expect(store.getState().prReviewStale).toBe(true));
+
+    expect(store.getState().reviewUnitTicks[METHOD_ID]).toMatchObject({
+      fingerprint: "unit-fingerprint",
+      viewerId: VIEWED_FILES_VIEWER_ID,
+      headSha: VIEWED_FILES_HEAD,
+    });
+    expect(store.getState().reviewFileTicks).toEqual({});
   });
 
   it("cancels optimistic viewed intent when freshness detects a newer PR head", async () => {

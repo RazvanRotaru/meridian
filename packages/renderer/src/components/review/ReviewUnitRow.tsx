@@ -16,7 +16,7 @@ import { KIND_CHIP, kindChipText, MONO, NO_FOCUS_RING, TEST_CHIP, TICK_BTN, TICK
 export function UnitRow(props: {
   unit: UnitRowData;
   path: string;
-  /** GitHub viewed state is file-atomic; every unit in this row shares its owning file's state. */
+  /** Per-node progress; GitHub VIEWED may supply the initial all-units baseline. */
   viewState: CheckState;
   drafts: readonly ReviewComment[];
   composer: CommentTarget | null;
@@ -67,10 +67,10 @@ export function UnitRow(props: {
           disabled={viewedBlockedReason !== null}
           title={viewedBlockedReason
             ?? (state === "done"
-              ? `Viewed ${path} — click to unmark the file`
+              ? `Viewed ${unit.displayName} — click to unmark`
               : state === "stale"
-                ? `${path} changed since viewed — click to mark the file again`
-                : `Mark ${path} as viewed`)}
+                ? `${unit.displayName} changed since viewed — click to mark again`
+                : `Mark ${unit.displayName} as viewed`)}
           onClick={() => toggleReviewUnitTick(unit.nodeId)}
         >
           {TICK_GLYPH[state]}
