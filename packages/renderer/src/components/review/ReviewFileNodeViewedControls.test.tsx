@@ -16,7 +16,9 @@ const FOLDER_ID = "ts:src";
 const FILE_ID = "ts:src/ServiceContainerFactory.ts";
 const CLASS_ID = "ts:src/ServiceContainerFactory.ts#OsService";
 const UNIT_ID = "ts:src/ServiceContainerFactory.ts#OsService.getWellKnownPath";
+const SECOND_UNIT_ID = "ts:src/ServiceContainerFactory.ts#OsService.getTempPath";
 const OUTSIDE_FILE_ID = "ts:other/b.ts";
+const OUTSIDE_UNIT_ID = "ts:other/b.ts#crossFileChild";
 const FOLDER_NODE: GraphNode = {
   id: FOLDER_ID,
   kind: "package",
@@ -48,6 +50,14 @@ const UNIT_NODE: GraphNode = {
   parentId: CLASS_ID,
   location: { file: "src/ServiceContainerFactory.ts", startLine: 4, endLine: 12 },
 };
+const SECOND_UNIT_NODE: GraphNode = {
+  id: SECOND_UNIT_ID,
+  kind: "function",
+  qualifiedName: "OsService.getTempPath",
+  displayName: "getTempPath",
+  parentId: CLASS_ID,
+  location: { file: "src/ServiceContainerFactory.ts", startLine: 14, endLine: 18 },
+};
 const OUTSIDE_FILE_NODE: GraphNode = {
   id: OUTSIDE_FILE_ID,
   kind: "module",
@@ -55,12 +65,28 @@ const OUTSIDE_FILE_NODE: GraphNode = {
   displayName: "b.ts",
   location: { file: "other/b.ts", startLine: 1, endLine: 20 },
 };
+const OUTSIDE_UNIT_NODE: GraphNode = {
+  id: OUTSIDE_UNIT_ID,
+  kind: "function",
+  qualifiedName: "crossFileChild",
+  displayName: "crossFileChild",
+  parentId: CLASS_ID,
+  location: { file: "other/b.ts", startLine: 4, endLine: 8 },
+};
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.1.0",
   generatedAt: "2026-07-13T00:00:00.000Z",
   generator: { name: "test", version: "0" },
   target: { name: "fixture", root: ".", language: "typescript" },
-  nodes: [FOLDER_NODE, FILE_NODE, CLASS_NODE, UNIT_NODE, OUTSIDE_FILE_NODE],
+  nodes: [
+    FOLDER_NODE,
+    FILE_NODE,
+    CLASS_NODE,
+    UNIT_NODE,
+    SECOND_UNIT_NODE,
+    OUTSIDE_FILE_NODE,
+    OUTSIDE_UNIT_NODE,
+  ],
   edges: [],
 };
 
@@ -68,7 +94,7 @@ describe("ReviewNodeViewedChrome", () => {
   it("renders graph-scaled folder, file, and unit states in periwinkle without a fixed toolbar transform", () => {
     const markup = renderReviewNodes({ fingerprint: "file-fingerprint" });
 
-    expect(markup.match(/data-review-view-state="done"/g)?.length).toBeGreaterThanOrEqual(4);
+    expect(markup.match(/data-review-view-state="done"/g)?.length).toBeGreaterThanOrEqual(5);
     expect(markup).toContain('data-review-viewed-scope="folder"');
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup).toContain('data-review-viewed-scope="unit"');
@@ -83,18 +109,61 @@ describe("ReviewNodeViewedChrome", () => {
     expect(markup).toContain("inset:-1px");
   });
 
-  it("automatically rolls a viewed method up through its class and file", () => {
+  it("keeps a parent todo until every changed child has been viewed", () => {
     const store = reviewStore({ folderMembers: [FILE_ID] });
 
     store.getState().toggleReviewUnitTick(UNIT_ID);
-    const markup = renderReviewNodesWithStore(store);
+    const partialMarkup = renderReviewNodesWithStore(store);
 
-    expect(markup).toMatch(new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="done"`));
-    expect(markup).toMatch(new RegExp(`data-review-node-id="${FILE_ID}"[^>]+data-review-view-state="done"`));
-    expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
-
-    store.getState().toggleReviewUnitsViewed([UNIT_ID]);
+    expect(partialMarkup).toMatch(new RegExp(`data-review-node-id="${UNIT_ID}"[^>]+data-review-view-state="done"`));
+    expect(partialMarkup).toMatch(new RegExp(`data-review-node-id="${SECOND_UNIT_ID}"[^>]+data-review-view-state="todo"`));
+    expect(partialMarkup).toMatch(new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="todo"`));
+    expect(partialMarkup).toMatch(new RegExp(`data-review-node-id="${FILE_ID}"[^>]+data-review-view-state="todo"`));
     expect(store.getState().reviewFileTicks["src/ServiceContainerFactory.ts"]).toBeUndefined();
+
+    store.getState().toggleReviewUnitTick(SECOND_UNIT_ID);
+    const completeMarkup = renderReviewNodesWithStore(store);
+    expect(completeMarkup).toMatch(new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="done"`));
+    expect(completeMarkup).toMatch(new RegExp(`data-review-node-id="${FILE_ID}"[^>]+data-review-view-state="done"`));
+    expect(completeMarkup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
+  });
+
+  it("aggregates a structural parent against each descendant's owning file state", () => {
+    const store = reviewStore({ folderMembers: [FILE_ID] });
+    const [sourceFile, outsideFile] = store.getState().reviewFiles;
+    store.setState({
+      reviewFiles: [
+        sourceFile!,
+        {
+          ...outsideFile!,
+          units: [{
+            nodeId: OUTSIDE_UNIT_ID,
+            displayName: "crossFileChild",
+            kind: "function",
+            startLine: 4,
+            endLine: 8,
+            depth: 0,
+            isTest: false,
+            fingerprint: "outside-unit-fingerprint",
+          }],
+        },
+      ],
+      reviewFileViewedStates: {
+        [sourceFile!.path]: "VIEWED",
+        [outsideFile!.path]: "UNVIEWED",
+      },
+    });
+
+    const partialMarkup = renderReviewNodesWithStore(store);
+    expect(partialMarkup).toMatch(
+      new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="todo"`),
+    );
+
+    store.getState().toggleReviewUnitTick(OUTSIDE_UNIT_ID);
+    const completeMarkup = renderReviewNodesWithStore(store);
+    expect(completeMarkup).toMatch(
+      new RegExp(`data-review-node-id="${CLASS_ID}"[^>]+data-review-view-state="done"`),
+    );
   });
 
   it("uses a dashed, icon-distinct stale state and hides controls outside the review surface", () => {
@@ -201,7 +270,8 @@ describe("ReviewPreviewViewedControl", () => {
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup.match(/data-review-viewed-scope="unit"/g)?.length).toBe(2);
     expect(markup).toContain("Viewed src/ServiceContainerFactory.ts — click to unmark");
-    expect(markup.match(/Viewed src\/ServiceContainerFactory\.ts — click to unmark/g)?.length).toBeGreaterThanOrEqual(3);
+    expect(markup).toContain("Viewed OsService — click to unmark");
+    expect(markup).toContain("Viewed run — click to unmark");
     expect(markup).toContain("top:-10px;right:-10px");
     expect(markup.match(/class="review-node-viewed-outline"/g)?.length).toBe(3);
     expect(markup).toContain("background-color:#A78BFA1A");
@@ -216,7 +286,7 @@ describe("ReviewPreviewViewedControl", () => {
     );
 
     expect(markup).toContain('data-review-view-state="todo"');
-    expect(markup).toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
+    expect(markup).toContain('aria-label="Mark run as viewed"');
     expect(markup).toContain('aria-pressed="false"');
     expect(markup).not.toContain('class="review-node-viewed-outline"');
     expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:hover");
@@ -259,6 +329,9 @@ function renderReviewNodesWithStore(store: ReturnType<typeof reviewStore>, enabl
         <ReviewNodeViewedChrome nodeId={UNIT_ID} scope="unit" borderRadius={6}>
           <div>unit</div>
         </ReviewNodeViewedChrome>
+        <ReviewNodeViewedChrome nodeId={SECOND_UNIT_ID} scope="unit" borderRadius={6}>
+          <div>second unit</div>
+        </ReviewNodeViewedChrome>
       </SurfaceInteractionScope>
     </StoreProvider>,
   );
@@ -292,16 +365,28 @@ function reviewStore({
       status: "modified",
       moduleId: FILE_ID,
       isTest: false,
-      units: [{
-        nodeId: UNIT_ID,
-        displayName: "run",
-        kind: "function",
-        startLine: 4,
-        endLine: 12,
-        depth: 0,
-        isTest: false,
-        fingerprint: "unit-fingerprint",
-      }],
+      units: [
+        {
+          nodeId: UNIT_ID,
+          displayName: "run",
+          kind: "function",
+          startLine: 4,
+          endLine: 12,
+          depth: 0,
+          isTest: false,
+          fingerprint: "unit-fingerprint",
+        },
+        {
+          nodeId: SECOND_UNIT_ID,
+          displayName: "getTempPath",
+          kind: "function",
+          startLine: 14,
+          endLine: 18,
+          depth: 0,
+          isTest: false,
+          fingerprint: "second-unit-fingerprint",
+        },
+      ],
       fingerprint: "file-fingerprint",
       blastRadius: 0,
       deletedImpact: null,
@@ -315,10 +400,19 @@ function reviewStore({
       blastRadius: 0,
       deletedImpact: null,
     }],
-    reviewUnitTicks: {},
-    reviewFileTicks: fingerprint === undefined
+    reviewUnitTicks: fingerprint === undefined
       ? {}
-      : { "src/ServiceContainerFactory.ts": { at: "now", fingerprint } },
+      : {
+          [UNIT_ID]: {
+            at: "now",
+            fingerprint: fingerprint === "file-fingerprint" ? "unit-fingerprint" : fingerprint,
+          },
+          [SECOND_UNIT_ID]: {
+            at: "now",
+            fingerprint: fingerprint === "file-fingerprint" ? "second-unit-fingerprint" : fingerprint,
+          },
+        },
+    reviewFileTicks: {},
     minimalRollups: folderMembers.length === 0 ? {} : { [FOLDER_ID]: folderMembers },
   });
   const snapshot = store.getState();

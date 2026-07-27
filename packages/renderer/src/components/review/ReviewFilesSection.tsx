@@ -12,7 +12,12 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import type { ChangedDiffLine } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { fileViewState, type ReviewFileRow } from "../../derive/reviewFiles";
+import {
+  fileViewState,
+  unitViewState,
+  type ReviewFileRow,
+  type ReviewUnitCoordinates,
+} from "../../derive/reviewFiles";
 import type { PrFileViewedState, PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment, ReviewTick } from "../../state/reviewTicksPref";
 import { useActiveChangeGroup } from "./ChangeGroupStrip";
@@ -59,6 +64,8 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates) ?? null;
+  const viewedViewerId = useBlueprint((state) => state.reviewViewedFilesViewerId);
+  const viewedHeadSha = useBlueprint((state) => state.prReviewRevision?.headSha);
   const viewedLoading = useBlueprint((state) => state.reviewViewedFilesLoading) ?? false;
   const viewedLoadError = useBlueprint((state) => state.reviewViewedFilesError) ?? null;
   const viewedSyncErrors = useBlueprint((state) => state.reviewViewedFileSyncErrors) ?? {};
@@ -120,7 +127,12 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   if (files.length === 0) {
     return null;
   }
-  const viewed = files.filter((file) => fileViewState(file, unitTicks, fileTicks, githubViewedStates) === "done").length;
+  const coordinates: ReviewUnitCoordinates = {
+    viewerId: viewedViewerId,
+    headSha: viewedHeadSha,
+  };
+  const viewed = files.filter((file) =>
+    fileViewState(file, unitTicks, fileTicks, githubViewedStates, coordinates) === "done").length;
   const syncFailureCount = Object.keys(viewedSyncErrors).length;
   const unmatchedCount = files.filter((file) => file.moduleId === null).length;
   const listOpen = expanded || open;
@@ -192,8 +204,10 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
           <FileRow
             key={file.path}
             file={file}
+            unitTicks={unitTicks}
             fileTicks={fileTicks}
             githubViewedStates={githubViewedStates}
+            coordinates={coordinates}
             drafts={draftIndex.byRow}
             draftCounts={draftIndex.countsByFile}
             githubComments={githubCommentsByFile}
@@ -210,8 +224,10 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
 
 function FileRow(props: {
   file: ReviewFileRow;
+  unitTicks: Record<string, ReviewTick>;
   fileTicks: Record<string, ReviewTick>;
   githubViewedStates: Record<string, PrFileViewedState> | null;
+  coordinates: ReviewUnitCoordinates;
   drafts: DraftsByRow;
   draftCounts: DraftCountsByFile;
   githubComments: GitHubCommentsByFile;
@@ -223,8 +239,10 @@ function FileRow(props: {
 }) {
   const {
     file,
+    unitTicks,
     fileTicks,
     githubViewedStates,
+    coordinates,
     drafts,
     draftCounts,
     githubComments,
@@ -240,7 +258,7 @@ function FileRow(props: {
   const { toggleReviewFileViewed, addReviewComment, setReviewLit, focusReviewFile, selectReviewNode, showReviewFile } = useBlueprintActions();
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
   const [hovered, setHovered] = useState(false);
-  const view = fileViewState(file, {}, fileTicks, githubViewedStates);
+  const view = fileViewState(file, unitTicks, fileTicks, githubViewedStates, coordinates);
   // A viewed file folds shut (GitHub's gesture). A manual chevron override holds only until the
   // file's viewed state next changes, then the derived fold wins again.
   useEffect(() => {
@@ -261,6 +279,12 @@ function FileRow(props: {
     (comment) => !canvasComments.includes(comment),
   );
   const composerHere = composer !== null && composer.path === file.path && composer.nodeId === null;
+  const githubState = githubViewedStates != null && Object.hasOwn(githubViewedStates, file.path)
+    ? githubViewedStates[file.path]
+    : undefined;
+  const doneUnits = file.units.filter(
+    (unit) => unitViewState(unit, unitTicks, githubState, coordinates) === "done",
+  ).length;
   const hasBody = file.units.length > 0 || fileDrafts.length > 0 || (commentsVisible && existingComments.length > 0) || file.deletedImpact !== null;
   return (
     <div style={FILE_BLOCK}>
@@ -296,7 +320,7 @@ function FileRow(props: {
             {file.status[0].toUpperCase()}
           </span>
           <FilePath path={file.path} />
-          {file.units.length > 0 && <span style={SECTION_COUNT}>{file.units.length} units</span>}
+          {file.units.length > 0 && <span style={SECTION_COUNT}>{doneUnits}/{file.units.length}</span>}
           {file.blastRadius > 0 && (
             <span style={BLAST_BADGE} title={`blast radius: ${file.blastRadius} files outside this PR call into the changed code`}>
               ◎ {file.blastRadius}
@@ -365,7 +389,7 @@ function FileRow(props: {
               key={unit.nodeId}
               unit={unit}
               path={file.path}
-              viewState={view}
+              viewState={unitViewState(unit, unitTicks, githubState, coordinates)}
               drafts={drafts.get(rowKey(file.path, unit.nodeId)) ?? []}
               composer={composer}
               onComposer={onComposer}

@@ -331,9 +331,14 @@ function CollapsedRail() {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
+  const viewedViewerId = useBlueprint((state) => state.reviewViewedFilesViewerId);
+  const viewedHeadSha = useBlueprint((state) => state.prReviewRevision?.headSha);
   const stale = useBlueprint((state) => state.prReviewStale || state.prReviewRefreshing);
   const { toggleReviewPanel } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates);
+  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates, {
+    viewerId: viewedViewerId,
+    headSha: viewedHeadSha,
+  });
   return (
     <button
       type="button"
@@ -362,6 +367,8 @@ function Header(props: {
   const unitTicks = useBlueprint((state) => state.reviewUnitTicks);
   const fileTicks = useBlueprint((state) => state.reviewFileTicks);
   const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
+  const viewedViewerId = useBlueprint((state) => state.reviewViewedFilesViewerId);
+  const viewedHeadSha = useBlueprint((state) => state.prReviewRevision?.headSha);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
@@ -374,7 +381,10 @@ function Header(props: {
     && state.prPreparedGraphId === null
     && state.analyzeUrl !== null);
   const { resetReviewTicks, toggleReviewPanel, prepareHeadGraph, refreshPrReview } = useBlueprintActions();
-  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates);
+  const viewed = countViewedFiles(files, unitTicks, fileTicks, githubViewedStates, {
+    viewerId: viewedViewerId,
+    headSha: viewedHeadSha,
+  });
   const total = files.length;
   const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
   const ctx = review.context;

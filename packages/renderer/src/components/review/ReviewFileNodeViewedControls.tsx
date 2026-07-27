@@ -1,8 +1,8 @@
 /**
  * Viewed-state chrome rendered inside Map nodes. Because it sits beneath React Flow's node
  * transform, the outline and attached check scale with the graph instead of becoming a fixed-size
- * screen overlay. Every control resolves to GitHub's atomic file checkbox: declaration controls
- * toggle their owning file, while structural and folder controls bulk-toggle represented files.
+ * screen overlay. Declaration controls retain per-node progress; structural controls aggregate all
+ * represented descendants, while file/folder completion synchronizes GitHub's atomic checkbox.
  */
 
 import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
@@ -10,8 +10,10 @@ import type { ReactNode } from "react";
 import {
   filesViewState,
   fileViewState,
+  unitViewState,
   type CheckState,
   type ReviewFileRow,
+  type ReviewUnitCoordinates,
   type ReviewUnitRow,
 } from "../../derive/reviewFiles";
 import type { GraphIndex } from "../../graph/graphIndex";
@@ -43,7 +45,7 @@ interface UnitTarget {
 interface UnitGroupTarget {
   kind: "unit-group";
   label: string;
-  files: readonly ReviewFileRow[];
+  units: readonly UnitTarget[];
 }
 
 type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget | UnitGroupTarget;
@@ -239,9 +241,18 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
     blueprint.reviewUnitTicks,
     blueprint.reviewFileTicks,
     blueprint.reviewFileViewedStates,
+    {
+      viewerId: blueprint.reviewViewedFilesViewerId,
+      headSha: blueprint.prReviewRevision?.headSha,
+    },
   ));
   const blockedReason = useBlueprint(reviewViewedGestureBlockReason);
-  const { toggleReviewFilesViewed, toggleReviewFileViewed, toggleReviewUnitTick } = useBlueprintActions();
+  const {
+    toggleReviewFilesViewed,
+    toggleReviewFileViewed,
+    toggleReviewUnitTick,
+    toggleReviewUnitsViewed,
+  } = useBlueprintActions();
   if (target === null || state === null) {
     return null;
   }
@@ -257,7 +268,7 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
       } else if (target.kind === "file") {
         toggleReviewFileViewed(target.file.path);
       } else if (target.kind === "unit-group") {
-        toggleReviewFilesViewed(target.files.map((file) => file.path));
+        toggleReviewUnitsViewed(target.units.map(({ unit }) => unit.nodeId));
       } else {
         toggleReviewUnitTick(target.unit.nodeId);
       }
@@ -351,14 +362,10 @@ function reviewTargetIndex(files: readonly ReviewFileRow[], graphIndex: GraphInd
   const unitGroupsByNodeId = new Map([...groupedUnits].map(([nodeId, descendants]) => {
     const ownUnit = unitsByNodeId.get(nodeId)?.unit;
     const units = ownUnit === undefined ? descendants : [ownUnit, ...descendants];
-    const files = [...new Map(units.flatMap((unit) => {
-      const owner = unitsByNodeId.get(unit.nodeId)?.file;
-      return owner === undefined ? [] : [[owner.path, owner] as const];
-    })).values()];
     return [nodeId, {
       kind: "unit-group" as const,
       label: graphIndex.nodesById.get(nodeId)?.displayName ?? nodeId,
-      files,
+      units: units.map((unit) => unitsByNodeId.get(unit.nodeId)!),
     }];
   }));
   const index = {
@@ -377,26 +384,38 @@ function viewStateFor(
   unitTicks: Parameters<typeof fileViewState>[1],
   fileTicks: Parameters<typeof fileViewState>[2],
   githubStates: Parameters<typeof fileViewState>[3],
+  coordinates: ReviewUnitCoordinates,
 ): CheckState | null {
   if (target === null) {
     return null;
   }
   if (target.kind === "folder") {
-    return filesViewState(target.files, unitTicks, fileTicks, githubStates);
+    return filesViewState(target.files, unitTicks, fileTicks, githubStates, coordinates);
   }
   if (target.kind === "unit-group") {
-    return filesViewState(target.files, unitTicks, fileTicks, githubStates);
+    const states = target.units.map(({ file, unit }) => {
+      const githubState = githubStates != null && Object.hasOwn(githubStates, file.path)
+        ? githubStates[file.path]
+        : undefined;
+      return unitViewState(unit, unitTicks, githubState, coordinates);
+    });
+    if (states.some((state) => state === "stale")) return "stale";
+    return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
   }
-  return fileViewState(target.file, unitTicks, fileTicks, githubStates);
+  if (target.kind === "file") {
+    return fileViewState(target.file, unitTicks, fileTicks, githubStates, coordinates);
+  }
+  const githubState = githubStates != null && Object.hasOwn(githubStates, target.file.path)
+    ? githubStates[target.file.path]
+    : undefined;
+  return unitViewState(target.unit, unitTicks, githubState, coordinates);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {
   const subject = target.kind === "folder"
     ? `${target.label} folder`
     : target.kind === "file" ? target.file.path
-      : target.kind === "unit-group"
-        ? target.files.length === 1 ? target.files[0]!.path : `${target.files.length} files`
-        : target.file.path;
+      : target.kind === "unit-group" ? target.label : target.unit.displayName;
   if (state === "done") {
     return `Viewed ${subject} — click to unmark`;
   }

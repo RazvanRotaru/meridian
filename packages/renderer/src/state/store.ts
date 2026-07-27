@@ -209,8 +209,14 @@ import {
   isReviewTestPath,
   promoteFullyViewedUnitTicks,
   removeReviewFileTick,
+  removeReviewUnitTicks,
+  setReviewUnitsViewed,
   tickForFile,
+  unitViewState,
+  unitsViewState,
   type ReviewFileRow,
+  type ReviewUnitCoordinates,
+  type ReviewUnitProvenance,
   type ReviewUnitRow,
 } from "../derive/reviewFiles";
 import { deriveReviewProjection } from "../derive/reviewProjection";
@@ -585,9 +591,9 @@ export interface BlueprintState {
   reviewFileDelta: Record<string, { added: number; deleted: number; status?: PrFileStatus }>;
   /** Per-flow review progress, keyed by flowId, persisted to localStorage under the reviewKey. */
   reviewTicks: Record<string, ReviewTick>;
-  /** Legacy persisted per-unit ticks. Active review gestures are file-atomic and clear these. */
+  /** Per-unit viewed progress, keyed by node id and persisted with the review. */
   reviewUnitTicks: Record<string, ReviewTick>;
-  /** Browser-local whole-file progress, used only when GitHub viewer state is unavailable. */
+  /** Whole-file progress and durable GitHub synchronization intent, keyed by exact path. */
   reviewFileTicks: Record<string, ReviewTick>;
   /** GitHub viewer state for a signed-in live PR. Null keeps local/artifact progress authoritative. */
   reviewFileViewedStates: Record<string, PrFileViewedState> | null;
@@ -2012,7 +2018,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const initialMigratedProgress = initialProgress === null
     ? null
     : promoteFullyViewedUnitTicks(initialMigrationFiles, initialProgress.unitTicks, initialProgress.fileTicks);
-  if (initialProgress !== null && Object.keys(initialProgress.unitTicks).length > 0) {
+  if (
+    initialProgress !== null
+    && (
+      Object.keys(initialProgress.unitTicks).length > 0
+      || Object.keys(initialProgress.fileTicks).length > 0
+    )
+  ) {
     writeReviewProgress(review!.context.reviewKey, {
       ...initialProgress,
       unitTicks: initialMigratedProgress!.unitTicks,
@@ -2659,7 +2671,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       set({ reviewViewedFileSyncPending: pending, reviewViewedFileSyncErrors: errors });
     };
 
-    const clearSyncedLocalFileTick = (path: string, viewerId: string): void => {
+    const clearSyncedLocalFileTick = (path: string, viewerId: string, viewed: boolean): void => {
       const current = get();
       const file = current.reviewFiles.find((candidate) => candidate.path === path);
       const tick = file === undefined
@@ -2678,7 +2690,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         ? { ...current.reviewFileTicks }
         : removeReviewFileTick(current.reviewFileTicks, file);
       if (file === undefined) delete nextTicks[path];
-      set({ reviewFileTicks: nextTicks });
+      set({
+        reviewFileTicks: nextTicks,
+        reviewUnitTicks: viewed && file !== undefined
+          ? removeReviewUnitTicks(current.reviewUnitTicks, file.units)
+          : current.reviewUnitTicks,
+      });
       persistReviewProgress(get());
     };
 
@@ -2726,7 +2743,45 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       fallbackViewerHint: GitHubViewerIdentity | null = null,
     ): void => {
       const current = get();
+      let localViewedFiles = current.reviewFiles;
+      if (!current.showTests && current.review !== null) {
+        const headArtifact = current.prPreparedArtifactCurrent && current.reviewBaseNodeIds.size > 0
+          ? {
+              ...current.artifact,
+              nodes: current.artifact.nodes.filter((node) => !current.reviewBaseNodeIds.has(node.id)),
+              edges: current.artifact.edges.filter((edge) =>
+                !current.reviewBaseNodeIds.has(edge.source)
+                && !current.reviewBaseNodeIds.has(edge.target)),
+            }
+          : current.artifact;
+        const headIndex = headArtifact === current.artifact
+          ? current.index
+          : buildGraphIndex(headArtifact);
+        const projectedFiles = deriveReviewProjection(
+          current.review.context,
+          headArtifact,
+          headIndex,
+          {
+            baseIndex: current.prPreparedArtifactCurrent
+              ? (current.prReviewComparison?.index ?? null)
+              : null,
+            baseArtifact: current.prPreparedArtifactCurrent
+              ? (current.prReviewComparison?.artifact ?? null)
+              : null,
+            showTests: true,
+          },
+        ).files;
+        // The mounted rows may carry richer live-PR mapping than a fresh projection. Use the full
+        // projection only to add currently hidden files, never to replace a visible row.
+        localViewedFiles = [...new Map(
+          [...projectedFiles, ...current.reviewFiles].map((file) => [file.path, file] as const),
+        ).values()];
+      }
+      const localViewedFileByPath = new Map(
+        localViewedFiles.map((file) => [file.path, file] as const),
+      );
       let fileTicks = { ...current.reviewFileTicks };
+      let unitTicks = current.reviewUnitTicks;
       const at = new Date().toISOString();
       const activeHeadSha = normalizedGitHubSha(current.prReviewRevision?.headSha);
       const writes = [...viewedFileWrites.values()].filter((entry) =>
@@ -2751,8 +2806,47 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const fallbackViewer = fallbackViewerHint
         ?? (firstWrite === undefined ? null : { id: firstWrite.viewerId, login: firstWrite.viewerLogin })
         ?? (persistedViewers.size === 1 ? [...persistedViewers.values()][0]! : null);
+      const writesByPath = new Map(writes.map((entry) => [entry.path, entry.desired]));
+      // A refresh can discover that authentication expired without any pending mutation. Preserve
+      // the canonical VIEWED baseline before clearing the GitHub map, otherwise an ordinary 401
+      // would make already-reviewed files and all of their children appear new again.
+      for (const file of localViewedFiles) {
+        if (
+          current.reviewFileViewedStates?.[file.path] !== "VIEWED"
+          || writesByPath.get(file.path) === false
+        ) {
+          continue;
+        }
+        fileTicks = removeReviewFileTick(fileTicks, file);
+        const rawHeadSha = current.prReviewRevision?.headSha;
+        const provenance: ReviewUnitProvenance = rawHeadSha === undefined || rawHeadSha === null
+          ? {}
+          : fallbackViewer === null
+            ? { headSha: rawHeadSha }
+            : {
+                viewerId: fallbackViewer.id,
+                viewerLogin: fallbackViewer.login,
+                headSha: rawHeadSha,
+              };
+        setReviewTick(fileTicks, file.path, {
+          at,
+          fingerprint: file.fingerprint,
+          ...(file.address ? { address: file.address } : {}),
+          ...(fallbackViewer !== null
+            ? {
+                viewerId: fallbackViewer.id,
+                viewerLogin: fallbackViewer.login,
+                viewed: true,
+              }
+            : {}),
+          ...(provenance.headSha !== undefined ? { headSha: provenance.headSha } : {}),
+        });
+        if (file.units.length > 0) {
+          unitTicks = setReviewUnitsViewed(file.units, unitTicks, true, at, provenance);
+        }
+      }
       for (const entry of writes) {
-        const file = current.reviewFiles.find((candidate) => candidate.path === entry.path);
+        const file = localViewedFileByPath.get(entry.path);
         if (file === undefined) {
           fileTicks = { ...fileTicks };
           delete fileTicks[entry.path];
@@ -2775,9 +2869,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       } else {
         localViewedFallbackViewers.set(number, fallbackViewer);
       }
+      const localProgress = promoteFullyViewedUnitTicks(
+        localViewedFiles,
+        unitTicks,
+        fileTicks,
+      );
       set({
-        reviewUnitTicks: current.reviewUnitTicks,
-        reviewFileTicks: fileTicks,
+        reviewUnitTicks: localProgress.unitTicks,
+        reviewFileTicks: localProgress.fileTicks,
         reviewFileViewedStates: null,
         reviewViewedFilesViewerId: null,
         reviewViewedFilesViewerLogin: null,
@@ -2882,7 +2981,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           viewedFileWrites.delete(key);
           if (sameViewedSnapshot(entry)) {
             set({ reviewViewedFilesViewerLogin: result.viewerLogin });
-            clearSyncedLocalFileTick(entry.path, entry.viewerId);
+            clearSyncedLocalFileTick(entry.path, entry.viewerId, desired);
             clearViewedWriteUi(entry.path);
           }
           return;
@@ -3064,7 +3163,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           viewedFileWrites.delete(key);
           if (sameViewedSnapshot(entry)) {
             set({ reviewViewedFilesViewerLogin: result.viewerLogin });
-            clearSyncedLocalFileTick(entry.path, entry.viewerId);
+            clearSyncedLocalFileTick(entry.path, entry.viewerId, desired);
             clearViewedWriteUi(entry.path);
           }
         }
@@ -3223,9 +3322,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // A live review becomes local-only only after an explicit 401.
       if (viewedGesturesBlocked(current)) return;
       const unique = [...new Map(files.map((file) => [file.path, file])).values()];
+      const coordinates: ReviewUnitCoordinates = {
+        viewerId: current.reviewViewedFilesViewerId,
+        headSha: current.prReviewRevision?.headSha,
+      };
       const before = new Map(unique.map((file) => [
         file.path,
-        fileViewState(file, current.reviewUnitTicks, current.reviewFileTicks, current.reviewFileViewedStates),
+        fileViewState(
+          file,
+          current.reviewUnitTicks,
+          current.reviewFileTicks,
+          current.reviewFileViewedStates,
+          coordinates,
+        ),
       ]));
       const priorLocalTicks = new Map(unique.map((file) => [
         file.path,
@@ -3239,6 +3348,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         current.reviewFileTicks,
         toggledAt,
         current.reviewFileViewedStates,
+        coordinates,
       );
       const nextGithubStates = current.reviewFileViewedStates === null
         ? null
@@ -3247,6 +3357,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (nextGithubStates !== null) {
         for (const file of changed) {
           setOwnRecordValue(nextGithubStates, file.path, markViewed ? "VIEWED" : "UNVIEWED");
+        }
+      }
+      let nextUnitTicks = next.unitTicks;
+      if (
+        nextGithubStates !== null
+        && markViewed
+        && current.reviewViewedFilesViewerId !== null
+        && current.reviewViewedFilesViewerLogin !== null
+        && current.prReviewRevision?.headSha !== undefined
+        && current.prReviewRevision.headSha !== null
+      ) {
+        // Keep exact unit history until GitHub accepts the file-level write. A stale-head failure
+        // can then retain valid semantic progress instead of erasing it with the optimistic fold.
+        for (const file of changed) {
+          nextUnitTicks = setReviewUnitsViewed(
+            file.units,
+            nextUnitTicks,
+            true,
+            toggledAt,
+            {
+              viewerId: current.reviewViewedFilesViewerId,
+              viewerLogin: current.reviewViewedFilesViewerLogin,
+              headSha: current.prReviewRevision.headSha,
+            },
+          );
         }
       }
       let nextLocalFileTicks = next.fileTicks;
@@ -3261,15 +3396,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             : undefined;
           const intentViewer = fallbackViewer ?? priorViewer;
           const intentHeadSha = current.prReviewRevision?.headSha ?? priorTick?.headSha;
+          if (intentHeadSha !== undefined && file.units.length > 0) {
+            nextUnitTicks = setReviewUnitsViewed(
+              file.units,
+              nextUnitTicks,
+              markViewed,
+              toggledAt,
+              intentViewer === undefined
+                ? { headSha: intentHeadSha }
+                : {
+                    viewerId: intentViewer.id,
+                    viewerLogin: intentViewer.login,
+                    headSha: intentHeadSha,
+                  },
+            );
+          }
           if (markViewed) {
-            const tick = tickForFile(file, nextLocalFileTicks);
-            if (tick === undefined) continue;
+            const tick = tickForFile(file, nextLocalFileTicks) ?? {
+              at: toggledAt,
+              fingerprint: file.fingerprint,
+              ...(file.address ? { address: file.address } : {}),
+            };
             setReviewTick(nextLocalFileTicks, file.path, {
               ...tick,
               ...(intentViewer
                 ? { viewerId: intentViewer.id, viewerLogin: intentViewer.login }
                 : {}),
-              ...(intentHeadSha ? { headSha: intentHeadSha } : {}),
+              ...(intentHeadSha !== undefined ? { headSha: intentHeadSha } : {}),
             });
           } else if (intentViewer !== undefined) {
             setReviewTick(nextLocalFileTicks, file.path, {
@@ -3285,7 +3438,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       set({
-        reviewUnitTicks: next.unitTicks,
+        reviewUnitTicks: nextUnitTicks,
         // Canonical state stays in memory. Preserve only durable migration/fallback intents, whose
         // ticks carry viewer ownership when they originated from an authenticated write.
         reviewFileTicks: nextGithubStates === null ? nextLocalFileTicks : current.reviewFileTicks,
@@ -3305,6 +3458,193 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         enqueueViewedWrites(
           number,
           changed.map((file) => ({ path: file.path, viewed: markViewed })),
+          expectedHeadSha,
+          viewerId,
+          viewerLogin,
+        );
+      }
+    };
+
+    const toggleReviewUnits = (nodeIds: readonly string[]): void => {
+      const current = get();
+      if (nodeIds.length === 0 || viewedGesturesBlocked(current)) return;
+      const requested = new Set(nodeIds);
+      const ownerByUnit = new Map<string, ReviewFileRow>();
+      for (const file of current.reviewFiles) {
+        for (const unit of file.units) ownerByUnit.set(unit.nodeId, file);
+      }
+      const units = [...requested]
+        .map((nodeId) => ownerByUnit.get(nodeId)?.units.find((unit) => unit.nodeId === nodeId))
+        .filter((unit): unit is ReviewUnitRow => unit !== undefined);
+      if (units.length === 0) return;
+      const unitsByFile = new Map<string, { file: ReviewFileRow; units: ReviewUnitRow[] }>();
+      for (const unit of units) {
+        const file = ownerByUnit.get(unit.nodeId)!;
+        const group = unitsByFile.get(file.path);
+        group ? group.units.push(unit) : unitsByFile.set(file.path, { file, units: [unit] });
+      }
+      const files = [...unitsByFile.values()].map((group) => group.file);
+      const toggledAt = new Date().toISOString();
+      const coordinates: ReviewUnitCoordinates = {
+        viewerId: current.reviewViewedFilesViewerId,
+        headSha: current.prReviewRevision?.headSha,
+      };
+      const number = current.prReviewed;
+      const fallbackViewer = number === null ? undefined : localViewedFallbackViewers.get(number);
+      const provenanceByPath = new Map(files.map((file) => {
+        let provenance: ReviewUnitProvenance = {};
+        if (
+          current.reviewFileViewedStates !== null
+          && current.reviewViewedFilesViewerId !== null
+          && current.reviewViewedFilesViewerLogin !== null
+          && current.prReviewRevision?.headSha !== undefined
+          && current.prReviewRevision.headSha !== null
+        ) {
+          provenance = {
+            viewerId: current.reviewViewedFilesViewerId,
+            viewerLogin: current.reviewViewedFilesViewerLogin,
+            headSha: current.prReviewRevision.headSha,
+          };
+        } else if (current.reviewFileViewedStates === null) {
+          const priorTick = tickForFile(file, current.reviewFileTicks);
+          const priorViewer = priorTick?.viewerId !== undefined && priorTick.viewerLogin !== undefined
+            ? { id: priorTick.viewerId, login: priorTick.viewerLogin }
+            : undefined;
+          const intentViewer = fallbackViewer ?? priorViewer;
+          const intentHeadSha = current.prReviewRevision?.headSha ?? priorTick?.headSha;
+          if (intentHeadSha !== undefined) {
+            provenance = intentViewer === undefined
+              ? { headSha: intentHeadSha }
+              : {
+                  viewerId: intentViewer.id,
+                  viewerLogin: intentViewer.login,
+                  headSha: intentHeadSha,
+                };
+          }
+        }
+        return [file.path, provenance] as const;
+      }));
+      let seededTicks = current.reviewUnitTicks;
+      for (const file of files) {
+        const githubState = current.reviewFileViewedStates !== null
+          && Object.hasOwn(current.reviewFileViewedStates, file.path)
+          ? current.reviewFileViewedStates[file.path]
+          : undefined;
+        const fileTick = tickForFile(file, current.reviewFileTicks);
+        const wholeFileBaseline = githubState === "VIEWED"
+          || (
+            current.reviewFileViewedStates === null
+            && fileTick !== undefined
+            && fileTick.viewed !== false
+            && fileTick.fingerprint === file.fingerprint
+          );
+        if (wholeFileBaseline) {
+          seededTicks = setReviewUnitsViewed(
+            file.units,
+            seededTicks,
+            true,
+            toggledAt,
+            provenanceByPath.get(file.path) ?? {},
+          );
+        }
+      }
+      const beforeDone = new Map(files.map((file) => [
+        file.path,
+        unitsViewState(file.units, seededTicks, undefined, coordinates) === "done",
+      ]));
+      const selectedDone = units.every((unit) => {
+        const file = ownerByUnit.get(unit.nodeId)!;
+        const githubState = current.reviewFileViewedStates !== null
+          && Object.hasOwn(current.reviewFileViewedStates, file.path)
+          ? current.reviewFileViewedStates[file.path]
+          : undefined;
+        return unitViewState(unit, seededTicks, githubState, coordinates) === "done";
+      });
+      const markViewed = !selectedDone;
+      let nextUnitTicks = seededTicks;
+      for (const [path, group] of unitsByFile) {
+        nextUnitTicks = setReviewUnitsViewed(
+          group.units,
+          nextUnitTicks,
+          markViewed,
+          toggledAt,
+          provenanceByPath.get(path) ?? {},
+        );
+      }
+      const nextGithubStates = current.reviewFileViewedStates === null
+        ? null
+        : { ...current.reviewFileViewedStates };
+      let nextFileTicks = current.reviewFileTicks;
+      const githubChanges: Array<{ path: string; viewed: boolean }> = [];
+      for (const file of files) {
+        const viewed = unitsViewState(file.units, nextUnitTicks, undefined, coordinates) === "done";
+        if (nextGithubStates !== null) {
+          const githubViewed = Object.hasOwn(nextGithubStates, file.path)
+            && nextGithubStates[file.path] === "VIEWED";
+          if (viewed !== githubViewed) {
+            setOwnRecordValue(nextGithubStates, file.path, viewed ? "VIEWED" : "UNVIEWED");
+            githubChanges.push({ path: file.path, viewed });
+          }
+          continue;
+        }
+
+        const priorTick = tickForFile(file, nextFileTicks);
+        const priorViewer = priorTick?.viewerId !== undefined && priorTick.viewerLogin !== undefined
+          ? { id: priorTick.viewerId, login: priorTick.viewerLogin }
+          : undefined;
+        const intentViewer = fallbackViewer ?? priorViewer;
+        const intentHeadSha = current.prReviewRevision?.headSha ?? priorTick?.headSha;
+        nextFileTicks = removeReviewFileTick(nextFileTicks, file);
+        if (viewed) {
+          setReviewTick(nextFileTicks, file.path, {
+            at: toggledAt,
+            fingerprint: file.fingerprint,
+            ...(file.address ? { address: file.address } : {}),
+            ...(intentViewer
+              ? {
+                  viewerId: intentViewer.id,
+                  viewerLogin: intentViewer.login,
+                  viewed: true,
+                }
+              : {}),
+            ...(intentHeadSha !== undefined ? { headSha: intentHeadSha } : {}),
+          });
+        } else if (
+          intentViewer !== undefined
+          && (beforeDone.get(file.path) === true || priorTick?.viewed === false)
+        ) {
+          setReviewTick(nextFileTicks, file.path, {
+            at: toggledAt,
+            fingerprint: file.fingerprint,
+            ...(file.address ? { address: file.address } : {}),
+            viewerId: intentViewer.id,
+            viewerLogin: intentViewer.login,
+            viewed: false,
+            ...(intentHeadSha !== undefined ? { headSha: intentHeadSha } : {}),
+          });
+        }
+      }
+      set({
+        reviewUnitTicks: nextUnitTicks,
+        reviewFileTicks: nextGithubStates === null ? nextFileTicks : current.reviewFileTicks,
+        reviewFileViewedStates: nextGithubStates,
+      });
+      persistReviewProgress(get());
+
+      const expectedHeadSha = current.prReviewRevision?.headSha;
+      const viewerId = current.reviewViewedFilesViewerId;
+      const viewerLogin = current.reviewViewedFilesViewerLogin;
+      if (
+        nextGithubStates !== null
+        && number !== null
+        && githubChanges.length > 0
+        && typeof expectedHeadSha === "string"
+        && viewerId !== null
+        && viewerLogin !== null
+      ) {
+        enqueueViewedWrites(
+          number,
+          githubChanges,
           expectedHeadSha,
           viewerId,
           viewerLogin,
@@ -3363,6 +3703,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const viewerLogin = parseGitHubViewerLogin(result.viewerLogin);
         localViewedFallbackViewers.delete(number);
         let localFileTicks = current.reviewFileTicks;
+        let localUnitTicks = reconcileReviewUnitTickCoordinates(
+          current.reviewUnitTicks,
+          viewerId,
+          result.headSha,
+        );
         const localChangesToSync = new Map<string, boolean>();
         const visiblePaths = new Set(current.reviewFiles.map((file) => file.path));
         for (const file of current.reviewFiles) {
@@ -3407,7 +3752,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               localFileTicks = removeReviewFileTick(localFileTicks, file);
               continue;
             }
-            if (fileViewState(file, current.reviewUnitTicks, localFileTicks, null) !== "done") {
+            if (fileViewState(file, localUnitTicks, localFileTicks, null, {
+              viewerId,
+              headSha: result.headSha,
+            }) !== "done") {
               continue;
             }
           }
@@ -3463,9 +3811,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             localChangesToSync.set(path, desired);
           }
         }
+        for (const file of current.reviewFiles) {
+          if (Object.hasOwn(states, file.path) && states[file.path] === "VIEWED") {
+            localUnitTicks = removeReviewUnitTicks(localUnitTicks, file.units);
+          }
+        }
         cancelViewedWrites(number);
         set({
-          reviewUnitTicks: current.reviewUnitTicks,
+          reviewUnitTicks: localUnitTicks,
           reviewFileTicks: localFileTicks,
           reviewFileViewedStates: states,
           reviewViewedFilesViewerId: viewerId,
@@ -6471,7 +6824,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (nextGithubStates === null) {
         const at = new Date().toISOString();
         for (const file of current.reviewFiles) {
-          if (fileViewState(file, current.reviewUnitTicks, current.reviewFileTicks, null) !== "done") continue;
+          if (fileViewState(
+            file,
+            current.reviewUnitTicks,
+            current.reviewFileTicks,
+            null,
+            {
+              viewerId: current.reviewViewedFilesViewerId,
+              headSha: current.prReviewRevision?.headSha,
+            },
+          ) !== "done") continue;
           const priorTick = tickForFile(file, current.reviewFileTicks);
           const priorViewer = priorTick?.viewerId !== undefined && priorTick.viewerLogin !== undefined
             ? { id: priorTick.viewerId, login: priorTick.viewerLogin }
@@ -6525,17 +6887,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // GitHub's viewed state is file-atomic. A unit gesture toggles its owning file as one operation.
+    // A unit gesture stays local to that declaration. GitHub changes only when all units in the
+    // owning file cross the viewed/not-viewed boundary.
     toggleReviewUnitTick(nodeId) {
-      const file = get().reviewFiles.find((candidate) => candidate.units.some((unit) => unit.nodeId === nodeId));
-      if (file) toggleWholeReviewFiles([file]);
+      toggleReviewUnits([nodeId]);
     },
 
-    // Structural cards resolve their changed leaves back to unique owning files.
+    // Structural cards aggregate and toggle exactly their represented changed leaves.
     toggleReviewUnitsViewed(nodeIds) {
-      const selectedIds = new Set(nodeIds);
-      const files = get().reviewFiles.filter((file) => file.units.some((unit) => selectedIds.has(unit.nodeId)));
-      toggleWholeReviewFiles(files);
+      toggleReviewUnits(nodeIds);
     },
 
     // The per-file checkbox is the same atomic transition GitHub exposes.
@@ -8997,8 +9357,7 @@ function applyPrReviewToMap(
     reviewRemovedByFile,
     reviewRemovedTruncatedByFile,
     reviewTicks: progress.ticks,
-    // GitHub's viewed model is whole-file atomic. Fully complete legacy units migrate once to a
-    // file tick; partial/stale represented units are intentionally dropped.
+    // Keep exact unit progress while retaining a whole-file synchronization intent when complete.
     reviewUnitTicks: migratedProgress.unitTicks,
     reviewFileTicks: migratedProgress.fileTicks,
     reviewFileViewedStates: options.reprojecting ? currentSelection.reviewFileViewedStates : null,
@@ -9923,6 +10282,62 @@ async function fetchPrFiles(baseUrl: string, number: number): Promise<PrFilesRes
 function normalizedGitHubSha(value: string | null | undefined): string | null {
   const normalized = value?.trim().toLowerCase();
   return normalized ? normalized : null;
+}
+
+/**
+ * Authenticated partial unit progress belongs to one immutable viewer/head coordinate. A different
+ * viewer must never inherit it. On a newer head, semantically addressed ticks can safely fall back
+ * to content validation; address-less ticks cannot be revalidated and are discarded.
+ */
+function reconcileReviewUnitTickCoordinates(
+  ticks: Record<string, ReviewTick>,
+  viewerId: string,
+  headSha: string,
+): Record<string, ReviewTick> {
+  let next = ticks;
+  const mutate = (): Record<string, ReviewTick> => {
+    if (next === ticks) next = { ...ticks };
+    return next;
+  };
+  for (const [key, tick] of Object.entries(ticks)) {
+    const coordinateBound = tick.viewerId !== undefined
+      || tick.viewerLogin !== undefined
+      || tick.headSha !== undefined;
+    if (!coordinateBound) continue;
+    const complete = tick.viewerId !== undefined
+      && tick.viewerLogin !== undefined
+      && tick.headSha !== undefined;
+    if (!complete) {
+      const localHeadOnly = tick.viewerId === undefined
+        && tick.viewerLogin === undefined
+        && tick.headSha !== undefined;
+      if (localHeadOnly && tick.address !== undefined) {
+        setReviewTick(mutate(), key, {
+          at: tick.at,
+          fingerprint: tick.fingerprint,
+          address: tick.address,
+        });
+      } else {
+        delete mutate()[key];
+      }
+      continue;
+    }
+    if (tick.viewerId !== viewerId) {
+      delete mutate()[key];
+      continue;
+    }
+    if (normalizedGitHubSha(tick.headSha) === normalizedGitHubSha(headSha)) continue;
+    if (tick.address === undefined) {
+      delete mutate()[key];
+      continue;
+    }
+    setReviewTick(mutate(), key, {
+      at: tick.at,
+      fingerprint: tick.fingerprint,
+      address: tick.address,
+    });
+  }
+  return next;
 }
 
 function normalizedGitHubLogin(value: string | null | undefined): string | null {

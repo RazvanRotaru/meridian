@@ -17,7 +17,10 @@ import {
   fileViewState,
   isReviewTestPath,
   promoteFullyViewedUnitTicks,
+  setReviewUnitsViewed,
   tickForUnit,
+  unitViewState,
+  unitsViewState,
 } from "./reviewFiles";
 
 function node(id: string, kind: string, file: string, start: number, end: number, parentId: string | null): GraphNode {
@@ -321,30 +324,60 @@ describe("deriveReviewFiles", () => {
 });
 
 describe("view state + tick transitions", () => {
-  // Two hunks so src/a.ts carries TWO leaf units. GitHub still exposes one atomic checkbox for it.
+  // Two hunks so src/a.ts carries TWO leaf units beneath GitHub's one file-level checkbox.
   const context = contextOf([
     { path: "src/a.ts", status: "modified", hunks: [{ start: 25, end: 30 }, { start: 75, end: 80 }] },
     { path: "docs/readme.md", status: "deleted" },
   ]);
   const [a, docs] = deriveReviewFiles(context, ARTIFACT, INDEX, { baseIndex: null });
 
-  it("ignores legacy partial unit progress and uses one whole-file tick", () => {
+  it("keeps a file todo until every changed unit is viewed", () => {
     let unitTicks: Record<string, { at: string; fingerprint: string }> = {};
     expect(fileViewState(a, unitTicks, {})).toBe("todo");
-    for (const unit of a.units) {
-      unitTicks = applyUnitTick(unitTicks, unit, "2026-07-10T00:00:00Z");
-    }
+    unitTicks = applyUnitTick(unitTicks, a.units[0], "2026-07-10T00:00:00Z");
+    expect(unitsViewState(a.units, unitTicks)).toBe("todo");
     expect(fileViewState(a, unitTicks, {})).toBe("todo");
-    const wholeFile = applyFileToggle(a, unitTicks, {}, "2026-07-10T00:00:01Z");
-    expect(wholeFile.unitTicks).toEqual({});
-    expect(fileViewState(a, wholeFile.unitTicks, wholeFile.fileTicks)).toBe("done");
+    unitTicks = applyUnitTick(unitTicks, a.units[1], "2026-07-10T00:00:01Z");
+    expect(unitsViewState(a.units, unitTicks)).toBe("done");
+    expect(fileViewState(a, unitTicks, {})).toBe("done");
   });
 
-  it("keeps unit staleness available for migration without deriving the file from it", () => {
+  it("derives file staleness from a changed viewed unit", () => {
     const tick = { at: "t", fingerprint: "old-fingerprint" };
     expect(checkStateOf(a.units[0].fingerprint, tick)).toBe("stale");
-    expect(fileViewState(a, { [a.units[0].nodeId]: tick }, {})).toBe("todo");
-    expect(fileViewState(a, {}, { [a.path]: tick })).toBe("stale");
+    expect(fileViewState(a, { [a.units[0].nodeId]: tick }, {})).toBe("stale");
+  });
+
+  it("retains stale whole-file progress from the file-atomic release", () => {
+    expect(fileViewState(a, {}, {
+      [a.path]: {
+        at: "t",
+        fingerprint: "previous-file-fingerprint",
+        address: a.address!,
+      },
+    })).toBe("stale");
+  });
+
+  it("validates address-less unit progress against its exact GitHub viewer and head", () => {
+    const unit = { ...a.units[0], address: null };
+    const coordinates = { viewerId: "U_Astrid", headSha: "a".repeat(40) };
+    const ticks = setReviewUnitsViewed([unit], {}, true, "t", {
+      viewerId: "U_Astrid",
+      viewerLogin: "Astrid",
+      headSha: "a".repeat(40),
+    });
+
+    expect(unitViewState(unit, ticks, "UNVIEWED", coordinates)).toBe("done");
+    expect(unitViewState(unit, ticks, "DISMISSED", coordinates)).toBe("done");
+    expect(unitViewState(unit, {}, "DISMISSED", coordinates)).toBe("stale");
+    expect(unitViewState(unit, ticks, "UNVIEWED", {
+      ...coordinates,
+      viewerId: "U_Bob",
+    })).toBe("stale");
+    expect(unitViewState(unit, ticks, "UNVIEWED", {
+      ...coordinates,
+      headSha: "b".repeat(40),
+    })).toBe("stale");
   });
 
   it("treats a durable unview intent as todo and does not overwrite it during legacy migration", () => {
@@ -388,12 +421,53 @@ describe("view state + tick transitions", () => {
 
     const migrated = promoteFullyViewedUnitTicks([a], ticks, {});
 
-    expect(migrated.unitTicks).toEqual({ hidden: ticks.hidden });
+    expect(migrated.unitTicks).toEqual(ticks);
     expect(migrated.fileTicks[a.path]).toEqual({
       at: "2026-07-10T00:00:01Z",
       fingerprint: a.fingerprint,
       address: a.address,
     });
+  });
+
+  it("recovers a complete authenticated unit set when its file intent was not persisted yet", () => {
+    const addresslessFile = {
+      ...a,
+      units: a.units.map((unit) => ({ ...unit, address: null })),
+    };
+    const ticks = Object.fromEntries(addresslessFile.units.map((unit, index) => [
+      unit.nodeId,
+      {
+        at: `2026-07-10T00:00:0${index}Z`,
+        fingerprint: unit.fingerprint,
+        viewerId: "U_Astrid",
+        viewerLogin: "Astrid",
+        headSha: "a".repeat(40),
+      },
+    ]));
+
+    const migrated = promoteFullyViewedUnitTicks([addresslessFile], ticks, {});
+
+    expect(migrated.unitTicks).toEqual(ticks);
+    expect(migrated.fileTicks[a.path]).toMatchObject({
+      fingerprint: a.fingerprint,
+      viewerId: "U_Astrid",
+      viewerLogin: "Astrid",
+      headSha: "a".repeat(40),
+    });
+  });
+
+  it("expands a file-atomic tick back into exact units without dropping its sync intent", () => {
+    const fileTick = {
+      at: "2026-07-10T00:00:00Z",
+      fingerprint: a.fingerprint,
+      address: a.address!,
+    };
+
+    const migrated = promoteFullyViewedUnitTicks([a], {}, { [a.path]: fileTick });
+
+    expect(unitsViewState(a.units, migrated.unitTicks)).toBe("done");
+    expect(migrated.fileTicks[a.path]).toEqual(fileTick);
+    expect(promoteFullyViewedUnitTicks([a], migrated.unitTicks, migrated.fileTicks)).toEqual(migrated);
   });
 
   it("persists a valid __proto__ Git filename as an own whole-file tick", () => {
@@ -411,13 +485,13 @@ describe("view state + tick transitions", () => {
 
     expect(Object.getPrototypeOf(migrated.fileTicks)).toBe(Object.prototype);
     expect(Object.hasOwn(migrated.fileTicks, "__proto__")).toBe(true);
-    expect(fileViewState(special, {}, migrated.fileTicks)).toBe("done");
+    expect(fileViewState(special, migrated.unitTicks, migrated.fileTicks)).toBe("done");
     expect(JSON.parse(JSON.stringify(migrated.fileTicks))["__proto__"]).toMatchObject({
       fingerprint: special.fingerprint,
     });
   });
 
-  it("drops represented partial or stale unit progress without fabricating a viewed file", () => {
+  it("preserves represented partial and stale unit progress without fabricating a viewed file", () => {
     const partial = {
       [a.units[0].nodeId]: {
         at: "t",
@@ -434,8 +508,8 @@ describe("view state + tick transitions", () => {
       },
     };
 
-    expect(promoteFullyViewedUnitTicks([a], partial, {})).toEqual({ unitTicks: {}, fileTicks: {} });
-    expect(promoteFullyViewedUnitTicks([a], stale, {})).toEqual({ unitTicks: {}, fileTicks: {} });
+    expect(promoteFullyViewedUnitTicks([a], partial, {})).toEqual({ unitTicks: partial, fileTicks: {} });
+    expect(promoteFullyViewedUnitTicks([a], stale, {})).toEqual({ unitTicks: stale, fileTicks: {} });
   });
 
   it("promotes a unique previous-path unit tick over a resolved stale file tick", () => {
@@ -468,7 +542,7 @@ describe("view state + tick transitions", () => {
       { oldFile: existingFileTick },
     );
 
-    expect(migrated.unitTicks).toEqual({});
+    expect(migrated.unitTicks).toEqual({ oldUnit: oldUnitTick });
     expect(migrated.fileTicks).toEqual({
       [renamed.path]: {
         at: oldUnitTick.at,
@@ -510,7 +584,7 @@ describe("view state + tick transitions", () => {
       checkStateOf(h2B.fingerprint, tickForUnit(h2B, ticks), h2B.address),
       checkStateOf(h2C.fingerprint, tickForUnit(h2C, ticks), h2C.address),
     ]).toEqual(["done", "stale", "todo"]);
-    expect(filesViewState([{ ...a, units: [h2A, h2B, h2C] }, docs], ticks, {})).toBe("todo");
+    expect(filesViewState([{ ...a, units: [h2A, h2B, h2C] }, docs], ticks, {})).toBe("stale");
   });
 
   it("accepts only one exact previous-path rename address and fails closed on ambiguity", () => {
@@ -526,27 +600,29 @@ describe("view state + tick transitions", () => {
     expect(applyUnitTick({ old: oldTick }, current, "t2")).toEqual({});
   });
 
-  it("stores file gestures as one whole-file tick and clears legacy units", () => {
+  it("cascades a file gesture over every changed unit", () => {
     const on = applyFileToggle(a, {}, {}, "t");
-    expect(on.unitTicks).toEqual({});
-    expect(on.fileTicks[a.path]).toEqual({ at: "t", fingerprint: a.fingerprint, address: a.address });
+    expect(Object.keys(on.unitTicks)).toHaveLength(a.units.length);
+    expect(fileViewState(a, on.unitTicks, on.fileTicks)).toBe("done");
+    expect(on.fileTicks).toEqual({});
     const off = applyFileToggle(a, on.unitTicks, on.fileTicks, "t");
     expect(Object.keys(off.unitTicks)).toEqual([]);
     expect(off.fileTicks).toEqual({});
   });
 
-  it("turns a legacy partly viewed file into one whole-file tick", () => {
+  it("completes every remaining unit from a partly viewed file", () => {
     const partial = applyUnitTick({}, a.units[0], "t");
     const next = applyFileToggle(a, partial, {}, "t");
-    expect(next.unitTicks).toEqual({});
+    expect(Object.keys(next.unitTicks)).toHaveLength(a.units.length);
     expect(fileViewState(a, next.unitTicks, next.fileTicks)).toBe("done");
   });
 
-  it("uses GitHub VIEWED even without a semantic address and renders DISMISSED as stale", () => {
+  it("uses GitHub VIEWED as an all-unit baseline and keeps DISMISSED stale at file level", () => {
     const withoutAddress = { ...a, address: null };
     expect(fileViewState(withoutAddress, {}, {}, { [a.path]: "VIEWED" })).toBe("done");
     expect(fileViewState(withoutAddress, {}, {}, { [a.path]: "DISMISSED" })).toBe("stale");
     expect(fileViewState(withoutAddress, {}, {}, { [a.path]: "UNVIEWED" })).toBe("todo");
+    expect(fileViewState(docs, {}, {}, { [docs.path]: "DISMISSED" })).toBe("stale");
   });
 
   it("uses the explicit file tick for a unit-less file, with hunk-digest staleness", () => {

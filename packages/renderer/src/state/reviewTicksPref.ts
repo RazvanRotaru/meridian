@@ -23,16 +23,16 @@ export interface ReviewTick {
   fingerprint: string;
   /** Semantic address proven by the worker. Required for content-based unit/file carry-forward. */
   address?: string;
-  /** Immutable GitHub viewer identity that owns a durable file-sync intent after authentication is
-   * lost. This is meaningful only for fileTicks; legacy and explicitly local ticks remain
-   * unscoped. */
+  /** Immutable GitHub viewer identity that owns a durable file-sync intent or coordinate-bound
+   * unit progress. Legacy and explicitly local ticks remain unscoped. */
   viewerId?: string;
   /** Display login captured beside viewerId. Never used as the authorization/ownership key. */
   viewerLogin?: string;
   /** Desired GitHub file state for a durable authenticated sync intent. Missing means viewed for
    * backward compatibility; `false` is the tombstone needed to retain an unview gesture. */
   viewed?: boolean;
-  /** Immutable PR head that owns an authenticated sync intent. Legacy/local ticks omit it. */
+  /** Immutable PR head that owns an authenticated sync intent or address-less unit tick.
+   * Legacy/local ticks omit it. */
   headSha?: string;
 }
 
