@@ -143,6 +143,39 @@ describe("typeScriptConfigInputs", () => {
     expect(typeScriptConfigInputs(root, "packages/app", tracked(...paths))).toEqual(result);
   });
 
+  it("binds extensionless-before-json local extends priority", () => {
+    write("tsconfig.json", '{"extends":"./configs/base"}\n');
+    write("configs/base.json", '{"compilerOptions":{"strict":true}}\n');
+    const treeBlobs = tracked("tsconfig.json", "configs/base.json");
+
+    const jsonOnly = typeScriptConfigInputs(root, "packages/app", treeBlobs);
+    expect(jsonOnly.extendsInputs).toEqual([{
+      from: "repo:tsconfig.json",
+      index: 0,
+      specifier: "./configs/base",
+      resolvedAddress: "repo:configs/base.json",
+    }]);
+    expect(jsonOnly.reuseEligibility).toEqual({ eligible: true, reasons: [] });
+
+    write("configs/base", '{"compilerOptions":{"strict":false}}\n');
+    const extensionlessPresent = typeScriptConfigInputs(root, "packages/app", treeBlobs);
+    expect(extensionlessPresent.extendsInputs).toEqual([{
+      from: "repo:tsconfig.json",
+      index: 0,
+      specifier: "./configs/base",
+      resolvedAddress: "repo:configs/base",
+    }]);
+    expect(extensionlessPresent.configFiles.map((input) => input.address)).toEqual([
+      "repo:configs/base",
+      "repo:tsconfig.json",
+    ]);
+    expect(extensionlessPresent.reuseEligibility).toEqual({
+      eligible: false,
+      reasons: ["untracked-config-input"],
+    });
+    expect(extensionlessPresent).not.toEqual(jsonOnly);
+  });
+
   it("marks an untracked selected config ineligible while retaining its digest", () => {
     write("tsconfig.json", '{"compilerOptions":{"strict":true}}\n');
 
@@ -280,4 +313,3 @@ describe("typeScriptConfigInputs", () => {
     });
   }
 });
-

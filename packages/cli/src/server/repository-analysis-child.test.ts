@@ -12,7 +12,9 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { SCHEMA_VERSION, type GraphArtifact } from "@meridian/core";
 import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
-import { analysisRuntimeFingerprint } from "../analysis-runtime-fingerprint";
+import {
+  typeScriptRevisionShardRuntimeFingerprint,
+} from "../typescript-revision-shard-runtime-fingerprint";
 import {
   runRepositoryAnalysisChild,
   runRepositoryArtifactRestampChild,
@@ -123,12 +125,13 @@ describe("repository analysis child", () => {
   it("rejects shard execution when the fresh child runtime differs from parent provenance", async () => {
     const directory = temporaryDirectory();
     const root = join(REPO, "examples", "orders-api");
-    const runtime = analysisRuntimeFingerprint();
+    const runtime = typeScriptRevisionShardRuntimeFingerprint();
     const policy: TypeScriptRevisionShardPolicy = {
       version: 1,
       mode: "verified-experimental",
       admission: null,
       cacheDir: join(directory, "shards"),
+      pairCacheDir: null,
       treeOid: "a".repeat(40),
       buildFingerprint: runtime.buildFingerprint === "f".repeat(64)
         ? "e".repeat(64)
@@ -153,6 +156,40 @@ describe("repository analysis child", () => {
     })).rejects.toThrow(
       "TypeScript revision-shard runtime provenance differs before extraction",
     );
+  }, 30_000);
+
+  it("accepts matching TypeScript shard provenance across a fresh child process", async () => {
+    const directory = temporaryDirectory();
+    const root = join(REPO, "examples", "orders-api");
+    const runtime = typeScriptRevisionShardRuntimeFingerprint();
+    const policy: TypeScriptRevisionShardPolicy = {
+      version: 1,
+      mode: "verified-experimental",
+      admission: null,
+      cacheDir: join(directory, "shards"),
+      pairCacheDir: null,
+      treeOid: "a".repeat(40),
+      buildFingerprint: runtime.buildFingerprint,
+      analysisPolicyFingerprint: "b".repeat(64),
+      runtimeFingerprint: {
+        nodeVersion: runtime.nodeVersion,
+        platform: runtime.platform,
+        arch: runtime.arch,
+        typescriptVersion: runtime.typescriptVersion,
+        tsMorphVersion: runtime.tsMorphVersion,
+      },
+    };
+
+    await expect(runRepositoryAnalysisChild({
+      absoluteRoot: root,
+      cwd: root,
+    }, {
+      artifactOutputPath: join(directory, "artifact.json"),
+      typeScriptRevisionShards: policy,
+      timeoutMs: 30_000,
+    })).resolves.toMatchObject({
+      target: { root: "." },
+    });
   }, 30_000);
 
   it("validates and restamps branch provenance entirely in a one-shot child", async () => {

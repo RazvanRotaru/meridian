@@ -7,12 +7,10 @@
  * and the shared tail (aggregate -> collapse -> ports -> stats) runs once, globally.
  */
 
-import { DEPTH_RANK, rankOfKind } from "@meridian/core";
 import type {
   ExtractOptions,
   ExtractionDiagnostic,
   ExtractionDepth,
-  ExtractionProgressActivity,
   ExtractionProgressPosition,
   ExtractionResult,
   GraphNode,
@@ -21,41 +19,32 @@ import type {
 } from "@meridian/core";
 import { joinCrossPackageEdges, type UnitSummary } from "./cross-package-join";
 import { buildEdges } from "./edge-build";
-import { collectRawEdges, type RawEdge } from "./edge-pass";
-import type { NodeDescriptor } from "./model";
+import type { RawEdge } from "./edge-pass";
 import type { CrossPackageResolver } from "./edge-resolve";
-import { buildUnitSummary } from "./export-summary";
 import {
-  NODE_ID_LANGUAGE,
   appendDropDiagnostics,
-  moduleIdsByRelPath,
-  moduleSourcesById,
   portsWithin,
 } from "./extract-common";
-import { assignFinalIds, buildGraphNodes } from "./finalize-nodes";
-import { buildLogicFlows } from "./flow-pass";
-import { collectImportEdges } from "./import-pass";
-import { collectValueRefEdges } from "./value-ref-pass";
 import { collapseToDepth } from "./depth-collapse";
-import { collectPorts } from "./ports-pass";
-import { collectPromiseResources } from "./promise-resource-pass";
 import { loadUnitProject, type LoadedProject } from "./project-loader";
-import { buildResolutionIndex } from "./resolution-index";
 import { buildStats } from "./stats";
-import { buildStructure } from "./structural-pass";
 import {
   deriveImplementedByEdges,
-  implementationMembers,
   type ImplementationMember,
 } from "./implementation-edges";
 import { absoluteRoot, isUnderRoot, relativeToRoot, toPosix } from "./paths";
 import { discoverWorkspaceUnits, type Workspace, type WorkspaceUnit } from "./workspace-units";
 import { dirname, resolve } from "node:path";
 import {
+  extractLoadedUnitContributions,
+  materializeUnitContributionSetV1,
+} from "./unit-contributions";
+import {
   createExtractionProgressReporter,
-  createRelationshipFileProgress,
   type ExtractionProgressReporter,
 } from "./progress";
+
+export { survivorIdsAtDepth } from "./extraction-depth";
 
 /** Everything a unit contributes once its project has been dropped — plain data only. */
 export interface UnitExtraction {
@@ -199,100 +188,15 @@ export function extractLoadedUnit(
   progressUnit?: ExtractionProgressPosition,
   progressReporter?: ExtractionProgressReporter,
 ): UnitExtraction {
-  const diagnostics: ExtractionDiagnostic[] = [];
-  const { descriptors, moduleByFilePath } = buildStructure(
+  return materializeUnitContributionSetV1(extractLoadedUnitContributions(
+    unit,
     loaded,
-    NODE_ID_LANGUAGE,
-    progressReporter === undefined || progressUnit === undefined
-      ? undefined
-      : (sourceFile, current, total) => progressReporter({
-          language: "typescript",
-          phase: "structure",
-          unit: progressUnit,
-          sourceFile: { current, total, path: loaded.relativePathOf(sourceFile) },
-        }),
-  );
-  assignFinalIds(descriptors);
-  const index = buildResolutionIndex(descriptors, moduleByFilePath, loaded.root);
-  if (progressReporter !== undefined && progressUnit !== undefined) {
-    progressReporter({
-      language: "typescript",
-      phase: "relationships",
-      unit: progressUnit,
-      sourceFile: null,
-    });
-  }
-  const relationshipProgress = (activity: ExtractionProgressActivity) =>
-    createRelationshipFileProgress(progressReporter, progressUnit, activity);
-  const behavioural = collectRawEdges(
-    loaded,
-    descriptors,
-    index,
-    moduleByFilePath,
-    diagnostics,
+    options,
     resolver,
-    relationshipProgress("calls-and-types"),
-  );
-  const imports = collectImportEdges(
-    loaded,
-    moduleByFilePath,
-    index,
-    resolver,
-    relationshipProgress("imports"),
-  );
-  const valueRefs = options.valueRefs
-    ? collectValueRefEdges(
-        loaded,
-        index,
-        moduleByFilePath,
-        diagnostics,
-        resolver,
-        relationshipProgress("value-references"),
-      )
-    : [];
-  const promiseResources = collectPromiseResources(
-    loaded,
-    index,
-    moduleByFilePath,
-    resolver,
-    {
-      discovery: relationshipProgress("promise-discovery"),
-      links: relationshipProgress("promise-links"),
-    },
-  );
-  const keepIds = survivorIdsAtDepth(descriptors, depth);
-  const flows = buildLogicFlows(
-    descriptors,
-    index,
-    keepIds,
-    moduleSourcesById(loaded, moduleByFilePath),
-    promiseResources.flowIds,
-    relationshipProgress("logic-flows"),
-  );
-  const moduleIds = moduleIdsByRelPath(loaded, moduleByFilePath);
-  return {
-    nodes: [...buildGraphNodes(descriptors), ...promiseResources.nodes],
-    rawEdges: [...behavioural, ...imports, ...valueRefs, ...promiseResources.edges],
-    implementationMembers: implementationMembers(descriptors),
-    flows,
-    ports: collectPorts(
-      loaded,
-      index,
-      moduleByFilePath,
-      undefined,
-      relationshipProgress("ports"),
-    ),
-    summary: buildUnitSummary(
-      unit,
-      loaded,
-      index,
-      moduleIds,
-      resolver,
-      relationshipProgress("exports"),
-    ),
-    diagnostics,
-    files: loaded.sourceFiles.length,
-  };
+    depth,
+    progressUnit,
+    progressReporter,
+  ));
 }
 
 /** Join pending refs across summaries, then run the ordinary global tail of the pipeline. */
@@ -355,11 +259,4 @@ function dedupeSharedAncestors(nodes: GraphNode[]): GraphNode[] {
     seen.add(node.id);
     return true;
   });
-}
-
-/** Which of this unit's nodes survive the depth collapse — a per-node rank test, so it can
- * run per unit (flows need it) and still agree exactly with the global collapse. */
-export function survivorIdsAtDepth(descriptors: NodeDescriptor[], depth: ExtractionDepth): Set<string> {
-  const maxRank = DEPTH_RANK[depth];
-  return new Set(descriptors.filter((descriptor) => rankOfKind(descriptor.kind) <= maxRank).map((descriptor) => descriptor.finalId));
 }

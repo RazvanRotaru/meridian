@@ -279,7 +279,9 @@ function collectStorageWrites(loaded: LoadedProject): Map<string, Node[]> {
 }
 
 function appendWrite(writes: Map<string, Node[]>, key: string, value: Node): void {
-  writes.set(key, [...(writes.get(key) ?? []), value]);
+  const existing = writes.get(key);
+  if (existing) existing.push(value);
+  else writes.set(key, [value]);
 }
 
 function collectSettlerAliases(
@@ -358,7 +360,11 @@ function correlateReturnedResources(
   resolver: CrossPackageResolver | undefined,
 ): Map<string, PromiseResource | null> {
   const bySource = new Map<string, ReturnSite[]>();
-  for (const site of sites) bySource.set(site.source, [...(bySource.get(site.source) ?? []), site]);
+  for (const site of sites) {
+    const existing = bySource.get(site.source);
+    if (existing) existing.push(site);
+    else bySource.set(site.source, [site]);
+  }
   let returnedBy = new Map<string, PromiseResource | null>();
   for (let pass = 0; pass < MAX_ALIAS_DEPTH; pass += 1) {
     const next = new Map<string, PromiseResource | null>();

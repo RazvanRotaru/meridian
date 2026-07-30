@@ -4,7 +4,7 @@
  * honest resolution and a call site; aggregation and the drop/include policy happen downstream.
  */
 
-import { Node, SyntaxKind, type ClassDeclaration } from "ts-morph";
+import { Node, SyntaxKind, type ClassDeclaration, type SourceFile } from "ts-morph";
 import type { CallSite, EdgeKind, ExtractionDiagnostic } from "@meridian/core";
 import { callSiteOf, nodeKey, type NodeDescriptor } from "./model";
 import { isRuntimeImportCall } from "./import-dependency";
@@ -25,6 +25,22 @@ export interface RawEdge {
   callSite: CallSite;
 }
 
+/** One target-file's exact contribution to one relationship phase. */
+export interface RawEdgeFileContribution {
+  readonly file: string;
+  readonly edges: RawEdge[];
+  readonly diagnostics: ExtractionDiagnostic[];
+}
+
+/**
+ * Explicit cold-phase lanes. Keeping inheritance separate prevents a cache/materializer from
+ * having to infer pass provenance from edge kinds or diagnostic messages.
+ */
+export interface RawEdgeContributionSet {
+  readonly behavioural: RawEdgeFileContribution[];
+  readonly inheritance: RawEdgeFileContribution[];
+}
+
 export function collectRawEdges(
   loaded: LoadedProject,
   descriptors: NodeDescriptor[],
@@ -33,22 +49,102 @@ export function collectRawEdges(
   diagnostics: ExtractionDiagnostic[],
   resolver?: CrossPackageResolver,
   onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
 ): RawEdge[] {
-  const edges: RawEdge[] = [];
-  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
-    const relPath = loaded.relativePathOf(sourceFile);
+  const contributions = collectRawEdgeContributions(
+    loaded,
+    descriptors,
+    index,
+    moduleByFilePath,
+    resolver,
+    onSourceFile,
+    selectedFiles,
+  );
+  diagnostics.push(
+    ...contributions.behavioural.flatMap((file) => file.diagnostics),
+    ...contributions.inheritance.flatMap((file) => file.diagnostics),
+  );
+  return [
+    ...contributions.behavioural.flatMap((file) => file.edges),
+    ...contributions.inheritance.flatMap((file) => file.edges),
+  ];
+}
+
+/**
+ * Collect relationships as file-owned, phase-owned contributions. `selectedFiles` is an exact
+ * target-relative allow-list; its iteration order is ignored and target-program order wins.
+ */
+export function collectRawEdgeContributions(
+  loaded: LoadedProject,
+  descriptors: NodeDescriptor[],
+  index: ResolutionIndex,
+  moduleByFilePath: Map<string, NodeDescriptor>,
+  resolver?: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
+): RawEdgeContributionSet {
+  const sourceFiles = selectedSourceFiles(loaded, selectedFiles);
+  const behavioural = sourceFiles.map(({ sourceFile, relPath }, fileIndex) => {
+    const contribution: RawEdgeFileContribution = {
+      file: relPath,
+      edges: [],
+      diagnostics: [],
+    };
     reportRelationshipFileProgress(
       onSourceFile,
       relPath,
       fileIndex + 1,
-      loaded.sourceFiles.length,
+      sourceFiles.length,
     );
-    collectBehaviouralEdges(sourceFile, relPath, index, moduleByFilePath, diagnostics, edges, resolver);
-  }
+    collectBehaviouralEdges(
+      sourceFile,
+      relPath,
+      index,
+      moduleByFilePath,
+      contribution.diagnostics,
+      contribution.edges,
+      resolver,
+    );
+    return contribution;
+  });
+
+  const inheritance = sourceFiles.map(({ relPath }): RawEdgeFileContribution => ({
+    file: relPath,
+    edges: [],
+    diagnostics: [],
+  }));
+  const inheritanceByFile = new Map(inheritance.map((contribution) => [
+    contribution.file,
+    contribution,
+  ]));
   for (const descriptor of descriptors) {
-    collectInheritanceEdges(descriptor, index, diagnostics, edges, resolver);
+    const contribution = inheritanceByFile.get(descriptor.location.file);
+    if (contribution !== undefined) {
+      collectInheritanceEdges(
+        descriptor,
+        index,
+        contribution.diagnostics,
+        contribution.edges,
+        resolver,
+      );
+    }
   }
-  return edges;
+
+  return { behavioural, inheritance };
+}
+
+function selectedSourceFiles(
+  loaded: LoadedProject,
+  selectedFiles: ReadonlySet<string> | undefined,
+): Array<{ sourceFile: SourceFile; relPath: string }> {
+  const result: Array<{ sourceFile: SourceFile; relPath: string }> = [];
+  for (const sourceFile of loaded.sourceFiles) {
+    const relPath = loaded.relativePathOf(sourceFile);
+    if (selectedFiles === undefined || selectedFiles.has(relPath)) {
+      result.push({ sourceFile, relPath });
+    }
+  }
+  return result;
 }
 
 function collectBehaviouralEdges(

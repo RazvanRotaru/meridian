@@ -9,6 +9,7 @@
 import {
   PR_REVIEW_PROGRESS_STAGE_IDS,
   sanitizePrReviewExtractionProgress,
+  type PrReviewProgressRevisionId,
   type PrReviewProgressStage,
 } from "@meridian/core";
 
@@ -46,9 +47,10 @@ export async function streamPrAnalysis(
   analyzeUrl: string,
   request: PrAnalyzeRequest,
   onStage: (stage: PrAnalyzeStage, progress: unknown) => void,
+  onLaneComplete: (lane: PrReviewProgressRevisionId) => void = () => undefined,
 ): Promise<PrAnalysisResult> {
   const response = await postAnalyze(analyzeUrl, request);
-  return drainAnalysisStream(response, onStage);
+  return drainAnalysisStream(response, onStage, onLaneComplete);
 }
 
 async function postAnalyze(analyzeUrl: string, request: PrAnalyzeRequest): Promise<Response> {
@@ -68,6 +70,7 @@ async function postAnalyze(analyzeUrl: string, request: PrAnalyzeRequest): Promi
 async function drainAnalysisStream(
   response: Response,
   onStage: (stage: PrAnalyzeStage, progress: unknown) => void,
+  onLaneComplete: (lane: PrReviewProgressRevisionId) => void,
 ): Promise<PrAnalysisResult> {
   const reader = response.body!.getReader();
   const decoder = new TextDecoder();
@@ -80,7 +83,7 @@ async function drainAnalysisStream(
         break;
       }
       buffer += decoder.decode(value, { stream: true });
-      result = drainCompleteLines(buffer, onStage) ?? result;
+      result = drainCompleteLines(buffer, onStage, onLaneComplete) ?? result;
       buffer = trailingPartial(buffer);
       assertBoundedAnalysisLine(buffer);
     }
@@ -89,7 +92,7 @@ async function drainAnalysisStream(
   }
   buffer += decoder.decode();
   assertBoundedAnalysisLine(buffer);
-  result = applyLine(buffer.trim(), onStage) ?? result;
+  result = applyLine(buffer.trim(), onStage, onLaneComplete) ?? result;
   if (result === null) {
     throw new Error("PR analysis ended without a graph.");
   }
@@ -100,12 +103,13 @@ async function drainAnalysisStream(
 function drainCompleteLines(
   buffer: string,
   onStage: (stage: PrAnalyzeStage, progress: unknown) => void,
+  onLaneComplete: (lane: PrReviewProgressRevisionId) => void,
 ): PrAnalysisResult | null {
   let result: PrAnalysisResult | null = null;
   const lines = buffer.split("\n");
   for (const line of lines.slice(0, -1)) {
     assertBoundedAnalysisLine(line);
-    result = applyLine(line.trim(), onStage) ?? result;
+    result = applyLine(line.trim(), onStage, onLaneComplete) ?? result;
   }
   return result;
 }
@@ -120,6 +124,7 @@ function trailingPartial(buffer: string): string {
 function applyLine(
   line: string,
   onStage: (stage: PrAnalyzeStage, progress: unknown) => void,
+  onLaneComplete: (lane: PrReviewProgressRevisionId) => void,
 ): PrAnalysisResult | null {
   const parsed = parseLine(line);
   if (parsed === null) {
@@ -139,6 +144,10 @@ function applyLine(
   if (parsed.stage === "error") {
     throw new Error(parsed.message ?? "PR analysis failed.");
   }
+  if (parsed.stage === "lane-complete") {
+    if (isPrReviewProgressRevisionId(parsed.lane)) onLaneComplete(parsed.lane);
+    return null;
+  }
   if (isPrAnalyzeStage(parsed.stage)) {
     onStage(
       parsed.stage,
@@ -157,6 +166,7 @@ interface AnalyzeLine {
   mergeBaseSha?: string;
   cache?: unknown;
   progress?: unknown;
+  lane?: unknown;
 }
 
 function nonEmptyString(value: unknown): string | null {
@@ -178,6 +188,10 @@ const PR_ANALYZE_STAGES: readonly PrAnalyzeStage[] = PR_REVIEW_PROGRESS_STAGE_ID
 
 function isPrAnalyzeStage(value: string): value is PrAnalyzeStage {
   return (PR_ANALYZE_STAGES as readonly string[]).includes(value);
+}
+
+function isPrReviewProgressRevisionId(value: unknown): value is PrReviewProgressRevisionId {
+  return value === "head" || value === "mergeBase";
 }
 
 function parseLine(line: string): AnalyzeLine | null {

@@ -19,7 +19,7 @@ describe("BootProgress", () => {
     );
 
     expect(markup).toContain(PR_REVIEW_PROGRESS_MODEL.title);
-    expect(markup).toContain("Fetching PR HEAD and merge base");
+    expect(markup).toContain("Fetching exact PR revisions");
     for (const step of PR_REVIEW_PROGRESS_MODEL.steps) {
       expect(markup).toContain(step.label);
     }
@@ -52,7 +52,7 @@ describe("BootProgress", () => {
     );
 
     expect(markup).toContain("Loading and indexing review graphs");
-    expect(markup).not.toContain("Cloning the repository");
+    expect(markup).not.toContain("Preparing the repository mirror");
     expect(markup).toContain('data-state="reused"');
     expect(markup).toContain('data-state="skipped"');
   });
@@ -67,7 +67,21 @@ describe("BootProgress", () => {
     );
 
     expect(markup).toContain("Resolving exact PR revisions and verified cache");
-    expect(markup).not.toContain("Cloning the repository");
+    expect(markup).not.toContain("Preparing the repository mirror");
+  });
+
+  it("uses warm-safe repository preparation copy for the mirror stage", () => {
+    const markup = renderToStaticMarkup(
+      <BootProgress progress={{
+        path: "review-analysis",
+        stage: "review-clone",
+        reviewProgress: null,
+      }} />,
+    );
+
+    expect(markup).toContain("Preparing the repository mirror");
+    expect(markup).toContain("Reusing or creating the mirror");
+    expect(markup).not.toContain("Cloning");
   });
 
   it("names verified HEAD reuse without implying extraction", () => {

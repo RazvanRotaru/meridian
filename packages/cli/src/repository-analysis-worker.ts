@@ -5,8 +5,8 @@ import { lstatSync, readFileSync, rmSync } from "node:fs";
 import { validateArtifact, type GraphArtifact } from "@meridian/core";
 import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import {
-  computeCurrentAnalysisRuntimeFingerprint,
-} from "./analysis-runtime-fingerprint";
+  computeCurrentTypeScriptRevisionShardRuntimeFingerprint,
+} from "./typescript-revision-shard-runtime-fingerprint";
 import { CliError, EXIT } from "./errors";
 import { analyzeRepository, type RepositoryAnalysisRequest } from "./repository-analysis";
 import { runGit } from "./server/git-exec";
@@ -105,7 +105,7 @@ function requireCurrentShardRuntime(
   policy: TypeScriptRevisionShardPolicy,
   phase: "before" | "after",
 ): void {
-  const current = computeCurrentAnalysisRuntimeFingerprint();
+  const current = computeCurrentTypeScriptRevisionShardRuntimeFingerprint();
   if (
     current.buildFingerprint !== policy.buildFingerprint
     || current.nodeVersion !== policy.runtimeFingerprint.nodeVersion

@@ -18,7 +18,7 @@ import {
   resolve,
   sep,
 } from "node:path";
-import { canonicalJson, canonicalJsonBytes, canonicalJsonSha256 } from "./canonical-json";
+import { canonicalJson, canonicalJsonSha256, sha256Hex } from "./canonical-json";
 
 const CACHE_FORMAT = "meridian.incremental-poc.immutable-json.v1";
 const DEFAULT_MAX_ENTRY_BYTES = 512 * 1024 * 1024;
@@ -160,13 +160,18 @@ export async function writeImmutableJsonCache<T>(
 ): Promise<ImmutableJsonCacheWriteResult<T>> {
   const path = immutableJsonCachePath(root, address);
   const trustedRoot = resolve(access.trustedRoot ?? root);
+  // The immutable value is often hundreds of MiB. Canonicalize it once, hash those exact bytes,
+  // and splice the already-canonical value into the fixed canonical envelope. Calling the generic
+  // serializer for both the digest and envelope traversed the complete shard twice.
+  const canonicalValue = canonicalJson(value);
+  const payloadDigest = sha256Hex(canonicalValue);
   const envelope: CacheEnvelope<T> = {
     format: CACHE_FORMAT,
     address,
-    payloadDigest: canonicalJsonSha256(value),
+    payloadDigest,
     value,
   };
-  const bytes = canonicalJsonBytes(envelope);
+  const bytes = canonicalEnvelopeBytes(address, payloadDigest, canonicalValue);
   await ensureTrustedDirectoryPath(trustedRoot, dirname(path), true);
 
   const temporaryPath = `${path}.${process.pid}.${randomUUID()}.tmp`;
@@ -196,6 +201,23 @@ export async function writeImmutableJsonCache<T>(
     throw new ImmutableCacheCollisionError(address, path);
   }
   return { ...existing, created: false };
+}
+
+function canonicalEnvelopeBytes(
+  address: string,
+  payloadDigest: string,
+  canonicalValue: string,
+): Buffer {
+  // Canonical object keys sort as address, format, payloadDigest, value. All three envelope
+  // strings are internal validated constants/hex values, but JSON.stringify remains the exact
+  // escaping authority so this construction stays byte-identical to canonicalJson(envelope).
+  return Buffer.from(
+    `{"address":${JSON.stringify(address)},`
+    + `"format":${JSON.stringify(CACHE_FORMAT)},`
+    + `"payloadDigest":${JSON.stringify(payloadDigest)},`
+    + `"value":${canonicalValue}}`,
+    "utf8",
+  );
 }
 
 /**

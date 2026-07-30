@@ -44,11 +44,13 @@ const MAX_PATH_BYTES = 4_096;
 const MAX_PROGRESS_PATH_BYTES = 512;
 const MIN_PROGRESS_INTERVAL_MS = 1_000;
 const SUPPORTED_PROGRESS_LANGUAGE_COUNT = 2;
-const REQUIRED_PROGRESS_EVENTS_PER_LANGUAGE = 5;
+const REQUIRED_PROGRESS_EVENTS_PER_LANGUAGE = 6;
 const RESERVED_ACTIVITY_PROGRESS_EVENTS = 256;
+const RESERVED_INPUT_PROOF_CLEAR_EVENTS = 64;
 const RESERVED_REQUIRED_PROGRESS_EVENTS =
   SUPPORTED_PROGRESS_LANGUAGE_COUNT * REQUIRED_PROGRESS_EVENTS_PER_LANGUAGE
-  + RESERVED_ACTIVITY_PROGRESS_EVENTS;
+  + RESERVED_ACTIVITY_PROGRESS_EVENTS
+  + RESERVED_INPUT_PROOF_CLEAR_EVENTS;
 const MAX_CHANGED_PATH_BYTES_TOTAL = 1024 * 1024;
 const MAX_HINT_PATH_BYTES_TOTAL = 256 * 1024;
 const MAX_WARNING_BYTES = 4_000;
@@ -297,6 +299,7 @@ function isTypeScriptRevisionShardPolicy(
     "buildFingerprint",
     "cacheDir",
     "mode",
+    "pairCacheDir",
     "runtimeFingerprint",
     "treeOid",
     "version",
@@ -313,6 +316,10 @@ function isTypeScriptRevisionShardPolicy(
     || !isTypeScriptRevisionShardMode(value.mode)
     || !isAbsolute(asString(value.cacheDir))
     || Buffer.byteLength(value.cacheDir as string) > MAX_PATH_BYTES
+    || (value.pairCacheDir !== null
+      && (!isAbsolute(asString(value.pairCacheDir))
+        || Buffer.byteLength(value.pairCacheDir as string) > MAX_PATH_BYTES))
+    || (value.mode !== "admitted" && value.pairCacheDir !== null)
     || typeof value.treeOid !== "string"
     || !GIT_TREE_OID.test(value.treeOid)
     || typeof value.buildFingerprint !== "string"
@@ -517,17 +524,22 @@ export function createRepositoryAnalysisProgressReporter(
   let emitted = 0;
   let regularEmitted = 0;
   let activityEmitted = 0;
+  let inputProofClearEmitted = 0;
   let lastEmittedAt = Number.NEGATIVE_INFINITY;
   const sawFirstSource = new Set<ExtractionProgress["language"]>();
   const sawFinalSource = new Set<ExtractionProgress["language"]>();
+  const sawInputProof = new Set<ExtractionProgress["language"]>();
   const sawRelationships = new Set<ExtractionProgress["language"]>();
   const sawStitch = new Set<ExtractionProgress["language"]>();
   const sawFinalize = new Set<ExtractionProgress["language"]>();
   let previousActivityCoordinate: string | null = null;
+  const inputProofSources = new Set<ExtractionProgress["language"]>();
   return (progress) => {
     if (!isRawExtractionProgress(progress)) return;
     const timestamp = now();
     const firstObservation = emitted === 0;
+    const firstInputProof = progress.phase === "input-proof"
+      && !sawInputProof.has(progress.language);
     const firstRelationship = progress.phase === "relationships"
       && !sawRelationships.has(progress.language);
     const firstStitch = progress.phase === "stitch"
@@ -548,13 +560,30 @@ export function createRepositoryAnalysisProgressReporter(
     const activityTransition = activityCoordinate !== null
       && activityCoordinate !== previousActivityCoordinate;
     previousActivityCoordinate = activityCoordinate;
+    const clearsInputProofSource = progress.phase === "input-proof"
+      && progress.sourceFile === null
+      && inputProofSources.has(progress.language);
+    const opensInputProofSource = progress.phase === "input-proof"
+      && progress.sourceFile !== null
+      && !inputProofSources.has(progress.language);
+    // Never present a file unless capacity remains for the later explicit clear. Once the bounded
+    // reservation is exhausted, unit/phase progress remains truthful without risking a stale path.
+    if (
+      opensInputProofSource
+      && inputProofClearEmitted + inputProofSources.size >= RESERVED_INPUT_PROOF_CLEAR_EVENTS
+    ) {
+      return;
+    }
     const requiredPhaseObservation = firstSource
       || finalSource
+      || firstInputProof
       || firstRelationship
       || firstStitch
       || firstFinalize;
     const reservedActivityObservation = activityTransition
       && activityEmitted < RESERVED_ACTIVITY_PROGRESS_EVENTS;
+    const reservedInputProofClear = clearsInputProofSource
+      && inputProofClearEmitted < RESERVED_INPUT_PROOF_CLEAR_EVENTS;
     const regularCapacity = MAX_REPOSITORY_WORKER_PROGRESS_EVENTS
       - RESERVED_REQUIRED_PROGRESS_EVENTS;
     const sampledObservation = firstObservation
@@ -563,14 +592,17 @@ export function createRepositoryAnalysisProgressReporter(
       ? "phase"
       : reservedActivityObservation
         ? "activity"
-        : sampledObservation && regularEmitted < regularCapacity
-          ? "regular"
-          : null;
+        : reservedInputProofClear
+          ? "input-proof-clear"
+          : sampledObservation && regularEmitted < regularCapacity
+            ? "regular"
+            : null;
     if (capacityBucket === null || emitted >= MAX_REPOSITORY_WORKER_PROGRESS_EVENTS) {
       return;
     }
     if (firstSource) sawFirstSource.add(progress.language);
     if (finalSource) sawFinalSource.add(progress.language);
+    if (firstInputProof) sawInputProof.add(progress.language);
     if (firstRelationship) sawRelationships.add(progress.language);
     if (firstStitch) sawStitch.add(progress.language);
     if (firstFinalize) sawFinalize.add(progress.language);
@@ -590,7 +622,13 @@ export function createRepositoryAnalysisProgressReporter(
     if (!isRepositoryAnalysisProgress(bounded)) return;
     emitted += 1;
     if (capacityBucket === "activity") activityEmitted += 1;
+    if (capacityBucket === "input-proof-clear") inputProofClearEmitted += 1;
     if (capacityBucket === "regular") regularEmitted += 1;
+    if (progress.phase === "input-proof" && progress.sourceFile !== null) {
+      inputProofSources.add(progress.language);
+    } else {
+      inputProofSources.delete(progress.language);
+    }
     lastEmittedAt = timestamp;
     try {
       const result = emit(bounded);
@@ -767,6 +805,7 @@ function isRawExtractionProgress(value: unknown): value is ExtractionProgress {
 
 function isExtractionProgressPhase(value: unknown): value is ExtractionProgressPhase {
   return value === "project-load"
+    || value === "input-proof"
     || value === "structure"
     || value === "relationships"
     || value === "stitch"

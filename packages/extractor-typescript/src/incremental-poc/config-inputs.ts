@@ -67,10 +67,11 @@ export function typeScriptConfigInputs(
   rootInput: string,
   unitDir: string,
   treeBlobs: readonly GitBlobIdentity[],
+  trackedByPathInput?: ReadonlyMap<string, GitBlobIdentity>,
 ): TypeScriptConfigInputFingerprint {
   const root = absoluteRoot(rootInput);
   requireUnitDir(unitDir);
-  const trackedByPath = trackedBlobMap(treeBlobs);
+  const trackedByPath = trackedByPathInput ?? trackedBlobMap(treeBlobs);
   const unitConfigPath = unitDir === ""
     ? resolve(root, "tsconfig.json")
     : resolve(root, ...unitDir.split("/"), "tsconfig.json");
@@ -110,6 +111,32 @@ export function typeScriptConfigInputs(
       reasons: sortedReasons,
     },
   };
+}
+
+/**
+ * Re-run the ordered local `extends` selection used by config fingerprinting.
+ *
+ * Exact-revision admission uses this without constructing a TypeScript Project. Requiring the
+ * selected address to remain identical binds negative higher-priority probes too: for example, an
+ * ignored extensionless `./base` appearing must invalidate a fingerprint that selected
+ * `./base.json`.
+ */
+export function resolveLocalTypeScriptConfigExtendsAddress(
+  rootInput: string,
+  fromPathInput: string,
+  specifierInput: string,
+): string | null {
+  if (!isAbsolute(fromPathInput)) return null;
+  const root = absoluteRoot(rootInput);
+  const fromPath = toPosix(resolve(fromPathInput));
+  if (!isUnderRoot(relativeToRoot(root, fromPath))) return null;
+  const resolvedPath = resolveLocalExtends(
+    root,
+    fromPath,
+    specifierInput,
+    new Set(),
+  );
+  return resolvedPath === null ? null : repoAddress(root, resolvedPath);
 }
 
 function visitConfig(

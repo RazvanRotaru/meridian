@@ -8,7 +8,7 @@ import {
 } from "./pr-review-progress";
 
 describe("canonical PR-review progress", () => {
-  it("keeps merge-base-first extraction truthful without regressing the graph step", () => {
+  it("keeps concurrent revision lanes independent until each explicitly completes", () => {
     let progress = createPrReviewProgressSnapshot();
     for (const stage of [
       "resolve",
@@ -28,10 +28,57 @@ describe("canonical PR-review progress", () => {
       artifacts: "pending",
       projection: "pending",
     });
-    expect(progress.revisions).toEqual({ head: "active", mergeBase: "done" });
+    expect(progress.revisions).toEqual({ head: "active", mergeBase: "active" });
     expect(prReviewProgressStatusText(progress)).toBe(
       PR_REVIEW_PROGRESS_MODEL.stages["extract-head"].label,
     );
+
+    progress = reducePrReviewProgress(progress, {
+      type: "stage",
+      stage: "extract-merge-base",
+    });
+    expect(progress.revisions).toEqual({ head: "active", mergeBase: "active" });
+
+    progress = reducePrReviewProgress(progress, { type: "lane-complete", lane: "head" });
+    expect(progress.revisions).toEqual({ head: "done", mergeBase: "active" });
+    expect(progress.activeStage).toBe("extract-merge-base");
+
+    progress = reducePrReviewProgress(progress, { type: "lane-complete", lane: "mergeBase" });
+    expect(progress.revisions).toEqual({ head: "done", mergeBase: "done" });
+    expect(progress.activeStage).toBe("extract");
+    expect(progress.progress).toBeNull();
+    expect(prReviewProgressStatusText(progress)).toBe("Waiting for extraction capacity…");
+
+    progress = reducePrReviewProgress(progress, { type: "analysis-done", cache: "miss" });
+    expect(progress.revisions).toEqual({ head: "done", mergeBase: "done" });
+  });
+
+  it("marks a sequential lane done before the next lane starts", () => {
+    let progress = createPrReviewProgressSnapshot();
+    progress = reducePrReviewProgress(progress, { type: "stage", stage: "extract" });
+    progress = reducePrReviewProgress(progress, { type: "stage", stage: "extract-head" });
+    progress = reducePrReviewProgress(progress, { type: "lane-complete", lane: "head" });
+
+    expect(progress.steps.graphs).toBe("active");
+    expect(progress.revisions).toEqual({ head: "done", mergeBase: "pending" });
+    expect(progress.activeStage).toBe("extract");
+
+    progress = reducePrReviewProgress(progress, { type: "stage", stage: "extract-merge-base" });
+    expect(progress.revisions).toEqual({ head: "done", mergeBase: "active" });
+  });
+
+  it("accepts a replayed completion without inventing activity for a one-sided lane", () => {
+    let progress = createPrReviewProgressSnapshot();
+    progress = reducePrReviewProgress(progress, { type: "stage", stage: "reuse-head" });
+    progress = reducePrReviewProgress(progress, { type: "stage", stage: "extract" });
+    progress = reducePrReviewProgress(progress, { type: "lane-complete", lane: "mergeBase" });
+
+    expect(progress.steps.graphs).toBe("active");
+    expect(progress.revisions).toEqual({ head: "reused", mergeBase: "done" });
+    expect(reducePrReviewProgress(progress, {
+      type: "lane-complete",
+      lane: "head",
+    })).toBe(progress);
   });
 
   it("does not claim extraction began at the pre-admission umbrella stage", () => {
@@ -160,6 +207,45 @@ describe("canonical PR-review progress", () => {
     expect(prReviewProgressStatusText(observed)).toBe(
       "Extracting merge-base graph… merge base 0123456 · Python · review graph 2/2 · relationships · unit 3/5",
     );
+  });
+
+  it("shows input-proof file progress and clears the file before unattributed proof work", () => {
+    const inputProof = {
+      version: 1,
+      revision: {
+        kind: "head",
+        commit: "abcdef0123456789abcdef0123456789abcdef01",
+        execution: { current: 2, total: 2 },
+      },
+      language: "typescript",
+      phase: "input-proof",
+      unit: { current: 2, total: 27, path: "src/aria/app", pathTruncated: false },
+      sourceFile: {
+        current: 2060,
+        total: 4526,
+        path: "src/aria/app/src/lib/feedback/feedbackTelemetry.ts",
+        pathTruncated: false,
+      },
+    } as const;
+    const observed = reducePrReviewProgress(createPrReviewProgressSnapshot(), {
+      type: "stage",
+      stage: "extract-head",
+      progress: inputProof,
+    });
+    expect(prReviewProgressStatusText(observed)).toContain(
+      "input proof · unit 2/27 · file 2060/4526 · src/aria/app/src/lib/feedback/feedbackTelemetry.ts",
+    );
+
+    const unattributed = reducePrReviewProgress(observed, {
+      type: "stage",
+      stage: "extract-head",
+      progress: { ...inputProof, sourceFile: null },
+    });
+    expect(prReviewProgressStatusText(unattributed)).toBe(
+      "Extracting PR HEAD graph… PR HEAD abcdef0 · TypeScript · review graph 2/2"
+      + " · input proof · unit 2/27",
+    );
+    expect(prReviewProgressStatusText(unattributed)).not.toContain("feedbackTelemetry.ts");
   });
 
   it("renders a bounded relationship activity with its current source file", () => {

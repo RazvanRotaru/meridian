@@ -6,8 +6,8 @@ import type {
 import type { WorkspaceUnit } from "../workspace-units";
 import type { TypeScriptConfigInputFingerprint } from "./config-inputs";
 
-export const POC_SHARD_VERSION = 6 as const;
-export const POC_MANIFEST_VERSION = 1 as const;
+export const POC_SHARD_VERSION = 12 as const;
+export const POC_MANIFEST_VERSION = 4 as const;
 
 export interface GitBlobIdentity {
   path: string;
@@ -31,6 +31,16 @@ export interface ProgramInputFingerprint {
   address: string;
   digest: string;
   kind: "unit-source" | "workspace-source" | "dependency";
+  /**
+   * Content keys of the exact package-manifest observations consulted for this source file.
+   * Entries are sorted, unique, and resolve through UnitInputFingerprint.filesystemInputs.
+   */
+  filesystemInputKeys: string[];
+  /**
+   * Content key for this source's exact triple-slash path observations. Sources without path
+   * directives reference the one canonical empty proof.
+   */
+  resolutionLookupProofKey: string;
   impliedNodeFormat: number | null;
   isDefaultLibrary: boolean;
   isExternalLibrary: boolean;
@@ -65,11 +75,24 @@ export interface ResolutionLookupInputFingerprint {
   trackedBlobOid: string | null;
 }
 
+export interface ResolutionLookupProofFingerprint {
+  /**
+   * Content keys for the exact failed/affecting lookup observations captured by one resolver
+   * callback. Entries are sorted, unique, and resolve through resolutionLookupInputs.
+   *
+   * The empty proof is valid and has one canonical content address. Completeness remains an
+   * explicit property of the owning resolution rather than something inferred from list length.
+   */
+  resolutionLookupInputKeys: string[];
+}
+
 export interface ModuleResolutionFingerprint {
   containingFile: string;
   mode: number | null;
   specifier: string;
   target: ResolutionTargetFingerprint | null;
+  /** Content key of the exact callback proof in UnitInputFingerprint.resolutionLookupProofs. */
+  resolutionLookupProofKey: string;
   hasCompleteLookupProof: boolean;
   alternateResult: string | null;
 }
@@ -79,6 +102,8 @@ export interface TypeReferenceResolutionFingerprint {
   mode: number | null;
   specifier: string;
   target: ResolutionTargetFingerprint | null;
+  /** Content key of the exact callback proof in UnitInputFingerprint.resolutionLookupProofs. */
+  resolutionLookupProofKey: string;
   hasCompleteLookupProof: boolean;
   alternateResult: string | null;
 }
@@ -129,7 +154,13 @@ export interface UnitInputFingerprint {
   filesystemInputs: FilesystemInputFingerprint[];
   moduleResolutions: ModuleResolutionFingerprint[];
   typeReferenceResolutions: TypeReferenceResolutionFingerprint[];
+  resolutionLookupProofs: ResolutionLookupProofFingerprint[];
   resolutionLookupInputs: ResolutionLookupInputFingerprint[];
+  /**
+   * Lookup observations that cannot be attributed to a resolver callback. These remain
+   * unit-global until an explicit owner can be proven.
+   */
+  unattributedResolutionLookupInputKeys: string[];
   structuralMemberBoundaries: StructuralMemberBoundaryFingerprint[] | null;
   reuseEligibility: ReuseEligibilityFingerprint;
   compilerOptionsDigest: string;
@@ -140,8 +171,19 @@ export interface UnitInputFingerprint {
 export interface RevisionUnitManifest {
   unitId: string;
   shardKey: string;
+  baseInputKey: string;
+  shardPayloadDigest: string;
+  addressKind: "input" | "input-and-output";
   sourceBlobs: GitBlobIdentity[];
   reuseEligibility: ReuseEligibilityFingerprint;
+  semanticPlanKind: "partitioned" | "whole-unit-fallback";
+  semanticPlanReasons: string[];
+  semanticRegionContextDigest: string;
+  semanticRegions: Array<{
+    regionId: string;
+    key: string;
+    files: string[];
+  }>;
 }
 
 export interface RevisionManifest {
@@ -182,6 +224,27 @@ export interface RevisionExtractionMetrics {
   fingerprintMs: number;
   unitExtractionMs: number;
   stitchMs: number;
+  /** Non-semantic wall-clock attribution for performance experiments. */
+  profile: {
+    checkoutAndTreeInputMs: number;
+    cacheLookupMs: number;
+    semanticAddressingMs: number;
+    postExtractionFingerprintMs: number;
+    shardCodecMs: number;
+    ephemeralPublicationMs: number;
+    semanticDigestMs: number;
+    checkoutRevalidationMs: number;
+  };
+  semanticRegions: {
+    totalRegions: number;
+    reusedRegions: number;
+    rebuiltRegions: number;
+    reuseRatio: number;
+    totalSourceBytes: number;
+    reusedSourceBytes: number;
+    byteReuseRatio: number;
+    fallbackUnits: number;
+  };
   totalUnits: number;
   reusedUnits: number;
   rebuiltUnits: number;

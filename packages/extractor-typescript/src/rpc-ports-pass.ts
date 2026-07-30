@@ -51,7 +51,7 @@ interface RpcContext {
   index: ResolutionIndex;
   moduleByFilePath: Map<string, NodeDescriptor>;
   proxyBindings: Map<string, ProxyOrigin>;
-  callsByTarget: Map<string, CallExpression[]>;
+  callsByTarget: () => ReadonlyMap<string, readonly CallExpression[]>;
 }
 
 /** Infer typed RPC exits and concrete stub entries in addition to catalog-modeled boundaries. */
@@ -59,12 +59,24 @@ export function collectStaticRpcPorts(
   loaded: LoadedProject,
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
+  factoryCalls: readonly CallExpression[],
 ): Port[] {
+  // The caller already visits every call while collecting catalog ports. Most repositories have
+  // no accepted RPC-factory member at all, so use that exact syntactic witness to avoid another
+  // whole-program AST walk plus receiver/type and target-resolution work.
+  if (factoryCalls.length === 0) return [];
+
+  let callsByTarget: Map<string, CallExpression[]> | null = null;
   const context: RpcContext = {
     index,
     moduleByFilePath,
-    proxyBindings: collectProxyBindings(loaded.sourceFiles),
-    callsByTarget: collectCallsByTarget(loaded.sourceFiles, index),
+    proxyBindings: collectProxyBindings(factoryCalls),
+    // Parameter propagation is uncommon. Resolve every call target only if a proxy actually
+    // reaches a parameter; direct and const-alias correlations never pay for this index.
+    callsByTarget: () => {
+      callsByTarget ??= collectCallsByTarget(loaded.sourceFiles, index);
+      return callsByTarget;
+    },
   };
   const ports: Port[] = [];
   for (const sourceFile of loaded.sourceFiles) {
@@ -78,30 +90,37 @@ export function collectStaticRpcPorts(
   return dedupePorts(ports);
 }
 
-function collectProxyBindings(sourceFiles: readonly SourceFile[]): Map<string, ProxyOrigin> {
+/** Pure syntax gate shared with the catalog pass; semantic RPC proof remains below. */
+export function isStaticRpcFactoryCallSyntax(call: CallExpression): boolean {
+  const callee = call.getExpression();
+  if (!Node.isPropertyAccessExpression(callee)) return false;
+  const member = callee.getName();
+  return member === RPC_PROXY_MEMBER || member === RPC_STUB_MEMBER;
+}
+
+function collectProxyBindings(factoryCalls: readonly CallExpression[]): Map<string, ProxyOrigin> {
   const bindings = new Map<string, ProxyOrigin>();
-  for (const sourceFile of sourceFiles) {
-    for (const declaration of sourceFile.getDescendantsOfKind(SyntaxKind.VariableDeclaration)) {
-      const initializer = declaration.getInitializer();
-      const pattern = declaration.getNameNode();
-      if (!initializer || !Node.isCallExpression(initializer) || !Node.isObjectBindingPattern(pattern)) continue;
-      if (!isRpcFactoryCall(initializer, RPC_PROXY_MEMBER)) continue;
-      const service = staticString(initializer.getArguments()[0]);
-      const typeArgument = initializer.getTypeArguments()[0];
-      if (service === null || !typeArgument || initializer.getTypeArguments().length !== 1) continue;
-      const proxy = pattern.getElements().find(isProxyBinding);
-      if (!proxy || !Node.isIdentifier(proxy.getNameNode())) continue;
-      const resolvedType = typeArgument.getType();
-      const origin: ProxyOrigin = {
-        service,
-        serviceType: resolvedType.isAny() || resolvedType.isUnknown() ? null : resolvedType,
-        confidence: 1,
-      };
-      bindings.set(nodeKey(proxy), origin);
-      bindings.set(nodeKey(proxy.getNameNode()), origin);
-      for (const symbolDeclaration of proxy.getNameNode().getSymbol()?.getDeclarations() ?? []) {
-        bindings.set(nodeKey(symbolDeclaration), origin);
-      }
+  for (const initializer of factoryCalls) {
+    if (!isRpcFactoryCall(initializer, RPC_PROXY_MEMBER)) continue;
+    const declaration = initializer.getParent();
+    if (!Node.isVariableDeclaration(declaration) || declaration.getInitializer() !== initializer) continue;
+    const pattern = declaration.getNameNode();
+    if (!Node.isObjectBindingPattern(pattern)) continue;
+    const service = staticString(initializer.getArguments()[0]);
+    const typeArgument = initializer.getTypeArguments()[0];
+    if (service === null || !typeArgument || initializer.getTypeArguments().length !== 1) continue;
+    const proxy = pattern.getElements().find(isProxyBinding);
+    if (!proxy || !Node.isIdentifier(proxy.getNameNode())) continue;
+    const resolvedType = typeArgument.getType();
+    const origin: ProxyOrigin = {
+      service,
+      serviceType: resolvedType.isAny() || resolvedType.isUnknown() ? null : resolvedType,
+      confidence: 1,
+    };
+    bindings.set(nodeKey(proxy), origin);
+    bindings.set(nodeKey(proxy.getNameNode()), origin);
+    for (const symbolDeclaration of proxy.getNameNode().getSymbol()?.getDeclarations() ?? []) {
+      bindings.set(nodeKey(symbolDeclaration), origin);
     }
   }
   return bindings;
@@ -190,7 +209,7 @@ function proxyOriginsAtParameter(
   const parameterKey = nodeKey(parameter);
   const position = callable.getParameters().findIndex((candidate) => nodeKey(candidate) === parameterKey);
   if (position < 0) return { origins: [], unknown: true };
-  const callSites = context.callsByTarget.get(targetId) ?? [];
+  const callSites = context.callsByTarget().get(targetId) ?? [];
   if (callSites.length === 0) return { origins: [], unknown: true };
   const origins: ProxyOrigin[] = [];
   let unknown = false;
@@ -216,7 +235,9 @@ function collectCallsByTarget(
     for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
       const target = resolveTarget(call.getExpression(), index);
       if (target.resolution !== "resolved" || target.resolvedTarget === null) continue;
-      calls.set(target.resolvedTarget, [...(calls.get(target.resolvedTarget) ?? []), call]);
+      const existing = calls.get(target.resolvedTarget);
+      if (existing) existing.push(call);
+      else calls.set(target.resolvedTarget, [call]);
     }
   }
   return calls;

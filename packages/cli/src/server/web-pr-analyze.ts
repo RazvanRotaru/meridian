@@ -12,7 +12,10 @@
 
 import { createHash } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { SyntheticScenarioDescriptor } from "@meridian/core";
+import type {
+  PrReviewProgressRevisionId,
+  SyntheticScenarioDescriptor,
+} from "@meridian/core";
 import { readJsonBody } from "./web-request";
 import { parsePrAnalyzeRequest, parsePrPrepareRequest } from "./web-pr-request";
 import type { PrAnalyzeRequest } from "./web-pr-request";
@@ -56,7 +59,26 @@ interface PrAnalysisProgressLine {
   progress: RepositoryAnalysisProgress;
 }
 
-type PrAnalysisProgress = PrAnalysisStage | PrAnalysisProgressLine;
+interface PrAnalysisLaneCompleteLine {
+  stage: "lane-complete";
+  lane: PrReviewProgressRevisionId;
+}
+
+type PrAnalysisProgress =
+  | PrAnalysisStage
+  | PrAnalysisProgressLine
+  | PrAnalysisLaneCompleteLine;
+
+/** Preserve independent HEAD and merge-base lanes for callers joining an in-flight singleflight. */
+function prProgressReplayKey(progress: PrAnalysisProgress): string | undefined {
+  if (typeof progress !== "string" && progress.stage === "lane-complete") {
+    return progress.lane === "head" ? "head" : "merge-base";
+  }
+  const stage = typeof progress === "string" ? progress : progress.stage;
+  if (stage === "extract-head" || stage === "reuse-head") return "head";
+  if (stage === "extract-merge-base" || stage === "reuse-merge-base") return "merge-base";
+  return undefined;
+}
 
 interface PrAnalysisDone {
   stage: "done";
@@ -147,7 +169,14 @@ async function streamAnalysis(
     const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
     const completed = await ctx.analysisCoordinator.run<PrAnalysisDone, PrAnalysisProgress>(
       prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache),
-      async ({ signal: jobSignal, report, runPreparation, runAnalysis }) => {
+      async ({
+        analysisCapacity,
+        signal: jobSignal,
+        report,
+        runPreparation,
+        runCoordination,
+        runAnalysis,
+      }) => {
         const cached = await cachedPrGraph({
           cacheRoot: ctx.cacheRoot,
           repositories: ctx.repositories,
@@ -159,15 +188,22 @@ async function streamAnalysis(
           typeScriptRevisionShardMode: ctx.typeScriptRevisionShardMode,
           experimentalPrRevisionCache: ctx.experimentalPrRevisionCache,
           signal: jobSignal,
-          onStage: report,
-          onExtractionProgress: (progress) => report({
-            stage: progress.revision.kind === "head" ? "extract-head" : "extract-merge-base",
-            progress,
-          }),
+          onStage: (stage) => report(stage, prProgressReplayKey(stage)),
+          onRevisionComplete: (lane) => {
+            const event: PrAnalysisProgress = { stage: "lane-complete", lane };
+            report(event, prProgressReplayKey(event));
+          },
+          onExtractionProgress: (progress) => {
+            const event: PrAnalysisProgress = {
+              stage: progress.revision.kind === "head" ? "extract-head" : "extract-merge-base",
+              progress,
+            };
+            report(event, prProgressReplayKey(event));
+          },
           runPreparation,
-          // HEAD and merge-base extraction form one coherent two-sided transaction and therefore
-          // consume exactly one memory admission slot together.
+          runCoordination,
           runAnalysis,
+          analysisCapacity,
           repositoryAnalysis: ctx.repositoryAnalysis,
         });
         let leasesHandedOff = false;

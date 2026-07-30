@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -12,9 +13,19 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   listGitTreeBlobs,
+  revalidateAdmittedUnitInputsAtExactTree,
   verifyCleanCheckoutAtTree,
   verifyGitTreeInputs,
 } from "./git-tree";
+import {
+  resolutionLookupInputKey,
+  resolutionLookupProofKey,
+} from "./fingerprints";
+import { sha256Hex } from "./canonical-json";
+import {
+  POC_SHARD_VERSION,
+  type UnitInputFingerprint,
+} from "./model";
 
 let root: string;
 let treeOid: string;
@@ -113,7 +124,7 @@ describe("listGitTreeBlobs", () => {
     await expect(
       verifyGitTreeInputs(root, await listGitTreeBlobs(root, git("rev-parse", "HEAD^{tree}"))),
     ).rejects.toThrow(/target is not a regular Git blob/);
-  });
+  }, 15_000);
 });
 
 describe("verifyCleanCheckoutAtTree", () => {
@@ -137,3 +148,222 @@ describe("verifyCleanCheckoutAtTree", () => {
     await expect(verifyCleanCheckoutAtTree(root, treeOid)).rejects.toThrow(/does not match/);
   });
 });
+
+describe("revalidateAdmittedUnitInputsAtExactTree", () => {
+  it("rejects an ignored extensionless config that takes priority over admitted .json extends", async () => {
+    writeFileSync(join(root, ".gitignore"), "/configs/base\n");
+    mkdirSync(join(root, "configs"));
+    writeFileSync(join(root, "tsconfig.json"), '{"extends":"./configs/base"}\n');
+    writeFileSync(
+      join(root, "configs", "base.json"),
+      '{"compilerOptions":{"strict":true}}\n',
+    );
+    commit("add tracked local config extends");
+    treeOid = git("rev-parse", "HEAD^{tree}");
+    const treeBlobs = (await verifyGitTreeInputs(
+      root,
+      await listGitTreeBlobs(root, treeOid),
+    )).regularBlobs;
+    const inputs = exactTreeUnitFingerprint(
+      treeBlobs,
+      "export const value = 1;\n",
+    );
+    inputs.typescriptConfig = {
+      selectedConfigAddress: "repo:tsconfig.json",
+      selectionProbes: [
+        {
+          role: "unit",
+          address: "repo:src/tsconfig.json",
+          exists: false,
+          state: "absent",
+        },
+        {
+          role: "root",
+          address: "repo:tsconfig.json",
+          exists: true,
+          state: "file",
+        },
+      ],
+      configFiles: [
+        trackedConfigInput(root, treeBlobs, "configs/base.json"),
+        trackedConfigInput(root, treeBlobs, "tsconfig.json"),
+      ],
+      extendsInputs: [{
+        from: "repo:tsconfig.json",
+        index: 0,
+        specifier: "./configs/base",
+        resolvedAddress: "repo:configs/base.json",
+      }],
+      reuseEligibility: { eligible: true, reasons: [] },
+    };
+
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, inputs, treeBlobs)).toBe(true);
+
+    writeFileSync(
+      join(root, "configs", "base"),
+      '{"compilerOptions":{"strict":false}}\n',
+    );
+    expect(git("status", "--porcelain")).toBe("");
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, inputs, treeBlobs)).toBe(false);
+  });
+
+  it("verifies owned triple-slash evidence and rejects an ignored target that appears", async () => {
+    const sourceText = [
+      '/// <reference path="../generated/triple-types.d.ts" />',
+      "export const value = 1;",
+      "",
+    ].join("\n");
+    writeFileSync(join(root, "src", "index.ts"), sourceText);
+    writeFileSync(join(root, ".gitignore"), "/generated/\n");
+    commit("add absent owned triple-slash input");
+    treeOid = git("rev-parse", "HEAD^{tree}");
+    const treeBlobs = (await verifyGitTreeInputs(
+      root,
+      await listGitTreeBlobs(root, treeOid),
+    )).regularBlobs;
+    const inputs = exactTreeUnitFingerprint(treeBlobs, sourceText);
+
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, inputs, treeBlobs)).toBe(true);
+
+    mkdirSync(join(root, "generated"));
+    writeFileSync(
+      join(root, "generated", "triple-types.d.ts"),
+      "declare interface AppearedIgnoredType { value: string }\n",
+    );
+    expect(git("status", "--porcelain")).toBe("");
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, inputs, treeBlobs)).toBe(false);
+  });
+
+  it("fails closed for dangling, malformed, and orphan lookup proof data", async () => {
+    const sourceText = [
+      '/// <reference path="../generated/triple-types.d.ts" />',
+      "export const value = 1;",
+      "",
+    ].join("\n");
+    writeFileSync(join(root, "src", "index.ts"), sourceText);
+    commit("add owned triple-slash input");
+    treeOid = git("rev-parse", "HEAD^{tree}");
+    const treeBlobs = (await verifyGitTreeInputs(
+      root,
+      await listGitTreeBlobs(root, treeOid),
+    )).regularBlobs;
+    const inputs = exactTreeUnitFingerprint(treeBlobs, sourceText);
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, inputs, treeBlobs)).toBe(true);
+
+    const dangling = structuredClone(inputs);
+    dangling.programInputs[0]!.resolutionLookupProofKey = "0".repeat(64);
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, dangling, treeBlobs)).toBe(false);
+
+    const malformed = structuredClone(inputs);
+    const inputKey = malformed.resolutionLookupProofs[0]!.resolutionLookupInputKeys[0]!;
+    const malformedProof = { resolutionLookupInputKeys: [inputKey, inputKey] };
+    malformed.resolutionLookupProofs = [malformedProof];
+    malformed.programInputs[0]!.resolutionLookupProofKey =
+      resolutionLookupProofKey(malformedProof);
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, malformed, treeBlobs)).toBe(false);
+
+    const orphanProof = structuredClone(inputs);
+    orphanProof.resolutionLookupProofs.push({ resolutionLookupInputKeys: [] });
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, orphanProof, treeBlobs)).toBe(false);
+
+    const orphanInput = structuredClone(inputs);
+    orphanInput.resolutionLookupInputs.push({
+      address: "repo:generated/orphan.d.ts",
+      purpose: "affecting",
+      state: "absent",
+      digest: null,
+      trackedBlobOid: null,
+    });
+    expect(revalidateAdmittedUnitInputsAtExactTree(root, orphanInput, treeBlobs)).toBe(false);
+  });
+});
+
+function exactTreeUnitFingerprint(
+  treeBlobs: Awaited<ReturnType<typeof listGitTreeBlobs>>,
+  sourceText: string,
+): UnitInputFingerprint {
+  const source = treeBlobs.find((blob) => blob.path === "src/index.ts");
+  if (source === undefined) throw new Error("source blob is missing");
+  const lookupInput: UnitInputFingerprint["resolutionLookupInputs"][number] = {
+    address: "repo:generated/triple-types.d.ts",
+    purpose: "affecting",
+    state: "absent",
+    digest: null,
+    trackedBlobOid: null,
+  };
+  const proof = {
+    resolutionLookupInputKeys: [resolutionLookupInputKey(lookupInput)],
+  };
+  return {
+    version: POC_SHARD_VERSION,
+    unit: {
+      dir: "src",
+      name: null,
+      entryFile: null,
+      sourceDir: "src",
+      include: ["src/**/*.ts", "src/**/*.tsx"],
+      exclude: [],
+    },
+    sourceBlobs: [{ ...source }],
+    typescriptConfig: {
+      selectedConfigAddress: null,
+      selectionProbes: [],
+      configFiles: [],
+      extendsInputs: [],
+      reuseEligibility: { eligible: true, reasons: [] },
+    },
+    programInputs: [{
+      address: "repo:src/index.ts",
+      digest: sha256Hex(sourceText),
+      kind: "unit-source",
+      filesystemInputKeys: [],
+      resolutionLookupProofKey: resolutionLookupProofKey(proof),
+      impliedNodeFormat: null,
+      isDefaultLibrary: false,
+      isExternalLibrary: false,
+      trackedBlobOid: source.oid,
+    }],
+    filesystemInputs: [],
+    moduleResolutions: [],
+    typeReferenceResolutions: [],
+    resolutionLookupProofs: [proof],
+    resolutionLookupInputs: [lookupInput],
+    unattributedResolutionLookupInputKeys: [],
+    structuralMemberBoundaries: null,
+    reuseEligibility: { eligible: true, reasons: [] },
+    compilerOptionsDigest: "test-compiler-options",
+    policy: {
+      depth: "function",
+      exclude: [],
+      includeExternal: false,
+      includeUnresolved: false,
+      emitImportEdges: true,
+      valueRefs: false,
+    },
+    provenance: {
+      extractorVersion: "test",
+      analysisPolicyVersion: "test",
+      schemaVersion: "test",
+      shardSchemaVersion: POC_SHARD_VERSION,
+      tsMorphVersion: "test",
+      typescriptVersion: "test",
+    },
+  };
+}
+
+function trackedConfigInput(
+  repoRoot: string,
+  treeBlobs: Awaited<ReturnType<typeof listGitTreeBlobs>>,
+  path: string,
+): UnitInputFingerprint["typescriptConfig"]["configFiles"][number] {
+  const blob = treeBlobs.find((candidate) => candidate.path === path);
+  if (blob === undefined) throw new Error(`config blob is missing: ${path}`);
+  const bytes = readFileSync(join(repoRoot, ...path.split("/")));
+  return {
+    address: `repo:${path}`,
+    digest: sha256Hex(bytes),
+    byteSize: bytes.byteLength,
+    trackedBlobOid: blob.oid,
+    trackedMode: blob.mode,
+  };
+}

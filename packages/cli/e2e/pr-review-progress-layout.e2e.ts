@@ -3,6 +3,14 @@
 import { readFileSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
+import {
+  createPrReviewProgressSnapshot,
+  PR_REVIEW_PROGRESS_MODEL,
+  prReviewProgressStatusText,
+  reducePrReviewProgress,
+  type PrReviewProgressEvent,
+  type PrReviewProgressSnapshot,
+} from "@meridian/core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { chromium, type Browser, type Page } from "playwright";
 import { injectPrReviewProgressModel } from "../src/server/web-boot";
@@ -118,6 +126,198 @@ describe.skipIf(!chromiumInstalled())("PR review progress layout (headless chrom
 
     expect(states).toEqual({ head: "reused", mergeBase: "reused" });
   });
+
+  it("keeps interleaved lanes independent and completes each before the pair terminal", async () => {
+    const states = await page.evaluate(() => {
+      const landing = globalThis as typeof globalThis & {
+        applyPrPrepareLine(line: string): unknown;
+        completeReviewPrepareProgress(cache: "hit" | "miss", destination: string): void;
+        setGithubIntent(intent: "explore" | "review"): void;
+        showPrepareProgress(sourceKind: string, cacheAlreadyChecked: boolean, prNumber: number): void;
+      };
+      const readStates = () => Object.fromEntries(
+        ["head", "mergeBase"].map((revisionId) => {
+          const revision = document.querySelector<HTMLElement>(
+            `.prepare-revision[data-revision-id="${revisionId}"]`,
+          );
+          if (!revision) throw new Error(`Missing ${revisionId} revision lane.`);
+          return [revisionId, revision.dataset.state];
+        }),
+      );
+      landing.setGithubIntent("review");
+      landing.showPrepareProgress("github", false, 42);
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract-head" }));
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract-merge-base" }));
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract-head" }));
+      const during = readStates();
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "lane-complete", lane: "head" }));
+      const afterHead = {
+        states: readStates(),
+        detail: document.querySelector<HTMLElement>("#prepare-detail-text")?.textContent,
+      };
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "lane-complete", lane: "mergeBase" }));
+      const beforeTerminal = {
+        states: readStates(),
+        detail: document.querySelector<HTMLElement>("#prepare-detail-text")?.textContent,
+      };
+      landing.completeReviewPrepareProgress("miss", "/view?id=fixture");
+      return { during, afterHead, beforeTerminal, completed: readStates() };
+    });
+
+    expect(states).toEqual({
+      during: { head: "active", mergeBase: "active" },
+      afterHead: {
+        states: { head: "done", mergeBase: "active" },
+        detail: "Extracting merge-base graph…",
+      },
+      beforeTerminal: {
+        states: { head: "done", mergeBase: "done" },
+        detail: "Waiting for extraction capacity…",
+      },
+      completed: { head: "done", mergeBase: "done" },
+    });
+  });
+
+  it("shows a capacity-one lane as done before its sibling starts", async () => {
+    const states = await page.evaluate(() => {
+      const landing = globalThis as typeof globalThis & {
+        applyPrPrepareLine(line: string): unknown;
+        setGithubIntent(intent: "explore" | "review"): void;
+        showPrepareProgress(sourceKind: string, cacheAlreadyChecked: boolean, prNumber: number): void;
+      };
+      const readStates = () => Object.fromEntries(
+        ["head", "mergeBase"].map((revisionId) => {
+          const revision = document.querySelector<HTMLElement>(
+            `.prepare-revision[data-revision-id="${revisionId}"]`,
+          );
+          if (!revision) throw new Error(`Missing ${revisionId} revision lane.`);
+          return [revisionId, revision.dataset.state];
+        }),
+      );
+      landing.setGithubIntent("review");
+      landing.showPrepareProgress("github", false, 42);
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract" }));
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract-head" }));
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "lane-complete", lane: "head" }));
+      const between = readStates();
+      landing.applyPrPrepareLine(JSON.stringify({ stage: "extract-merge-base" }));
+      return { between, next: readStates() };
+    });
+
+    expect(states).toEqual({
+      between: { head: "done", mergeBase: "pending" },
+      next: { head: "done", mergeBase: "active" },
+    });
+  });
+
+  it("keeps the dependency-free landing reducer and status text conformant with core", async () => {
+    const inputProof = {
+      version: 1,
+      revision: {
+        kind: "merge-base",
+        commit: "b".repeat(40),
+        execution: { current: 1, total: 2 },
+      },
+      language: "typescript",
+      phase: "input-proof",
+      unit: { current: 2, total: 27, path: "src/aria/app", pathTruncated: false },
+      sourceFile: {
+        current: 2060,
+        total: 4526,
+        path: "src/aria/app/src/lib/feedback/feedbackTelemetry.ts",
+        pathTruncated: false,
+      },
+    };
+    const events = [
+      { type: "stage", stage: "clone" },
+      { type: "stage", stage: "checkout" },
+      { type: "stage", stage: "extract" },
+      { type: "stage", stage: "extract-merge-base", progress: inputProof },
+      {
+        type: "stage",
+        stage: "extract-merge-base",
+        progress: { ...inputProof, sourceFile: null },
+      },
+      { type: "lane-complete", lane: "mergeBase" },
+      {
+        type: "stage",
+        stage: "extract-head",
+        progress: {
+          ...inputProof,
+          revision: {
+            kind: "head",
+            commit: "a".repeat(40),
+            execution: { current: 2, total: 2 },
+          },
+        },
+      },
+      { type: "lane-complete", lane: "head" },
+      { type: "analysis-done", cache: "miss" },
+    ] satisfies PrReviewProgressEvent[];
+
+    let canonical = reducePrReviewProgress(
+      createPrReviewProgressSnapshot(42),
+      { type: "stage", stage: "resolve" },
+    );
+    const canonicalTrace = [progressPresentation(canonical)];
+    for (const event of events) {
+      canonical = reducePrReviewProgress(canonical, event);
+      if (event.type === "analysis-done") {
+        canonical = reducePrReviewProgress(canonical, { type: "stage", stage: "handoff" });
+      }
+      canonicalTrace.push(progressPresentation(canonical));
+    }
+
+    const landingTrace = await page.evaluate((matrix) => {
+      const landing = globalThis as typeof globalThis & {
+        completeReviewPrepareLane(lane: "head" | "mergeBase"): void;
+        completeReviewPrepareProgress(cache: "hit" | "miss", destination: string): void;
+        setGithubIntent(intent: "explore" | "review"): void;
+        setReviewPrepareStage(stage: string, progress: unknown): void;
+        showPrepareProgress(sourceKind: string, cacheAlreadyChecked: boolean, prNumber: number): void;
+      };
+      const presentation = () => {
+        const detail = document.querySelector<HTMLElement>("#prepare-detail");
+        const detailText = document.querySelector<HTMLElement>("#prepare-detail-text");
+        if (!detail || !detailText) throw new Error("Missing canonical PR progress detail.");
+        return {
+          statusText: detailText.textContent ?? "",
+          detailState: detail.dataset.state ?? null,
+          currentStep: document.querySelector<HTMLElement>(
+            ".prepare-review-step[aria-current=\"step\"]",
+          )?.dataset.stepId ?? null,
+          steps: Object.fromEntries(
+            [...document.querySelectorAll<HTMLElement>(".prepare-review-step")]
+              .map((row) => [row.dataset.stepId, row.dataset.state]),
+          ),
+          revisions: Object.fromEntries(
+            [...document.querySelectorAll<HTMLElement>(".prepare-revision")]
+              .map((row) => [row.dataset.revisionId, row.dataset.state]),
+          ),
+        };
+      };
+
+      landing.setGithubIntent("review");
+      landing.showPrepareProgress("github", false, 42);
+      const trace = [presentation()];
+      for (const event of matrix) {
+        if (event.type === "stage") {
+          landing.setReviewPrepareStage(event.stage, event.progress ?? null);
+        } else if (event.type === "lane-complete") {
+          landing.completeReviewPrepareLane(event.lane);
+        } else {
+          landing.completeReviewPrepareProgress(
+            event.cache,
+            "/view?id=fixture&prn=42&rev=1",
+          );
+        }
+        trace.push(presentation());
+      }
+      return trace;
+    }, events);
+
+    expect(landingTrace).toEqual(canonicalTrace);
+  });
 });
 
 async function setExtractionProgress(target: Page, path: string): Promise<void> {
@@ -133,7 +333,7 @@ async function setExtractionProgress(target: Page, path: string): Promise<void> 
         execution: { current: 1, total: 2 },
       },
       language: "typescript",
-      phase: "structure",
+      phase: "input-proof",
       unit: { current: 2, total: 28, path: "src/app", pathTruncated: false },
       sourceFile: { current: 4479, total: 4528, path: sourcePath, pathTruncated: false },
     });
@@ -180,6 +380,20 @@ async function progressGeometry(target: Page): Promise<{
       signedInTop: signedIn.getBoundingClientRect().top,
     };
   });
+}
+
+function progressPresentation(progress: PrReviewProgressSnapshot) {
+  return {
+    statusText: prReviewProgressStatusText(progress),
+    detailState: progress.status === "running"
+      ? "active"
+      : progress.status === "success" ? "done" : progress.status,
+    currentStep: progress.activeStage === null
+      ? null
+      : PR_REVIEW_PROGRESS_MODEL.stages[progress.activeStage].step,
+    steps: progress.steps,
+    revisions: progress.revisions,
+  };
 }
 
 function createLandingServer(): Server {

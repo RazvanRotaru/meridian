@@ -45,6 +45,7 @@ describe("TypeScript revision-shard policy", () => {
       version: 1 as const,
       mode: "shadow" as const,
       cacheDir: "/cache/typescript-revision-shards-v1",
+      pairCacheDir: null,
       treeOid: "a".repeat(40),
       buildFingerprint: "b".repeat(64),
       analysisPolicyFingerprint: "c".repeat(64),
@@ -65,6 +66,10 @@ describe("TypeScript revision-shard policy", () => {
     expect(() => requireTypeScriptRevisionShardPolicy({
       ...policy,
       mode: "admitted",
+    })).toThrow("invalid TypeScript revision-shard policy");
+    expect(() => requireTypeScriptRevisionShardPolicy({
+      ...policy,
+      pairCacheDir: "/cache/ephemeral-pair",
     })).toThrow("invalid TypeScript revision-shard policy");
   });
 });

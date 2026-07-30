@@ -3424,6 +3424,15 @@
         renderReviewPrepareProgress();
       }
 
+      function completeReviewPrepareLane(lane) {
+        if (!reviewPrepareProgress) return;
+        reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
+          type: "lane-complete",
+          lane,
+        });
+        renderReviewPrepareProgress();
+      }
+
       function completeReviewPrepareProgress(cache, destination) {
         if (!reviewPrepareProgress) return;
         reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
@@ -3509,17 +3518,32 @@
             : null;
           next.message = null;
           if (event.stage === "extract-head") {
-            if (next.revisions.mergeBase === "active") next.revisions.mergeBase = "done";
             next.revisions.head = "active";
           } else if (event.stage === "reuse-head") {
-            if (next.revisions.mergeBase === "active") next.revisions.mergeBase = "done";
             next.revisions.head = "reused";
           } else if (event.stage === "extract-merge-base") {
-            if (next.revisions.head === "active") next.revisions.head = "done";
             next.revisions.mergeBase = "active";
           } else if (event.stage === "reuse-merge-base") {
-            if (next.revisions.head === "active") next.revisions.head = "done";
             next.revisions.mergeBase = "reused";
+          }
+          return next;
+        }
+        if (event.type === "lane-complete") {
+          if (next.status !== "running"
+            || next.steps.graphs !== "active"
+            || !["head", "mergeBase"].includes(event.lane)) {
+            return current;
+          }
+          const state = next.revisions[event.lane];
+          if (["done", "reused", "error", "canceled"].includes(state)) return current;
+          next.revisions[event.lane] = "done";
+          const completedStage = event.lane === "head" ? "extract-head" : "extract-merge-base";
+          const otherLane = event.lane === "head" ? "mergeBase" : "head";
+          if (next.activeStage === completedStage) {
+            next.activeStage = next.revisions[otherLane] === "active"
+              ? otherLane === "head" ? "extract-head" : "extract-merge-base"
+              : "extract";
+            next.progress = null;
           }
           return next;
         }
@@ -3868,6 +3892,10 @@
           return null;
         }
         if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+        if (data.stage === "lane-complete" && ["head", "mergeBase"].includes(data.lane)) {
+          completeReviewPrepareLane(data.lane);
+          return null;
+        }
         if (["clone", "checkout", "extract", "extract-head", "reuse-head", "extract-merge-base", "reuse-merge-base"].includes(data.stage)) {
           setReviewPrepareStage(data.stage, data.progress);
           return null;

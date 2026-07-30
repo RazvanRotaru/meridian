@@ -34,6 +34,8 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
     const warm = await extractRevisionDifferential(request);
     expect(warm.incremental.metrics.reusedUnits).toBe(warm.incremental.metrics.totalUnits);
     expect(warm.incremental.metrics.byteReuseRatio).toBe(1);
+    expect(warm.incremental.metrics.semanticRegions.totalRegions).toBe(0);
+    expect(warm.cold.metrics.semanticRegions.totalRegions).toBeGreaterThan(0);
     expect(warm.differential.equal).toBe(true);
 
     const options = {
@@ -81,6 +83,12 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
 
     const run = await extractRevisionDifferential(fixtureRequest(fixture, revision));
     expect(run.incremental.metrics).toMatchObject({ rebuiltUnits: 1, reusedUnits: 2 });
+    expect(run.incremental.metrics.semanticRegions).toMatchObject({
+      totalRegions: 2,
+      reusedRegions: 1,
+      rebuiltRegions: 1,
+      reuseRatio: 0.5,
+    });
     expect(run.incremental.result.nodes.some((node) => node.location.file.endsWith("/status.ts"))).toBe(true);
   });
 
@@ -96,7 +104,67 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
 
     const run = await extractRevisionDifferential(fixtureRequest(fixture, revision));
     expect(run.incremental.metrics).toMatchObject({ rebuiltUnits: 1, reusedUnits: 2 });
+    expect(run.incremental.metrics.semanticRegions).toMatchObject({
+      totalRegions: 1,
+      reusedRegions: 1,
+      rebuiltRegions: 0,
+      reuseRatio: 1,
+    });
     expect(run.incremental.result.nodes.some((node) => node.location.file.endsWith("/delete-me.ts"))).toBe(false);
+  });
+
+  it("reuses semantic bytes when fresh Promise correlation changes an unchanged provider flow", async () => {
+    const provider = "packages/provider/src/gate.ts";
+    const consumer = "packages/provider/src/gate-consumer.ts";
+    fixture.writeFile(
+      provider,
+      [
+        "export class Gate {",
+        "  ready!: Promise<void>;",
+        "  wait(): Promise<void> { return this.ready; }",
+        "}",
+        "export const gate = new Gate();",
+        "",
+      ].join("\n"),
+    );
+    fixture.writeFile(
+      consumer,
+      [
+        'import { gate } from "./gate";',
+        "export function observeGate(): void { void gate; }",
+        "",
+      ].join("\n"),
+    );
+    const baseRevision = fixture.commit("prepare Promise flow correlation");
+    const base = await extractRevisionWithCache(fixtureRequest(fixture, baseRevision));
+    const baseProviderUnit = base.manifest.units.find(
+      (unit) => unit.unitId === "packages/provider",
+    )!;
+    const baseProviderRegion = baseProviderUnit.semanticRegions.find(
+      (region) => region.files.includes(provider),
+    )!;
+
+    replaceInFixture(
+      fixture,
+      consumer,
+      "void gate;",
+      "gate.ready = new Promise<void>(() => {}); void gate;",
+    );
+    const targetRevision = fixture.commit("activate cross-file Promise flow");
+    const run = await extractRevisionDifferential(fixtureRequest(fixture, targetRevision));
+    const targetProviderUnit = run.incremental.manifest.units.find(
+      (unit) => unit.unitId === "packages/provider",
+    )!;
+    const targetProviderRegion = targetProviderUnit.semanticRegions.find(
+      (region) => region.files.includes(provider),
+    )!;
+
+    expect(targetProviderRegion.key).toBe(baseProviderRegion.key);
+    expect(run.incremental.metrics.semanticRegions.reusedRegions).toBeGreaterThan(0);
+    expect(Object.keys(run.incremental.result.flows ?? {})).toContain(
+      "ts:packages/provider/src/gate.ts#Gate.wait",
+    );
+    expect(run.differential).toMatchObject({ equal: true, mismatches: [] });
   });
 
   it("reuses every unit for unobserved non-TypeScript changes, including beside source files", async () => {
@@ -264,10 +332,11 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
 
     const run = await extractRevisionDifferential(request);
     expect(run.differential.equal).toBe(true);
+    // Full-unit envelopes bind the revision-wide workspace digest used by their semantic plans.
     expect(run.incremental.metrics).toMatchObject({
       totalUnits: 4,
-      rebuiltUnits: 1,
-      reusedUnits: 3,
+      rebuiltUnits: 4,
+      reusedUnits: 0,
     });
     expect(run.incremental.manifest.workspaceDigest).not.toBe(dormant.manifest.workspaceDigest);
     expect(
@@ -278,6 +347,17 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
     expect(progress.some((event) => event.phase === "project-load" && event.unit?.total === 4)).toBe(
       true,
     );
+    const inputProofFileIndex = progress.findIndex((event) => (
+      event.phase === "input-proof" && event.sourceFile !== null
+    ));
+    expect(inputProofFileIndex).toBeGreaterThanOrEqual(0);
+    const inputProofFile = progress[inputProofFileIndex]!;
+    expect(inputProofFile.sourceFile?.path).not.toMatch(/^(?:\.\.\/|\/)/);
+    expect(progress.slice(inputProofFileIndex + 1).some((event) => (
+      event.phase === "input-proof"
+      && event.unit?.path === inputProofFile.unit?.path
+      && event.sourceFile === null
+    ))).toBe(true);
     expect(progress.some((event) => event.phase === "stitch")).toBe(true);
 
     const directOptions = {
@@ -329,10 +409,11 @@ describe("revision-safe package shard differential POC", { timeout: 20_000 }, ()
     });
 
     expect(resolved.differential.equal).toBe(true);
+    // Introducing a workspace unit conservatively invalidates every stored semantic-plan context.
     expect(resolved.incremental.metrics).toMatchObject({
       totalUnits: 4,
-      rebuiltUnits: 2,
-      reusedUnits: 2,
+      rebuiltUnits: 4,
+      reusedUnits: 0,
     });
     expect(
       resolved.incremental.result.edges.some(

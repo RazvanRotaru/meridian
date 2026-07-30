@@ -8941,18 +8941,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const work = (async () => {
         try {
           const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-          const analysis = await streamPrAnalysis(analyzeUrl, request, (stage, progress) => {
-            if (active()) {
-              set((current) => ({
-                prPrepareStage: stage,
-                prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
-                  type: "stage",
-                  stage,
-                  progress,
-                }),
-              }));
-            }
-          });
+          const analysis = await streamPrAnalysis(
+            analyzeUrl,
+            request,
+            (stage, progress) => {
+              if (active()) {
+                set((current) => ({
+                  prPrepareStage: stage,
+                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                    type: "stage",
+                    stage,
+                    progress,
+                  }),
+                }));
+              }
+            },
+            (lane) => {
+              if (active()) {
+                set((current) => ({
+                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                    type: "lane-complete",
+                    lane,
+                  }),
+                }));
+              }
+            },
+          );
           if (!active()) {
             return;
           }

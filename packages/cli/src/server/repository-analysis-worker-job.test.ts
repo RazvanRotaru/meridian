@@ -210,6 +210,14 @@ describe("repository analysis worker protocol", () => {
     });
     const unit = { current: 1, total: 1, path: "." };
     report({ language: "typescript", phase: "project-load", unit, sourceFile: null });
+    report({ language: "typescript", phase: "input-proof", unit, sourceFile: null });
+    report({
+      language: "typescript",
+      phase: "input-proof",
+      unit,
+      sourceFile: { current: 1, total: 2, path: "src/compiler-input.ts" },
+    });
+    report({ language: "typescript", phase: "input-proof", unit, sourceFile: null });
     for (let current = 1; current <= 600; current += 1) {
       report({
         language: "typescript",
@@ -256,7 +264,9 @@ describe("repository analysis worker protocol", () => {
     report({ language: "python", phase: "finalize", unit: null, sourceFile: null });
 
     expect(progress.length).toBeLessThanOrEqual(MAX_REPOSITORY_WORKER_PROGRESS_EVENTS);
-    expect(progress.length).toBeGreaterThan(200);
+    // Dedicated capacity for input-proof file clearing reduces ordinary one-hertz samples while
+    // keeping the overall transport cap and every truthful phase/clear transition bounded.
+    expect(progress.length).toBeGreaterThan(150);
     expect(progress.slice(-5).map((event) => [event.language, event.phase])).toEqual([
       ["python", "structure"],
       ["python", "structure"],
@@ -271,14 +281,29 @@ describe("repository analysis worker protocol", () => {
       phase: "relationships",
       sourceFile: { current: 400, total: 600, path: "src/flow-heavy.ts" },
     });
-    expect(progress.find((event) => event.sourceFile?.current === 1)?.sourceFile).toMatchObject({
+    expect(progress.filter((event) => event.phase === "input-proof").map((event) => (
+      event.sourceFile
+    ))).toEqual([
+      null,
+      {
+        current: 1,
+        total: 2,
+        path: "src/compiler-input.ts",
+        pathTruncated: false,
+      },
+      null,
+    ]);
+    const firstStructureSource = progress.find((event) => (
+      event.phase === "structure" && event.sourceFile?.current === 1
+    ));
+    expect(firstStructureSource?.sourceFile).toMatchObject({
       current: 1,
       total: 600,
       path: expect.stringMatching(/^…\//),
       pathTruncated: true,
     });
     expect(Buffer.byteLength(
-      progress.find((event) => event.sourceFile?.current === 1)?.sourceFile?.path ?? "",
+      firstStructureSource?.sourceFile?.path ?? "",
       "utf8",
     )).toBeLessThanOrEqual(512);
     expect(progress.every(isRepositoryAnalysisProgress)).toBe(true);
@@ -287,6 +312,44 @@ describe("repository analysis worker protocol", () => {
       id: "analysis",
       progress: event,
     }))).toBe(true);
+  });
+
+  it("preserves input-proof file clearing even inside the sampling interval", () => {
+    const progress: RepositoryAnalysisProgress[] = [];
+    const report = createRepositoryAnalysisProgressReporter({
+      version: 1,
+      revision: {
+        kind: "head",
+        commit: "a".repeat(40),
+        execution: { current: 1, total: 2 },
+      },
+    }, (event) => progress.push(event), () => 0);
+    const unit = { current: 1, total: 1, path: "." };
+
+    report({ language: "typescript", phase: "project-load", unit, sourceFile: null });
+    report({ language: "typescript", phase: "input-proof", unit, sourceFile: null });
+    report({
+      language: "typescript",
+      phase: "input-proof",
+      unit,
+      sourceFile: { current: 1, total: 2, path: "src/compiler-input.ts" },
+    });
+    report({ language: "typescript", phase: "input-proof", unit, sourceFile: null });
+
+    expect(progress.map((event) => [event.phase, event.sourceFile])).toEqual([
+      ["project-load", null],
+      ["input-proof", null],
+      [
+        "input-proof",
+        {
+          current: 1,
+          total: 2,
+          path: "src/compiler-input.ts",
+          pathTruncated: false,
+        },
+      ],
+      ["input-proof", null],
+    ]);
   });
 
   it("keeps terminal phase capacity after activity transitions exhaust their reservation", () => {
@@ -448,6 +511,7 @@ function shardPolicy() {
     mode: "empty" as const,
     admission: null,
     cacheDir: "/cache/typescript-revision-shards-v1",
+    pairCacheDir: null,
     treeOid: "c".repeat(40),
     buildFingerprint: "d".repeat(64),
     analysisPolicyFingerprint: "e".repeat(64),

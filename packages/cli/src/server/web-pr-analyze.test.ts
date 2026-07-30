@@ -164,8 +164,14 @@ describe("handlePrAnalyze", () => {
       "checkout",
       "extract",
       "extract-head",
+      "lane-complete",
       "extract-merge-base",
+      "lane-complete",
       "done",
+    ]);
+    expect(lines.filter((line) => line.stage === "lane-complete")).toEqual([
+      { stage: "lane-complete", lane: "head" },
+      { stage: "lane-complete", lane: "mergeBase" },
     ]);
 
     const done = lines.at(-1)!;
@@ -332,10 +338,12 @@ describe("handlePrAnalyze", () => {
     const [firstResult, secondResult] = await Promise.all([first, second]);
 
     expect(firstResult.lines().map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(secondResult.lines().map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(firstResult.lines().at(-1)?.graphId).not.toBe(secondResult.lines().at(-1)?.graphId);
     expect(maximumActive).toBe(2);
@@ -356,7 +364,9 @@ describe("handlePrAnalyze", () => {
       "checkout",
       "extract",
       "extract-head",
+      "lane-complete",
       "extract-merge-base",
+      "lane-complete",
       "done",
     ]);
     const done = captured.lines().at(-1);
@@ -580,10 +590,11 @@ describe("handlePrAnalyze", () => {
     await Promise.all([first.completion, follower.completion]);
 
     expect(first.captured.lines().map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(follower.captured.lines().map((line) => line.stage)).toEqual([
-      "extract-head", "extract-merge-base", "done",
+      "extract", "extract-head", "lane-complete", "extract-merge-base", "lane-complete", "done",
     ]);
     expect(follower.captured.lines().at(-1)).toStrictEqual(first.captured.lines().at(-1));
     expect(repositories.prepareCalls).toHaveLength(1);
@@ -605,6 +616,51 @@ describe("handlePrAnalyze", () => {
     ]);
     ctx.graphStore.dispose();
     expect(repositories.leaseRecords.every((record) => record.releaseCount === 1)).toBe(true);
+  });
+
+  it("replays a completed HEAD lane to a follower while merge-base remains active", async () => {
+    const ctx = githubCtx();
+    const comparisonStarted = deferred<void>();
+    const releaseComparison = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      if (request.changedSince === undefined) {
+        comparisonStarted.resolve();
+        await releaseComparison.promise;
+      }
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+
+    const first = beginInvoke(ctx, BODY);
+    await comparisonStarted.promise;
+    await waitFor(() => first.captured.body().includes(
+      '{"stage":"lane-complete","lane":"head"}',
+    ));
+    const follower = beginInvoke(ctx, BODY);
+    await waitFor(() => follower.captured.body().includes('"stage":"extract-merge-base"'));
+
+    expect(follower.captured.lines()).toEqual([
+      { stage: "extract" },
+      { stage: "lane-complete", lane: "head" },
+      { stage: "extract-merge-base" },
+    ]);
+
+    releaseComparison.resolve();
+    await Promise.all([first.completion, follower.completion]);
+    expect(follower.captured.lines().map((line) => line.stage)).toEqual([
+      "extract",
+      "lane-complete",
+      "extract-merge-base",
+      "lane-complete",
+      "done",
+    ]);
+    expect(follower.captured.lines().filter((line) => line.stage === "lane-complete")).toEqual([
+      { stage: "lane-complete", lane: "head" },
+      { stage: "lane-complete", lane: "mergeBase" },
+    ]);
   });
 
   it("detaches an aborted waiter without cancelling its identical surviving request", async () => {
@@ -746,7 +802,8 @@ describe("handlePrAnalyze", () => {
     const captured = await invoke(ctx, BODY);
     const lines = captured.lines();
     expect(lines.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     const done = lines.at(-1)!;
     const graphId = done.graphId as string;
@@ -805,7 +862,8 @@ describe("handlePrAnalyze", () => {
     const second = (await invoke(restarted, BODY)).lines();
 
     expect(first.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(first.at(-1)?.cache).toBe("miss");
     expect(second.map((line) => line.stage)).toEqual(["done"]);
@@ -929,7 +987,8 @@ describe("handlePrAnalyze", () => {
     const done = first.at(-1)!;
 
     expect(first.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(done.cache).toBe("miss");
     const headRoot = graphDescriptor(firstCtx, done.graphId as string).sourceRoot;
@@ -998,7 +1057,8 @@ describe("handlePrAnalyze", () => {
     const done = lines.at(-1)!;
 
     expect(lines.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-merge-base", "extract-head", "done",
+      "clone", "checkout", "extract", "extract-merge-base", "lane-complete",
+      "extract-head", "lane-complete", "done",
     ]);
     expect(done.cache).toBe("miss");
     const headRoot = graphDescriptor(ctx, done.graphId as string).sourceRoot;
@@ -1028,7 +1088,7 @@ describe("handlePrAnalyze", () => {
     mockGitRevisions(HEAD_SHA, "main", "eee1234def5678900000aaaabbbbccccddddeeee");
     const movedBase = (await invoke(githubCtx(source, undefined, undefined, true), BODY)).lines();
     expect(movedBase.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "reuse-merge-base", "extract", "extract-head", "done",
+      "clone", "checkout", "reuse-merge-base", "extract", "extract-head", "lane-complete", "done",
     ]);
     expect(movedBase.at(-1)?.cache).toBe("miss");
     expect(movedBase.at(-1)?.comparisonGraphId).toBe(done.comparisonGraphId);
@@ -1216,7 +1276,8 @@ describe("handlePrAnalyze", () => {
     const second = secondLines.at(-1)!;
 
     expect(secondLines.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "extract", "extract-head", "extract-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(second.cache).toBe("miss");
     expect(second.baseSha).toBe(movedBaseSha);
