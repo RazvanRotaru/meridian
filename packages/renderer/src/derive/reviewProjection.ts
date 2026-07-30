@@ -6,7 +6,12 @@
  */
 
 import { computeAffectedNodes, LOGIC_FLOW_EXTENSION, parseNodeId } from "@meridian/core";
-import type { AffectedNode, GraphArtifact, ReviewContext } from "@meridian/core";
+import type {
+  AffectedNode,
+  ChangedDiffLines,
+  GraphArtifact,
+  ReviewContext,
+} from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 import { deriveReviewDataFromContext, type ReviewData } from "./reviewData";
 import { deriveReviewFiles, type ReviewFileRow } from "./reviewFiles";
@@ -25,17 +30,29 @@ export function deriveReviewProjection(
   context: ReviewContext,
   artifact: GraphArtifact,
   index: GraphIndex,
-  options: { baseIndex: GraphIndex | null; baseArtifact?: GraphArtifact | null; showTests: boolean },
+  options: {
+    baseIndex: GraphIndex | null;
+    baseArtifact?: GraphArtifact | null;
+    showTests: boolean;
+    hideSourceCommentDiffs?: boolean;
+    diffLines?: ChangedDiffLines | null;
+  },
 ): ReviewProjection {
-  const coveredContext = withFlowCoverageWarnings(context, artifact);
-  const allFiles = deriveReviewFiles(coveredContext, artifact, index, { baseIndex: options.baseIndex });
+  const sourceVisibleContext = options.hideSourceCommentDiffs
+    ? withoutCommentOnlyFiles(context, options.diffLines ?? null)
+    : context;
+  const allFiles = deriveReviewFiles(sourceVisibleContext, artifact, index, { baseIndex: options.baseIndex });
   const excludedTestFileCount = options.showTests ? 0 : allFiles.filter((file) => file.isTest).length;
   const includedPaths = options.showTests
     ? null
     : new Set(allFiles.filter((file) => !file.isTest).map((file) => file.path));
-  const visibleContext = includedPaths === null
-    ? coveredContext
-    : { ...coveredContext, changedFiles: coveredContext.changedFiles.filter((file) => includedPaths.has(file.path)) };
+  const visibleContextWithoutCoverage = includedPaths === null
+    ? sourceVisibleContext
+    : {
+        ...sourceVisibleContext,
+        changedFiles: sourceVisibleContext.changedFiles.filter((file) => includedPaths.has(file.path)),
+      };
+  const visibleContext = withFlowCoverageWarnings(visibleContextWithoutCoverage, artifact);
   const files = includedPaths === null
     ? allFiles
     : deriveReviewFiles(visibleContext, artifact, index, { baseIndex: options.baseIndex });
@@ -46,10 +63,22 @@ export function deriveReviewProjection(
     options.baseArtifact ?? null,
     options.baseIndex,
   );
+  const coveredContext = withFlowCoverageWarnings(context, artifact);
+  const reviewContext = (
+    coveredContext.warnings.length === visibleContext.warnings.length
+    && coveredContext.warnings.every((warning, index) => warning === visibleContext.warnings[index])
+  )
+    ? coveredContext
+    : {
+        ...coveredContext,
+        // Coverage belongs to the visible review transaction. Preserve the raw changed-file
+        // inventory for reversible toggling without surfacing warnings for hidden languages.
+        warnings: visibleContext.warnings,
+      };
   const review: ReviewData = {
     ...visibleReview,
     // Preserve the complete source context for reversible toggling and stable progress/drafts.
-    context: coveredContext,
+    context: reviewContext,
     // A test-owned flow can be impacted by a production edit, so changed-file filtering alone is
     // insufficient: when Tests is off, remove those supporting flows as well.
     rows: options.showTests ? visibleReview.rows : visibleReview.rows.filter((row) => !row.isTest),
@@ -61,6 +90,30 @@ export function deriveReviewProjection(
     affected: computeAffectedNodes(artifact.nodes, visibleContext.changedFiles),
     excludedTestFileCount,
   };
+}
+
+/**
+ * Losslessly remove files whose complete canonical diff proves that every edit run changes comments
+ * only. The raw context remains on `review.context`, so toggling the preference restores the exact
+ * PR inventory, progress scope, and comment anchors.
+ */
+function withoutCommentOnlyFiles(
+  context: ReviewContext,
+  diffLines: ChangedDiffLines | null,
+): ReviewContext {
+  if (diffLines === null) return context;
+  const changedFiles = context.changedFiles.filter((file) => {
+    // File creation/deletion/rename is itself a visible source-tree change even when every textual
+    // row is a comment (for example Python package markers and module-resolution targets).
+    if (file.status !== "modified") return true;
+    const rows = Object.hasOwn(diffLines, file.path) ? diffLines[file.path] : undefined;
+    return rows === undefined
+      || rows.length === 0
+      || !rows.every((row) => row.sourceCommentOnly === true);
+  });
+  return changedFiles.length === context.changedFiles.length
+    ? context
+    : { ...context, changedFiles };
 }
 
 /**

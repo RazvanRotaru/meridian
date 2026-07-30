@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { reviewViewedGestureBlockReason } from "../../state/store";
-import { ReviewPanelResizableLayout } from "./ReviewPanel";
+import { reviewEmptyFilterNotice, ReviewPanelResizableLayout } from "./ReviewPanel";
 
 describe("ReviewPanelResizableLayout", () => {
   it("makes each review section boundary an accessible compact splitter", () => {
@@ -56,6 +56,43 @@ describe("ReviewPanelResizableLayout", () => {
   });
 });
 
+describe("reviewEmptyFilterNotice", () => {
+  it("distinguishes test, source-comment, and combined empty projections", () => {
+    expect(renderNotice({
+      visibleFileCount: 0,
+      excludeTestChanges: true,
+      hideSourceCommentDiffs: false,
+    })).toContain("Test changes are excluded.");
+    expect(renderNotice({
+      visibleFileCount: 0,
+      excludeTestChanges: false,
+      hideSourceCommentDiffs: true,
+    })).toContain("Source-comment-only changes are hidden.");
+
+    const combined = renderNotice({
+      visibleFileCount: 0,
+      excludeTestChanges: true,
+      hideSourceCommentDiffs: true,
+    });
+    expect(combined).toContain("both review filters are active");
+    expect(combined).toContain("Exclude test changes");
+    expect(combined).toContain("Hide source comments in diffs");
+  });
+
+  it("stays silent when files remain or neither content filter is active", () => {
+    expect(reviewEmptyFilterNotice({
+      visibleFileCount: 1,
+      excludeTestChanges: true,
+      hideSourceCommentDiffs: true,
+    })).toBeNull();
+    expect(reviewEmptyFilterNotice({
+      visibleFileCount: 0,
+      excludeTestChanges: false,
+      hideSourceCommentDiffs: false,
+    })).toBeNull();
+  });
+});
+
 function renderLayout(overrides: Partial<{
   scopeVisible: boolean;
   flowsVisible: boolean;
@@ -75,4 +112,8 @@ function renderLayout(overrides: Partial<{
       footerVisible={overrides.footerVisible ?? true}
     />,
   );
+}
+
+function renderNotice(options: Parameters<typeof reviewEmptyFilterNotice>[0]): string {
+  return renderToStaticMarkup(<>{reviewEmptyFilterNotice(options)}</>);
 }

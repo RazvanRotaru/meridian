@@ -50,6 +50,15 @@ export interface ChangedDiffLine {
   newLine: number | null;
   beforeNewLine: number;
   text: string;
+  /**
+   * Complete patch context proves that this edit row contributes no executable source change. The
+   * physical row may still contain unchanged code (for example, a trailing-comment edit), and
+   * executable sibling rows in the same run remain unflagged. Omitted means "not proven", never
+   * "code changed". A file is removable only when every row is flagged.
+   */
+  sourceCommentOnly?: true;
+  /** The physical source row itself contains only comment/trivia and may be omitted from source. */
+  sourceCommentLineOnly?: true;
   /** Git's marker immediately followed this changed row. */
   noNewline?: boolean;
 }
@@ -72,6 +81,8 @@ export interface ChangedFileManifestEntry {
   status: ChangedFileManifestStatus;
   /** Renames only: the old/base path relative to the same extraction root. */
   previousPath?: string;
+  /** Git extended headers prove a mode or file-type change in addition to any textual rows. */
+  nonTextualChanges?: true;
 }
 
 /** Schema version for the conservative, edit-grained formatting proof. */
@@ -209,22 +220,61 @@ export function changedLineKindsFromExtensions(extensions: unknown): ChangedLine
 
 /**
  * Read the lossless changed rows from `extensions.changedSince.diffLines` defensively.
- * Malformed rows are skipped; malformed/missing top-level payloads yield null.
+ * Each file is an all-or-nothing transaction: a malformed row discards that file's entire array.
+ * This matters because a partial set of otherwise valid comment-only rows must never authorize
+ * hiding a file whose omitted edit may contain executable code. Malformed/missing top-level
+ * payloads yield null.
  */
 export function changedDiffLinesFromExtensions(extensions: unknown): ChangedDiffLines | null {
   const raw = (extensions as { changedSince?: { diffLines?: unknown } } | undefined)?.changedSince?.diffLines;
   if (raw === null || raw === undefined || typeof raw !== "object" || Array.isArray(raw)) {
     return null;
   }
+  const stats = changedLineStatsFromExtensions(extensions);
+  const rawManifest = (
+    extensions as { changedSince?: { manifest?: unknown } } | undefined
+  )?.changedSince?.manifest;
+  const manifest = changedFileManifestFromExtensions(extensions);
+  const invalidManifest = rawManifest !== undefined && manifest === null;
+  const nonTextualPaths = new Set(
+    (manifest ?? [])
+      .filter((entry) => entry.nonTextualChanges === true)
+      .map((entry) => entry.path),
+  );
+  const manifestPaths = manifest === null
+    ? null
+    : new Set(manifest.map((entry) => entry.path));
   const diffLines: ChangedDiffLines = {};
   for (const [file, value] of Object.entries(raw)) {
-    if (!Array.isArray(value)) {
+    if (!Array.isArray(value) || value.length === 0 || !value.every(isChangedDiffLine)) {
       continue;
     }
-    const rows = value.filter(isChangedDiffLine);
-    if (rows.length > 0) {
-      setOwnRecordValue(diffLines, file, rows);
-    }
+    const delta = stats === null ? undefined : Object.hasOwn(stats, file) ? stats[file] : undefined;
+    const exactTotals = delta !== undefined
+      && value.filter((row) => row.kind === "added").length === delta.added
+      && value.filter((row) => row.kind === "deleted").length === delta.deleted;
+    const hasCommentProof = value.some(
+      (row) => row.sourceCommentOnly === true || row.sourceCommentLineOnly === true,
+    );
+    // Exact rows remain useful to old/partial viewers, but comment-only facts authorize removing a
+    // file from review and therefore require corroborating whole-file totals from the same payload.
+    // A mode or file-type change is executable structure outside those row totals, so an
+    // inconsistent/foreign artifact must lose its optional proof rather than hide that change. A
+    // present but invalid all-or-nothing manifest makes every such proof untrustworthy, as does a
+    // valid manifest that omits the row transaction's path.
+    const rows = hasCommentProof && (
+      !exactTotals
+      || invalidManifest
+      || (manifestPaths !== null && !manifestPaths.has(file))
+      || nonTextualPaths.has(file)
+    )
+      ? value.map(({
+          sourceCommentOnly: _sourceCommentOnly,
+          sourceCommentLineOnly: _sourceCommentLineOnly,
+          ...row
+        }) => row)
+      : value;
+    setOwnRecordValue(diffLines, file, rows);
   }
   return diffLines;
 }
@@ -419,12 +469,17 @@ function isChangedDiffLine(value: unknown): value is ChangedDiffLine {
     newLine?: unknown;
     beforeNewLine?: unknown;
     text?: unknown;
+    sourceCommentOnly?: unknown;
+    sourceCommentLineOnly?: unknown;
     noNewline?: unknown;
   } | null;
   if (
     (candidate?.kind !== "added" && candidate?.kind !== "deleted")
     || !isPositiveLine(candidate.beforeNewLine)
     || typeof candidate.text !== "string"
+    || (candidate.sourceCommentOnly !== undefined && candidate.sourceCommentOnly !== true)
+    || (candidate.sourceCommentLineOnly !== undefined && candidate.sourceCommentLineOnly !== true)
+    || (candidate.sourceCommentLineOnly === true && candidate.sourceCommentOnly !== true)
     || (candidate.noNewline !== undefined && typeof candidate.noNewline !== "boolean")
   ) {
     return false;
@@ -437,20 +492,34 @@ function isChangedDiffLine(value: unknown): value is ChangedDiffLine {
 }
 
 function changedFileManifestEntry(value: unknown): ChangedFileManifestEntry | null {
-  const candidate = value as { path?: unknown; status?: unknown; previousPath?: unknown } | null;
+  const candidate = value as {
+    path?: unknown;
+    status?: unknown;
+    previousPath?: unknown;
+    nonTextualChanges?: unknown;
+  } | null;
   if (!isManifestPath(candidate?.path) || !isChangedFileManifestStatus(candidate.status)) {
     return null;
   }
+  if (candidate.nonTextualChanges !== undefined && candidate.nonTextualChanges !== true) {
+    return null;
+  }
+  const nonTextual = candidate.nonTextualChanges === true ? { nonTextualChanges: true as const } : {};
   if (candidate.status === "renamed") {
     if (!isManifestPath(candidate.previousPath) || candidate.previousPath === candidate.path) {
       return null;
     }
-    return { path: candidate.path, status: candidate.status, previousPath: candidate.previousPath };
+    return {
+      path: candidate.path,
+      status: candidate.status,
+      previousPath: candidate.previousPath,
+      ...nonTextual,
+    };
   }
   if (candidate.previousPath !== undefined) {
     return null;
   }
-  return { path: candidate.path, status: candidate.status };
+  return { path: candidate.path, status: candidate.status, ...nonTextual };
 }
 
 function formattingOnlyEdit(value: unknown): FormattingOnlyEdit | null {

@@ -23,6 +23,7 @@ import {
 import type {
   AffectedNode,
   ChangedDiffLine,
+  ChangedDiffLines,
   ChangedLineKind,
   ChangedLineSpan,
   ChangeGroupsResult,
@@ -209,7 +210,6 @@ import { canonicalPrReviewScope } from "../derive/prReviewScope";
 import {
   applyFilesToggle,
   fileViewState,
-  isReviewTestPath,
   promoteFullyViewedUnitTicks,
   removeReviewFileTick,
   removeReviewUnitTicks,
@@ -231,7 +231,7 @@ import {
   formattingAwareArtifactDiff,
 } from "../derive/formattingOnlyReviewContext";
 import { expandReviewScopeBaseUnits, type ReviewScopeBaseNodes } from "../derive/reviewScopeExpansion";
-import { buildReviewSubmission } from "../derive/reviewSubmit";
+import { buildReviewSubmission, reviewDraftIsVisible } from "../derive/reviewSubmit";
 import {
   DEFAULT_SERVICE_GROUPING_TARGET_SIZE,
   isServiceGroupingTargetSize,
@@ -640,8 +640,8 @@ export interface BlueprintState {
   /** Whether graph and logic-flow node gestures may open transient code previews. Session-only;
    * source stays available through each node header's explicit View source action. */
   reviewCodePreviewEnabled: boolean;
-  /** Show newly added, comment-only source rows as neutral context instead of diff additions.
-   * Browser-local so the reader's source-diff preference follows them between reviews. */
+  /** Hide proven source-comment-only edits from diff rows and the visible review transaction.
+   * Browser-local so the reader's review preference follows them between repositories. */
   reviewHideAddedSourceCommentDiffs: boolean;
   /** Remove only edits the prepared analysis proved syntax-equivalent after layout normalization.
    * Browser-local and default-on; missing or uncertain proof keeps the change reviewable. */
@@ -1956,6 +1956,34 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // renderable state. The composer itself carries the visible confirmation; Discard replays the
   // exact attempted source/lens/revision transition, while Keep editing clears this callback.
   let pendingReviewLineComposerTransition: (() => void) | null = null;
+  // A nested review projection destructively removes hidden members from the live scene. Retain one
+  // session-only unfiltered/projected pair so the inverse toggle can three-way-merge the user's
+  // intervening curation and restore only the members removed by the projection.
+  let reviewProjectionFrameBaseline: {
+    reviewKey: string;
+    index: GraphIndex;
+    history: MinimalGraphHistoryEntry[];
+    unfiltered: MinimalGraphHistoryEntry;
+    projected: MinimalGraphHistoryEntry;
+  } | null = null;
+  const hasReusableReviewProjectionFrame = (
+    state: BlueprintState,
+    history: MinimalGraphHistoryEntry[] = state.minimalGraphHistory,
+  ): boolean =>
+    reviewProjectionFrameBaseline !== null
+    && reviewProjectionFrameBaseline.reviewKey === state.review?.context.reviewKey
+    && reviewProjectionFrameBaseline.index === state.index
+    && reviewProjectionFrameBaseline.history === history;
+  const captureHistoryWithReviewProjection = (state: BlueprintState): MinimalGraphHistoryEntry => {
+    const entry = captureMinimalGraphHistory(state);
+    if (hasReusableReviewProjectionFrame(state)) {
+      entry.reviewProjectionBaseline = {
+        unfiltered: reviewProjectionFrameBaseline!.unfiltered,
+        projected: reviewProjectionFrameBaseline!.projected,
+      };
+    }
+    return entry;
+  };
   const prsNextPage: Record<PrsTab, number> = { open: 1, closed: 1 };
   // PR-head reads return an entire file. Share that response across every changed node in the file;
   // fetchCodeView still slices and annotates a separate node-specific view for each caller.
@@ -1971,6 +1999,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // A PR-review swap/restore replaces the WHOLE artifact/index, so every "built once per artifact"
   // cache must rebuild from the incoming index — and any overlay ELK pass in flight must drop.
   const invalidateArtifactCaches = () => {
+    reviewProjectionFrameBaseline = null;
     moduleGraph = null;
     blockDeps = null;
     codePayloadCache.clear();
@@ -2003,18 +2032,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         dependencies.artifact,
         reviewPreferences.excludeFormatOnlyChanges,
       );
+  const initialReviewDiff = formattingAwareArtifactDiff(
+    dependencies.artifact,
+    reviewPreferences.excludeFormatOnlyChanges,
+  );
   const initialReviewProjection = artifactReview
     ? deriveReviewProjection(initialReviewContext!, dependencies.artifact, dependencies.index, {
         baseIndex: null,
         showTests: false,
+        hideSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
+        diffLines: initialReviewDiff.diffLines,
       })
     : null;
   const review = initialReviewProjection?.review ?? null;
   if (initialReviewProjection !== null) {
-    const initialStatusDiff = formattingAwareArtifactDiff(
-      dependencies.artifact,
-      reviewPreferences.excludeFormatOnlyChanges,
-    );
     applyChangedIds(dependencies.index, initialReviewProjection.affected.map((node) => node.nodeId));
     applyChangedStatus(
       dependencies.index,
@@ -2022,8 +2053,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         dependencies.index,
         initialReviewProjection.affected,
         reviewNodeStatusSourcesFromDiff(
-          initialStatusDiff.kinds,
-          initialStatusDiff.diffLines,
+          initialReviewDiff.kinds,
+          initialReviewDiff.diffLines,
         ),
       ),
     );
@@ -2223,7 +2254,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           filePaths: [...new Set(matched.map((match) => match.path))].sort(),
           moduleIds: seeds,
         },
-        minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
+        minimalGraphHistory: [...state.minimalGraphHistory, captureHistoryWithReviewProjection(state)],
         minimalView: "graph",
         minimalShowGhostNodes: true,
         minimalShowNonDiffGhostNodes: true,
@@ -2259,6 +2290,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutStatus: "laying-out",
         minimalLayoutActivity: activity,
       });
+      reviewProjectionFrameBaseline = null;
       void requestMinimalRelayout(activity).then(() => {
         const current = get();
         if (
@@ -2346,14 +2378,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         state.artifact,
         state.reviewExcludeFormatOnlyChanges,
       );
-      const projection = deriveReviewProjection(context, state.artifact, state.index, {
-        baseIndex: null,
-        showTests,
-      });
+      const capturedFrame = state.minimalSeedIds.length > 0
+        ? captureMinimalGraphHistory(state)
+        : null;
+      const history = state.minimalGraphHistory;
+      const reusableBaseline = capturedFrame !== null
+        && hasReusableReviewProjectionFrame(state, history);
+      const frame = capturedFrame === null
+        ? null
+        : reusableBaseline
+          ? mergeReviewProjectionFrame(
+              reviewProjectionFrameBaseline!.unfiltered,
+              reviewProjectionFrameBaseline!.projected,
+              capturedFrame,
+            )
+          : capturedFrame;
       const statusDiff = formattingAwareArtifactDiff(
         state.artifact,
         state.reviewExcludeFormatOnlyChanges,
       );
+      const projection = deriveReviewProjection(context, state.artifact, state.index, {
+        baseIndex: null,
+        showTests,
+        hideSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
+        diffLines: statusDiff.diffLines,
+      });
       applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
       applyChangedStatus(
         state.index,
@@ -2366,11 +2415,154 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ),
         ),
       );
+      const visiblePaths = new Set(projection.files.map((file) => file.path));
+      const excludedPaths = artifactReview.context.changedFiles
+        .map((file) => file.path)
+        .filter((path) => !visiblePaths.has(path));
+      const excludedMatches = matchAffectedFiles(state.index, excludedPaths).matched;
+      const excludedModuleIds = new Set(excludedMatches.map((match) => match.moduleId));
+      const excludedFiles = new Set(excludedMatches.map((match) => match.file));
+      const keepDirect = (id: string): boolean => {
+        if (!showTests && state.index.testIds.has(id)) return false;
+        const owner = flowStepArtifactOwner(state, id, frame?.moduleExpanded ?? state.moduleExpanded) ?? id;
+        if (excludedModuleIds.has(owner)) return false;
+        const file = state.index.nodesById.get(owner)?.location.file;
+        return file === undefined || !excludedFiles.has(file);
+      };
+      const keep = (id: string): boolean => {
+        const rollupFiles = frame !== null && Object.hasOwn(frame.minimalRollups, id)
+          ? frame.minimalRollups[id]
+          : undefined;
+        return rollupFiles === undefined ? keepDirect(id) : rollupFiles.some(keepDirect);
+      };
+      const activeGroup = state.reviewActiveGroupId === null
+        ? null
+        : state.reviewGroups?.groups.find((group) => group.id === state.reviewActiveGroupId) ?? null;
+      const previousVisiblePaths = new Set(state.reviewFiles.map((file) => file.path));
+      const revealsFiles = projection.files.some((file) => !previousVisiblePaths.has(file.path));
+      const scopedReveal = frame !== null
+        && !reusableBaseline
+        && frame.flowSelection === null
+        && revealsFiles
+        && (
+          frame.reviewActiveGroupId !== null
+          || frame.reviewPathScope !== null
+          || frame.reviewFocusedSubgraph !== null
+        )
+        ? {
+            previous: deriveReviewScopedFrame(
+              state.index,
+              state.reviewFiles,
+              activeGroup,
+              frame.reviewPathScope,
+              frame.reviewFocusedSubgraph,
+              {
+                baseNodeIds: state.reviewBaseNodeIds,
+                deletedNodeIds: state.reviewDeletedNodeIds,
+              },
+            ),
+            next: deriveReviewScopedFrame(
+              state.index,
+              projection.files,
+              activeGroup,
+              frame.reviewPathScope,
+              frame.reviewFocusedSubgraph,
+              {
+                baseNodeIds: state.reviewBaseNodeIds,
+                deletedNodeIds: state.reviewDeletedNodeIds,
+              },
+            ),
+          }
+        : null;
+      const currentVisibleMembers = frame?.minimalMemberIds.filter(keep) ?? [];
+      const minimalSeedIds = frame === null
+        ? []
+        : scopedReveal === null
+          ? frame.minimalSeedIds
+          : mergeProjectionList(
+              scopedReveal.next.seeds,
+              scopedReveal.previous.seeds,
+              frame.minimalSeedIds,
+            );
+      const minimalMemberIds = scopedReveal === null
+        ? currentVisibleMembers
+        : mergeProjectionList(
+            scopedReveal.next.seeds,
+            scopedReveal.previous.seeds,
+            currentVisibleMembers,
+          );
+      const currentVisibleExpanded = frame === null
+        ? new Set<string>()
+        : new Set([...frame.moduleExpanded].filter(keep));
+      const moduleExpanded = scopedReveal === null
+        ? currentVisibleExpanded
+        : mergeProjectionSet(
+            scopedReveal.next.expanded,
+            scopedReveal.previous.expanded,
+            currentVisibleExpanded,
+          );
+      const reviewFocusedSubgraph = scopedReveal?.next.focused ?? (
+        frame?.reviewFocusedSubgraph === null || frame === null
+        ? null
+        : {
+            ...frame.reviewFocusedSubgraph,
+            moduleIds: frame.reviewFocusedSubgraph.moduleIds.filter(keep),
+            filePaths: frame.reviewFocusedSubgraph.filePaths.filter((path) => visiblePaths.has(path)),
+          }
+      );
       set({
         review: projection.review,
         reviewFiles: projection.files,
         reviewAffectedIds: new Set(projection.affected.map((node) => node.nodeId)),
+        ...(frame === null
+          ? {}
+          : {
+              ...restoreMinimalGraphHistory(frame),
+              minimalGraphHistory: history,
+              minimalSeedIds,
+              minimalMemberIds,
+              minimalRollups: scopedReveal === null
+                ? Object.fromEntries(
+                    Object.entries(frame.minimalRollups)
+                      .map(([id, fileIds]) => [id, fileIds.filter(keep)] as const)
+                      .filter(([id, fileIds]) => keep(id) && fileIds.length > 0),
+                  )
+                : rollupsRecord(scopedReveal.next.rolledUp),
+              moduleSelected: new Set([...frame.moduleSelected].filter(keep)),
+              moduleExpanded,
+              reviewSelectedId: frame.reviewSelectedId !== null && keep(frame.reviewSelectedId)
+                ? frame.reviewSelectedId
+                : null,
+              reviewLitNodeIds: frame.reviewLitNodeIds === null
+                ? null
+                : new Set([...frame.reviewLitNodeIds].filter(keep)),
+              reviewFocusedSubgraph,
+              logicSelected: frame.logicSelected !== null && keep(frame.logicSelected)
+                ? frame.logicSelected
+                : null,
+              minimalRfNodes: [],
+              minimalRfEdges: [],
+              minimalLayoutStatus: minimalMemberIds.length > 0 ? "laying-out" as const : "idle" as const,
+              minimalLayoutActivity: minimalMemberIds.length > 0
+                ? { label: "Refreshing review graph…" }
+                : null,
+            }),
       });
+      if (frame !== null) {
+        const committed = get();
+        reviewProjectionFrameBaseline = excludedPaths.length === 0
+          ? null
+          : {
+              reviewKey: committed.review!.context.reviewKey,
+              index: committed.index,
+              history,
+              unfiltered: frame,
+              projected: captureMinimalGraphHistory(committed),
+            };
+        if (minimalMemberIds.length > 0) {
+          void requestMinimalRelayout({ label: "Refreshing review graph…" });
+        }
+      }
     };
 
     const flowStepArtifactOwner = (
@@ -2397,6 +2589,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return !state.index.testIds.has(id) && (owner === null || !state.index.testIds.has(owner));
     };
 
+    /** Nodes excluded from the canonical review transaction must also be hidden from the coupling
+     * ring, otherwise a visible neighbour can re-materialize them as ghosts after their seed/file
+     * row was removed. Ancestor-aware ghost filtering closes over each matched file module. */
+    const reviewProjectionHiddenIds = (state: BlueprintState): ReadonlySet<string> => {
+      const hidden = new Set(state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds);
+      if (state.review === null) return hidden;
+      const visiblePaths = new Set(state.reviewFiles.map((file) => file.path));
+      const excludedPaths = state.review.context.changedFiles
+        .map((file) => file.path)
+        .filter((path) => !visiblePaths.has(path));
+      for (const match of matchAffectedFiles(state.index, excludedPaths).matched) {
+        hidden.add(match.moduleId);
+      }
+      return hidden;
+    };
+
     const idPassesReviewDiffProjection = (
       state: BlueprintState,
       id: string,
@@ -2417,8 +2625,35 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (before.prReviewed === null) {
         return false;
       }
-      const frame = captureMinimalGraphHistory(before);
+      const capturedFrame = captureMinimalGraphHistory(before);
       const history = before.minimalGraphHistory;
+      const reusableBaseline = hasReusableReviewProjectionFrame(before, history);
+      const frame = reusableBaseline
+        ? mergeReviewProjectionFrame(
+            reviewProjectionFrameBaseline!.unfiltered,
+            reviewProjectionFrameBaseline!.projected,
+            capturedFrame,
+          )
+        : capturedFrame;
+      const rootProjectionBefore = (
+        history.length === 0
+        && frame.reviewActiveGroupId === null
+        && frame.reviewPathScope === null
+        && frame.reviewFocusedSubgraph === null
+        && frame.flowSelection === null
+      )
+        ? deriveReviewScopedFrame(
+            before.index,
+            before.reviewFiles,
+            null,
+            null,
+            null,
+            {
+              baseNodeIds: before.reviewBaseNodeIds,
+              deletedNodeIds: before.reviewDeletedNodeIds,
+            },
+          )
+        : null;
       const previousGroup = before.reviewActiveGroupId === null
         ? null
         : before.reviewGroups?.groups.find((group) => group.id === before.reviewActiveGroupId) ?? null;
@@ -2439,14 +2674,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // applyPrReviewToMap queued a root-review layout. This frame restoration owns the next scene,
       // even when filtering leaves it intentionally empty, so invalidate that root pass now.
       invalidateMinimalLayout();
-      const keep = (id: string) => idPassesTestsProjection(projected, id, frame.moduleExpanded);
       const projectedFilePaths = new Set(projected.reviewFiles.map((file) => file.path));
+      const excludedChangedPaths = new Set(
+        (projected.review?.context.changedFiles ?? [])
+          .map((file) => file.path)
+          .filter((path) => !projectedFilePaths.has(path)),
+      );
+      const excludedMatches = matchAffectedFiles(projected.index, [...excludedChangedPaths]).matched;
+      const excludedModuleIds = new Set(excludedMatches.map((match) => match.moduleId));
+      const excludedCanonicalFiles = new Set(excludedMatches.map((match) => match.file));
+      const keepDirect = (id: string) => {
+        if (!idPassesTestsProjection(projected, id, frame.moduleExpanded)) return false;
+        const owner = flowStepArtifactOwner(projected, id, frame.moduleExpanded) ?? id;
+        if (excludedModuleIds.has(owner)) return false;
+        const file = projected.index.nodesById.get(owner)?.location.file;
+        return file === undefined || !excludedCanonicalFiles.has(file);
+      };
+      const keep = (id: string) => {
+        const rollupFiles = Object.hasOwn(frame.minimalRollups, id)
+          ? frame.minimalRollups[id]
+          : undefined;
+        return rollupFiles === undefined
+          ? keepDirect(id)
+          : rollupFiles.some(keepDirect);
+      };
       const survivingGroupFiles = new Set(
         (previousGroup?.files ?? []).filter((path) => projectedFilePaths.has(path)),
       );
-      const projectedGroup = previousGroup === null || survivingGroupFiles.size === 0
+      const exactProjectedGroup = frame.reviewActiveGroupId === null
         ? null
-        : (projected.reviewGroups?.groups ?? [])
+        : projected.reviewGroups?.groups.find((group) => group.id === frame.reviewActiveGroupId) ?? null;
+      const projectedGroup = exactProjectedGroup !== null
+        ? { group: exactProjectedGroup, overlap: exactProjectedGroup.files.length }
+        : previousGroup === null || survivingGroupFiles.size === 0
+          ? null
+          : (projected.reviewGroups?.groups ?? [])
             .map((group) => ({
               group,
               overlap: group.files.filter((path) => survivingGroupFiles.has(path)).length,
@@ -2458,20 +2720,133 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const activeGroupFiles = reviewActiveGroupId === null
         ? null
         : new Set(projectedGroup?.group.files ?? []);
-      const reviewPathScope = before.reviewPathScope !== null
+      const reviewPathScope = frame.reviewPathScope !== null
         && projected.reviewFiles.some((file) =>
           (activeGroupFiles === null || activeGroupFiles.has(file.path))
-          && isReviewPathInScope(file.path, before.reviewPathScope),
+          && isReviewPathInScope(file.path, frame.reviewPathScope),
         )
-          ? before.reviewPathScope
+          ? frame.reviewPathScope
           : null;
+      const beforeVisiblePaths = new Set(before.reviewFiles.map((file) => file.path));
+      const revealsFiles = projected.reviewFiles.some((file) => !beforeVisiblePaths.has(file.path));
+      const scopedReveal = !reusableBaseline
+        && revealsFiles
+        && (
+          frame.reviewActiveGroupId !== null
+          || frame.reviewPathScope !== null
+          || frame.reviewFocusedSubgraph !== null
+        )
+        ? {
+            previous: deriveReviewScopedFrame(
+              before.index,
+              before.reviewFiles,
+              previousGroup,
+              frame.reviewPathScope,
+              frame.reviewFocusedSubgraph,
+              {
+                baseNodeIds: before.reviewBaseNodeIds,
+                deletedNodeIds: before.reviewDeletedNodeIds,
+              },
+            ),
+            next: deriveReviewScopedFrame(
+              projected.index,
+              projected.reviewFiles,
+              projectedGroup?.group ?? null,
+              reviewPathScope,
+              frame.reviewFocusedSubgraph,
+              {
+                baseNodeIds: projected.reviewBaseNodeIds,
+                deletedNodeIds: projected.reviewDeletedNodeIds,
+              },
+            ),
+          }
+        : null;
+      // A selected logic flow temporarily replaces the graph scene, but its baseline is still the
+      // scoped file-review scene. Reconcile newly visible files into that baseline so closing the
+      // flow restores the updated projection. Re-derive the corresponding old/new flow scenes too:
+      // a rollup can cross its threshold while the flow is open, and the immediate reveal must be
+      // identical to closing and reopening that same flow from the updated baseline.
+      const sceneScopedReveal = frame.flowSelection === null ? scopedReveal : null;
+      const flowSelection = frame.flowSelection !== null && keep(frame.flowSelection.rootId)
+        ? frame.flowSelection
+        : null;
+      const scopedFlowReveal = scopedReveal !== null
+        && frame.flowSelection !== null
+        && flowSelection !== null
+        ? {
+            previous: deriveReviewScopedFlowScene(
+              before.index,
+              (before.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows,
+              frame.flowSelection,
+              scopedReveal.previous,
+            ),
+            next: deriveReviewScopedFlowScene(
+              projected.index,
+              (projected.artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows,
+              flowSelection,
+              scopedReveal.next,
+            ),
+          }
+        : null;
       // Origins remain as the overlay sentinel when every current member is filtered (the live PR
       // root uses the same raw-seed/empty-member contract for an all-test review), keeping Back
       // reachable from a test-only nested child.
-      const minimalSeedIds = frame.minimalSeedIds;
-      const minimalMemberIds = frame.minimalMemberIds.filter(keep);
+      const currentVisibleMembers = frame.minimalMemberIds.filter(keep);
+      const minimalSeedIds = rootProjectionBefore !== null
+        ? projected.minimalSeedIds
+        : scopedFlowReveal !== null
+        ? mergeProjectionList(
+            scopedFlowReveal.next.minimalSeedIds,
+            scopedFlowReveal.previous.minimalSeedIds,
+            frame.minimalSeedIds,
+          )
+        : sceneScopedReveal !== null
+          ? mergeProjectionList(
+            sceneScopedReveal.next.seeds,
+            sceneScopedReveal.previous.seeds,
+            frame.minimalSeedIds,
+          )
+          : frame.minimalSeedIds;
+      const minimalMemberIds = rootProjectionBefore !== null
+        ? mergeProjectionList(
+            projected.minimalMemberIds,
+            rootProjectionBefore.seeds,
+            currentVisibleMembers,
+          )
+        : scopedFlowReveal !== null
+        ? mergeProjectionList(
+            scopedFlowReveal.next.minimalMemberIds,
+            scopedFlowReveal.previous.minimalMemberIds,
+            currentVisibleMembers,
+          )
+        : sceneScopedReveal !== null
+          ? mergeProjectionList(
+            sceneScopedReveal.next.seeds,
+            sceneScopedReveal.previous.seeds,
+            currentVisibleMembers,
+          )
+          : currentVisibleMembers;
       const moduleSelected = new Set([...frame.moduleSelected].filter(keep));
-      const moduleExpanded = new Set([...frame.moduleExpanded].filter(keep));
+      const currentVisibleExpanded = new Set([...frame.moduleExpanded].filter(keep));
+      const moduleExpanded = rootProjectionBefore !== null
+        ? mergeProjectionSet(
+            projected.moduleExpanded,
+            rootProjectionBefore.expanded,
+            currentVisibleExpanded,
+          )
+        : scopedFlowReveal !== null
+        ? mergeProjectionSet(
+            scopedFlowReveal.next.moduleExpanded,
+            scopedFlowReveal.previous.moduleExpanded,
+            currentVisibleExpanded,
+          )
+        : sceneScopedReveal !== null
+          ? mergeProjectionSet(
+            sceneScopedReveal.next.expanded,
+            sceneScopedReveal.previous.expanded,
+            currentVisibleExpanded,
+          )
+          : currentVisibleExpanded;
       const reviewLitNodeIds = frame.reviewLitNodeIds === null
         ? null
         : new Set([...frame.reviewLitNodeIds].filter(keep));
@@ -2481,10 +2856,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const logicSelected = frame.logicSelected !== null && keep(frame.logicSelected)
         ? frame.logicSelected
         : null;
-      const flowSelection = frame.flowSelection !== null && keep(frame.flowSelection.rootId)
-        ? frame.flowSelection
-        : null;
-      const projectedFlowBaseline = frame.reviewFlowBaseline === null
+      const filteredFlowBaseline = frame.reviewFlowBaseline === null
         ? null
         : {
             ...frame.reviewFlowBaseline,
@@ -2499,6 +2871,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             reviewLitNodeIds: frame.reviewFlowBaseline.reviewLitNodeIds === null
               ? null
               : new Set([...frame.reviewFlowBaseline.reviewLitNodeIds].filter(keep)),
+          };
+      const projectedFlowBaseline = (
+        filteredFlowBaseline === null
+        || scopedReveal === null
+        || frame.flowSelection === null
+      )
+        ? filteredFlowBaseline
+        : {
+            ...filteredFlowBaseline,
+            moduleExpanded: mergeProjectionSet(
+              scopedReveal.next.expanded,
+              scopedReveal.previous.expanded,
+              filteredFlowBaseline.moduleExpanded,
+            ),
+            minimalSeedIds: mergeProjectionList(
+              scopedReveal.next.seeds,
+              scopedReveal.previous.seeds,
+              filteredFlowBaseline.minimalSeedIds,
+            ),
+            minimalMemberIds: mergeProjectionList(
+              scopedReveal.next.seeds,
+              scopedReveal.previous.seeds,
+              filteredFlowBaseline.minimalMemberIds,
+            ),
           };
       const filteredFlow = frame.flowSelection !== null && flowSelection === null;
       const reviewFlowBaseline = flowSelection === null ? null : projectedFlowBaseline;
@@ -2525,13 +2921,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneLayoutSeq += 1;
       }
       const visibleReviewPaths = new Set(projected.reviewFiles.map((file) => file.path));
-      const reviewFocusedSubgraph = frame.reviewFocusedSubgraph === null
+      const reviewFocusedSubgraph = scopedReveal?.next.focused ?? (frame.reviewFocusedSubgraph === null
         ? null
         : {
             ...frame.reviewFocusedSubgraph,
             moduleIds: frame.reviewFocusedSubgraph.moduleIds.filter(keep),
             filePaths: frame.reviewFocusedSubgraph.filePaths.filter((path) => visibleReviewPaths.has(path)),
-          };
+          });
       const restore = restoreMinimalGraphHistory(frame);
       set({
         ...restore,
@@ -2547,11 +2943,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               minimalArrange: projectedFlowBaseline.minimalArrange,
             }
           : {}),
-        minimalRollups: Object.fromEntries(
-          Object.entries(frame.minimalRollups)
-            .map(([id, fileIds]) => [id, fileIds.filter(keep)] as const)
-            .filter(([id, fileIds]) => keep(id) && fileIds.length > 0),
-        ),
+        minimalRollups: scopedReveal === null
+          ? Object.fromEntries(
+              Object.entries(frame.minimalRollups)
+                .map(([id, fileIds]) => [id, fileIds.filter(keep)] as const)
+                .filter(([id, fileIds]) => keep(id) && fileIds.length > 0),
+            )
+          : rollupsRecord(scopedReveal.next.rolledUp),
         moduleSelected: effectiveModuleSelected,
         moduleExpanded: effectiveModuleExpanded,
         reviewSelectedId: effectiveReviewSelectedId,
@@ -2578,11 +2976,24 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         flowPaneRfNodes: [],
         flowPaneRfEdges: [],
         flowPaneLayoutStatus: "idle",
+        ...(rootProjectionBefore === null
+          ? {}
+          : { minimalRollups: projected.minimalRollups }),
         minimalRfNodes: [],
         minimalRfEdges: [],
         minimalLayoutStatus: effectiveMinimalMemberIds.length > 0 ? "laying-out" : "idle",
         minimalLayoutActivity: effectiveMinimalMemberIds.length > 0 ? { label } : null,
       });
+      const committed = get();
+      reviewProjectionFrameBaseline = excludedChangedPaths.size === 0
+        ? null
+        : {
+            reviewKey: committed.review!.context.reviewKey,
+            index: committed.index,
+            history,
+            unfiltered: frame,
+            projected: captureMinimalGraphHistory(committed),
+          };
       if (effectiveMinimalMemberIds.length > 0) {
         void requestMinimalRelayout({ label });
       }
@@ -6076,8 +6487,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       const inspectedSource = !nested && state.moduleGhostInspection !== null;
       const minimalBasePositions = captureMapPositions(nested ? state.minimalRfNodes : state.moduleRfNodes);
       const history = nested
-        ? [...state.minimalGraphHistory, captureMinimalGraphHistory(state)]
+        ? [...state.minimalGraphHistory, captureHistoryWithReviewProjection(state)]
         : [];
+      reviewProjectionFrameBaseline = null;
       const clearSyntheticFlow = state.flowPaneOrigin === "synthetic"
         ? {
             flowSelection: null,
@@ -6172,17 +6584,33 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && (state.showPrivate || !state.index.privateIds.has(id)),
         ),
       );
+      const remainingHistory = state.minimalGraphHistory.slice(0, -1);
       set({
         ...restoreMinimalGraphHistory(parent),
         moduleSelected: restoredModuleSelected,
-        minimalGraphHistory: state.minimalGraphHistory.slice(0, -1),
+        minimalGraphHistory: remainingHistory,
       });
+      reviewProjectionFrameBaseline = parent.reviewProjectionBaseline === undefined || state.review === null
+        ? null
+        : {
+            reviewKey: state.review.context.reviewKey,
+            index: state.index,
+            history: remainingHistory,
+            unfiltered: parent.reviewProjectionBaseline.unfiltered,
+            projected: parent.reviewProjectionBaseline.projected,
+          };
       // The restored RF scene already reflects its captured selection and geometry. Selection is
       // paint-only, so returning to the parent cannot queue a competing layout over this snapshot.
       const showTestsChanged = state.showTests !== parent.showTests;
-      if (showTestsChanged) {
+      const sourceCommentProjectionChanged = (
+        state.reviewHideAddedSourceCommentDiffs
+        !== parent.reviewHideAddedSourceCommentDiffs
+      );
+      if (showTestsChanged || sourceCommentProjectionChanged) {
         const liveReprojected = reprojectLivePrReview(
-          parent.showTests ? "Restoring tests…" : "Restoring production review…",
+          showTestsChanged
+            ? (parent.showTests ? "Restoring tests…" : "Restoring production review…")
+            : "Refreshing source-comment filter…",
         );
         if (!liveReprojected) {
           reprojectArtifactReview(parent.showTests);
@@ -6223,6 +6651,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => get().closeMinimalGraph())) {
         return;
       }
+      reviewProjectionFrameBaseline = null;
       const stateBeforeClose = get();
       const closingPrReview = stateBeforeClose.prReviewed;
       // A user close/lens transition wins over a refresh. Invalidate both its data-fetch lane and
@@ -6321,7 +6750,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Reset the overlay to its base: restore the working set to the origin selection, collapse any
     // opened review rollups, and drop re-arrangement (back to the captured map-mirror).
     resetMinimalGraph() {
-      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange, moduleExpanded } = get();
+      const state = get();
+      const { minimalSeedIds, minimalMemberIds, minimalRollups, minimalArrange, moduleExpanded } = state;
       // An all-test review with Tests hidden retains a seed-only sentinel so the empty review panel
       // stays mounted. It is not a real origin/member and Reset must never promote it into view.
       if (minimalMemberIds.length === 0) {
@@ -6330,10 +6760,22 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // Flow review may temporarily substitute exact changed files; restore those to their package
       // summaries. Ordinary chevron disclosure never changes either member list.
       const origin = restoreRolledSeeds(minimalSeedIds, minimalRollups);
+      const hidden = reviewProjectionHiddenIds(state);
+      const isHidden = (id: string): boolean =>
+        hidden.has(id) || state.index.ancestorsOf(id).some((ancestor) => hidden.has(ancestor.id));
+      // A review projection deliberately retains the raw origin as a reversible seed sentinel.
+      // Reset may restore that origin, but must not promote currently excluded files back into the
+      // explicit member set. A summarized package survives when at least one of its files does.
+      const visibleOrigin = state.review === null
+        ? origin
+        : origin.filter((id) => {
+            const files = minimalRollups[id];
+            return files === undefined ? !isHidden(id) : files.some((fileId) => !isHidden(fileId));
+          });
       const rolledIds = Object.keys(minimalRollups);
       const hasOpenRollup = rolledIds.some((id) => moduleExpanded.has(id));
       if (
-        sameMembers(minimalMemberIds, origin)
+        sameMembers(minimalMemberIds, visibleOrigin)
         && sameMembers(minimalSeedIds, origin)
         && !minimalArrange
         && !hasOpenRollup
@@ -6344,11 +6786,13 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       rolledIds.forEach((id) => collapsed.delete(id));
       set({
         minimalSeedIds: origin,
-        minimalMemberIds: [...origin],
+        minimalMemberIds: visibleOrigin,
         moduleExpanded: collapsed,
         minimalArrange: false,
       });
-      void requestMinimalRelayout({ label: "Resetting extracted graph…" });
+      if (visibleOrigin.length > 0) {
+        void requestMinimalRelayout({ label: "Resetting extracted graph…" });
+      }
     },
 
     // Re-arrange: drop the captured map-mirror and run the canonical canvas ELK layout. It stays
@@ -6384,11 +6828,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
         const state = get();
-        const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact, showTests } = state;
+        const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact } = state;
         moduleGraph ??= buildModuleGraph(index);
         const deps = (blockDeps ??= buildBlockDeps(index));
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        const hidden = showTests ? EMPTY_HIDDEN_IDS : index.testIds;
+        const hidden = reviewProjectionHiddenIds(state);
         const members = minimalMembersForFlowInspection(state);
         const surface = activeModuleSurfaceSpec(state.viewMode);
         // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
@@ -7236,9 +7680,23 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     },
 
     setReviewHideAddedSourceCommentDiffs(hide) {
-      const state = get();
+      if (!guardReviewLineComposerTransition(() => get().setReviewHideAddedSourceCommentDiffs(hide))) {
+        return;
+      }
+      let state = get();
       if (state.reviewHideAddedSourceCommentDiffs === hide) {
         return;
+      }
+      // Artifact-carried reviews do not replace the whole workspace during reprojection. Leave an
+      // active flow first so its baseline and flow pane cannot retain nodes the filter removes.
+      if (
+        state.prReviewed === null
+        && state.review !== null
+        && state.flowSelection !== null
+        && state.reviewFlowBaseline !== null
+      ) {
+        state.selectFlowEntry(null);
+        state = get();
       }
       writeReviewPreferences({
         version: 5,
@@ -7249,6 +7707,49 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
       set({ reviewHideAddedSourceCommentDiffs: hide });
+      const current = get();
+      // This preference defines the visible review transaction, not just source-row paint. Reuse
+      // the same lossless reprojection path as Tests so files, affected nodes, flows, groups, and
+      // graph seeds change atomically while the raw PR context remains available for toggle-back.
+      if (current.prReviewed !== null && current.minimalSeedIds.length > 0) {
+        let reprojected: boolean;
+        if (
+          current.flowSelection === null
+          || current.minimalGraphHistory.length > 0
+          || current.reviewActiveGroupId !== null
+          || current.reviewPathScope !== null
+          || current.reviewFocusedSubgraph !== null
+          || hasReusableReviewProjectionFrame(current)
+        ) {
+          reprojected = reprojectLivePrReview(
+            hide ? "Hiding source-comment-only changes…" : "Restoring source comments…",
+            true,
+          );
+        } else {
+          reprojected = applyPrReviewToMap(
+            get,
+            set,
+            prFilesUrl,
+            invalidateMinimalLayout,
+            invalidateModuleLayout,
+            invalidateArtifactCaches,
+            { reprojecting: true, preserveReviewSelection: true },
+          );
+        }
+        const projected = get();
+        if (
+          reprojected
+          && !hide
+          && projected.reviewFileViewedStates !== null
+          && !projected.prReviewStale
+        ) {
+          // A hidden legacy file can acquire a whole-file viewed intent only when it re-enters.
+          // Reconcile that intent against the canonical GitHub snapshot just like Tests restoration.
+          queueMicrotask(() => void loadViewedFiles(current.prReviewed!));
+        }
+        return;
+      }
+      reprojectArtifactReview(current.showTests);
     },
 
     setReviewExcludeFormatOnlyChanges(exclude) {
@@ -7405,12 +7906,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prReviewRefreshing,
         prReviewStatus,
         prReviewRevision: submittedRevision,
-        showTests,
-        index,
       } = get();
-      const visibleComments = showTests
-        ? reviewComments
-        : reviewComments.filter((comment) => !isReviewTestPath(comment.path, index, get().prReviewBaseline?.index ?? null));
+      const visibleComments = review === null
+        ? []
+        : reviewComments.filter((comment) => reviewDraftIsVisible(comment, reviewFiles, review.context));
       const reviewBody = body.trim();
       if (
         !review
@@ -7424,8 +7923,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return false;
       }
-      // Hidden test drafts remain persisted and reappear when Tests is restored; they must neither
-      // submit invisibly nor block the visible draft set while their rows are absent.
+      // Drafts hidden by Tests or source-comment projection remain persisted and reappear when the
+      // filter is restored; they must neither submit invisibly nor block the visible draft set.
       const forceFileComments = event === "COMMENT"
         && prReviewStale
         && submittedRevision?.headSha == null;
@@ -7707,7 +8206,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // amber paint) while retaining the raw PR context/ticks/drafts for a lossless toggle-back.
       if (prReviewed !== null && minimalSeedIds.length > 0) {
         let reprojected: boolean;
-        if (get().minimalGraphHistory.length > 0) {
+        const current = get();
+        if (
+          current.flowSelection === null
+          || current.minimalGraphHistory.length > 0
+          || current.reviewActiveGroupId !== null
+          || current.reviewPathScope !== null
+          || current.reviewFocusedSubgraph !== null
+          || hasReusableReviewProjectionFrame(current)
+        ) {
           reprojected = reprojectLivePrReview(showTests ? "Showing tests…" : "Hiding tests…", true);
         } else {
           reprojected = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
@@ -8783,6 +9290,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           return;
         }
       }
+      reviewProjectionFrameBaseline = null;
       if (applyPrReviewToMap(
         get,
         set,
@@ -9466,6 +9974,7 @@ function applyPrReviewToMap(
     },
     { baseSide: !swapped },
   );
+  const projectionDiffLines = diffLinesByPrPath(contentPrFiles);
   // A refresh re-enters this same reviewKey. Carry the in-memory progress directly so drafts made
   // while persistence is unavailable (or while the refresh request is in flight) cannot disappear.
   const liveProgress = liveReview?.context.reviewKey === context.reviewKey
@@ -9482,6 +9991,8 @@ function applyPrReviewToMap(
     baseIndex: swapped ? (prReviewComparison?.index ?? null) : null,
     baseArtifact: swapped ? (prReviewComparison?.artifact ?? null) : null,
     showTests: get().showTests,
+    hideSourceCommentDiffs: get().reviewHideAddedSourceCommentDiffs,
+    diffLines: projectionDiffLines,
   });
   const { review, visibleContext } = projection;
   const headMatchedFiles = matchAffectedFiles(
@@ -9578,8 +10089,12 @@ function applyPrReviewToMap(
   }
   const canonicalDiffLines = swapped ? changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions) : null;
   for (const binding of fileBindings) {
-    const rows = valueForReviewAliases(canonicalDiffLines, binding.aliases)
-      ?? (binding.file.diffComplete !== false ? binding.file.diffLines : undefined);
+    // `binding.file` carries GitHub's U3 source-comment proof merged onto the exact local rows.
+    // Prefer it over the artifact's otherwise-identical U0 rows so deleted/interior comment edits
+    // stay filterable after the prepared HEAD graph replaces the synchronous review.
+    const rows = binding.file.diffComplete !== false
+      ? (binding.file.diffLines ?? valueForReviewAliases(canonicalDiffLines, binding.aliases))
+      : undefined;
     if (!rows || rows.length === 0) continue;
     for (const locFile of binding.aliases) reviewDiffLinesByFile[locFile] = rows;
   }
@@ -9741,12 +10256,24 @@ function applyPrReviewToMap(
   const revisionMismatch = options.reprojecting
     ? currentSelection.prReviewStale
     : loadedRevision !== null && summary !== null && isPrReviewStale(loadedRevision, summary);
-  const visibleSelectionId = (id: string | null) => id !== null && (currentSelection.showTests || !index.testIds.has(id));
+  const excludedSelectionFiles = new Set(
+    matchAffectedFiles(
+      index,
+      context.changedFiles
+        .map((file) => file.path)
+        .filter((path) => !visiblePaths.has(path)),
+    ).matched.map((match) => match.file),
+  );
+  const visibleSelectionId = (id: string | null) => {
+    if (id === null || (!currentSelection.showTests && index.testIds.has(id))) return false;
+    const file = index.nodesById.get(id)?.location.file;
+    return file === undefined || !excludedSelectionFiles.has(file);
+  };
   const preservedModuleSelection = options.preserveReviewSelection
-    ? new Set([...currentSelection.moduleSelected].filter((id) => currentSelection.showTests || !index.testIds.has(id)))
+    ? new Set([...currentSelection.moduleSelected].filter(visibleSelectionId))
     : new Set<string>();
   const preservedReviewLitIds = options.preserveReviewSelection && currentSelection.reviewLitNodeIds !== null
-    ? new Set([...currentSelection.reviewLitNodeIds].filter((id) => currentSelection.showTests || !index.testIds.has(id)))
+    ? new Set([...currentSelection.reviewLitNodeIds].filter(visibleSelectionId))
     : null;
   const preservedReviewLit = preservedReviewLitIds !== null && preservedReviewLitIds.size > 0
     ? preservedReviewLitIds
@@ -9992,6 +10519,22 @@ interface BoundReviewFile {
   aliases: Set<string>;
   /** Current-graph aliases eligible for RIGHT-side comments or base→HEAD edit remapping. */
   headFiles: Set<string>;
+}
+
+/** Exact complete PR rows keyed in the same extraction-relative vocabulary as ReviewContext. */
+function diffLinesByPrPath(files: readonly PrChangedFile[]): ChangedDiffLines {
+  const result = Object.create(null) as ChangedDiffLines;
+  for (const file of files) {
+    if (file.diffComplete !== false && file.diffLines && file.diffLines.length > 0) {
+      Object.defineProperty(result, file.path, {
+        value: file.diffLines,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+  }
+  return result;
 }
 
 /** Resolve each PR file once against both revisions. Every diff/delta/source/comment map consumes
@@ -10349,8 +10892,319 @@ function deriveReviewScopeGraph(
   };
 }
 
-function rollupsRecord(rolledUp: ReadonlyMap<string, string[]>): Record<string, string[]> {
+function deriveReviewScopedFrame(
+  index: GraphIndex,
+  reviewFiles: readonly ReviewFileRow[],
+  activeGroup: { files: readonly string[]; moduleIds: readonly string[] } | null,
+  pathScope: string | null,
+  focused: BlueprintState["reviewFocusedSubgraph"],
+  baseNodes: ReviewScopeBaseNodes,
+): {
+  seeds: string[];
+  rolledUp: Map<string, string[]>;
+  expanded: Set<string>;
+  focused: BlueprintState["reviewFocusedSubgraph"];
+} {
+  if (focused === null) {
+    return {
+      ...deriveReviewScopeGraph(
+        index,
+        reviewFiles,
+        activeGroup === null ? null : new Set(activeGroup.moduleIds),
+        pathScope,
+        baseNodes,
+      ),
+      focused: null,
+    };
+  }
+  const groupFiles = activeGroup === null ? null : new Set(activeGroup.files);
+  const candidates = reviewFiles.filter((file) =>
+    file.moduleId !== null
+    && (groupFiles === null || groupFiles.has(file.path))
+    && isReviewPathInScope(file.path, pathScope)
+    && index.isWithinFocus(focused.rootId, file.moduleId),
+  );
+  const matched = matchAffectedFiles(index, candidates.map((file) => file.path)).matched
+    .filter((match) => index.isWithinFocus(focused.rootId, match.moduleId));
+  const seeds = [...new Set(matched.map((match) => match.moduleId))].sort();
+  const boundary = new Map<string, string[]>([[focused.rootId, seeds]]);
+  return {
+    seeds,
+    rolledUp: new Map(),
+    expanded: reviewExpansionForMatches(index, matched, boundary),
+    focused: {
+      ...focused,
+      filePaths: [...new Set(matched.map((match) => match.path))].sort(),
+      moduleIds: seeds,
+    },
+  };
+}
+
+function deriveReviewScopedFlowScene(
+  index: GraphIndex,
+  flows: LogicFlows,
+  selection: FlowSelectionRef,
+  scoped: {
+    seeds: readonly string[];
+    rolledUp: ReadonlyMap<string, readonly string[]>;
+    expanded: ReadonlySet<string>;
+  },
+): {
+  minimalSeedIds: string[];
+  minimalMemberIds: string[];
+  moduleExpanded: Set<string>;
+} {
+  const related = relatedNodeIds(index, flows, selection);
+  return {
+    ...expandFlowRollupsFor(
+      index,
+      rollupsRecord(scoped.rolledUp),
+      related,
+      scoped.seeds,
+      scoped.seeds,
+    ),
+    moduleExpanded: expandedCodePaths(scoped.expanded, related, index),
+  };
+}
+
+function rollupsRecord(rolledUp: ReadonlyMap<string, readonly string[]>): Record<string, string[]> {
   return Object.fromEntries([...rolledUp].map(([packageId, fileIds]) => [packageId, [...fileIds]]));
+}
+
+function mergeReviewProjectionFrame(
+  unfiltered: MinimalGraphHistoryEntry,
+  projected: MinimalGraphHistoryEntry,
+  current: MinimalGraphHistoryEntry,
+): MinimalGraphHistoryEntry {
+  // Closing a flow while filtered restores its pre-flow base scene. Compare that scene with the
+  // equivalent U/P bases too; flow-expanded file substitutions are projection mechanics, not user
+  // curation, and merging them against a closed rollup can otherwise create overlapping seeds.
+  const unfilteredCuration = reviewProjectionCurationFrame(unfiltered, current.flowSelection === null);
+  const projectedCuration = reviewProjectionCurationFrame(projected, current.flowSelection === null);
+  return {
+    ...current,
+    minimalMemberIds: mergeProjectionList(
+      unfilteredCuration.minimalMemberIds,
+      projectedCuration.minimalMemberIds,
+      current.minimalMemberIds,
+    ),
+    minimalRollups: mergeProjectionRollups(
+      unfilteredCuration.minimalRollups,
+      projectedCuration.minimalRollups,
+      current.minimalRollups,
+    ),
+    minimalBasePositions: {
+      ...unfilteredCuration.minimalBasePositions,
+      ...current.minimalBasePositions,
+    },
+    moduleSelected: mergeProjectionSet(
+      unfilteredCuration.moduleSelected,
+      projectedCuration.moduleSelected,
+      current.moduleSelected,
+    ),
+    moduleExpanded: mergeProjectionSet(
+      unfilteredCuration.moduleExpanded,
+      projectedCuration.moduleExpanded,
+      current.moduleExpanded,
+    ),
+    reviewSelectedId: current.reviewSelectedId === projectedCuration.reviewSelectedId
+      ? unfilteredCuration.reviewSelectedId
+      : current.reviewSelectedId,
+    reviewLitNodeIds: mergeProjectionNullableSet(
+      unfilteredCuration.reviewLitNodeIds,
+      projectedCuration.reviewLitNodeIds,
+      current.reviewLitNodeIds,
+    ),
+    reviewFocusedSubgraph: mergeProjectionFocusedSubgraph(
+      unfilteredCuration.reviewFocusedSubgraph,
+      projectedCuration.reviewFocusedSubgraph,
+      current.reviewFocusedSubgraph,
+    ),
+    reviewActiveGroupId: current.reviewActiveGroupId === projectedCuration.reviewActiveGroupId
+      ? unfilteredCuration.reviewActiveGroupId
+      : current.reviewActiveGroupId,
+    reviewPathScope: current.reviewPathScope === projectedCuration.reviewPathScope
+      ? unfilteredCuration.reviewPathScope
+      : current.reviewPathScope,
+    reviewFlowBaseline: mergeProjectionFlowBaseline(unfiltered, projected, current),
+  };
+}
+
+function reviewProjectionCurationFrame(
+  frame: MinimalGraphHistoryEntry,
+  unwrapFlow: boolean,
+): MinimalGraphHistoryEntry {
+  const baseline = unwrapFlow ? frame.reviewFlowBaseline : null;
+  if (baseline === null) return frame;
+  return {
+    ...frame,
+    moduleSelected: baseline.moduleSelected,
+    moduleExpanded: baseline.moduleExpanded,
+    minimalSeedIds: baseline.minimalSeedIds,
+    minimalMemberIds: baseline.minimalMemberIds,
+    minimalBasePositions: baseline.minimalBasePositions,
+    minimalArrange: baseline.minimalArrange,
+    reviewSelectedId: baseline.reviewSelectedId,
+    reviewLitNodeIds: baseline.reviewLitNodeIds,
+    flowSelection: null,
+    reviewFlowBaseline: null,
+  };
+}
+
+function mergeProjectionFlowBaseline(
+  unfilteredFrame: MinimalGraphHistoryEntry,
+  projectedFrame: MinimalGraphHistoryEntry,
+  currentFrame: MinimalGraphHistoryEntry,
+): BlueprintState["reviewFlowBaseline"] {
+  // A flow baseline is the graph scene before flow inspection, regardless of which flow happens
+  // to be open. A reader may open or switch flows while a review projection is active, so compare
+  // each frame's underlying base scene instead of requiring matching flow selections.
+  const current = currentFrame.reviewFlowBaseline;
+  if (currentFrame.flowSelection === null || current === null) {
+    return current;
+  }
+  const unfiltered = reviewProjectionBaseScene(unfilteredFrame);
+  const projected = reviewProjectionBaseScene(projectedFrame);
+  if (unfiltered === null || projected === null) return current;
+  return {
+    ...current,
+    moduleSelected: mergeProjectionSet(
+      unfiltered.moduleSelected,
+      projected.moduleSelected,
+      current.moduleSelected,
+    ),
+    moduleExpanded: mergeProjectionSet(
+      unfiltered.moduleExpanded,
+      projected.moduleExpanded,
+      current.moduleExpanded,
+    ),
+    minimalSeedIds: mergeProjectionList(
+      unfiltered.minimalSeedIds,
+      projected.minimalSeedIds,
+      current.minimalSeedIds,
+    ),
+    minimalMemberIds: mergeProjectionList(
+      unfiltered.minimalMemberIds,
+      projected.minimalMemberIds,
+      current.minimalMemberIds,
+    ),
+    reviewSelectedId: current.reviewSelectedId === projected.reviewSelectedId
+      ? unfiltered.reviewSelectedId
+      : current.reviewSelectedId,
+    reviewLitNodeIds: mergeProjectionNullableSet(
+      unfiltered.reviewLitNodeIds,
+      projected.reviewLitNodeIds,
+      current.reviewLitNodeIds,
+    ),
+  };
+}
+
+function reviewProjectionBaseScene(
+  frame: MinimalGraphHistoryEntry,
+): NonNullable<BlueprintState["reviewFlowBaseline"]> | null {
+  if (frame.reviewFlowBaseline !== null) return frame.reviewFlowBaseline;
+  if (frame.flowSelection !== null) return null;
+  return {
+    moduleSelected: frame.moduleSelected,
+    moduleExpanded: frame.moduleExpanded,
+    minimalSeedIds: frame.minimalSeedIds,
+    minimalMemberIds: frame.minimalMemberIds,
+    minimalBasePositions: frame.minimalBasePositions,
+    minimalArrange: frame.minimalArrange,
+    reviewSelectedId: frame.reviewSelectedId,
+    reviewLitNodeIds: frame.reviewLitNodeIds,
+  };
+}
+
+function mergeProjectionList(
+  unfiltered: readonly string[],
+  projected: readonly string[],
+  current: readonly string[],
+): string[] {
+  const projectedSet = new Set(projected);
+  const currentSet = new Set(current);
+  const removedByUser = new Set(projected.filter((id) => !currentSet.has(id)));
+  const merged = unfiltered.filter((id) => !removedByUser.has(id));
+  for (const id of current) {
+    if (!projectedSet.has(id) && !merged.includes(id)) merged.push(id);
+  }
+  return merged;
+}
+
+function mergeProjectionSet(
+  unfiltered: ReadonlySet<string>,
+  projected: ReadonlySet<string>,
+  current: ReadonlySet<string>,
+): Set<string> {
+  return new Set(mergeProjectionList([...unfiltered], [...projected], [...current]));
+}
+
+function mergeProjectionNullableSet(
+  unfiltered: ReadonlySet<string> | null,
+  projected: ReadonlySet<string> | null,
+  current: ReadonlySet<string> | null,
+): Set<string> | null {
+  if (projected === null) {
+    return current === null
+      ? unfiltered === null ? null : new Set(unfiltered)
+      : mergeProjectionSet(unfiltered ?? new Set<string>(), new Set<string>(), current);
+  }
+  if (current === null) return null;
+  return mergeProjectionSet(unfiltered ?? new Set<string>(), projected, current);
+}
+
+function mergeProjectionRollups(
+  unfiltered: Readonly<Record<string, readonly string[]>>,
+  projected: Readonly<Record<string, readonly string[]>>,
+  current: Readonly<Record<string, readonly string[]>>,
+): Record<string, string[]> {
+  const merged: Record<string, string[]> = {};
+  const keys = new Set([...Object.keys(unfiltered), ...Object.keys(projected), ...Object.keys(current)]);
+  for (const key of keys) {
+    const original = unfiltered[key];
+    const visible = projected[key];
+    const now = current[key];
+    if (visible !== undefined && now === undefined) continue;
+    if (now === undefined) {
+      if (visible === undefined && original !== undefined) merged[key] = [...original];
+      continue;
+    }
+    merged[key] = mergeProjectionList(original ?? [], visible ?? [], now);
+  }
+  return merged;
+}
+
+function mergeProjectionFocusedSubgraph(
+  unfiltered: BlueprintState["reviewFocusedSubgraph"],
+  projected: BlueprintState["reviewFocusedSubgraph"],
+  current: BlueprintState["reviewFocusedSubgraph"],
+): BlueprintState["reviewFocusedSubgraph"] {
+  if (projected === null) {
+    return current === null
+      ? unfiltered === null ? null : {
+          ...unfiltered,
+          filePaths: [...unfiltered.filePaths],
+          moduleIds: [...unfiltered.moduleIds],
+        }
+      : {
+          ...current,
+          filePaths: [...current.filePaths],
+          moduleIds: [...current.moduleIds],
+        };
+  }
+  if (current === null) return null;
+  if (unfiltered === null || current.rootId !== projected.rootId || unfiltered.rootId !== projected.rootId) {
+    return {
+      ...current,
+      filePaths: [...current.filePaths],
+      moduleIds: [...current.moduleIds],
+    };
+  }
+  return {
+    ...current,
+    filePaths: mergeProjectionList(unfiltered.filePaths, projected.filePaths, current.filePaths),
+    moduleIds: mergeProjectionList(unfiltered.moduleIds, projected.moduleIds, current.moduleIds),
+  };
 }
 
 /** Declaration-level expansion for the current review seed set. Changed paths are pre-armed exactly
@@ -10407,10 +11261,26 @@ function expandFlowRollups(
   baseSeedIds: readonly string[] = state.minimalSeedIds,
   baseMemberIds: readonly string[] = state.minimalMemberIds,
 ): { minimalSeedIds: string[]; minimalMemberIds: string[] } {
-  const homeFiles = new Set(nearestModuleIds([...related], state.index));
+  return expandFlowRollupsFor(
+    state.index,
+    state.minimalRollups,
+    related,
+    baseSeedIds,
+    baseMemberIds,
+  );
+}
+
+function expandFlowRollupsFor(
+  index: GraphIndex,
+  rollups: Readonly<Record<string, readonly string[]>>,
+  related: ReadonlySet<string>,
+  baseSeedIds: readonly string[],
+  baseMemberIds: readonly string[],
+): { minimalSeedIds: string[]; minimalMemberIds: string[] } {
+  const homeFiles = new Set(nearestModuleIds([...related], index));
   let minimalSeedIds = [...baseSeedIds];
   let minimalMemberIds = [...baseMemberIds];
-  for (const [packageId, fileIds] of Object.entries(state.minimalRollups)) {
+  for (const [packageId, fileIds] of Object.entries(rollups)) {
     if (!fileIds.some((fileId) => homeFiles.has(fileId))) {
       continue;
     }

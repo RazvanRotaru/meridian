@@ -9,7 +9,7 @@ import { useEffect, useMemo } from "react";
 import type { ChangedLineKind, LineRange } from "@meridian/core";
 import { nonTextualDiffNotice } from "../derive/nonTextualDiffNotice";
 import { anchorableHunks } from "../derive/reviewSubmit";
-import { sourceCommentOnlyLines, withoutAddedSourceCommentDiffLines } from "../derive/sourceCommentLines";
+import { withoutSourceCommentDiffLines } from "../derive/sourceCommentLines";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { prReviewRevisionKey } from "../state/prReviewFreshness";
 import { matchesReviewLineComposerTarget } from "../state/reviewLineComposer";
@@ -112,30 +112,28 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       : diffLinesWithinSlice(canonicalDiffLines, sourceSide, baseLine, shownEnd, diffOldSpan),
     [baseLine, canonicalDiffLines, diffOldSpan, shownEnd, sourceSide],
   );
+  const sourceCommentFilterActive = review !== null && hideAddedSourceCommentDiffs;
   const hiddenSourceCommentLines = useMemo(() => {
-    if (
-      canonicalDiffLines === undefined
-      || review === null
-      || !hideAddedSourceCommentDiffs
-      || sourceSide !== "head"
-      || codeView.code === null
-    ) {
+    if (canonicalDiffLines === undefined || !sourceCommentFilterActive) {
       return EMPTY_HIDDEN_SOURCE_LINES;
     }
-    const commentLines = sourceCommentOnlyLines(file, codeView.code, baseLine);
     return new Set(canonicalDiffLines.flatMap((line) => (
-      line.kind === "added"
-      && line.newLine !== null
-      && commentLines.has(line.newLine)
-        ? [line.newLine]
-        : []
+      line.sourceCommentLineOnly !== true
+        ? []
+        : sourceSide === "head" && line.kind === "added" && line.newLine !== null
+          ? [line.newLine]
+          : sourceSide === "base" && line.kind === "deleted" && line.oldLine !== null
+            ? [line.oldLine]
+            : []
     )));
-  }, [baseLine, canonicalDiffLines, codeView.code, file, hideAddedSourceCommentDiffs, review, sourceSide]);
+  }, [canonicalDiffLines, sourceCommentFilterActive, sourceSide]);
   const displayCanonicalDiffLines = useMemo(
     () => canonicalDiffLines === undefined
       ? undefined
-      : withoutAddedSourceCommentDiffLines(canonicalDiffLines, hiddenSourceCommentLines),
-    [canonicalDiffLines, hiddenSourceCommentLines],
+      : sourceCommentFilterActive
+        ? withoutSourceCommentDiffLines(canonicalDiffLines, hiddenSourceCommentLines)
+        : canonicalDiffLines,
+    [canonicalDiffLines, hiddenSourceCommentLines, sourceCommentFilterActive],
   );
   const diffLines = useMemo(
     () => displayCanonicalDiffLines === undefined
@@ -185,8 +183,8 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     return rows;
   }, [baseLine, diffLines, legacyRemoved, shownEnd]);
   const deletedLines = useMemo(() => new Set(
-    (diffLines ?? []).flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []),
-  ), [diffLines]);
+    (rawDiffLines ?? []).flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []),
+  ), [rawDiffLines]);
   const commentCode = sourceSide === "head" ? codeView.code : null;
   const headComments = useCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
   const deletedComments = useDeletedCodeReviewComments(file, deletedLines);

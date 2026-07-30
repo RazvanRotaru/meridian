@@ -100,22 +100,32 @@ describe("repository analysis worker protocol", () => {
     })).toBe(false);
   });
 
-  it("sorts canonical status-rich changed files without losing rename provenance", () => {
+  it("sorts canonical status-rich changed files without losing rename or non-textual provenance", () => {
     const artifact = fixtureArtifact();
     artifact.extensions = {
       changedSince: {
         baseRef: "base",
         manifest: [
-          { path: "z/new.ts", previousPath: "z/old.ts", status: "renamed" },
-          { path: "a/deleted.py", status: "deleted" },
+          {
+            path: "z/new.ts",
+            previousPath: "z/old.ts",
+            status: "renamed",
+            nonTextualChanges: true,
+          },
+          { path: "a/deleted.py", status: "deleted", nonTextualChanges: true },
         ],
       },
     };
 
     expect(changedMetadataForWorker(artifact, "base")).toEqual({
       changedFiles: [
-        { path: "a/deleted.py", status: "deleted" },
-        { path: "z/new.ts", previousPath: "z/old.ts", status: "renamed" },
+        { path: "a/deleted.py", status: "deleted", nonTextualChanges: true },
+        {
+          path: "z/new.ts",
+          previousPath: "z/old.ts",
+          status: "renamed",
+          nonTextualChanges: true,
+        },
       ],
       changedSinceBaseRef: "base",
     });
@@ -167,6 +177,30 @@ describe("repository analysis worker protocol", () => {
     expect(isRepositoryAnalysisWorkerResponse(response)).toBe(false);
     response.result.graphSummary.schemaVersion = SCHEMA_VERSION;
     expect(isRepositoryAnalysisWorkerResponse(response)).toBe(true);
+    expect(isRepositoryAnalysisWorkerResponse({
+      ...response,
+      result: {
+        ...response.result,
+        changedFiles: [{
+          path: "src/index.ts",
+          status: "modified",
+          nonTextualChanges: true,
+        }],
+      },
+    })).toBe(true);
+    for (const nonTextualChanges of [false, 0, 1, "true", null, undefined, {}]) {
+      expect(isRepositoryAnalysisWorkerResponse({
+        ...response,
+        result: {
+          ...response.result,
+          changedFiles: [{
+            path: "src/index.ts",
+            status: "modified",
+            nonTextualChanges,
+          }],
+        },
+      }), String(nonTextualChanges)).toBe(false);
+    }
   });
 
   it("strictly validates persisted compact analysis facts without a worker envelope", () => {
@@ -178,7 +212,11 @@ describe("repository analysis worker protocol", () => {
         edgeCount: 0,
       },
       target: fixtureArtifact().target,
-      changedFiles: [{ path: "src/index.ts", status: "modified" }],
+      changedFiles: [{
+        path: "src/index.ts",
+        status: "modified",
+        nonTextualChanges: true,
+      }],
       emptySideHints: ["src/index.ts"],
       sourceFiles: ["src/index.ts"],
       changedSinceBaseRef: "base",
@@ -191,6 +229,16 @@ describe("repository analysis worker protocol", () => {
       ...facts,
       summary: { ...facts.summary, schemaVersion: "1.99.0" },
     })).toBe(false);
+    for (const nonTextualChanges of [false, 0, 1, "true", null, undefined, {}]) {
+      expect(isRepositoryAnalysisFacts({
+        ...facts,
+        changedFiles: [{
+          path: "src/index.ts",
+          status: "modified",
+          nonTextualChanges,
+        }],
+      }), String(nonTextualChanges)).toBe(false);
+    }
   });
 
   it("enriches, bounds, and caps real extractor progress while preserving required phases", () => {

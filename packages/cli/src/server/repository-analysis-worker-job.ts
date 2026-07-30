@@ -1052,15 +1052,17 @@ function isChangedFiles(value: unknown): value is ChangedFileManifestEntry[] {
   let bytes = 0;
   for (const entry of value) {
     if (!isRecord(entry) || !safeLogicalPath(entry.path) || seen.has(entry.path)) return false;
+    if (entry.nonTextualChanges !== undefined && entry.nonTextualChanges !== true) return false;
     if (previousPath !== undefined && previousPath.localeCompare(entry.path) >= 0) return false;
     seen.add(entry.path);
     previousPath = entry.path;
+    const nonTextualKey = entry.nonTextualChanges === true ? ["nonTextualChanges"] : [];
     if (entry.status === "renamed") {
       if (!safeLogicalPath(entry.previousPath) || entry.previousPath === entry.path
-        || !hasExactKeys(entry, ["path", "previousPath", "status"])) return false;
+        || !hasExactKeys(entry, ["path", "previousPath", "status", ...nonTextualKey])) return false;
       bytes += Buffer.byteLength(entry.previousPath);
     } else if ((entry.status !== "added" && entry.status !== "modified" && entry.status !== "deleted")
-      || !hasExactKeys(entry, ["path", "status"])) return false;
+      || !hasExactKeys(entry, ["path", "status", ...nonTextualKey])) return false;
     bytes += Buffer.byteLength(entry.path);
     if (bytes > MAX_CHANGED_PATH_BYTES_TOTAL) return false;
   }

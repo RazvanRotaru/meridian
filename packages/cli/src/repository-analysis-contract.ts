@@ -6,9 +6,10 @@ import type { GitDiffExecutor } from "./git-diff";
 
 /**
  * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
- * Version 9 includes edit-grained, full-file syntax proofs for formatting-only TypeScript changes.
+ * Version 9 adds formatting-only syntax proofs. Version 10 distinguishes
+ * executable-comment-only edits from physically comment-only source rows.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 9;
+export const REPOSITORY_ANALYSIS_VERSION = 10;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",

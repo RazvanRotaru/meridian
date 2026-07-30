@@ -10,7 +10,7 @@ import type { ReviewContext } from "@meridian/core";
 import type { PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import type { ReviewFileRow } from "./reviewFiles";
-import { buildReviewSubmission } from "./reviewSubmit";
+import { buildReviewSubmission, reviewDraftIsVisible, visibleReviewFilePath } from "./reviewSubmit";
 
 const CONTEXT: ReviewContext = {
   changedFiles: [
@@ -57,6 +57,36 @@ function draft(
 }
 
 describe("buildReviewSubmission", () => {
+  it("maps a visible draft alias to the checklist row's exact path", () => {
+    expect(visibleReviewFilePath(
+      draft("./src/a.ts", null, "aliased"),
+      FILES,
+      CONTEXT,
+    )).toBe("src/a.ts");
+  });
+
+  it("does not retarget a hidden exact draft path to a newly unique visible suffix", () => {
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [
+        { path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 1 }] },
+        { path: "repo/src/a.ts", status: "modified", hunks: [{ start: 1, end: 1 }] },
+      ],
+    };
+    const visibleFiles: ReviewFileRow[] = [{
+      ...FILES[0]!,
+      path: "repo/src/a.ts",
+      moduleId: "ts:repo/src/a.ts",
+      units: [],
+    }];
+
+    expect(reviewDraftIsVisible(
+      draft("src/a.ts", null, "hidden exact owner"),
+      visibleFiles,
+      context,
+    )).toBe(false);
+  });
+
   it("anchors a unit comment to the first changed line inside the unit", () => {
     const submission = buildReviewSubmission([draft("src/a.ts", "ts:src/a.ts#Repo", "check this")], FILES, CONTEXT);
     // The unit starts at 10 but the hunk starts at 25 — the anchor must be a line the diff shows.

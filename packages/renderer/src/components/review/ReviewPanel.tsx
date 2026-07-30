@@ -16,6 +16,7 @@ import {
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
+import { reviewDraftIsVisible } from "../../derive/reviewSubmit";
 import type { PrSummary } from "../../state/prTypes";
 import { PrPrepareInline } from "../prs/PrPrepareProgress";
 import { ResizableSplitView } from "../flowexplorer/FlowSplitView";
@@ -40,13 +41,12 @@ function ReviewPanelImpl() {
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const prSelected = useBlueprint((state) => state.prSelected);
   const preparedHeadCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
-  const footerVisible = useBlueprint((state) => state.prReviewed !== null || (state.showTests
-    ? state.reviewComments.length > 0
-    : state.reviewComments.some((comment) => !isReviewTestPath(
-      comment.path,
-      state.index,
-      state.prReviewBaseline?.index ?? null,
-    ))));
+  const footerVisible = useBlueprint((state) => state.prReviewed !== null || (
+    state.review !== null
+    && state.reviewComments.some((comment) =>
+      reviewDraftIsVisible(comment, state.reviewFiles, state.review!.context),
+    )
+  ));
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
@@ -75,6 +75,18 @@ function ReviewPanelImpl() {
       !effectivePaths.has(path)
       && Object.hasOwn(proof, path)
       && proof[path].length > 0);
+  });
+  const hasExcludedSourceCommentChanges = useBlueprint((state) => {
+    if (!state.reviewHideAddedSourceCommentDiffs || state.review === null) {
+      return false;
+    }
+    return state.review.context.changedFiles.some((file) => {
+      if (file.status !== "modified" || !Object.hasOwn(state.reviewDiffLinesByFile, file.path)) {
+        return false;
+      }
+      const rows = state.reviewDiffLinesByFile[file.path];
+      return rows.length > 0 && rows.every((row) => row.sourceCommentOnly === true);
+    });
   });
   const {
     setReviewFlowSplitView,
@@ -111,12 +123,13 @@ function ReviewPanelImpl() {
     review.rows,
     prSelected === null || preparedHeadCurrent,
   ).length > 0;
-  const testsHiddenNoticeVisible = !showTests && reviewFiles.length === 0 && hasExcludedTestChanges;
-  const formatOnlyHiddenNoticeVisible = hasExcludedFormatOnlyChanges
-    && reviewFiles.length === 0
-    && !testsHiddenNoticeVisible;
-  const scopeVisible = !filesExpanded
-    && (scopePresent || testsHiddenNoticeVisible || formatOnlyHiddenNoticeVisible);
+  const emptyFilterNotice = reviewEmptyFilterNotice({
+    visibleFileCount: reviewFiles.length,
+    excludeTestChanges: !showTests && hasExcludedTestChanges,
+    excludeFormattingOnlyChanges: hasExcludedFormatOnlyChanges,
+    hideSourceCommentDiffs: hideAddedSourceCommentDiffs && hasExcludedSourceCommentChanges,
+  });
+  const scopeVisible = !filesExpanded && (scopePresent || emptyFilterNotice !== null);
   const affectedFlowsVisible = !filesExpanded && flowsPresent;
   return (
     <div style={PANEL}>
@@ -131,14 +144,9 @@ function ReviewPanelImpl() {
         )}
         scope={(
           <div style={REVIEW_SECTION_SURFACE}>
-            {testsHiddenNoticeVisible ? (
+            {emptyFilterNotice ? (
               <div style={TESTS_HIDDEN_NOTICE} role="status">
-                Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
-              </div>
-            ) : null}
-            {formatOnlyHiddenNoticeVisible ? (
-              <div style={TESTS_HIDDEN_NOTICE} role="status">
-                Formatting-only changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude formatting-only changes</strong> to include them.
+                {emptyFilterNotice}
               </div>
             ) : null}
             <ChangeGroupStrip />
@@ -195,6 +203,56 @@ function ReviewPanelImpl() {
       />
     </div>
   );
+}
+
+export function reviewEmptyFilterNotice(options: {
+  visibleFileCount: number;
+  excludeTestChanges: boolean;
+  excludeFormattingOnlyChanges?: boolean;
+  hideSourceCommentDiffs: boolean;
+}): React.ReactNode | null {
+  if (options.visibleFileCount > 0) return null;
+  const excludesFormatting = options.excludeFormattingOnlyChanges === true;
+  const activeFilters = Number(options.excludeTestChanges)
+    + Number(excludesFormatting)
+    + Number(options.hideSourceCommentDiffs);
+  if (activeFilters === 0) return null;
+  if (options.excludeTestChanges && options.hideSourceCommentDiffs && !excludesFormatting) {
+    return (
+      <>
+        All changes are hidden while both review filters are active. Open <strong>Review preferences</strong> to adjust <strong>Exclude test changes</strong> and <strong>Hide source comments in diffs</strong>.
+      </>
+    );
+  }
+  if (activeFilters > 1) {
+    return (
+      <>
+        All changes are hidden while multiple review filters are active. Open <strong>Review preferences</strong> to adjust the enabled content filters.
+      </>
+    );
+  }
+  if (options.hideSourceCommentDiffs) {
+    return (
+      <>
+        Source-comment-only changes are hidden. Open <strong>Review preferences</strong> and turn off <strong>Hide source comments in diffs</strong> to include them.
+      </>
+    );
+  }
+  if (excludesFormatting) {
+    return (
+      <>
+        Formatting-only changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude formatting-only changes</strong> to include them.
+      </>
+    );
+  }
+  if (options.excludeTestChanges) {
+    return (
+      <>
+        Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
+      </>
+    );
+  }
+  return null;
 }
 
 export interface ReviewPanelResizableLayoutProps {

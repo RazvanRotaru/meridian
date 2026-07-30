@@ -62,8 +62,8 @@ describe("ReviewPreferencesPane", () => {
     expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(3);
     expect(markup).toContain("Source diff display");
     expect(markup).toContain("Hide source comments in diffs");
-    expect(markup).toContain("Hide comment-only source additions from code diffs");
-    expect(markup).toContain("Code and lines that mix code with comments stay highlighted");
+    expect(markup).toContain("Hide changes that only alter source comments from code diffs and the review graph");
+    expect(markup).toContain("Changes that also alter executable code stay highlighted");
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
     expect(markup).toContain("Code preview behavior");
     expect(markup).toContain("across the review graph and logic flow");

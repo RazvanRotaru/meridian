@@ -86,6 +86,161 @@ describe("deriveReviewProjection", () => {
     expect(projection.excludedTestFileCount).toBe(0);
   });
 
+  it("removes a proven comment-only file from every visible projection while retaining raw context", () => {
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [CONTEXT.changedFiles[0]],
+    };
+    const projection = deriveReviewProjection(context, ARTIFACT, buildGraphIndex(ARTIFACT), {
+      baseIndex: null,
+      showTests: true,
+      hideSourceCommentDiffs: true,
+      diffLines: {
+        "src/service.ts": [
+          {
+            kind: "deleted",
+            oldLine: 1,
+            newLine: null,
+            beforeNewLine: 1,
+            text: "// Old docs.",
+            sourceCommentOnly: true,
+          },
+          {
+            kind: "added",
+            oldLine: null,
+            newLine: 1,
+            beforeNewLine: 1,
+            text: "// New docs.",
+            sourceCommentOnly: true,
+          },
+        ],
+      },
+    });
+
+    expect(projection.visibleContext.changedFiles).toEqual([]);
+    expect(projection.files).toEqual([]);
+    expect(projection.affected).toEqual([]);
+    expect(projection.review.rows).toEqual([]);
+    expect(projection.review.context).toBe(context);
+  });
+
+  it("does not retain a flow-coverage warning for a language whose only changed file is hidden", () => {
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [CONTEXT.changedFiles[0]],
+    };
+    const artifact = { ...ARTIFACT, extensions: {} } as GraphArtifact;
+    const projection = deriveReviewProjection(context, artifact, buildGraphIndex(artifact), {
+      baseIndex: null,
+      showTests: true,
+      hideSourceCommentDiffs: true,
+      diffLines: {
+        "src/service.ts": [{
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// New docs.",
+          sourceCommentOnly: true,
+        }],
+      },
+    });
+
+    expect(projection.visibleContext.warnings).toEqual([]);
+    expect(projection.review.context.changedFiles).toEqual(context.changedFiles);
+    expect(projection.review.context.warnings).toEqual([]);
+  });
+
+  it("fails open unless every canonical row is proven comment-only", () => {
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [CONTEXT.changedFiles[0]],
+    };
+    const projection = deriveReviewProjection(context, ARTIFACT, buildGraphIndex(ARTIFACT), {
+      baseIndex: null,
+      showTests: true,
+      hideSourceCommentDiffs: true,
+      diffLines: {
+        "src/service.ts": [{
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "run(); // code changed too",
+        }],
+      },
+    });
+
+    expect(projection.visibleContext).toBe(context);
+    expect(projection.files.map((file) => file.path)).toEqual(["src/service.ts"]);
+  });
+
+  it("keeps a rename even when every textual row changes comments only", () => {
+    const renamed = {
+      ...CONTEXT.changedFiles[0],
+      status: "renamed" as const,
+      previousPath: "src/old-service.ts",
+    };
+    const context: ReviewContext = { ...CONTEXT, changedFiles: [renamed] };
+    const projection = deriveReviewProjection(context, ARTIFACT, buildGraphIndex(ARTIFACT), {
+      baseIndex: null,
+      showTests: true,
+      hideSourceCommentDiffs: true,
+      diffLines: {
+        "src/service.ts": [{
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// New docs.",
+          sourceCommentOnly: true,
+        }],
+      },
+    });
+
+    expect(projection.visibleContext).toBe(context);
+    expect(projection.files.map((file) => file.path)).toEqual(["src/service.ts"]);
+  });
+
+  it("keeps added and removed files when every textual row is a comment", () => {
+    const context: ReviewContext = {
+      ...CONTEXT,
+      changedFiles: [
+        { ...CONTEXT.changedFiles[0], status: "added" },
+        { path: "src/gone.ts", status: "deleted" },
+      ],
+    };
+    const projection = deriveReviewProjection(context, ARTIFACT, buildGraphIndex(ARTIFACT), {
+      baseIndex: null,
+      showTests: true,
+      hideSourceCommentDiffs: true,
+      diffLines: {
+        "src/service.ts": [{
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// New package marker.",
+          sourceCommentOnly: true,
+        }],
+        "src/gone.ts": [{
+          kind: "deleted",
+          oldLine: 1,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "// Old package marker.",
+          sourceCommentOnly: true,
+        }],
+      },
+    });
+
+    expect(projection.visibleContext).toBe(context);
+    expect(projection.visibleContext.changedFiles.map((file) => file.path)).toEqual([
+      "src/service.ts",
+      "src/gone.ts",
+    ]);
+  });
+
   it("warns when changed code belongs to a language absent from the flow inventory", () => {
     const pythonFile = "src/backend/service.py";
     const pythonModule = "py:backend.service";

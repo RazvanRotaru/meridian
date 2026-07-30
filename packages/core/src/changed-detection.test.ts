@@ -103,7 +103,7 @@ describe("changedFileManifestFromExtensions", () => {
   it("round-trips the complete file manifest, including a rename's base path", () => {
     const manifest = [
       { path: "src/new.ts", status: "renamed", previousPath: "src/old.ts" },
-      { path: "assets/logo.png", status: "modified" },
+      { path: "assets/logo.png", status: "modified", nonTextualChanges: true },
       { path: "src/gone.ts", status: "deleted" },
       { path: "src/new-file.ts", status: "added" },
     ];
@@ -120,6 +120,9 @@ describe("changedFileManifestFromExtensions", () => {
     })).toBeNull();
     expect(changedFileManifestFromExtensions({
       changedSince: { manifest: [{ path: "src/a.ts", status: "modified", previousPath: "src/old.ts" }] },
+    })).toBeNull();
+    expect(changedFileManifestFromExtensions({
+      changedSince: { manifest: [{ path: "src/a.ts", status: "modified", nonTextualChanges: false }] },
     })).toBeNull();
     expect(changedFileManifestFromExtensions({
       changedSince: {
@@ -318,23 +321,44 @@ describe("changedDiffLinesFromExtensions", () => {
   it("round-trips exact ordered add/delete rows without collapsing literal backslashes", () => {
     const extensions = {
       changedSince: {
+        stats: {
+          "src\\a.ts": { added: 1, deleted: 1 },
+        },
         diffLines: {
           "src\\a.ts": [
-            { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old", noNewline: true },
-            { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
+            {
+              kind: "deleted",
+              oldLine: 4,
+              newLine: null,
+              beforeNewLine: 4,
+              text: "old",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+              noNewline: true,
+            },
+            { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new", sourceCommentOnly: true },
           ],
         },
       },
     };
     expect(changedDiffLinesFromExtensions(extensions)).toEqual({
       "src\\a.ts": [
-        { kind: "deleted", oldLine: 4, newLine: null, beforeNewLine: 4, text: "old", noNewline: true },
-        { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new" },
+        {
+          kind: "deleted",
+          oldLine: 4,
+          newLine: null,
+          beforeNewLine: 4,
+          text: "old",
+          sourceCommentOnly: true,
+          sourceCommentLineOnly: true,
+          noNewline: true,
+        },
+        { kind: "added", oldLine: null, newLine: 4, beforeNewLine: 4, text: "new", sourceCommentOnly: true },
       ],
     });
   });
 
-  it("yields null without diffLines and skips malformed rows and entries", () => {
+  it("yields null without diffLines and rejects each malformed file transaction atomically", () => {
     expect(changedDiffLinesFromExtensions(undefined)).toBeNull();
     expect(changedDiffLinesFromExtensions({ changedSince: { files: {} } })).toBeNull();
     const mixed = {
@@ -351,9 +375,177 @@ describe("changedDiffLinesFromExtensions", () => {
         },
       },
     };
-    expect(changedDiffLinesFromExtensions(mixed)).toEqual({
-      "src/a.ts": [{ kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "ok" }],
+    expect(changedDiffLinesFromExtensions(mixed)).toEqual({});
+  });
+
+  it("withholds comment-only proof when exact row totals are missing or disagree", () => {
+    const extensions = {
+      changedSince: {
+        stats: { "src/a.ts": { added: 1, deleted: 1 } },
+        diffLines: {
+          "src/a.ts": [
+            {
+              kind: "deleted",
+              oldLine: 1,
+              newLine: null,
+              beforeNewLine: 1,
+              text: "// docs",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(changedDiffLinesFromExtensions(extensions)).toEqual({
+      "src/a.ts": [{
+        kind: "deleted",
+        oldLine: 1,
+        newLine: null,
+        beforeNewLine: 1,
+        text: "// docs",
+      }],
     });
+  });
+
+  it("withholds comment-only proof from files with non-textual changes", () => {
+    const extensions = {
+      changedSince: {
+        manifest: [{
+          path: "src/a.ts",
+          status: "modified",
+          nonTextualChanges: true,
+        }],
+        stats: { "src/a.ts": { added: 1, deleted: 1 } },
+        diffLines: {
+          "src/a.ts": [
+            {
+              kind: "deleted",
+              oldLine: 1,
+              newLine: null,
+              beforeNewLine: 1,
+              text: "// old docs",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 1,
+              beforeNewLine: 1,
+              text: "// new docs",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(changedDiffLinesFromExtensions(extensions)).toEqual({
+      "src/a.ts": [
+        {
+          kind: "deleted",
+          oldLine: 1,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "// old docs",
+        },
+        {
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// new docs",
+        },
+      ],
+    });
+  });
+
+  it.each([
+    [
+      "a malformed entry",
+      [
+        { path: "src/a.ts", status: "modified" },
+        { path: "bad\0.ts", status: "modified" },
+      ],
+    ],
+    [
+      "a duplicate path",
+      [
+        { path: "src/a.ts", status: "modified" },
+        { path: "src/a.ts", status: "modified" },
+      ],
+    ],
+    ["no entry for the diff path", []],
+  ])("withholds all comment-only proof when the manifest has %s", (_case, manifest) => {
+    const extensions = {
+      changedSince: {
+        manifest,
+        stats: { "src/a.ts": { added: 1, deleted: 1 } },
+        diffLines: {
+          "src/a.ts": [
+            {
+              kind: "deleted",
+              oldLine: 1,
+              newLine: null,
+              beforeNewLine: 1,
+              text: "// old docs",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 1,
+              beforeNewLine: 1,
+              text: "// new docs",
+              sourceCommentOnly: true,
+              sourceCommentLineOnly: true,
+            },
+          ],
+        },
+      },
+    };
+
+    expect(changedDiffLinesFromExtensions(extensions)).toEqual({
+      "src/a.ts": [
+        {
+          kind: "deleted",
+          oldLine: 1,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "// old docs",
+        },
+        {
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// new docs",
+        },
+      ],
+    });
+  });
+
+  it("rejects a physical comment-line fact without the enclosing executable proof", () => {
+    const extensions = {
+      changedSince: {
+        diffLines: {
+          "src/a.ts": [{
+            kind: "added",
+            oldLine: null,
+            newLine: 1,
+            beforeNewLine: 1,
+            text: "// docs",
+            sourceCommentLineOnly: true,
+          }],
+        },
+      },
+    };
+
+    expect(changedDiffLinesFromExtensions(extensions)).toEqual({});
   });
 });
 

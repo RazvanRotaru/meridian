@@ -162,7 +162,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
           <span style={OPTION_COPY}>
             <span style={OPTION_TITLE}>Hide source comments in diffs</span>
             <span id={ADDED_SOURCE_COMMENTS_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
-              Hide comment-only source additions from code diffs. Code and lines that mix code with comments stay highlighted.
+              Hide changes that only alter source comments from code diffs and the review graph. Changes that also alter executable code stay highlighted.
             </span>
           </span>
         </label>
