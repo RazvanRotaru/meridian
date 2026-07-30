@@ -88,6 +88,48 @@ export function filterGhostNodes(
   return { nodes: keptNodes, edges: keptEdges };
 }
 
+/**
+ * Keep every real card, while limiting ghost cards to an explicit set of real artifact ids.
+ * Ghost ids are canonical node ids, so callers can protect PR-affected nodes and explicit minimal
+ * members without reinterpreting presentation metadata. This runs before ghost grouping; removed
+ * satellites therefore cannot be reminted as a synthetic parent.
+ */
+export function filterGhostNodesByAllowedIds(
+  nodes: Node[],
+  edges: Edge[],
+  allowedGhostIds: ReadonlySet<string> | null,
+): { nodes: Node[]; edges: Edge[] } {
+  if (allowedGhostIds === null) {
+    return { nodes, edges };
+  }
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const hiddenGhostIds = new Set(
+    nodes
+      .filter((node) => node.type === "ghost" && !allowedGhostIds.has(node.id))
+      .map((node) => node.id),
+  );
+  const keptNodes = hiddenGhostIds.size === 0
+    ? nodes
+    : nodes.filter((node) => !hiddenGhostIds.has(node.id));
+  const keptEdges = edges.filter((edge) => {
+    if (hiddenGhostIds.has(edge.source) || hiddenGhostIds.has(edge.target)) {
+      return false;
+    }
+    const ghostWire = (edge.data as { ghost?: unknown } | undefined)?.ghost === true;
+    if (!ghostWire) {
+      return true;
+    }
+    // Legacy/unresolved ghost wires can outlive their endpoint card. Treat that absent endpoint as
+    // hidden unless its canonical id is explicitly protected by the caller.
+    return (nodeIds.has(edge.source) || allowedGhostIds.has(edge.source))
+      && (nodeIds.has(edge.target) || allowedGhostIds.has(edge.target));
+  });
+  if (keptNodes === nodes && keptEdges.length === edges.length) {
+    return { nodes, edges };
+  }
+  return { nodes: keptNodes, edges: keptEdges };
+}
+
 /** The relationship-toggle key an edge answers to; null means non-semantic flow or malformed data. */
 function relKeyOf(edge: Edge): string | null {
   return relationKindOf(edge.data);

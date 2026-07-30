@@ -574,6 +574,9 @@ export interface BlueprintState {
   minimalView: "graph" | "codebase";
   /** Frame-local ghost declutter choice; Back restores the parent's exact visibility. */
   minimalShowGhostNodes: boolean;
+  /** Frame-local PR filter. False hides only non-diff ghost satellites; affected ghosts and exact
+   * minimal members remain visible. Back restores the parent's exact choice. */
+  minimalShowNonDiffGhostNodes: boolean;
   /** Codebase presentation's local disclosure overrides, preserved across nested extraction. */
   minimalCodebaseExpansionOverrides: Map<string, boolean>;
   /** The parsed PR-review data (affected-flow rows + flow trees); null hides the review surface.
@@ -937,6 +940,7 @@ export interface BlueprintState {
   buildMinimalGraph(): void;
   setMinimalView(view: "graph" | "codebase"): void;
   setMinimalShowGhostNodes(visible: boolean): void;
+  setMinimalShowNonDiffGhostNodes(visible: boolean): void;
   setMinimalCodebaseExpansionOverride(nodeId: string, expanded: boolean): void;
   /** Restore one exact parent extracted graph without closing the overall overlay/review. */
   backMinimalGraph(): void;
@@ -2197,6 +2201,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: [...state.minimalGraphHistory, captureMinimalGraphHistory(state)],
         minimalView: "graph",
         minimalShowGhostNodes: true,
+        minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: reveal?.selectedId ?? null,
         reviewLitNodeIds: reveal === null ? null : new Set(reveal.litNodeIds),
@@ -3949,6 +3954,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalLayoutActivity: null,
     minimalView: "graph",
     minimalShowGhostNodes: true,
+    minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     review,
     reviewAffectedIds: new Set(initialReviewProjection?.affected.map((node) => node.nodeId) ?? []),
@@ -5929,6 +5935,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    setMinimalShowNonDiffGhostNodes(visible) {
+      if (get().minimalShowNonDiffGhostNodes !== visible) {
+        set({ minimalShowNonDiffGhostNodes: visible });
+      }
+    },
+
     setMinimalCodebaseExpansionOverride(nodeId, expanded) {
       const next = new Map(get().minimalCodebaseExpansionOverrides);
       next.set(nodeId, expanded);
@@ -6034,6 +6046,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: history,
         minimalView: "graph",
         minimalShowGhostNodes: true,
+        minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
         moduleGhostInspection: null,
@@ -6196,6 +6209,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: [],
         minimalView: "graph",
         minimalShowGhostNodes: true,
+        minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewFocusedSubgraph: null,
         ...(closingPrReview !== null
@@ -6692,6 +6706,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: [],
         minimalView: "graph",
         minimalShowGhostNodes: true,
+        minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
@@ -6752,6 +6767,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalGraphHistory: [],
         minimalView: "graph",
         minimalShowGhostNodes: true,
+        minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
         reviewLitNodeIds: null,
@@ -9609,6 +9625,7 @@ function applyPrReviewToMap(
     minimalGraphHistory: [],
     minimalView: "graph",
     minimalShowGhostNodes: true,
+    minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",

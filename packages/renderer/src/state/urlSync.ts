@@ -286,6 +286,7 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     minimalGraphHistory: [],
     minimalView: "graph",
     minimalShowGhostNodes: true,
+    minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     reviewFocusedSubgraph: null,
     minimalRfNodes: [],

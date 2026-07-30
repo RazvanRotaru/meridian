@@ -19,6 +19,7 @@ export interface MinimalGraphHistoryEntry {
   minimalLayoutActivity: BlueprintState["minimalLayoutActivity"];
   minimalView: BlueprintState["minimalView"];
   minimalShowGhostNodes: BlueprintState["minimalShowGhostNodes"];
+  minimalShowNonDiffGhostNodes: BlueprintState["minimalShowNonDiffGhostNodes"];
   minimalCodebaseExpansionOverrides: BlueprintState["minimalCodebaseExpansionOverrides"];
   showHighways: BlueprintState["showHighways"];
   showTests: BlueprintState["showTests"];
@@ -71,6 +72,7 @@ export function captureMinimalGraphHistory(state: BlueprintState): MinimalGraphH
     minimalLayoutActivity: state.minimalLayoutActivity,
     minimalView: state.minimalView,
     minimalShowGhostNodes: state.minimalShowGhostNodes,
+    minimalShowNonDiffGhostNodes: state.minimalShowNonDiffGhostNodes,
     minimalCodebaseExpansionOverrides: new Map(state.minimalCodebaseExpansionOverrides),
     showHighways: state.showHighways,
     showTests: state.showTests,
@@ -122,6 +124,7 @@ export function restoreMinimalGraphHistory(parent: MinimalGraphHistoryEntry): Pa
     minimalLayoutActivity: parent.minimalLayoutActivity,
     minimalView: parent.minimalView,
     minimalShowGhostNodes: parent.minimalShowGhostNodes,
+    minimalShowNonDiffGhostNodes: parent.minimalShowNonDiffGhostNodes,
     minimalCodebaseExpansionOverrides: new Map(parent.minimalCodebaseExpansionOverrides),
     showHighways: parent.showHighways,
     showTests: parent.showTests,

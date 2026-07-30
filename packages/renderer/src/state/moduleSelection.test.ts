@@ -1549,6 +1549,7 @@ describe("minimal-graph overlay (extract selection)", () => {
     store.getState().setMinimalView("codebase");
     store.getState().setMinimalCodebaseExpansionOverride("ts:src", false);
     store.getState().setMinimalShowGhostNodes(false);
+    store.getState().setMinimalShowNonDiffGhostNodes(false);
     store.getState().selectModule(BUILD_ORDERS);
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
@@ -1556,11 +1557,13 @@ describe("minimal-graph overlay (extract selection)", () => {
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
     expect(store.getState().minimalView).toBe("graph");
     expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(store.getState().minimalShowNonDiffGhostNodes).toBe(true);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map());
 
     store.getState().backMinimalGraph();
     expect(store.getState().minimalView).toBe("codebase");
     expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().minimalShowNonDiffGhostNodes).toBe(false);
     expect(store.getState().minimalCodebaseExpansionOverrides).toEqual(new Map([["ts:src", false]]));
   });
 

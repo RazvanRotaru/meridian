@@ -24,6 +24,7 @@ import {
   CodebaseHighlightIcon,
   CodePreviewVisibilityIcon,
   CollapseIcon,
+  DiffOnlyIcon,
   ExpandIcon,
   ExpandSelectionIcon,
   ExtractSelectionIcon,
@@ -44,6 +45,8 @@ export interface CanvasActionBarProps {
   ghostNodesVisible?: boolean;
   hasGhostNodes?: boolean;
   onToggleGhostNodes?: () => void;
+  reviewGhostDiffOnly?: boolean;
+  onToggleReviewGhostDiffOnly?: () => void;
   relationKinds?: readonly string[];
 }
 
@@ -56,6 +59,8 @@ export function CanvasActionBar({
   ghostNodesVisible = true,
   hasGhostNodes = false,
   onToggleGhostNodes,
+  reviewGhostDiffOnly = false,
+  onToggleReviewGhostDiffOnly,
   relationKinds,
 }: CanvasActionBarProps = {}) {
   const selected = useBlueprint((state) => state.moduleSelected);
@@ -139,8 +144,14 @@ export function CanvasActionBar({
     && flowPaneLayoutStatus !== "laying-out"
     && syntheticExecutionStatus !== "running";
   const showSourceSelectionActions = canExtract && !minimalOpen;
-  const showReviewCodePreviewAction = reviewActive && minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
+  const showReviewCodePreviewAction = reviewActive && minimalOpen;
+  // Ghost satellites belong to the extracted graph presentation. The codebase view deliberately
+  // keeps its own structural context and never inherits this paint-only filter.
+  const showReviewGhostDiffAction = reviewActive
+    && minimalOpen
+    && !codebaseView
+    && onToggleReviewGhostDiffOnly !== undefined;
   // Back is present at every extraction depth. A root graph also needs the wider nested-action
   // footprint whenever Extract (or the review-container equivalent) sits beside it.
   const wideMinimalActions = minimalHistory.length > 0
@@ -155,7 +166,7 @@ export function CanvasActionBar({
     surfaceSize?.width ?? null,
     mode,
     surfaceSize?.height ?? null,
-    45 + (showReviewCodePreviewAction ? 45 : 0),
+    45 + (showReviewCodePreviewAction ? 45 : 0) + (showReviewGhostDiffAction ? 45 : 0),
   );
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -291,6 +302,13 @@ export function CanvasActionBar({
                   pressed={ghostNodesVisible}
                 />
               )}
+              {showReviewGhostDiffAction ? (
+                <ReviewGhostDiffAction
+                  active={reviewGhostDiffOnly}
+                  disabled={!hasGhostNodes}
+                  onToggle={onToggleReviewGhostDiffOnly}
+                />
+              ) : null}
               {showReviewCodePreviewAction ? (
                 <CanvasActionButton
                   ariaLabel="Code previews"
@@ -422,6 +440,31 @@ export function CanvasActionBar({
         ) : null}
       </CanvasActionBarFrame>
     </Panel>
+  );
+}
+
+function ReviewGhostDiffAction({
+  active,
+  disabled,
+  onToggle,
+}: {
+  active: boolean;
+  disabled: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <CanvasActionButton
+      ariaLabel="Filter unrelated ghost nodes"
+      title={disabled
+        ? "No ghost nodes in this extracted graph"
+        : active
+          ? "Show all ghost nodes"
+          : "Hide ghost nodes not modified by this PR unless they are part of the minimal graph"}
+      icon={<DiffOnlyIcon size={18} active={active} />}
+      onClick={onToggle}
+      pressed={active}
+      disabled={disabled}
+    />
   );
 }
 
