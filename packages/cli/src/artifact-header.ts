@@ -15,6 +15,7 @@ import type {
   ChangedLineStats,
   ChangedRanges,
   ExtractionResult,
+  FormattingOnlyProof,
   GraphArtifact,
   GraphNode,
   JsonValue,
@@ -53,6 +54,7 @@ export interface HeaderInputs {
     kinds: ChangedLineKinds;
     diffLines: ChangedDiffLines;
     manifest: ChangedFileManifestEntry[];
+    formattingOnly: FormattingOnlyProof;
   };
 }
 

@@ -4412,6 +4412,107 @@ const HEAD_ARTIFACT: GraphArtifact = {
   } as GraphArtifact["extensions"],
 };
 
+/** PR #4123-shaped prepared graph: the sole edit rewraps one TypeScript signature. */
+const FORMAT_ONLY_HEAD_ARTIFACT: GraphArtifact = {
+  ...HEAD_ARTIFACT,
+  generatedAt: "2026-07-30T00:00:00.000Z",
+  nodes: [
+    node(PACKAGE_ID, "package", "src"),
+    node(FILE_ID, "module", "src/a.ts", PACKAGE_ID),
+    node(CLASS_ID, "class", "src/a.ts", FILE_ID, { start: 3, end: 30 }),
+    node(METHOD_ID, "method", "src/a.ts", CLASS_ID, { start: 20, end: 24 }),
+  ],
+  extensions: {
+    changedSince: {
+      baseRef: "origin/main",
+      manifest: [{ path: "src/a.ts", status: "modified" }],
+      files: { "src/a.ts": [{ start: 20, end: 24 }] },
+      stats: { "src/a.ts": { added: 5, deleted: 1 } },
+      kinds: {
+        "src/a.ts": [
+          { start: 20, end: 20, kind: "modified" },
+          { start: 21, end: 24, kind: "added" },
+        ],
+      },
+      diffLines: {
+        "src/a.ts": [
+          {
+            kind: "deleted",
+            oldLine: 20,
+            newLine: null,
+            beforeNewLine: 20,
+            text: "  readonly convertBinary: (bytes: Uint8Array, extension: string, name: string) => Promise<string>;",
+          },
+          { kind: "added", oldLine: null, newLine: 20, beforeNewLine: 20, text: "  readonly convertBinary: (" },
+          { kind: "added", oldLine: null, newLine: 21, beforeNewLine: 21, text: "    bytes: Uint8Array," },
+          { kind: "added", oldLine: null, newLine: 22, beforeNewLine: 22, text: "    extension: string," },
+          { kind: "added", oldLine: null, newLine: 23, beforeNewLine: 23, text: "    name: string," },
+          { kind: "added", oldLine: null, newLine: 24, beforeNewLine: 24, text: "  ) => Promise<string>;" },
+        ],
+      },
+      formattingOnly: {
+        version: 1,
+        edits: [{
+          path: "src/a.ts",
+          oldStart: 20,
+          oldLines: 1,
+          newStart: 20,
+          newLines: 5,
+          oldRows: [{
+            text: "  readonly convertBinary: (bytes: Uint8Array, extension: string, name: string) => Promise<string>;",
+            noNewline: false,
+          }],
+          newRows: [
+            { text: "  readonly convertBinary: (", noNewline: false },
+            { text: "    bytes: Uint8Array,", noNewline: false },
+            { text: "    extension: string,", noNewline: false },
+            { text: "    name: string,", noNewline: false },
+            { text: "  ) => Promise<string>;", noNewline: false },
+          ],
+        }],
+      },
+    },
+  } as GraphArtifact["extensions"],
+};
+
+const FORMAT_ONLY_ARTIFACT_REVIEW: GraphArtifact = {
+  ...FORMAT_ONLY_HEAD_ARTIFACT,
+  extensions: {
+    ...FORMAT_ONLY_HEAD_ARTIFACT.extensions,
+    logicFlow: {
+      [METHOD_ID]: [],
+    },
+    review: {
+      changedFiles: [{
+        path: "src/a.ts",
+        status: "modified",
+        hunks: [{ start: 20, end: 24 }],
+      }],
+      baseRef: "main",
+      baseSha: "base",
+      headRef: "feature",
+      reviewKey: "artifact-format-review",
+      warnings: [],
+    },
+  },
+};
+
+const FORMAT_ONLY_CHANGED_SINCE_ARTIFACT: GraphArtifact = {
+  ...FORMAT_ONLY_HEAD_ARTIFACT,
+  extensions: {
+    ...FORMAT_ONLY_HEAD_ARTIFACT.extensions,
+    logicFlow: {
+      [METHOD_ID]: [{
+        kind: "call",
+        label: "run",
+        target: METHOD_ID,
+        resolution: "resolved",
+        source: { file: "src/a.ts", line: 20 },
+      }],
+    },
+  },
+};
+
 const BOOT_SYNTHETIC_SCENARIO: SyntheticScenarioDescriptor = {
   id: "boot-run",
   label: "Boot run",
@@ -4559,8 +4660,13 @@ function headSelectedPrState(number: number) {
 }
 
 /** Complete prepare-first entry; returns the swapped store plus the boot pair for restore asserts. */
-async function swappedReviewStore(extra: Partial<StoreDependencies> = {}) {
-  const fetchMock = routedFetch();
+async function swappedReviewStore(
+  extra: Partial<StoreDependencies> = {},
+  preparedArtifact: GraphArtifact = HEAD_ARTIFACT,
+) {
+  const fetchMock = routedFetch({
+    graph: () => Promise.resolve(Response.json(preparedArtifact)),
+  });
   vi.stubGlobal("fetch", fetchMock);
   const store = freshStore({
     ...ANALYZE_DEPS,
@@ -5528,6 +5634,93 @@ describe("PR head preparation (prepareHeadGraph)", () => {
 });
 
 describe("PR review artifact swap and restore", () => {
+  it("keeps formatting-only status colouring in an ordinary changed-since graph", async () => {
+    const store = freshStoreForArtifact(FORMAT_ONLY_CHANGED_SINCE_ARTIFACT);
+
+    expect(store.getState().review).toBeNull();
+    expect(store.getState().reviewExcludeFormatOnlyChanges).toBe(true);
+
+    store.getState().selectFlowEntry({ rootId: METHOD_ID, blockPath: [] });
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowPaneRfNodes.some((entry) =>
+      (entry.data as { changedStatus?: string }).changedStatus === "modified",
+    )).toBe(true);
+
+    store.setState({ logicRoot: METHOD_ID });
+    await store.getState().logicRelayout();
+    expect(store.getState().logicRfNodes.some((entry) =>
+      (entry.data as { changedStatus?: string }).changedStatus === "modified",
+    )).toBe(true);
+  });
+
+  it("excludes a PR #4123 formatting-only node by default and restores it when disabled", async () => {
+    const { store } = await swappedReviewStore({}, FORMAT_ONLY_HEAD_ARTIFACT);
+
+    expect(store.getState().reviewExcludeFormatOnlyChanges).toBe(true);
+    expect(store.getState().review?.context.changedFiles).toEqual([]);
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set());
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(false);
+    // The raw seed remains mounted so an all-format review can still open preferences.
+    expect(store.getState().minimalSeedIds.length).toBeGreaterThan(0);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    store.getInitialState = store.getState;
+    const markup = renderToStaticMarkup(
+      createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+    );
+    expect(markup).toContain("Formatting-only changes are excluded");
+    expect(markup).not.toContain("Test changes are excluded");
+
+    store.getState().setReviewExcludeFormatOnlyChanges(false);
+
+    expect(store.getState().review?.context.changedFiles).toEqual([
+      {
+        path: "src/a.ts",
+        status: "modified",
+        hunks: [{ start: 20, end: 24 }],
+      },
+    ]);
+    expect(store.getState().reviewFiles).toHaveLength(1);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().index.changedIds.has(METHOD_ID)).toBe(true);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+  });
+
+  it("closes stale artifact flow and node selections when formatting-only content is excluded", async () => {
+    const store = freshStoreForArtifact(FORMAT_ONLY_ARTIFACT_REVIEW);
+    store.getState().setReviewExcludeFormatOnlyChanges(false);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
+    store.setState({
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+      moduleSelected: new Set([METHOD_ID]),
+      reviewFlowSplitView: "graph",
+      reviewOpenFlowSplitOnSelect: true,
+    });
+    store.getState().selectFlowEntry({ rootId: METHOD_ID, blockPath: [] });
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    store.setState({
+      reviewSelectedId: METHOD_ID,
+      reviewLitNodeIds: new Set([METHOD_ID]),
+      logicSelected: METHOD_ID,
+    });
+
+    store.getState().setReviewExcludeFormatOnlyChanges(true);
+
+    expect(store.getState().reviewAffectedIds).toEqual(new Set());
+    expect(store.getState().flowSelection).toBeNull();
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().flowPaneExpansionOverrides).toEqual(new Set());
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().reviewFlowBaseline).toBeNull();
+    expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(store.getState().reviewSelectedId).toBeNull();
+    expect(store.getState().reviewLitNodeIds).toBeNull();
+    expect(store.getState().logicSelected).toBeNull();
+  });
+
   it("clears GitHub viewed-file state when the prepared review session ends", () => {
     const store = freshStore();
     swapToPreparedArtifact(store.getState, store.setState, HEAD_ARTIFACT, () => undefined);

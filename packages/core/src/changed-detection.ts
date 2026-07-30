@@ -74,6 +74,43 @@ export interface ChangedFileManifestEntry {
   previousPath?: string;
 }
 
+/** Schema version for the conservative, edit-grained formatting proof. */
+export const FORMATTING_ONLY_PROOF_VERSION = 1 as const;
+const MAX_FORMATTING_ONLY_PROOF_EDITS = 512;
+const MAX_FORMATTING_ONLY_PROOF_EDITS_PER_FILE = 64;
+const MAX_FORMATTING_ONLY_PROOF_ROWS = 100_000;
+const MAX_FORMATTING_ONLY_PROOF_ROW_BYTES = 32 * 1024 * 1024;
+const UTF8_ENCODER = new TextEncoder();
+
+/** Exact source row bound into a formatting proof (line terminators are represented separately). */
+export interface FormattingOnlyRow {
+  text: string;
+  noNewline: boolean;
+}
+
+/**
+ * One exact unified-diff edit proven to preserve the parsed source structure.
+ *
+ * Coordinates use next-row cursor semantics for an empty side: `oldStart`/`newStart` is the
+ * 1-based insertion cursor and `oldLines`/`newLines` is zero. Keeping both sides makes the proof
+ * joinable to the canonical PR patch without treating every edit in the file as formatting.
+ */
+export interface FormattingOnlyEdit {
+  path: string;
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+  oldRows: FormattingOnlyRow[];
+  newRows: FormattingOnlyRow[];
+}
+
+/** Strictly versioned payload persisted at `extensions.changedSince.formattingOnly`. */
+export interface FormattingOnlyProof {
+  version: typeof FORMATTING_ONLY_PROOF_VERSION;
+  edits: FormattingOnlyEdit[];
+}
+
 /**
  * Return nodes with changed code tagged `"changed"`; untouched nodes pass through by reference.
  *
@@ -216,6 +253,81 @@ export function changedFileManifestFromExtensions(extensions: unknown): ChangedF
   return manifest;
 }
 
+/**
+ * Read the exact formatting-only edits as a path-keyed record.
+ *
+ * Unlike best-effort paint metadata, filtering review work must fail open. The proof is therefore
+ * accepted only as one canonical transaction: exact version and keys, bounded safe coordinates,
+ * strict ordering, no overlapping edits, and every path present as `modified` in the canonical
+ * changed-file manifest. Any malformed entry invalidates the entire proof.
+ */
+export function formattingOnlyEditsFromExtensions(
+  extensions: unknown,
+): Record<string, FormattingOnlyEdit[]> | null {
+  const changedSince = (extensions as { changedSince?: unknown } | undefined)?.changedSince;
+  if (!isPlainRecord(changedSince)) {
+    return null;
+  }
+  const raw = changedSince.formattingOnly;
+  if (
+    !isPlainRecord(raw)
+    || !hasExactKeys(raw, ["edits", "version"])
+    || raw.version !== FORMATTING_ONLY_PROOF_VERSION
+    || !Array.isArray(raw.edits)
+    || raw.edits.length > MAX_FORMATTING_ONLY_PROOF_EDITS
+  ) {
+    return null;
+  }
+  const manifest = changedFileManifestFromExtensions(extensions);
+  if (manifest === null) {
+    return null;
+  }
+  const modifiedPaths = new Set(
+    manifest.filter((entry) => entry.status === "modified").map((entry) => entry.path),
+  );
+  const edits: FormattingOnlyEdit[] = [];
+  let rowBytes = 0;
+  let rowCount = 0;
+  for (const value of raw.edits) {
+    const edit = formattingOnlyEdit(value);
+    if (edit === null || !modifiedPaths.has(edit.path)) {
+      return null;
+    }
+    rowCount += edit.oldRows.length + edit.newRows.length;
+    if (rowCount > MAX_FORMATTING_ONLY_PROOF_ROWS) {
+      return null;
+    }
+    for (const row of [...edit.oldRows, ...edit.newRows]) {
+      rowBytes += encodedLength(row.text);
+      if (rowBytes > MAX_FORMATTING_ONLY_PROOF_ROW_BYTES) {
+        return null;
+      }
+    }
+    edits.push(edit);
+  }
+  for (let index = 1; index < edits.length; index += 1) {
+    if (compareFormattingOnlyEdits(edits[index - 1], edits[index]) >= 0) {
+      return null;
+    }
+  }
+  const grouped: Record<string, FormattingOnlyEdit[]> = {};
+  for (const edit of edits) {
+    const fileEdits = Object.hasOwn(grouped, edit.path) ? grouped[edit.path] : [];
+    const previous = fileEdits[fileEdits.length - 1];
+    if (
+      fileEdits.length >= MAX_FORMATTING_ONLY_PROOF_EDITS_PER_FILE
+      || (previous !== undefined && editsOverlap(previous, edit))
+    ) {
+      return null;
+    }
+    if (!Object.hasOwn(grouped, edit.path)) {
+      setOwnRecordValue(grouped, edit.path, fileEdits);
+    }
+    fileEdits.push(edit);
+  }
+  return grouped;
+}
+
 /** The line delta for one node's exact canonical file identity. */
 export function changedLineDeltaForNode(
   stats: ChangedLineStats,
@@ -341,6 +453,77 @@ function changedFileManifestEntry(value: unknown): ChangedFileManifestEntry | nu
   return { path: candidate.path, status: candidate.status };
 }
 
+function formattingOnlyEdit(value: unknown): FormattingOnlyEdit | null {
+  if (
+    !isPlainRecord(value)
+    || !hasExactKeys(value, ["newLines", "newRows", "newStart", "oldLines", "oldRows", "oldStart", "path"])
+  ) {
+    return null;
+  }
+  const oldRows = formattingOnlyRows(value.oldRows);
+  const newRows = formattingOnlyRows(value.newRows);
+  if (
+    !isManifestPath(value.path)
+    || !isPositiveLine(value.oldStart)
+    || !isNonNegativeLineCount(value.oldLines)
+    || !isPositiveLine(value.newStart)
+    || !isNonNegativeLineCount(value.newLines)
+    || oldRows === null
+    || newRows === null
+    || oldRows.length !== value.oldLines
+    || newRows.length !== value.newLines
+    || (value.oldLines === 0 && value.newLines === 0)
+    || value.oldStart + Math.max(1, value.oldLines) > Number.MAX_SAFE_INTEGER
+    || value.newStart + Math.max(1, value.newLines) > Number.MAX_SAFE_INTEGER
+  ) {
+    return null;
+  }
+  return {
+    path: value.path,
+    oldStart: value.oldStart,
+    oldLines: value.oldLines,
+    newStart: value.newStart,
+    newLines: value.newLines,
+    oldRows,
+    newRows,
+  };
+}
+
+function formattingOnlyRows(value: unknown): FormattingOnlyRow[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const rows: FormattingOnlyRow[] = [];
+  for (const raw of value) {
+    if (
+      !isPlainRecord(raw)
+      || !hasExactKeys(raw, ["noNewline", "text"])
+      || typeof raw.text !== "string"
+      || raw.text.includes("\n")
+      || typeof raw.noNewline !== "boolean"
+    ) {
+      return null;
+    }
+    rows.push({ text: raw.text, noNewline: raw.noNewline });
+  }
+  return rows;
+}
+
+function compareFormattingOnlyEdits(left: FormattingOnlyEdit, right: FormattingOnlyEdit): number {
+  return compareStrings(left.path, right.path)
+    || left.newStart - right.newStart
+    || left.oldStart - right.oldStart
+    || left.newLines - right.newLines
+    || left.oldLines - right.oldLines;
+}
+
+function editsOverlap(left: FormattingOnlyEdit, right: FormattingOnlyEdit): boolean {
+  return (
+    left.oldStart + Math.max(1, left.oldLines) > right.oldStart
+    || left.newStart + Math.max(1, left.newLines) > right.newStart
+  );
+}
+
 function isChangedFileManifestStatus(value: unknown): value is ChangedFileManifestStatus {
   return value === "added" || value === "modified" || value === "deleted" || value === "renamed";
 }
@@ -359,6 +542,27 @@ function isManifestPath(value: unknown): value is string {
 
 function isPositiveLine(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 1;
+}
+
+function isNonNegativeLineCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
+  const keys = Object.keys(value).sort(compareStrings);
+  return keys.length === expected.length && keys.every((key, index) => key === expected[index]);
+}
+
+function compareStrings(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function encodedLength(value: string): number {
+  return UTF8_ENCODER.encode(value).byteLength;
 }
 
 function overlapsChange(node: GraphNode, changed: ChangedRanges): boolean {

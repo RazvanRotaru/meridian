@@ -225,6 +225,11 @@ import {
 import { deriveReviewProjection } from "../derive/reviewProjection";
 import { deriveDeletedNodeProjection, type DeletedNodeProjection } from "../derive/deletedNodeProjection";
 import { canonicalPrFiles } from "../derive/canonicalPrFiles";
+import { filterFormattingOnlyPrFiles } from "../derive/formattingOnlyPrFiles";
+import {
+  filterFormattingOnlyReviewContext,
+  formattingAwareArtifactDiff,
+} from "../derive/formattingOnlyReviewContext";
 import { expandReviewScopeBaseUnits, type ReviewScopeBaseNodes } from "../derive/reviewScopeExpansion";
 import { buildReviewSubmission } from "../derive/reviewSubmit";
 import {
@@ -638,6 +643,9 @@ export interface BlueprintState {
   /** Show newly added, comment-only source rows as neutral context instead of diff additions.
    * Browser-local so the reader's source-diff preference follows them between reviews. */
   reviewHideAddedSourceCommentDiffs: boolean;
+  /** Remove only edits the prepared analysis proved syntax-equivalent after layout normalization.
+   * Browser-local and default-on; missing or uncertain proof keeps the change reviewable. */
+  reviewExcludeFormatOnlyChanges: boolean;
   /** Hides the review side panel so the graph takes the full width; session-only. */
   reviewPanelHidden: boolean;
   /** Shows existing GitHub review comments in canvas source widgets. Session-only; draft comment
@@ -991,6 +999,7 @@ export interface BlueprintState {
   setReviewCodePreviewTrigger(trigger: ReviewCodePreviewTrigger): void;
   toggleReviewCodePreview(): void;
   setReviewHideAddedSourceCommentDiffs(hide: boolean): void;
+  setReviewExcludeFormatOnlyChanges(exclude: boolean): void;
   toggleReviewDiffOnly(): void;
   toggleReviewPanel(): void;
   toggleReviewCommentsVisible(): void;
@@ -1980,15 +1989,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     invalidateSyntheticArtifactBoundary();
     return restorePrReviewBaseline(getState, setState, invalidateArtifactCaches, options);
   };
+  // Preferences must be available before the boot artifact's review projection is derived: the
+  // default-on formatting proof changes graph ownership, not merely a later paint preference.
+  const reviewPreferences = readReviewPreferences();
   // The parsed review payload from a `meridian review` artifact (null when the artifact carries no
   // valid `review` extension — e.g. a plain `web`/`view` session). Computed once (the artifact never
   // changes after boot); a GitHub PR opened via reviewPrInGraph can later populate `review` at runtime.
   const artifactReview = deriveReviewData(dependencies.artifact, dependencies.index);
+  const initialReviewContext = artifactReview === null
+    ? null
+    : filterFormattingOnlyReviewContext(
+        artifactReview.context,
+        dependencies.artifact,
+        reviewPreferences.excludeFormatOnlyChanges,
+      );
   const initialReviewProjection = artifactReview
-    ? deriveReviewProjection(artifactReview.context, dependencies.artifact, dependencies.index, { baseIndex: null, showTests: false })
+    ? deriveReviewProjection(initialReviewContext!, dependencies.artifact, dependencies.index, {
+        baseIndex: null,
+        showTests: false,
+      })
     : null;
   const review = initialReviewProjection?.review ?? null;
   if (initialReviewProjection !== null) {
+    const initialStatusDiff = formattingAwareArtifactDiff(
+      dependencies.artifact,
+      reviewPreferences.excludeFormatOnlyChanges,
+    );
     applyChangedIds(dependencies.index, initialReviewProjection.affected.map((node) => node.nodeId));
     applyChangedStatus(
       dependencies.index,
@@ -1996,8 +2022,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         dependencies.index,
         initialReviewProjection.affected,
         reviewNodeStatusSourcesFromDiff(
-          changedLineKindsFromExtensions(dependencies.artifact.extensions),
-          changedDiffLinesFromExtensions(dependencies.artifact.extensions),
+          initialStatusDiff.kinds,
+          initialStatusDiff.diffLines,
         ),
       ),
     );
@@ -2041,7 +2067,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       fileTicks: initialMigratedProgress!.fileTicks,
     });
   }
-  const reviewPreferences = readReviewPreferences();
   // Null when the server didn't ship source access — the code drawer is then inert.
   const sourceUrl = dependencies.sourceUrl;
   const githubSource = (dependencies.prSessionSource ?? null) !== null;
@@ -2316,10 +2341,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (state.prReviewed !== null || artifactReview === null || state.review === null) {
         return;
       }
-      const projection = deriveReviewProjection(artifactReview.context, state.artifact, state.index, {
+      const context = filterFormattingOnlyReviewContext(
+        artifactReview.context,
+        state.artifact,
+        state.reviewExcludeFormatOnlyChanges,
+      );
+      const projection = deriveReviewProjection(context, state.artifact, state.index, {
         baseIndex: null,
         showTests,
       });
+      const statusDiff = formattingAwareArtifactDiff(
+        state.artifact,
+        state.reviewExcludeFormatOnlyChanges,
+      );
       applyChangedIds(state.index, projection.affected.map((node) => node.nodeId));
       applyChangedStatus(
         state.index,
@@ -2327,8 +2361,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           state.index,
           projection.affected,
           reviewNodeStatusSourcesFromDiff(
-            changedLineKindsFromExtensions(state.artifact.extensions),
-            changedDiffLinesFromExtensions(state.artifact.extensions),
+            statusDiff.kinds,
+            statusDiff.diffLines,
           ),
         ),
       );
@@ -3981,6 +4015,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
     reviewCodePreviewEnabled: true,
     reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
+    reviewExcludeFormatOnlyChanges: reviewPreferences.excludeFormatOnlyChanges,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
     reviewCommentFilter: "all",
@@ -4830,9 +4865,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         syntheticFlowPresentation,
         index,
         artifact,
+        review,
         prPreparedArtifactCurrent,
         prReviewed,
         reviewDiffByFile,
+        reviewExcludeFormatOnlyChanges,
       } = get();
       if (flowPaneOrigin === "request" || flowPaneOrigin === "synthetic") {
         const execution = flowPaneOrigin === "synthetic" ? get().syntheticExecution : null;
@@ -4896,7 +4933,18 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       // prepared/current artifacts already carry head-coordinate changed-line kinds themselves.
       const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
         ? reviewDiffByFile
-        : reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions));
+        : review === null
+          ? reviewNodeStatusSourcesFromKinds(changedLineKindsFromExtensions(artifact.extensions))
+          : (() => {
+              const effectiveArtifactDiff = formattingAwareArtifactDiff(
+                artifact,
+                reviewExcludeFormatOnlyChanges,
+              );
+              return reviewNodeStatusSourcesFromDiff(
+                effectiveArtifactDiff.kinds,
+                effectiveArtifactDiff.diffLines,
+              );
+            })();
       const graph = await deriveFlowPaneLayout(flowSelection, flows, index, flowPaneExpansionOverrides, {
         changedStatusForSource: (source) => reviewSourceChangeStatus(source, stepStatusSources),
       }, flowPaneCollapsedEdges);
@@ -5146,10 +5194,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         hideGreyed,
         nestByService,
         logicFocus,
+        review,
         prPreparedArtifactCurrent,
         prReviewed,
         reviewDiffByFile,
         reviewDiffLinesByFile,
+        reviewExcludeFormatOnlyChanges,
       } = get();
       if (logicRoot === null) {
         set({ logicRfNodes: [], logicRfEdges: [], logicLayoutStatus: "idle", logicLayoutActivity: null });
@@ -5173,10 +5223,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // FlowStep source anchor using the same aligned line-kind source as node colouring.
         const stepStatusSources = prReviewed !== null && !prPreparedArtifactCurrent
           ? liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile)
-          : reviewNodeStatusSourcesFromDiff(
-              changedLineKindsFromExtensions(artifact.extensions),
-              changedDiffLinesFromExtensions(artifact.extensions),
-            );
+          : review === null
+            ? reviewNodeStatusSourcesFromDiff(
+                changedLineKindsFromExtensions(artifact.extensions),
+                changedDiffLinesFromExtensions(artifact.extensions),
+              )
+            : (() => {
+                const effectiveArtifactDiff = formattingAwareArtifactDiff(
+                  artifact,
+                  reviewExcludeFormatOnlyChanges,
+                );
+                return reviewNodeStatusSourcesFromDiff(
+                  effectiveArtifactDiff.kinds,
+                  effectiveArtifactDiff.diffLines,
+                );
+              })();
         const graph = await deriveLogicLayout(logicRoot, flows, index, expandedLogic, {
           hideGreyed,
           nestByService,
@@ -7087,11 +7148,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setReviewFlowSplitView(view) {
       const state = get();
       writeReviewPreferences({
-        version: 4,
+        version: 5,
         flowSplitView: view,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
         codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
+        excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
       const reviewFlowOpen = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -7124,11 +7186,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 4,
+        version: 5,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: open,
         codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
+        excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
       const reviewFlowSelected = state.review !== null
         && state.minimalSeedIds.length > 0
@@ -7158,11 +7221,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 4,
+        version: 5,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
         codePreviewTrigger: trigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
+        excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
       set({ reviewCodePreviewTrigger: trigger });
     },
@@ -7177,13 +7241,103 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 4,
+        version: 5,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
         codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: hide,
+        excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
       set({ reviewHideAddedSourceCommentDiffs: hide });
+    },
+
+    setReviewExcludeFormatOnlyChanges(exclude) {
+      const state = get();
+      if (state.reviewExcludeFormatOnlyChanges === exclude) {
+        return;
+      }
+      if (!guardReviewLineComposerTransition(() => get().setReviewExcludeFormatOnlyChanges(exclude))) {
+        return;
+      }
+      writeReviewPreferences({
+        version: 5,
+        flowSplitView: state.reviewFlowSplitView,
+        openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
+        codePreviewTrigger: state.reviewCodePreviewTrigger,
+        hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
+        excludeFormatOnlyChanges: exclude,
+      });
+      set({ reviewExcludeFormatOnlyChanges: exclude });
+      if (state.review === null) {
+        return;
+      }
+      if (state.prReviewed !== null && state.minimalSeedIds.length > 0) {
+        // A content-ownership change invalidates every nested review frame. Rebuild the root from
+        // the immutable raw PR facts instead of preserving a selection the new proof may remove.
+        applyPrReviewToMap(
+          get,
+          set,
+          prFilesUrl,
+          invalidateMinimalLayout,
+          invalidateModuleLayout,
+          invalidateArtifactCaches,
+          { reprojecting: true },
+        );
+        return;
+      }
+      const previousAffectedIds = new Set(state.reviewAffectedIds);
+      reprojectArtifactReview(state.showTests);
+      const projected = get();
+      const removedAffectedIds = new Set(
+        [...previousAffectedIds].filter((id) => !projected.reviewAffectedIds.has(id)),
+      );
+      if (
+        projected.reviewFlowBaseline !== null
+        && projected.flowSelection !== null
+      ) {
+        // Artifact reviews do not pass through applyPrReviewToMap's wholesale workspace reset. Close
+        // the active review flow through its normal restoration path so its captured Map baseline
+        // and every pane-owned selection/expansion/layout are invalidated together.
+        projected.selectFlowEntry(null);
+      }
+      const restored = get();
+      const reviewLitNodeIds = restored.reviewLitNodeIds === null
+        ? null
+        : new Set([...restored.reviewLitNodeIds].filter((id) => !removedAffectedIds.has(id)));
+      set({
+        moduleSelected: new Set(
+          [...restored.moduleSelected].filter((id) => !removedAffectedIds.has(id)),
+        ),
+        reviewSelectedId: restored.reviewSelectedId !== null
+          && removedAffectedIds.has(restored.reviewSelectedId)
+          ? null
+          : restored.reviewSelectedId,
+        reviewLitNodeIds: reviewLitNodeIds !== null && reviewLitNodeIds.size > 0
+          ? reviewLitNodeIds
+          : null,
+        logicSelected: restored.logicSelected !== null
+          && removedAffectedIds.has(restored.logicSelected)
+          ? null
+          : restored.logicSelected,
+      });
+      if (moduleSurfaceSpec(restored.viewMode) !== null) {
+        void get().moduleRelayout({
+          label: exclude ? "Excluding formatting-only changes…" : "Including formatting-only changes…",
+        });
+      }
+      if (get().minimalSeedIds.length > 0) {
+        void requestMinimalRelayout({
+          label: exclude ? "Excluding formatting-only changes…" : "Including formatting-only changes…",
+        });
+      }
+      if (get().flowSelection !== null) {
+        void get().flowPaneRelayout();
+      }
+      if (get().logicRoot !== null) {
+        void get().logicRelayout({
+          label: exclude ? "Excluding formatting-only changes…" : "Including formatting-only changes…",
+        });
+      }
     },
 
     toggleReviewDiffOnly() {
@@ -9281,7 +9435,7 @@ function applyPrReviewToMap(
     set({ prReviewBlocked: { number: prSelected, reason: "This PR session has no stable GitHub repository scope" } });
     return false;
   }
-  const context = reviewContextFromPrFiles(
+  const rawContext = reviewContextFromPrFiles(
     {
       prNumber: prSelected,
       headRef: summary?.headRef ?? null,
@@ -9290,6 +9444,26 @@ function applyPrReviewToMap(
       files: reviewPrFiles,
     },
     // Base-side hunks mark base coordinates — right for the boot artifact, wrong for a head graph.
+    { baseSide: !swapped },
+  );
+  const contentPrFiles = filterFormattingOnlyPrFiles(
+    reviewPrFiles,
+    get().reviewExcludeFormatOnlyChanges,
+  );
+  const rawPrFileByPath = new Map(reviewPrFiles.map((file) => [file.path, file]));
+  const formattingFilteredPaths = new Set(
+    contentPrFiles
+      .filter((file) => rawPrFileByPath.get(file.path) !== file)
+      .map((file) => file.path),
+  );
+  const context = reviewContextFromPrFiles(
+    {
+      prNumber: prSelected,
+      headRef: summary?.headRef ?? null,
+      baseRef: summary?.baseRef ?? null,
+      reviewKey,
+      files: contentPrFiles,
+    },
     { baseSide: !swapped },
   );
   // A refresh re-enters this same reviewKey. Carry the in-memory progress directly so drafts made
@@ -9324,10 +9498,12 @@ function applyPrReviewToMap(
         headIndex,
         baseArtifact: prReviewComparison.artifact,
         baseIndex: prReviewComparison.index,
-        // Compose the COMPLETE PR before the Tests filter. An all-test deletion still needs a
-        // hidden workspace sentinel so the review opens and the Tests toggle can reveal it.
+        // Compose the complete reviewable projection before the Tests filter. Formatting-only
+        // changes have already been proven and removed; raw PR seeds below remain the workspace
+        // sentinel so an all-format review can still open and turn the preference back off.
         context,
-        prFiles: reviewPrFiles,
+        prFiles: contentPrFiles,
+        effectiveDiffPaths: formattingFilteredPaths,
       })
     : emptyDeletedNodeProjection(reviewedHeadArtifact, headIndex);
   const artifact = deletedProjection.artifact;
@@ -9337,7 +9513,7 @@ function applyPrReviewToMap(
   const headAffected = swapped && prReviewComparison !== null
     ? preparedHeadAffected(
         visibleContext,
-        reviewPrFiles,
+        contentPrFiles,
         reviewedHeadArtifact,
         headIndex,
         deletedProjection.survivingAffectedHeadIds,
@@ -9350,7 +9526,7 @@ function applyPrReviewToMap(
   // Gate entry on the COMPLETE two-sided graph before applying the Tests projection. A deletion-
   // only PR now resolves through its merge-base module instead of being rejected by a HEAD-only
   // seed check. An all-test PR still opens an intentionally empty workspace with Tests off.
-  const allMatchedFiles = matchAffectedFiles(index, context.changedFiles.map((file) => file.path)).matched;
+  const allMatchedFiles = matchAffectedFiles(index, rawContext.changedFiles.map((file) => file.path)).matched;
   const allRollup = rollupSeeds(allMatchedFiles, index);
   if (allRollup.seeds.length === 0) {
     const allOutside = reviewPrFiles.length === 0 && prFilesOutside > 0;
@@ -9407,12 +9583,47 @@ function applyPrReviewToMap(
     if (!rows || rows.length === 0) continue;
     for (const locFile of binding.aliases) reviewDiffLinesByFile[locFile] = rows;
   }
+  // Source previews and comment anchors above deliberately keep the lossless raw rows. Node/flow
+  // colouring must instead consume the same effective edit runs as the affected-node projection;
+  // otherwise a hidden rewrap could leave a gold node behind or taint a mixed semantic edit.
+  const statusKinds = Object.create(null) as Record<string, ChangedLineSpan[]>;
+  const statusDiffLines = Object.create(null) as Record<string, ChangedDiffLine[]>;
+  const statusEdits = Object.create(null) as Record<string, LineEdit[]>;
+  const contentBindings = bindReviewFiles(
+    contentPrFiles,
+    headIndex,
+    swapped ? (prReviewComparison?.index ?? null) : null,
+    deletedProjection,
+  );
+  for (const binding of contentBindings) {
+    const aliases = swapped ? binding.aliases : binding.headFiles;
+    const rawEdits = rawPrFileByPath.get(binding.file.path)?.edits;
+    for (const locFile of aliases) {
+      statusKinds[locFile] = binding.file.kinds ?? [];
+      if (binding.file.diffLines && binding.file.diffLines.length > 0) {
+        statusDiffLines[locFile] = binding.file.diffLines;
+      }
+      // A synchronous review still paints BASE-coordinate graph nodes, so retain the complete raw
+      // base→HEAD transform even though only semantic kinds/rows remain eligible for colouring.
+      if (!swapped && rawEdits && rawEdits.length > 0) {
+        statusEdits[locFile] = rawEdits;
+      }
+    }
+  }
+  const artifactStatusDiff = formattingAwareArtifactDiff(
+    reviewedHeadArtifact,
+    get().reviewExcludeFormatOnlyChanges,
+  );
   const nodeStatusSources = swapped
     ? reviewNodeStatusSourcesFromDiff(
-        changedLineKindsFromExtensions(reviewedHeadArtifact.extensions),
-        changedDiffLinesFromExtensions(reviewedHeadArtifact.extensions),
+        artifactStatusDiff.kinds,
+        artifactStatusDiff.diffLines,
       )
-    : liveReviewStatusSources(reviewDiffByFile, reviewDiffLinesByFile);
+    : reviewNodeStatusSourcesFromDiff(
+        statusKinds,
+        statusDiffLines,
+        statusEdits,
+      );
   // The changed code blocks (hunks ∩ node ranges); repaint main's changed-node channel to THIS PR.
   applyChangedIds(index, affected.map((node) => node.nodeId));
   // Colour each touched CODE BLOCK by its own exact edits: additions-only green, deletions-only red,
@@ -9699,8 +9910,12 @@ function preparedHeadAffected(
     const raw = rawByPath.get(changed.path);
     const canonicalKinds = valueForReviewAliases(kindsByFile, aliases);
     const canonicalStats = valueForReviewAliases(statsByFile, aliases);
-    const exactKinds = canonicalKinds
-      ?? (raw?.diffComplete === true ? raw.kinds ?? [] : undefined);
+    // `raw` is the already-projected review file. In a prepared review it was assembled from the
+    // same canonical extension, then had only syntax-proven formatting runs removed. Prefer those
+    // effective kinds so the raw artifact channel cannot reintroduce an excluded node.
+    const exactKinds = raw?.diffComplete === true
+      ? raw.kinds ?? []
+      : canonicalKinds;
     const file = { ...changed, path: canonicalPath };
     delete file.oldHunks;
     if (exactKinds !== undefined || canonicalStats !== undefined) {

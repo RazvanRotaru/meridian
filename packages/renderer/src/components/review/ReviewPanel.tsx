@@ -9,6 +9,10 @@
  */
 
 import { memo, useEffect, useRef, useState } from "react";
+import {
+  formattingOnlyEditsFromExtensions,
+  readReviewContext,
+} from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
 import type { ReviewData } from "../../derive/reviewData";
@@ -48,11 +52,36 @@ function ReviewPanelImpl() {
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
   const codePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
+  const excludeFormatOnlyChanges = useBlueprint((state) => state.reviewExcludeFormatOnlyChanges);
+  const hasExcludedTestChanges = useBlueprint((state) => !state.showTests
+    && (state.review?.context.changedFiles.some((file) => isReviewTestPath(
+      file.path,
+      state.index,
+      state.prReviewBaseline?.index ?? null,
+    )) ?? false));
+  const hasExcludedFormatOnlyChanges = useBlueprint((state) => {
+    if (!state.reviewExcludeFormatOnlyChanges || state.review === null) {
+      return false;
+    }
+    const proof = formattingOnlyEditsFromExtensions(state.artifact.extensions);
+    if (proof === null) {
+      return false;
+    }
+    const rawPaths = state.prReviewSource?.files.map((file) => file.path)
+      ?? readReviewContext(state.artifact)?.changedFiles.map((file) => file.path)
+      ?? [];
+    const effectivePaths = new Set(state.review.context.changedFiles.map((file) => file.path));
+    return rawPaths.some((path) =>
+      !effectivePaths.has(path)
+      && Object.hasOwn(proof, path)
+      && proof[path].length > 0);
+  });
   const {
     setReviewFlowSplitView,
     setReviewOpenFlowSplitOnSelect,
     setReviewCodePreviewTrigger,
     setReviewHideAddedSourceCommentDiffs,
+    setReviewExcludeFormatOnlyChanges,
     toggleReviewDiffOnly,
     toggleShowTests,
   } = useBlueprintActions();
@@ -82,8 +111,12 @@ function ReviewPanelImpl() {
     review.rows,
     prSelected === null || preparedHeadCurrent,
   ).length > 0;
-  const testsHiddenNoticeVisible = !showTests && reviewFiles.length === 0;
-  const scopeVisible = !filesExpanded && (scopePresent || testsHiddenNoticeVisible);
+  const testsHiddenNoticeVisible = !showTests && reviewFiles.length === 0 && hasExcludedTestChanges;
+  const formatOnlyHiddenNoticeVisible = hasExcludedFormatOnlyChanges
+    && reviewFiles.length === 0
+    && !testsHiddenNoticeVisible;
+  const scopeVisible = !filesExpanded
+    && (scopePresent || testsHiddenNoticeVisible || formatOnlyHiddenNoticeVisible);
   const affectedFlowsVisible = !filesExpanded && flowsPresent;
   return (
     <div style={PANEL}>
@@ -101,6 +134,11 @@ function ReviewPanelImpl() {
             {testsHiddenNoticeVisible ? (
               <div style={TESTS_HIDDEN_NOTICE} role="status">
                 Test changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude test changes</strong> to include them.
+              </div>
+            ) : null}
+            {formatOnlyHiddenNoticeVisible ? (
+              <div style={TESTS_HIDDEN_NOTICE} role="status">
+                Formatting-only changes are excluded. Open <strong>Review preferences</strong> and turn off <strong>Exclude formatting-only changes</strong> to include them.
               </div>
             ) : null}
             <ChangeGroupStrip />
@@ -129,6 +167,7 @@ function ReviewPanelImpl() {
           <div style={PREFERENCES_LAYER}>
             <ReviewPreferencesPane
               excludeTestChanges={!showTests}
+              excludeFormatOnlyChanges={excludeFormatOnlyChanges}
               hideNodesNotInDiff={reviewDiffOnly}
               flowView={flowView}
               openFlowSplitOnSelect={openFlowSplitOnSelect}
@@ -139,6 +178,7 @@ function ReviewPanelImpl() {
                   toggleShowTests();
                 }
               }}
+              onExcludeFormatOnlyChangesChange={setReviewExcludeFormatOnlyChanges}
               onHideNodesNotInDiffChange={(hide) => {
                 if (hide !== reviewDiffOnly) {
                   toggleReviewDiffOnly();

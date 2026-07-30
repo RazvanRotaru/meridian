@@ -260,6 +260,7 @@ describe("changedSinceMetadata", () => {
       { path: "src/removed.ts", status: "deleted" },
       { path: "src/new-name.ts", status: "renamed", previousPath: "src/old-name.ts" },
     ]);
+    expect(result.formattingOnly).toEqual({ version: 1, edits: [] });
     expect(execute).toHaveBeenNthCalledWith(
       2,
       "/repo/subdir",
@@ -285,6 +286,23 @@ describe("changedSinceMetadata", () => {
         "--merge-base",
         "origin/main",
         "--relative",
+        "--name-status",
+        "-z",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames=50%",
+      ],
+      300_000,
+    );
+    expect(execute).toHaveBeenNthCalledWith(
+      4,
+      "/repo/subdir",
+      [
+        "diff",
+        "--merge-base",
+        "origin/main",
+        "--relative",
         "--unified=0",
         "--no-color",
         "--no-ext-diff",
@@ -293,7 +311,7 @@ describe("changedSinceMetadata", () => {
       ],
       300_000,
     );
-    expect(execute).toHaveBeenCalledTimes(3);
+    expect(execute).toHaveBeenCalledTimes(4);
   });
 
   it("fails closed when a git hunk body is incomplete", async () => {
@@ -325,13 +343,28 @@ describe("changedSinceMetadata", () => {
     const execute = vi.fn()
       .mockResolvedValueOnce(DIFF)
       .mockResolvedValueOnce(NAME_STATUS)
+      .mockResolvedValueOnce(NAME_STATUS)
       .mockResolvedValueOnce(changedPatch);
 
     await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(
       /working tree changed while reading git diff metadata/,
     );
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(execute.mock.calls[0][1]).toEqual(execute.mock.calls[3][1]);
+  });
+
+  it("fails closed when the exact file manifest changes during formatting proof reads", async () => {
+    const changedManifest = NAME_STATUS.replace("src/orderService.ts", "src/renamed-again.ts");
+    const execute = vi.fn()
+      .mockResolvedValueOnce(DIFF)
+      .mockResolvedValueOnce(NAME_STATUS)
+      .mockResolvedValueOnce(changedManifest);
+
+    await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(
+      /working tree changed while reading git diff manifest/,
+    );
     expect(execute).toHaveBeenCalledTimes(3);
-    expect(execute.mock.calls[0][1]).toEqual(execute.mock.calls[2][1]);
+    expect(execute.mock.calls[1][1]).toEqual(execute.mock.calls[2][1]);
   });
 
   it("captures changes with no text hunks: pure renames, binary edits, and mode-only edits", async () => {
@@ -366,6 +399,61 @@ describe("changedSinceMetadata", () => {
     ]);
     expect(metadata.ranges).toEqual({});
     expect(metadata.stats).toEqual({ "src/gone.ts": { added: 0, deleted: 1 } });
+  });
+
+  it("generates canonical edit-grained proof for the Autopilot #4123 TypeScript wrap", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-format-diff-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "src"));
+    const path = join(root, "src/msg.converter.ts");
+    const oldLine = "  readonly convertBinary: (bytes: Uint8Array, extension: string, name: string) => Promise<{ markdown: string; images: readonly MsgNativeAttachment[] } | null>;";
+    writeFileSync(path, [
+      "export interface MsgConversionDependencies {",
+      "  // Returns Markdown plus embedded images.",
+      "  // Returns null when conversion failed.",
+      oldLine,
+      "}",
+      "",
+    ].join("\n"));
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    const added = [
+      "  readonly convertBinary: (",
+      "    bytes: Uint8Array,",
+      "    extension: string,",
+      "    name: string,",
+      "  ) => Promise<{ markdown: string; images: readonly MsgNativeAttachment[] } | null>;",
+    ];
+    writeFileSync(path, [
+      "export interface MsgConversionDependencies {",
+      "  // Returns Markdown plus embedded images.",
+      "  // Returns null when conversion failed.",
+      ...added,
+      "}",
+      "",
+    ].join("\n"));
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+    expect(metadata.formattingOnly).toEqual({
+      version: 1,
+      edits: [{
+        path: "src/msg.converter.ts",
+        oldStart: 4,
+        oldLines: 1,
+        newStart: 4,
+        newLines: 5,
+        oldRows: [{ text: oldLine, noNewline: false }],
+        newRows: added.map((text) => ({ text, noNewline: false })),
+      }],
+    });
+    expect(metadata.diffLines["src/msg.converter.ts"].map((row) => row.text)).toEqual([
+      oldLine,
+      ...added,
+    ]);
   });
 });
 

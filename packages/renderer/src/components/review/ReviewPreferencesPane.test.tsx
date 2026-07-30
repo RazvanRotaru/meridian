@@ -13,16 +13,19 @@ function render(
   hideNodesNotInDiff = false,
   codePreviewTrigger: ReviewCodePreviewTrigger = "hover",
   hideAddedSourceCommentDiffs = false,
+  excludeFormatOnlyChanges = true,
 ) {
   return renderToStaticMarkup(
     <ReviewPreferencesPane
       excludeTestChanges={excludeTestChanges}
+      excludeFormatOnlyChanges={excludeFormatOnlyChanges}
       hideNodesNotInDiff={hideNodesNotInDiff}
       flowView={flowView}
       openFlowSplitOnSelect={openFlowSplitOnSelect}
       codePreviewTrigger={codePreviewTrigger}
       hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
       onExcludeTestChangesChange={() => undefined}
+      onExcludeFormatOnlyChangesChange={() => undefined}
       onHideNodesNotInDiffChange={() => undefined}
       onFlowViewChange={() => undefined}
       onOpenFlowSplitOnSelectChange={() => undefined}
@@ -44,6 +47,10 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Review content");
     expect(markup).toContain("Exclude test changes");
     expect(markup).toContain("Remove test files, affected nodes, flows, and comments");
+    expect(markup).toContain("Exclude formatting-only changes");
+    expect(markup).toContain("Remove proven formatting-only edits from affected nodes, files, and flows");
+    expect(markup).toContain("Uncertain or mixed changes stay in the review");
+    expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-format-only-description")[^>]*>/);
     expect(markup).toContain("Graph display");
     expect(markup).toContain("Hide nodes not in diff");
     expect(markup).toContain("Keep changed code and the file or package containers needed to place it");
@@ -51,8 +58,8 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Logic flow behavior");
     expect(markup).toContain("Open split view when selecting a logic flow");
     expect(markup).toContain("stays highlighted in the review graph");
-    expect(markup.match(/type="checkbox"/g)).toHaveLength(4);
-    expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(2);
+    expect(markup.match(/type="checkbox"/g)).toHaveLength(5);
+    expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(3);
     expect(markup).toContain("Source diff display");
     expect(markup).toContain("Hide source comments in diffs");
     expect(markup).toContain("Hide comment-only source additions from code diffs");
@@ -73,13 +80,13 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toContain("Execution graph");
     expect(markup).toContain("Metro");
     expect(markup).toContain("Blocks");
-    expect(markup).toContain("Flow, code preview, and source diff preferences are saved in this browser");
+    expect(markup).toContain("Formatting-only filtering, flow, code preview, and source diff preferences are saved in this browser");
     expect(markup).toContain("Graph display and test visibility apply to the current PR review");
     expect(markup).toContain('aria-label="Close review preferences"');
   });
 
   it("keeps every presentation configurable while automatic split opening and test exclusion are off", () => {
-    const markup = render("blocks", false, false);
+    const markup = render("blocks", false, false, false, "hover", false, false);
 
     expect(markup).not.toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/);
     expect(markup.match(/type="radio"/g)).toHaveLength(MODES.length + 2);
@@ -102,10 +109,17 @@ describe("ReviewPreferencesPane", () => {
   });
 
   it("checks the diff-only graph control independently from the other review preferences", () => {
-    const markup = render("timeline", false, false, true);
+    const markup = render("timeline", false, false, true, "hover", false, false);
 
     expect(markup.match(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")[^>]*>/g)).toHaveLength(1);
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-diff-only-description")[^>]*>/);
+  });
+
+  it("can include formatting-only changes without changing source-comment diff treatment", () => {
+    const markup = render("timeline", true, true, false, "hover", true, false);
+
+    expect(markup).not.toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-format-only-description")[^>]*>/);
+    expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
   });
 
   it.each(MODES)("marks only %s as selected", (mode) => {

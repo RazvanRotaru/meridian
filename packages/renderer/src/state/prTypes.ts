@@ -1,16 +1,11 @@
-import type { ChangedDiffLine, ChangedLineSpan, LineRange } from "@meridian/core";
+import type { ChangedDiffLine, ChangedLineSpan, FormattingOnlyEdit, LineRange } from "@meridian/core";
 
 export type PrsTab = "open" | "closed";
 export type PrReviewSubmissionEvent = "COMMENT" | "APPROVE" | "REQUEST_CHANGES";
 export type PrReviewCommentSide = "LEFT" | "RIGHT";
 
 /** One exact edit run's old/new spans; an empty side starts at its 1-based next-row cursor. */
-export interface LineEdit {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-}
+export type LineEdit = Pick<FormattingOnlyEdit, "oldStart" | "oldLines" | "newStart" | "newLines">;
 
 export type PrFileStatus = "added" | "modified" | "removed" | "renamed";
 export type PrFileViewedState = "VIEWED" | "UNVIEWED" | "DISMISSED";
@@ -41,6 +36,9 @@ export interface PrChangedFile {
   oldHunks?: LineRange[];
   /** Per-edit-run old/new spans, for mapping a node's base span to its position in the PR head file. */
   edits?: LineEdit[];
+  /** Exact complete edit runs independently proven to change formatting only. This is evidence,
+   * not a heuristic: consumers must match a whole run before excluding it from review. */
+  formattingOnlyEdits?: LineEdit[];
   /** GitHub's context-padded U3 header ranges, retained only for review-comment validation. */
   contextHunks?: LineRange[];
   /** Head-relative added/modified line spans (from the patch body) — the code panel's exact green/gold. */

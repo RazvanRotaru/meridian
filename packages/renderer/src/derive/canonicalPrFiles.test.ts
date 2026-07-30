@@ -22,6 +22,7 @@ describe("canonicalPrFiles", () => {
       ],
       files: {
         "src/kept.ts": [{ start: 10, end: 10 }],
+        "src/gone.ts": [{ start: 1, end: 1 }],
         "src/new-name.ts": [{ start: 2, end: 2 }],
       },
       stats: {
@@ -34,7 +35,7 @@ describe("canonicalPrFiles", () => {
         "src/new-name.ts": [{ start: 2, end: 2, kind: "modified" }],
       },
       diffLines: {
-        "src/kept.ts": [deleted(8, 10, "old"), added(10, "new")],
+        "src/kept.ts": [deleted(10, 10, "old"), added(10, "new")],
         "src/gone.ts": [deleted(1, 1, "one"), deleted(2, 1, "two")],
         "src/new-name.ts": [deleted(2, 2, "old"), added(2, "new")],
       },
@@ -53,7 +54,8 @@ describe("canonicalPrFiles", () => {
       deletions: 1,
       diffComplete: true,
       hunks: [{ start: 10, end: 10 }],
-      oldHunks: [{ start: 8, end: 8 }],
+      oldHunks: [{ start: 10, end: 10 }],
+      edits: [{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1 }],
       // GitHub-only U3 detail remains available for RIGHT-side comments.
       contextHunks: [{ start: 7, end: 13 }],
     });
@@ -137,6 +139,129 @@ describe("canonicalPrFiles", () => {
       { path: "constructor", additions: 0, deletions: 0, diffComplete: false },
       { path: "__proto__", additions: 0, deletions: 0, diffComplete: false },
     ]);
+  });
+
+  it("attaches PR #4123's strict prepared formatting proof to its exact canonical edit", () => {
+    const path = "src/aria/app/src/lib/msg.converter.ts";
+    const edit = { oldStart: 157, oldLines: 1, newStart: 157, newLines: 5 };
+    const oldText =
+      "  readonly convertBinary: (bytes: Uint8Array, extension: string, name: string) => Promise<string>;";
+    const newText = [
+      "  readonly convertBinary: (",
+      "    bytes: Uint8Array,",
+      "    extension: string,",
+      "    name: string,",
+      "  ) => Promise<string>;",
+    ];
+    const files = canonicalPrFiles([], changedSince({
+      manifest: [{ path, status: "modified" }],
+      files: { [path]: [{ start: 157, end: 161 }] },
+      stats: { [path]: { added: 5, deleted: 1 } },
+      kinds: {
+        [path]: [
+          { start: 157, end: 157, kind: "modified" },
+          { start: 158, end: 161, kind: "added" },
+        ],
+      },
+      diffLines: {
+        [path]: [
+          deleted(157, 157, oldText),
+          ...newText.map((text, index) => added(157 + index, text)),
+        ],
+      },
+      formattingOnly: {
+        version: 1,
+        edits: [{
+          path,
+          ...edit,
+          oldRows: [{ text: oldText, noNewline: false }],
+          newRows: newText.map((text) => ({ text, noNewline: false })),
+        }],
+      },
+    }));
+
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatchObject({
+      diffComplete: true,
+      edits: [edit],
+      formattingOnlyEdits: [edit],
+    });
+  });
+
+  it("does not carry stale GitHub proof when prepared proof is unsupported", () => {
+    const path = "src/a.ts";
+    const github: PrChangedFile[] = [{
+      path,
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      formattingOnlyEdits: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
+    }];
+    const files = canonicalPrFiles(github, changedSince({
+      manifest: [{ path, status: "modified" }],
+      files: { [path]: [{ start: 1, end: 1 }] },
+      stats: { [path]: { added: 1, deleted: 1 } },
+      kinds: { [path]: [{ start: 1, end: 1, kind: "modified" }] },
+      diffLines: { [path]: [deleted(1, 1, "old"), added(1, "new")] },
+      formattingOnly: {
+        version: 2,
+        edits: [{ path, oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }],
+      },
+    }));
+
+    expect(files[0]).not.toHaveProperty("formattingOnlyEdits");
+  });
+
+  it.each([
+    ["row text", { text: "stale old b", noNewline: true }],
+    ["no-newline marker", { text: "old b", noNewline: false }],
+  ])("rejects the whole proof transaction when one %s binding is stale", (_label, staleOldRow) => {
+    const pathA = "src/a.ts";
+    const pathB = "src/b.ts";
+    const edit = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 };
+    const files = canonicalPrFiles([], changedSince({
+      manifest: [
+        { path: pathA, status: "modified" },
+        { path: pathB, status: "modified" },
+      ],
+      files: {
+        [pathA]: [{ start: 1, end: 1 }],
+        [pathB]: [{ start: 1, end: 1 }],
+      },
+      stats: {
+        [pathA]: { added: 1, deleted: 1 },
+        [pathB]: { added: 1, deleted: 1 },
+      },
+      kinds: {
+        [pathA]: [{ start: 1, end: 1, kind: "modified" }],
+        [pathB]: [{ start: 1, end: 1, kind: "modified" }],
+      },
+      diffLines: {
+        [pathA]: [deleted(1, 1, "old a"), added(1, "new a")],
+        [pathB]: [{ ...deleted(1, 1, "old b"), noNewline: true }, added(1, "new b")],
+      },
+      formattingOnly: {
+        version: 1,
+        edits: [
+          {
+            path: pathA,
+            ...edit,
+            oldRows: [{ text: "old a", noNewline: false }],
+            newRows: [{ text: "new a", noNewline: false }],
+          },
+          {
+            path: pathB,
+            ...edit,
+            oldRows: [staleOldRow],
+            newRows: [{ text: "new b", noNewline: false }],
+          },
+        ],
+      },
+    }));
+
+    expect(files).toHaveLength(2);
+    expect(files[0]).not.toHaveProperty("formattingOnlyEdits");
+    expect(files[1]).not.toHaveProperty("formattingOnlyEdits");
   });
 });
 

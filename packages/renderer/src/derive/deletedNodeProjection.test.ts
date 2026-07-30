@@ -69,6 +69,7 @@ function project(
   base: GraphArtifact,
   changedFiles: ReviewContext["changedFiles"],
   prFiles: PrChangedFile[],
+  effectiveDiffPaths?: ReadonlySet<string>,
 ) {
   return deriveDeletedNodeProjection({
     headArtifact: head,
@@ -77,6 +78,7 @@ function project(
     baseIndex: buildGraphIndex(base),
     context: context(changedFiles),
     prFiles,
+    ...(effectiveDiffPaths === undefined ? {} : { effectiveDiffPaths }),
   });
 }
 
@@ -184,6 +186,60 @@ describe("deriveDeletedNodeProjection", () => {
       endLine: 22,
       depth: 1,
     })]);
+  });
+
+  it("does not reintroduce a formatting-only survivor from raw artifact rows in a mixed file", () => {
+    const path = "src/mixed.ts";
+    const moduleId = "ts:src/mixed.ts";
+    const formattingId = `${moduleId}#formattingOnly`;
+    const semanticId = `${moduleId}#semantic`;
+    const base = artifact([
+      node(moduleId, "module", path, path, 1, 40, null),
+      node(formattingId, "function", path, "formattingOnly", 10, 10, moduleId),
+      node(semanticId, "function", path, "semantic", 20, 20, moduleId),
+    ]);
+    const formattingRows = [
+      deleted(10, "const formattingOnly = (value: string) => value;"),
+      added(10, "const formattingOnly = ("),
+      added(11, "  value: string,"),
+      added(12, ") => value;"),
+    ];
+    const semanticRows = [
+      { ...deleted(20, "const semantic = false;"), beforeNewLine: 22 },
+      added(22, "const semantic = true;"),
+    ];
+    const rawRows = [...formattingRows, ...semanticRows];
+    const head = artifact([
+      node(moduleId, "module", path, path, 1, 42, null),
+      node(formattingId, "function", path, "formattingOnly", 10, 12, moduleId),
+      node(semanticId, "function", path, "semantic", 22, 22, moduleId),
+    ], {
+      extensions: {
+        changedSince: {
+          stats: { [path]: { added: 4, deleted: 2 } },
+          diffLines: { [path]: rawRows },
+        },
+      } as unknown as GraphArtifact["extensions"],
+    });
+    const effectiveFile: PrChangedFile = {
+      path,
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      diffComplete: true,
+      diffLines: semanticRows,
+    };
+
+    const result = project(
+      head,
+      base,
+      [{ path, status: "modified", hunks: [{ start: 22, end: 22 }] }],
+      [effectiveFile],
+      new Set([path]),
+    );
+
+    expect(result.survivingAffectedHeadIds).toEqual(new Set([semanticId]));
+    expect(result.survivingAffectedHeadIds.has(formattingId)).toBe(false);
   });
 
   it("projects every extracted unit plus its incoming callers and outgoing calls for a fully removed file", () => {

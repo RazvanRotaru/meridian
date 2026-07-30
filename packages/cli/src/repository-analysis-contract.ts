@@ -6,9 +6,9 @@ import type { GitDiffExecutor } from "./git-diff";
 
 /**
  * Bump when the fixed product profile or its interpretation changes, invalidating graph caches.
- * Version 8 includes resolved module dependencies from literal runtime `import()` expressions.
+ * Version 9 includes edit-grained, full-file syntax proofs for formatting-only TypeScript changes.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 8;
+export const REPOSITORY_ANALYSIS_VERSION = 9;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
