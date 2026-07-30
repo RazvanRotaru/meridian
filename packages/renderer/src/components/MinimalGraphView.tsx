@@ -49,7 +49,11 @@ import {
 } from "./canvas/useSemanticSurfaceNavigation";
 import { CanvasActionBar } from "./controlpanel/CanvasActionBar";
 import { minimalMiniMapColor } from "./minimalGraphStyles";
-import { filterExternalGhosts, filterGhostNodes } from "./moduleMapPaint";
+import {
+  filterExternalGhosts,
+  filterGhostNodes,
+  filterGhostNodesByAllowedIds,
+} from "./moduleMapPaint";
 import { relationKindOf } from "../graph/relationEdge";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
@@ -67,10 +71,12 @@ export function MinimalGraphView({
   const edges = useBlueprint((state) => state.minimalRfEdges);
   const selected = useBlueprint((state) => state.moduleSelected);
   const seedIds = useBlueprint((state) => state.minimalSeedIds);
+  const memberIds = useBlueprint((state) => state.minimalMemberIds);
   const layoutStatus = useBlueprint((state) => state.minimalLayoutStatus);
   const layoutActivity = useBlueprint((state) => state.minimalLayoutActivity);
   const reviewSelectedId = useBlueprint((state) => state.reviewSelectedId);
   const reviewActive = useBlueprint((state) => state.review !== null);
+  const reviewAffectedIds = useBlueprint((state) => state.reviewAffectedIds);
   const nestedExtraction = useBlueprint((state) => state.minimalGraphHistory.length > 0);
   const reviewFlowOpen = useBlueprint((state) => state.flowSelection !== null && state.reviewFlowBaseline !== null);
   const index = useBlueprint((state) => state.index);
@@ -83,6 +89,7 @@ export function MinimalGraphView({
   const serviceGroupingLabelMode = useBlueprint((state) => state.serviceGroupingLabelMode);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const showGhostNodes = useBlueprint((state) => state.minimalShowGhostNodes);
+  const showNonDiffGhostNodes = useBlueprint((state) => state.minimalShowNonDiffGhostNodes);
   const {
     closeMinimalGraph,
     promoteGhost,
@@ -90,12 +97,21 @@ export function MinimalGraphView({
     minimalRelayout,
     selectModule,
     setMinimalShowGhostNodes,
+    setMinimalShowNonDiffGhostNodes,
   } = useBlueprintActions();
   const relations = activeModuleSurfaceSpec(viewMode).relations;
   const ghostIds = useMemo(
     () => new Set(nodes.filter((node) => node.type === "ghost").map((node) => node.id)),
     [nodes],
   );
+  const protectedReviewGhostIds = useMemo(() => {
+    // "Modified by the PR" is intentionally the exact affected set. Ancestors are useful for the
+    // broad reviewDiffOnly projection, but an unchanged ancestor rendered as a ghost is still
+    // removable unless the user explicitly included it in this minimal graph.
+    const protectedIds = new Set(reviewAffectedIds);
+    memberIds.forEach((id) => protectedIds.add(id));
+    return protectedIds;
+  }, [memberIds, reviewAffectedIds]);
   const relationKinds = useMemo(() => {
     const kinds = new Set<string>();
     edges.forEach((edge) => {
@@ -112,6 +128,24 @@ export function MinimalGraphView({
     }
     setMinimalShowGhostNodes(next);
   }, [ghostIds, selectModule, selected, setMinimalShowGhostNodes, showGhostNodes]);
+  const toggleReviewGhostDiffOnly = useCallback(() => {
+    const nextShowNonDiffGhostNodes = !showNonDiffGhostNodes;
+    if (
+      !nextShowNonDiffGhostNodes
+      && [...selected].some((id) => ghostIds.has(id) && !protectedReviewGhostIds.has(id))
+    ) {
+      // Keep emphasis honest when the selective PR filter removes its exact paint seed.
+      selectModule(null);
+    }
+    setMinimalShowNonDiffGhostNodes(nextShowNonDiffGhostNodes);
+  }, [
+    ghostIds,
+    protectedReviewGhostIds,
+    selectModule,
+    selected,
+    setMinimalShowNonDiffGhostNodes,
+    showNonDiffGhostNodes,
+  ]);
 
   // Interactions ARE the Module map's own (the shared hook — called HERE so the debounce dies with
   // the overlay). During PR review, package double-click opens an exact-file child graph and every
@@ -163,8 +197,21 @@ export function MinimalGraphView({
   };
   const visibleGraph = useMemo(() => {
     const externalFiltered = filterExternalGhosts(nodes, edges, showExternalGhosts);
-    return filterGhostNodes(externalFiltered.nodes, externalFiltered.edges, showGhostNodes);
-  }, [edges, nodes, showExternalGhosts, showGhostNodes]);
+    const reviewGhostFiltered = filterGhostNodesByAllowedIds(
+      externalFiltered.nodes,
+      externalFiltered.edges,
+      reviewActive && !showNonDiffGhostNodes ? protectedReviewGhostIds : null,
+    );
+    return filterGhostNodes(reviewGhostFiltered.nodes, reviewGhostFiltered.edges, showGhostNodes);
+  }, [
+    edges,
+    nodes,
+    protectedReviewGhostIds,
+    reviewActive,
+    showExternalGhosts,
+    showGhostNodes,
+    showNonDiffGhostNodes,
+  ]);
   const semanticScene = useMemo(
     () => reviewActive || nestedExtraction
       ? { ...visibleGraph, semanticLayers: [] as const }
@@ -238,6 +285,8 @@ export function MinimalGraphView({
           ghostNodesVisible={showGhostNodes}
           hasGhostNodes={ghostIds.size > 0}
           onToggleGhostNodes={toggleGhostNodes}
+          reviewGhostDiffOnly={!showNonDiffGhostNodes}
+          onToggleReviewGhostDiffOnly={toggleReviewGhostDiffOnly}
           relationKinds={relationKinds}
         />
       </GraphSurface>

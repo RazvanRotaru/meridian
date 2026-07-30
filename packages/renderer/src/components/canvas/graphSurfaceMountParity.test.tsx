@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { ReactFlowProvider } from "@xyflow/react";
+import { ReactFlowProvider, type Edge, type Node } from "@xyflow/react";
 import { StoreProvider } from "../../state/StoreContext";
-import { freshStore } from "../../parity/surfaceFixture";
+import { ALPHA, ALPHA_RUN, freshStore } from "../../parity/surfaceFixture";
 import { ModuleMapView } from "../ModuleMapView";
 import { MinimalGraphView } from "../MinimalGraphView";
 
@@ -94,6 +94,68 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expect(interactions.paintSelectionOverride).toBeNull();
   });
 
+  it("filters only non-diff, non-member ghosts before the PR graph reaches GraphSurface", () => {
+    const unchangedReal = rfNode("ts:src/unchanged.ts", "file");
+    const affectedGhost = rfNode(ALPHA_RUN, "ghost");
+    // ALPHA is an ancestor of the affected method in the graph index, but is not itself affected.
+    // The selective ghost filter must not inherit the broad reviewDiffOnly ancestor closure.
+    const unchangedAncestorGhost = rfNode(ALPHA, "ghost");
+    const memberGhost = rfNode("ts:src/member.ts#member", "ghost");
+    const staleGhost = rfNode("ts:src/context.ts#stale", "ghost");
+    const affectedWire = rfEdge(unchangedReal.id, affectedGhost.id);
+    const ancestorWire = rfEdge(unchangedReal.id, unchangedAncestorGhost.id);
+    const memberWire = rfEdge(unchangedReal.id, memberGhost.id);
+    const staleWire = rfEdge(unchangedReal.id, staleGhost.id);
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: [unchangedReal.id],
+      minimalMemberIds: [unchangedReal.id, memberGhost.id],
+      minimalRfNodes: [
+        unchangedReal,
+        affectedGhost,
+        unchangedAncestorGhost,
+        memberGhost,
+        staleGhost,
+      ],
+      minimalRfEdges: [affectedWire, ancestorWire, memberWire, staleWire],
+      minimalLayoutStatus: "ready",
+      minimalShowNonDiffGhostNodes: false,
+      reviewAffectedIds: new Set([affectedGhost.id]),
+      review: {
+        context: {
+          changedFiles: [{ path: "src/changed.ts", status: "modified" }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "selective-review-ghosts",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    const filteredState = store.getState();
+    Object.assign(store, { getInitialState: () => filteredState });
+
+    renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReactFlowProvider><MinimalGraphView onShowCodebase={() => undefined} /></ReactFlowProvider>
+      </StoreProvider>,
+    );
+
+    expect(graphSurfaceMounts).toHaveLength(1);
+    const mount = graphSurfaceMounts[0];
+    expect((mount.nodes as Node[]).map((node) => node.id)).toEqual([
+      unchangedReal.id,
+      affectedGhost.id,
+      memberGhost.id,
+    ]);
+    expect((mount.edges as Edge[]).map((edge) => edge.id)).toEqual([
+      affectedWire.id,
+      memberWire.id,
+    ]);
+  });
+
   it("unmounts the covered source while a PR review owns the navigation boundary", () => {
     const store = freshStore();
     store.setState({
@@ -128,6 +190,24 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     expect(markup).toContain('data-graph-surface="minimal"');
   });
 });
+
+function rfNode(id: string, type: string): Node {
+  return {
+    id,
+    type,
+    position: { x: 0, y: 0 },
+    data: { label: id },
+  };
+}
+
+function rfEdge(source: string, target: string): Edge {
+  return {
+    id: `${source}->${target}`,
+    source,
+    target,
+    data: { ghost: true },
+  };
+}
 
 /** Every shared-canvas mount owes the complete declaration even while fitting temporarily disables
  * LOD/commit. Otherwise lifecycle state could make this test skip the very contract it protects. */

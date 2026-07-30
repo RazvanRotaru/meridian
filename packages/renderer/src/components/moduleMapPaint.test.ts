@@ -9,7 +9,15 @@ import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { Edge, Node } from "@xyflow/react";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { ghostGroupId } from "../derive/groupGhosts";
-import { emphasize, filterExternalGhosts, filterGhostNodes, filterRelationsForLens, filterVisible, type HideOptions } from "./moduleMapPaint";
+import {
+  emphasize,
+  filterExternalGhosts,
+  filterGhostNodes,
+  filterGhostNodesByAllowedIds,
+  filterRelationsForLens,
+  filterVisible,
+  type HideOptions,
+} from "./moduleMapPaint";
 import { SERVICE_RELATION_POLICY } from "../graph/lensRelationPolicy";
 
 /** Baseline options with nothing hidden; tests override the one filter they exercise. */
@@ -137,6 +145,53 @@ describe("filterGhostNodes", () => {
     const shown = filterGhostNodes(nodes, edges, true);
     expect(shown.nodes).toBe(nodes);
     expect(shown.edges).toBe(edges);
+  });
+});
+
+describe("filterGhostNodesByAllowedIds", () => {
+  it("hides only unprotected ghosts and their incident wires while every real card remains", () => {
+    const source = fileNode("ts:src/app.ts", { position: { x: 12, y: 34 } });
+    const unchangedReal = fileNode("ts:src/unchanged.ts", { position: { x: 420, y: 80 } });
+    const changedGhost = ghostNode("ts:src/changed.ts#changed");
+    const memberGhost = ghostNode("ts:src/member.ts#member");
+    const staleGhost = ghostNode("ts:src/context.ts#stale");
+    const realWire = edge(source.id, unchangedReal.id);
+    const changedWire = ghostEdge(source.id, changedGhost.id);
+    const memberWire = ghostEdge(source.id, memberGhost.id);
+    const staleWire = ghostEdge(source.id, staleGhost.id);
+    const danglingWire = ghostEdge(source.id, "unresolved:dynamic-call");
+
+    const filtered = filterGhostNodesByAllowedIds(
+      [source, unchangedReal, changedGhost, memberGhost, staleGhost],
+      [realWire, changedWire, memberWire, staleWire, danglingWire],
+      new Set([changedGhost.id, memberGhost.id]),
+    );
+
+    expect(filtered.nodes.map((node) => node.id)).toEqual([
+      source.id,
+      unchangedReal.id,
+      changedGhost.id,
+      memberGhost.id,
+    ]);
+    expect(filtered.edges.map((wire) => wire.id)).toEqual([
+      realWire.id,
+      changedWire.id,
+      memberWire.id,
+    ]);
+    expect(filtered.nodes.slice(0, 2).map((node) => node.position)).toEqual([
+      { x: 12, y: 34 },
+      { x: 420, y: 80 },
+    ]);
+  });
+
+  it("returns the laid-out arrays unchanged when the selective filter is inactive", () => {
+    const nodes = [fileNode("ts:src/app.ts"), ghostNode("ts:src/context.ts#helper")];
+    const edges = [ghostEdge(nodes[0].id, nodes[1].id)];
+
+    const filtered = filterGhostNodesByAllowedIds(nodes, edges, null);
+
+    expect(filtered.nodes).toBe(nodes);
+    expect(filtered.edges).toBe(edges);
   });
 });
 

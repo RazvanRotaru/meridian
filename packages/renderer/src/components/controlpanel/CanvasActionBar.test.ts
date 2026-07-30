@@ -22,15 +22,15 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(936, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
-  it("accounts for the review-only neighbourhood and code-preview actions in row and stacked placement", () => {
-    expect(canvasActionPlacement(1394, "review-focus", null, 90)).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1083, "review-focus", null, 90)).toEqual({
+  it("accounts for the review-only neighbourhood, ghost-diff, and code-preview actions in row and stacked placement", () => {
+    expect(canvasActionPlacement(1439, "review-focus", null, 135)).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1128, "review-focus", null, 135)).toEqual({
       position: "bottom-left",
       layout: "row",
       left: 327,
       bottom: 181,
     });
-    expect(canvasActionPlacement(1082, "review-focus", null, 90)).toEqual({
+    expect(canvasActionPlacement(1127, "review-focus", null, 135)).toEqual({
       position: "bottom-left",
       layout: "stacked",
       left: 327,
@@ -334,6 +334,91 @@ describe("CanvasActionBar ghost visibility", () => {
     const hiddenButton = actionButtonMarkup(hiddenMarkup, "Show ghost nodes");
     expect(hiddenButton).toContain('aria-pressed="false"');
     expect(describedText(hiddenMarkup, hiddenButton)).toBe("Show ghost nodes and their connections");
+  });
+});
+
+describe("CanvasActionBar PR ghost visibility", () => {
+  it("surfaces a selective ghost projection on the review graph only", () => {
+    const store = actionBarStore();
+    expect(renderActionBar(store)).not.toContain('aria-label="Filter unrelated ghost nodes"');
+
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-diff-only",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    expect(renderActionBar(store)).not.toContain('aria-label="Filter unrelated ghost nodes"');
+
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+    });
+
+    const fullContextMarkup = renderActionBar(store, {
+      hasGhostNodes: true,
+      reviewGhostDiffOnly: false,
+      onToggleReviewGhostDiffOnly: () => undefined,
+    });
+    const fullContextButton = actionButtonMarkup(fullContextMarkup, "Filter unrelated ghost nodes");
+    expect(fullContextButton).toContain('aria-pressed="false"');
+    expect(describedText(fullContextMarkup, fullContextButton)).toBe(
+      "Hide ghost nodes not modified by this PR unless they are part of the minimal graph",
+    );
+    expect(fullContextMarkup.match(/aria-label="Filter unrelated ghost nodes"/g)).toHaveLength(1);
+
+    const diffOnlyMarkup = renderActionBar(store, {
+      hasGhostNodes: true,
+      reviewGhostDiffOnly: true,
+      onToggleReviewGhostDiffOnly: () => undefined,
+    });
+    const diffOnlyButton = actionButtonMarkup(diffOnlyMarkup, "Filter unrelated ghost nodes");
+    expect(diffOnlyButton).toContain('aria-pressed="true"');
+    expect(describedText(diffOnlyMarkup, diffOnlyButton)).toBe("Show all ghost nodes");
+    expect(diffOnlyMarkup.match(/aria-label="Filter unrelated ghost nodes"/g)).toHaveLength(1);
+    expect(renderActionBar(store, {
+      minimalView: "codebase",
+      hasGhostNodes: true,
+      onToggleReviewGhostDiffOnly: () => undefined,
+    })).not.toContain(
+      'aria-label="Filter unrelated ghost nodes"',
+    );
+  });
+
+  it("disables the selective filter when the extracted graph has no ghosts", () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-no-ghosts",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+
+    const markup = renderActionBar(store, {
+      hasGhostNodes: false,
+      onToggleReviewGhostDiffOnly: () => undefined,
+    });
+    const button = actionButtonMarkup(markup, "Filter unrelated ghost nodes");
+    expect(button).toContain('aria-disabled="true"');
+    expect(describedText(markup, button)).toBe("No ghost nodes in this extracted graph");
   });
 });
 

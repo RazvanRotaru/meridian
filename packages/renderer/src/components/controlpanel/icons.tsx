@@ -134,6 +134,18 @@ export function GhostVisibilityIcon({ size = 15, visible = true }: IconProps & {
   );
 }
 
+/** Solid PR card + dashed ghost card — active state crosses out only unrelated ghost context. */
+export function DiffOnlyIcon({ size = 15, active = false }: IconProps & { active?: boolean }) {
+  return (
+    <svg {...svgProps(size)}>
+      <rect x="3" y="4" width="7" height="6" rx="1.5" />
+      <path d="M6.5 10v4h5" />
+      <rect x="14" y="14" width="7" height="6" rx="1.5" strokeDasharray="2 2" />
+      {active ? <path d="M4 20 20 4" /> : null}
+    </svg>
+  );
+}
+
 /** Several node links sharing a central trunk — paint-only Visual Highways bundling. */
 export function HighwaysIcon({ size = 15 }: IconProps) {
   return (
