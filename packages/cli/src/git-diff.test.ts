@@ -1,4 +1,13 @@
-import { chmodSync, mkdtempSync, mkdirSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
@@ -286,6 +295,27 @@ describe("changedSinceMetadata", () => {
         "--merge-base",
         "origin/main",
         "--relative",
+        "--unified=999999",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames=50%",
+        "--",
+        ":(literal)src/old-name.ts",
+        ":(literal)src/new-name.ts",
+        ":(literal)src/orderService.ts",
+        ":(literal)src/removed.ts",
+      ],
+      300_000,
+    );
+    expect(execute).toHaveBeenNthCalledWith(
+      4,
+      "/repo/subdir",
+      [
+        "diff",
+        "--merge-base",
+        "origin/main",
+        "--relative",
         "--name-status",
         "-z",
         "--no-color",
@@ -296,7 +326,7 @@ describe("changedSinceMetadata", () => {
       300_000,
     );
     expect(execute).toHaveBeenNthCalledWith(
-      4,
+      5,
       "/repo/subdir",
       [
         "diff",
@@ -311,7 +341,55 @@ describe("changedSinceMetadata", () => {
       ],
       300_000,
     );
-    expect(execute).toHaveBeenCalledTimes(4);
+    expect(execute).toHaveBeenCalledTimes(5);
+  });
+
+  it("prioritizes a likely comment edit when more than 200 supported files changed", async () => {
+    const ordinaryPaths = Array.from({ length: 200 }, (_value, index) => `src/code-${String(index).padStart(3, "0")}.ts`);
+    const commentPath = "zzz/provider.ts";
+    const ordinarySections = ordinaryPaths.map((path) => [
+      `diff --git a/${path} b/${path}`,
+      `--- a/${path}`,
+      `+++ b/${path}`,
+      "@@ -1 +1 @@",
+      "-export const oldValue = 1;",
+      "+export const newValue = 1;",
+    ].join("\n"));
+    const commentU0 = [
+      `diff --git a/${commentPath} b/${commentPath}`,
+      `--- a/${commentPath}`,
+      `+++ b/${commentPath}`,
+      "@@ -20 +20 @@",
+      "- * Old provider docs.",
+      "+ * New provider docs.",
+    ].join("\n");
+    const patch = [...ordinarySections, commentU0].join("\n");
+    const manifest = [...ordinaryPaths, commentPath].flatMap((path) => ["M", path]).concat("").join("\0");
+    const contextual = [
+      `diff --git a/${commentPath} b/${commentPath}`,
+      `--- a/${commentPath}`,
+      `+++ b/${commentPath}`,
+      "@@ -1,21 +1,21 @@",
+      " /**",
+      ...Array.from({ length: 18 }, () => "  * context"),
+      "- * Old provider docs.",
+      "+ * New provider docs.",
+      "  */",
+    ].join("\n");
+    const execute = vi.fn()
+      .mockResolvedValueOnce(patch)
+      .mockResolvedValueOnce(manifest)
+      .mockResolvedValueOnce(contextual)
+      .mockResolvedValueOnce(manifest)
+      .mockResolvedValueOnce(patch);
+
+    const metadata = await changedSinceMetadata("/repo", "main", 1_000, execute);
+
+    const contextArgs = execute.mock.calls[2]![1] as string[];
+    const fence = contextArgs.indexOf("--");
+    expect(contextArgs.slice(fence + 1)).toContain(`:(literal)${commentPath}`);
+    expect(contextArgs.slice(fence + 1)).toHaveLength(200);
+    expect(metadata.diffLines[commentPath].every((line) => line.sourceCommentOnly === true)).toBe(true);
   });
 
   it("fails closed when a git hunk body is incomplete", async () => {
@@ -338,19 +416,39 @@ describe("changedSinceMetadata", () => {
     await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(/final NUL/);
   });
 
+  it("fails the transaction when patch and manifest name different paths", async () => {
+    const patch = [
+      "diff --git a/src/a.json b/src/a.json",
+      "--- a/src/a.json",
+      "+++ b/src/a.json",
+      "@@ -1 +1 @@",
+      "-{\"value\":1}",
+      "+{\"value\":2}",
+    ].join("\n");
+    const execute = vi.fn()
+      .mockResolvedValueOnce(patch)
+      .mockResolvedValueOnce("M\0src/b.json\0");
+
+    await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(
+      /patch paths did not match the exact file manifest/,
+    );
+    expect(execute).toHaveBeenCalledTimes(2);
+  });
+
   it("fails closed when the working tree changes between the patch and manifest reads", async () => {
     const changedPatch = DIFF.replace("audit(rounded);", "auditChanged(rounded);");
     const execute = vi.fn()
       .mockResolvedValueOnce(DIFF)
       .mockResolvedValueOnce(NAME_STATUS)
+      .mockResolvedValueOnce(DIFF)
       .mockResolvedValueOnce(NAME_STATUS)
       .mockResolvedValueOnce(changedPatch);
 
     await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(
       /working tree changed while reading git diff metadata/,
     );
-    expect(execute).toHaveBeenCalledTimes(4);
-    expect(execute.mock.calls[0][1]).toEqual(execute.mock.calls[3][1]);
+    expect(execute).toHaveBeenCalledTimes(5);
+    expect(execute.mock.calls[0][1]).toEqual(execute.mock.calls[4][1]);
   });
 
   it("fails closed when the exact file manifest changes during formatting proof reads", async () => {
@@ -358,13 +456,14 @@ describe("changedSinceMetadata", () => {
     const execute = vi.fn()
       .mockResolvedValueOnce(DIFF)
       .mockResolvedValueOnce(NAME_STATUS)
+      .mockResolvedValueOnce(DIFF)
       .mockResolvedValueOnce(changedManifest);
 
     await expect(changedSinceMetadata("/repo", "main", 1_000, execute)).rejects.toThrow(
       /working tree changed while reading git diff manifest/,
     );
-    expect(execute).toHaveBeenCalledTimes(3);
-    expect(execute.mock.calls[1][1]).toEqual(execute.mock.calls[2][1]);
+    expect(execute).toHaveBeenCalledTimes(4);
+    expect(execute.mock.calls[1][1]).toEqual(execute.mock.calls[3][1]);
   });
 
   it("captures changes with no text hunks: pure renames, binary edits, and mode-only edits", async () => {
@@ -454,6 +553,211 @@ describe("changedSinceMetadata", () => {
       oldLine,
       ...added,
     ]);
+  });
+
+  it("uses bounded full-prefix context to prove comments without hiding JSX URL text", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-comment-context-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "src"));
+    writeFileSync(join(root, "src/comments.ts"), [
+      "/**",
+      " * Old provider owns this.",
+      " */",
+      "value = null; // old provider consumed it",
+      "",
+    ].join("\n"));
+    writeFileSync(join(root, "src/link.tsx"), "export const link = <a>https://old.example</a>;\n");
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    writeFileSync(join(root, "src/comments.ts"), [
+      "/**",
+      " * New provider owns this.",
+      " */",
+      "value = null; // new provider consumed it",
+      "",
+    ].join("\n"));
+    writeFileSync(join(root, "src/link.tsx"), "export const link = <a>https://new.example</a>;\n");
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+    expect(metadata.diffLines["src/comments.ts"].every((line) => line.sourceCommentOnly === true)).toBe(true);
+    expect(metadata.diffLines["src/link.tsx"].some((line) => line.sourceCommentOnly === true)).toBe(false);
+    expect(metadata.formattingOnly).toEqual({ version: 1, edits: [] });
+  });
+
+  it("proves comment-only rows across a rename while retaining the structural rename", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-comment-rename-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "src"));
+    const oldFile = join(root, "src/old.ts");
+    const newFile = join(root, "src/new.ts");
+    writeFileSync(oldFile, [
+      "/**",
+      " * Old provider owns this.",
+      " */",
+      "export const provider = true;",
+      "",
+    ].join("\n"));
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    renameSync(oldFile, newFile);
+    writeFileSync(newFile, [
+      "/**",
+      " * New provider owns this.",
+      " */",
+      "export const provider = true;",
+      "",
+    ].join("\n"));
+    git(root, "add", "-A");
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+
+    expect(metadata.manifest).toEqual([{
+      path: "src/new.ts",
+      status: "renamed",
+      previousPath: "src/old.ts",
+    }]);
+    expect(metadata.diffLines["src/new.ts"]).toHaveLength(2);
+    expect(metadata.diffLines["src/new.ts"].every((line) => line.sourceCommentOnly === true)).toBe(true);
+    expect(metadata.diffLines["src/new.ts"].every((line) => line.sourceCommentLineOnly === true)).toBe(true);
+  });
+
+  it("keeps a delimiter edit that comments out an otherwise unchanged source row", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-comment-boundary-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "src"));
+    const file = join(root, "src/provider.ts");
+    writeFileSync(file, "/* Old docs. */\nrun();\n");
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+    writeFileSync(file, "/* New docs.\nrun();\n");
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+
+    expect(metadata.diffLines["src/provider.ts"]).toHaveLength(2);
+    expect(metadata.diffLines["src/provider.ts"].some((line) => line.sourceCommentOnly === true)).toBe(false);
+  });
+
+  it("treats contextual candidate paths as literal Git identities", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-literal-pathspec-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    const path = ":(literal)comments.ts";
+    writeFileSync(join(root, path), "/**\n * Old docs.\n */\n");
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+    writeFileSync(join(root, path), "/**\n * New docs.\n */\n");
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+
+    expect(metadata.diffLines[path].every((line) => line.sourceCommentOnly === true)).toBe(true);
+  });
+
+  it("keeps PEP 723 script-metadata edits visible even though every changed row is a Python comment", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-pep-723-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "tools"));
+    const file = join(root, "tools/bootstrap.py");
+    writeFileSync(file, [
+      "# /// script",
+      "# requires-python = \">=3.11\"",
+      "# dependencies = [",
+      "#   \"requests<3\",",
+      "# ]",
+      "# ///",
+      "print(\"ready\")",
+      "",
+    ].join("\n"));
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    writeFileSync(file, [
+      "# /// script",
+      "# requires-python = \">=3.11\"",
+      "# dependencies = [",
+      "#   \"requests<4\",",
+      "# ]",
+      "# ///",
+      "print(\"ready\")",
+      "",
+    ].join("\n"));
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+
+    expect(metadata.diffLines["tools/bootstrap.py"]).toHaveLength(2);
+    expect(metadata.diffLines["tools/bootstrap.py"].some(
+      (line) => line.sourceCommentOnly === true || line.sourceCommentLineOnly === true,
+    )).toBe(false);
+  });
+
+  it("keeps a mode-changing source file visible even when its text edit changes only comments", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-comment-mode-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    mkdirSync(join(root, "src"));
+    const file = join(root, "src/tool.ts");
+    writeFileSync(file, "// Old docs.\n");
+    chmodSync(file, 0o644);
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    writeFileSync(file, "// New docs.\n");
+    chmodSync(file, 0o755);
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+    expect(metadata.manifest).toEqual([{
+      path: "src/tool.ts",
+      status: "modified",
+      nonTextualChanges: true,
+    }]);
+    expect(metadata.diffLines["src/tool.ts"]).toHaveLength(2);
+    expect(metadata.diffLines["src/tool.ts"].some((line) => line.sourceCommentOnly === true)).toBe(false);
+    expect(metadata.formattingOnly).toEqual({ version: 1, edits: [] });
+  });
+
+  it("keeps a source-shaped symlink target change visible", async () => {
+    const root = mkdtempSync(join(tmpdir(), "meridian-comment-symlink-"));
+    temporaryDirectories.push(root);
+    git(root, "init", "--quiet");
+    git(root, "config", "user.name", "Meridian Test");
+    git(root, "config", "user.email", "test@example.com");
+    const file = join(root, "provider.ts");
+    symlinkSync("//old", file);
+    git(root, "add", ".");
+    git(root, "commit", "--quiet", "-m", "base");
+
+    unlinkSync(file);
+    symlinkSync("//new", file);
+
+    const metadata = await changedSinceMetadata(root, "HEAD");
+
+    expect(metadata.manifest).toEqual([{
+      path: "provider.ts",
+      status: "modified",
+      nonTextualChanges: true,
+    }]);
+    expect(metadata.diffLines["provider.ts"]).toHaveLength(2);
+    expect(metadata.diffLines["provider.ts"].some(
+      (line) => line.sourceCommentOnly === true || line.sourceCommentLineOnly === true,
+    )).toBe(false);
+    expect(metadata.formattingOnly).toEqual({ version: 1, edits: [] });
   });
 });
 

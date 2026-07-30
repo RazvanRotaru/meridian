@@ -480,6 +480,10 @@ export interface PatchDetail {
  * as `contextHunks`, solely for GitHub review-comment validation.
  */
 export function parsePatchDetail(patch: string): PatchDetail {
+  // GitHub's files payload carries neither a complete lexical source view nor mode/file-type
+  // metadata. It therefore cannot safely authorize hiding comment-shaped rows (not even a Python
+  // line-1 edit, which may accompany a chmod). Prepared local analysis enriches the exact rows
+  // later; this transport parser remains a fail-open structural fallback.
   const parsed = parseUnifiedDiffBody(patch);
   const { removed, removedTruncated } = removedFromDiffLines(parsed.diffLines);
   return {

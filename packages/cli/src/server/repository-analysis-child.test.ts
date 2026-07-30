@@ -197,6 +197,20 @@ describe("repository analysis child", () => {
     const inputArtifactPath = join(directory, "neutral.json");
     const artifactOutputPath = join(directory, "branch.json");
     const artifact = fixtureArtifact();
+    artifact.extensions = {
+      changedSince: {
+        baseRef: "a".repeat(40),
+        manifest: [
+          {
+            path: "src/z.ts",
+            previousPath: "src/old-z.ts",
+            status: "renamed",
+            nonTextualChanges: true,
+          },
+          { path: "src/a.ts", status: "modified", nonTextualChanges: true },
+        ],
+      },
+    };
     const inputBytes = Buffer.from(`${JSON.stringify(artifact)}\n`, "utf8");
     writeFileSync(inputArtifactPath, inputBytes, { mode: 0o600 });
 
@@ -211,8 +225,13 @@ describe("repository analysis child", () => {
     expect(result.target.vcs?.branch).toBe("feature/review");
     expect(result.changedSinceBaseRef).toBe("a".repeat(40));
     expect(result.changedFiles).toEqual([
-      { path: "src/a.ts", status: "modified" },
-      { path: "src/z.ts", previousPath: "src/old-z.ts", status: "renamed" },
+      { path: "src/a.ts", status: "modified", nonTextualChanges: true },
+      {
+        path: "src/z.ts",
+        previousPath: "src/old-z.ts",
+        status: "renamed",
+        nonTextualChanges: true,
+      },
     ]);
     expect(result.sourceFiles).toEqual(["src/index.ts"]);
     expect(result.emptySideHints).toEqual([]);

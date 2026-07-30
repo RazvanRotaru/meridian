@@ -211,6 +211,53 @@ describe("parsePullRequestFiles", () => {
     ]);
   });
 
+  it("leaves JavaScript-family comment proof to the bounded repository-analysis worker", () => {
+    const [file] = parsePullRequestFiles([{
+      filename: "src/localSessionStore.ts",
+      status: "modified",
+      additions: 2,
+      deletions: 2,
+      patch: [
+        "@@ -1,4 +1,4 @@",
+        " /**",
+        "  * Pending screenshot owner.",
+        "- * PlatformContextProvider consumes this.",
+        "+ * DelegateComputerUseContextProvider consumes this.",
+        "  */",
+        "@@ -10,3 +10,3 @@",
+        " before();",
+        "-pending = null; // PlatformContextProvider consumed it",
+        "+pending = null; // DelegateComputerUseContextProvider consumed it",
+        " after();",
+      ].join("\n"),
+    }]);
+
+    expect(file.diffComplete).toBe(true);
+    expect(file.diffLines).toHaveLength(4);
+    expect(file.diffLines?.map((line) => line.sourceCommentOnly)).toEqual([
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
+  it("does not authorize Python comment hiding from a GitHub patch without mode metadata", () => {
+    const [file] = parsePullRequestFiles([{
+      filename: "tools/provider.py",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      patch: "@@ -1 +1 @@\n-# Old docs.\n+# New docs.",
+    }]);
+
+    expect(file.diffComplete).toBe(true);
+    expect(file.diffLines?.map((line) => line.sourceCommentOnly)).toEqual([
+      undefined,
+      undefined,
+    ]);
+  });
+
   it("fails closed to whole-file metadata instead of exposing a partial patch", () => {
     const [file] = parsePullRequestFiles([{
       filename: "src/truncated.ts",

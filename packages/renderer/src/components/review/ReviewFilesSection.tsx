@@ -28,6 +28,7 @@ import { isHeadSideReviewComment } from "./useCodeReviewComments";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
 import { filterReviewComments } from "../../derive/reviewCommentFilter";
+import { visibleReviewFilePath } from "../../derive/reviewSubmit";
 import { ReviewDiscussionToolbar } from "./ReviewDiscussionToolbar";
 import { reviewViewedGestureBlockReason } from "../../state/store";
 
@@ -72,6 +73,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const reviewStale = useBlueprint((state) => state.prReviewStale);
   const viewedBlockedReason = useBlueprint(reviewViewedGestureBlockReason);
   const comments = useBlueprint((state) => state.reviewComments);
+  const reviewContext = useBlueprint((state) => state.review?.context ?? null);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
@@ -101,8 +103,12 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
     const byRow = new Map<string, ReviewComment[]>();
     const countsByFile = new Map<string, DraftCounts>();
     for (const comment of comments) {
-      const counts = countsByFile.get(comment.path) ?? { file: 0, unit: 0, line: 0 };
-      const key = comment.line !== null ? rowKey(comment.path, null) : rowKey(comment.path, comment.nodeId);
+      const path = reviewContext === null
+        ? comment.path
+        : visibleReviewFilePath(comment, allFiles, reviewContext);
+      if (path === null) continue;
+      const counts = countsByFile.get(path) ?? { file: 0, unit: 0, line: 0 };
+      const key = comment.line !== null ? rowKey(path, null) : rowKey(path, comment.nodeId);
       if (comment.line !== null) {
         counts.line += 1;
       } else if (comment.nodeId === null) {
@@ -110,12 +116,12 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
       } else {
         counts.unit += 1;
       }
-      countsByFile.set(comment.path, counts);
+      countsByFile.set(path, counts);
       const bucket = byRow.get(key);
       bucket ? bucket.push(comment) : byRow.set(key, [comment]);
     }
     return { byRow, countsByFile };
-  }, [comments]);
+  }, [allFiles, comments, reviewContext]);
   const githubCommentsByFile = useMemo(() => {
     const byFile = new Map<string, PrGitHubComment[]>();
     for (const comment of filterReviewComments(discussion?.comments ?? NO_GITHUB_COMMENTS, commentFilter)) {

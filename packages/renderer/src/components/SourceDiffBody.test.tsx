@@ -321,11 +321,60 @@ describe("githubLineCommentScopeNote", () => {
 });
 
 describe("SourceDiffBody source-comment preference", () => {
-  it("omits ordinary, documentation, and directive comments while keeping mixed lines in the diff", () => {
+  it("keeps proven comment-only rows until the preference is enabled in an active review", () => {
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 2 } },
+      code: "// Updated explanation.\nrun();",
+      lineCount: 2,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [
+        {
+          kind: "deleted",
+          oldLine: 1,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "// Previous explanation.",
+          sourceCommentOnly: true,
+          sourceCommentLineOnly: true,
+        },
+        {
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "// Updated explanation.",
+          sourceCommentOnly: true,
+          sourceCommentLineOnly: true,
+        },
+        { kind: "added", oldLine: null, newLine: 2, beforeNewLine: 2, text: "run();" },
+      ],
+      sourceSide: "head",
+    };
+
+    const preferenceOff = renderBody(view, 340, { reviewHideAddedSourceCommentDiffs: false });
+    const ordinarySource = renderBody(view, 340, {
+      review: null,
+      reviewHideAddedSourceCommentDiffs: true,
+    });
+    const preferenceOn = renderBody(view, 340, { reviewHideAddedSourceCommentDiffs: true });
+
+    expect(preferenceOff).toContain("// Previous explanation.");
+    expect(sourceRowOpeningTag(preferenceOff, 1)).toContain('data-diff-origin="add"');
+    expect(ordinarySource).toContain("// Previous explanation.");
+    expect(sourceRowOpeningTag(ordinarySource, 1)).toContain('data-diff-origin="add"');
+    expect(preferenceOn).not.toContain("// Previous explanation.");
+    expect(sourceRowOpeningTag(preferenceOn, 1)).toBe("");
+    expect(sourceRowOpeningTag(preferenceOn, 2)).toContain('data-diff-origin="add"');
+  });
+
+  it("omits ordinary and documentation comments while keeping mixed lines in the diff", () => {
     const code = [
       "export function reviewTarget() {",
       "  /** Public API documentation. */",
-      "  // @ts-expect-error intentional fixture",
+      "  // More public API documentation.",
       "  // Explain the behavior that follows.",
       "  return run(); // This mixed line remains code.",
       "}",
@@ -344,6 +393,9 @@ describe("SourceDiffBody source-comment preference", () => {
         newLine: index + 1,
         beforeNewLine: index + 1,
         text,
+        ...(index >= 1 && index <= 3
+          ? { sourceCommentOnly: true as const, sourceCommentLineOnly: true as const }
+          : {}),
       })),
       sourceSide: "head",
     };
@@ -357,7 +409,7 @@ describe("SourceDiffBody source-comment preference", () => {
     expect(sourceRowOpeningTag(ordinary, 2)).toContain('data-diff-origin="add"');
     expect(ordinary).toContain('data-source-summary-added="6"');
     expect(focused).not.toContain("Public API documentation.");
-    expect(focused).not.toContain("@ts-expect-error intentional fixture");
+    expect(focused).not.toContain("More public API documentation.");
     expect(focused).not.toContain("Explain the behavior that follows.");
     expect(sourceRowOpeningTag(focused, 2)).toBe("");
     expect(sourceRowOpeningTag(focused, 3)).toBe("");
@@ -394,6 +446,8 @@ describe("SourceDiffBody source-comment preference", () => {
           newLine: index + 10,
           beforeNewLine: index + 10,
           text,
+          sourceCommentOnly: true as const,
+          sourceCommentLineOnly: true as const,
         })),
         { kind: "added", oldLine: null, newLine: 15, beforeNewLine: 15, text: source[14] },
       ],
@@ -434,6 +488,82 @@ describe("SourceDiffBody source-comment preference", () => {
 
     expect(sourceRowOpeningTag(html, 1)).toContain('data-diff-origin="add"');
     expect(html).toContain('data-source-summary-added="2"');
+  });
+
+  it("neutralizes a trailing-comment edit without hiding the executable source row", () => {
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 2 } },
+      code: "value = call(); // New explanation.\nnext();",
+      lineCount: 2,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [
+        {
+          kind: "deleted",
+          oldLine: 1,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "value = call(); // Old explanation.",
+          sourceCommentOnly: true,
+        },
+        {
+          kind: "added",
+          oldLine: null,
+          newLine: 1,
+          beforeNewLine: 1,
+          text: "value = call(); // New explanation.",
+          sourceCommentOnly: true,
+        },
+      ],
+      sourceSide: "head",
+    };
+
+    const html = renderBody(view, 340, { reviewHideAddedSourceCommentDiffs: true });
+
+    expect(html.replaceAll(/<[^>]+>/g, "")).toContain("value = call(); // New explanation.");
+    expect(html).not.toContain("Old explanation.");
+    expect(sourceRowOpeningTag(html, 1)).not.toContain("data-diff-origin");
+  });
+
+  it("hides physically comment-only source rows from a BASE preview too", () => {
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 2 } },
+      code: "// Previous explanation.\nrun();",
+      lineCount: 2,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [{
+        kind: "deleted",
+        oldLine: 1,
+        newLine: null,
+        beforeNewLine: 1,
+        text: "// Previous explanation.",
+        sourceCommentOnly: true,
+        sourceCommentLineOnly: true,
+      }],
+      sourceSide: "base",
+    };
+
+    const html = renderBody(view, 340, {
+      reviewHideAddedSourceCommentDiffs: true,
+      reviewLineComposer: composerWithDraft({
+        reviewKey: "source-diff-test",
+        lineRevision: null,
+        path: FILE,
+        line: 1,
+        side: "LEFT",
+      }, "Keep the discussion on the hidden comment row"),
+    });
+
+    expect(html).not.toContain("// Previous explanation.");
+    expect(sourceRowOpeningTag(html, 1)).toBe("");
+    expect(sourceRowOpeningTag(html, 2)).not.toBe("");
+    expect(html).toContain("Keep the discussion on the hidden comment row");
+    expect(html).toContain('data-line-comment-composer="1" data-line-comment-composer-side="LEFT"');
   });
 });
 

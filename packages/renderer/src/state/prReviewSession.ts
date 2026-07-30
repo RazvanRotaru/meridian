@@ -8,6 +8,7 @@
  */
 
 import {
+  changedDiffLinesFromExtensions,
   collectChangedIds,
   computeCoverage,
   syntheticScenarioDescriptorSchema,
@@ -224,6 +225,8 @@ export function restorePrReviewBaseline(
     ? deriveReviewProjection(effectiveContext!, baseline.artifact, baseline.index, {
         baseIndex: null,
         showTests: get().showTests,
+        hideSourceCommentDiffs: get().reviewHideAddedSourceCommentDiffs,
+        diffLines: changedDiffLinesFromExtensions(baseline.artifact.extensions),
       })
     : null;
   const migrationFiles = baseline.review

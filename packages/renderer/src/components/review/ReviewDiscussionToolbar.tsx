@@ -1,7 +1,7 @@
 import { ChatBubbleIcon, CheckIcon, ChevronDownIcon, EyeClosedIcon, EyeOpenIcon } from "@radix-ui/react-icons";
 import { useEffect, useId, useRef, useState } from "react";
 import { filterReviewComments } from "../../derive/reviewCommentFilter";
-import { isReviewTestPath } from "../../derive/reviewFiles";
+import { reviewDraftIsVisible, reviewPathIsVisible } from "../../derive/reviewSubmit";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewCommentFilter } from "../../state/prTypes";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
@@ -25,37 +25,49 @@ export function ReviewDiscussionToolbar() {
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
   const totalExisting = useBlueprint((state) => {
     const comments = state.prDiscussion?.comments ?? [];
-    return state.showTests
+    return state.review === null
       ? comments.length
-      : comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length;
+      : comments.filter((comment) =>
+          reviewPathIsVisible(comment.path, state.reviewFiles, state.review!.context),
+        ).length;
   });
   const filteredExisting = useBlueprint((state) => {
-    const comments = state.showTests
+    const comments = state.review === null
       ? state.prDiscussion?.comments ?? []
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)) ?? [];
+      : state.prDiscussion?.comments.filter((comment) =>
+          reviewPathIsVisible(comment.path, state.reviewFiles, state.review!.context),
+        ) ?? [];
     return filterReviewComments(comments, state.reviewCommentFilter).length;
   });
   const pending = useBlueprint((state) => {
-    return state.showTests
+    return state.review === null
       ? state.reviewComments.length
-      : state.reviewComments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length;
+      : state.reviewComments.filter((comment) =>
+          reviewDraftIsVisible(comment, state.reviewFiles, state.review!.context),
+        ).length;
   });
   const allCount = useBlueprint((state) => {
-    const comments = state.showTests
+    const comments = state.review === null
       ? state.prDiscussion?.comments ?? []
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)) ?? [];
+      : state.prDiscussion?.comments.filter((comment) =>
+          reviewPathIsVisible(comment.path, state.reviewFiles, state.review!.context),
+        ) ?? [];
     return filterReviewComments(comments, "all").length;
   });
   const mineCount = useBlueprint((state) => {
-    const comments = state.showTests
+    const comments = state.review === null
       ? state.prDiscussion?.comments ?? []
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)) ?? [];
+      : state.prDiscussion?.comments.filter((comment) =>
+          reviewPathIsVisible(comment.path, state.reviewFiles, state.review!.context),
+        ) ?? [];
     return filterReviewComments(comments, "mine").length;
   });
   const participatedCount = useBlueprint((state) => {
-    const comments = state.showTests
+    const comments = state.review === null
       ? state.prDiscussion?.comments ?? []
-      : state.prDiscussion?.comments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)) ?? [];
+      : state.prDiscussion?.comments.filter((comment) =>
+          reviewPathIsVisible(comment.path, state.reviewFiles, state.review!.context),
+        ) ?? [];
     return filterReviewComments(comments, "participated").length;
   });
   const { setReviewCommentFilter, toggleReviewCommentsVisible } = useBlueprintActions();

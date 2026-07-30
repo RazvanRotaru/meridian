@@ -23,7 +23,11 @@ export interface MinimalGraphHistoryEntry {
   minimalCodebaseExpansionOverrides: BlueprintState["minimalCodebaseExpansionOverrides"];
   showHighways: BlueprintState["showHighways"];
   showTests: BlueprintState["showTests"];
+  /** Projection provenance only; Back never overwrites this browser-local preference. */
+  reviewHideAddedSourceCommentDiffs: BlueprintState["reviewHideAddedSourceCommentDiffs"];
   reviewDiffOnly: BlueprintState["reviewDiffOnly"];
+  reviewActiveGroupId: BlueprintState["reviewActiveGroupId"];
+  reviewPathScope: BlueprintState["reviewPathScope"];
   reviewSelectedId: BlueprintState["reviewSelectedId"];
   reviewLitNodeIds: BlueprintState["reviewLitNodeIds"];
   reviewFocusedSubgraph: BlueprintState["reviewFocusedSubgraph"];
@@ -53,6 +57,11 @@ export interface MinimalGraphHistoryEntry {
   reviewFlowExplicitView: BlueprintState["reviewFlowExplicitView"];
   logicSelected: BlueprintState["logicSelected"];
   reviewFlowBaseline: BlueprintState["reviewFlowBaseline"];
+  /** Session-only three-way source for a parent scene captured while a review filter was active. */
+  reviewProjectionBaseline?: {
+    unfiltered: MinimalGraphHistoryEntry;
+    projected: MinimalGraphHistoryEntry;
+  };
 }
 
 export function captureMinimalGraphHistory(state: BlueprintState): MinimalGraphHistoryEntry {
@@ -76,7 +85,10 @@ export function captureMinimalGraphHistory(state: BlueprintState): MinimalGraphH
     minimalCodebaseExpansionOverrides: new Map(state.minimalCodebaseExpansionOverrides),
     showHighways: state.showHighways,
     showTests: state.showTests,
+    reviewHideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
     reviewDiffOnly: state.reviewDiffOnly,
+    reviewActiveGroupId: state.reviewActiveGroupId,
+    reviewPathScope: state.reviewPathScope,
     reviewSelectedId: state.reviewSelectedId,
     reviewLitNodeIds: state.reviewLitNodeIds === null ? null : new Set(state.reviewLitNodeIds),
     reviewFocusedSubgraph: cloneReviewFocusedSubgraph(state.reviewFocusedSubgraph),
@@ -129,6 +141,8 @@ export function restoreMinimalGraphHistory(parent: MinimalGraphHistoryEntry): Pa
     showHighways: parent.showHighways,
     showTests: parent.showTests,
     reviewDiffOnly: parent.reviewDiffOnly,
+    reviewActiveGroupId: parent.reviewActiveGroupId,
+    reviewPathScope: parent.reviewPathScope,
     reviewSelectedId: parent.reviewSelectedId,
     reviewLitNodeIds: parent.reviewLitNodeIds === null ? null : new Set(parent.reviewLitNodeIds),
     reviewFocusedSubgraph: cloneReviewFocusedSubgraph(parent.reviewFocusedSubgraph),

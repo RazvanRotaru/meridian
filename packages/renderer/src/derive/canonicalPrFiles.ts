@@ -89,13 +89,17 @@ export function canonicalPrFiles(
       file.oldHunks = exact.oldHunks;
       file.edits = exact.edits;
       file.kinds = exact.kinds;
-      file.diffLines = exact.diffLines;
+      file.diffLines = entry.nonTextualChanges === true
+        ? exact.diffLines.map(withoutSourceCommentFacts)
+        : mergeSourceCommentFacts(exact.diffLines, raw?.diffLines);
     } else {
       if (fileRanges !== undefined) file.hunks = fileRanges.map(copyRange);
       if (fileKinds !== undefined) file.kinds = fileKinds.map((span) => ({ ...span }));
     }
     if (rows !== undefined && exact === null) {
-      file.diffLines = rows.map((row) => ({ ...row }));
+      file.diffLines = entry.nonTextualChanges === true
+        ? rows.map(withoutSourceCommentFacts)
+        : mergeSourceCommentFacts(rows, raw?.diffLines);
       file.oldHunks = deletedRanges(rows);
     }
     if (formattingProof !== undefined) {
@@ -118,6 +122,48 @@ export function canonicalPrFiles(
     }
     return file;
   });
+}
+
+function withoutSourceCommentFacts(row: ChangedDiffLine): ChangedDiffLine {
+  const {
+    sourceCommentOnly: _sourceCommentOnly,
+    sourceCommentLineOnly: _sourceCommentLineOnly,
+    ...plain
+  } = row;
+  return plain;
+}
+
+/**
+ * Prepared local diffs are intentionally U0, while GitHub supplies U3 lexical context. Preserve a
+ * GitHub proof only when every canonical row agrees exactly; local coordinates/text remain the
+ * authority and any capped, stale, or otherwise divergent patch fails open.
+ */
+function mergeSourceCommentFacts(
+  canonical: readonly ChangedDiffLine[],
+  github: readonly ChangedDiffLine[] | undefined,
+): ChangedDiffLine[] {
+  const copied = canonical.map((row) => ({ ...row }));
+  if (
+    github === undefined
+    || github.length !== copied.length
+    || !github.every((row, index) => sameDiffRow(row, copied[index]))
+  ) {
+    return copied;
+  }
+  github.forEach((row, index) => {
+    if (row.sourceCommentOnly === true) copied[index].sourceCommentOnly = true;
+    if (row.sourceCommentLineOnly === true) copied[index].sourceCommentLineOnly = true;
+  });
+  return copied;
+}
+
+function sameDiffRow(left: ChangedDiffLine, right: ChangedDiffLine): boolean {
+  return left.kind === right.kind
+    && left.oldLine === right.oldLine
+    && left.newLine === right.newLine
+    && left.beforeNewLine === right.beforeNewLine
+    && left.text === right.text
+    && left.noNewline === right.noNewline;
 }
 
 function prStatus(status: "added" | "modified" | "deleted" | "renamed"): PrFileStatus {

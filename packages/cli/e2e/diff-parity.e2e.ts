@@ -84,6 +84,39 @@ interface PrAnalysisDone {
 
 type PrAnalysisRecord = PrAnalysisProgress | PrAnalysisDone;
 
+describe("diff parity analysis parser", () => {
+  it("accepts only literal true for optional non-textual changed-file facts", () => {
+    expect(parseChangedFile({
+      path: "src/index.ts",
+      status: "modified",
+      nonTextualChanges: true,
+    }, 0)).toEqual({
+      path: "src/index.ts",
+      status: "modified",
+      nonTextualChanges: true,
+    });
+    expect(parseChangedFile({
+      path: "src/new.ts",
+      previousPath: "src/old.ts",
+      status: "renamed",
+      nonTextualChanges: true,
+    }, 1)).toEqual({
+      path: "src/new.ts",
+      previousPath: "src/old.ts",
+      status: "renamed",
+      nonTextualChanges: true,
+    });
+
+    for (const nonTextualChanges of [false, 0, 1, "true", null, undefined, {}]) {
+      expect(() => parseChangedFile({
+        path: "src/index.ts",
+        status: "modified",
+        nonTextualChanges,
+      }, 2), String(nonTextualChanges)).toThrow(/changedFiles\[2\]/);
+    }
+  });
+});
+
 describe.skipIf(!HAS_CHROMIUM)("same-file GitHub/Git code diff parity (headless chromium)", () => {
   beforeAll(setup, 240_000);
   afterAll(teardown);
@@ -734,17 +767,26 @@ function parseChangedFile(value: unknown, index: number): ChangedFileManifestEnt
   const file = requireRecord(value, `changedFiles[${index}]`);
   const path = requireNonEmptyString(file.path, `changedFiles[${index}].path`);
   const status = file.status;
+  if (file.nonTextualChanges !== undefined && file.nonTextualChanges !== true) {
+    throw new Error(`changedFiles[${index}].nonTextualChanges must be literal true when present`);
+  }
+  const nonTextualKeys = file.nonTextualChanges === true ? ["nonTextualChanges"] : [];
+  const nonTextual = file.nonTextualChanges === true ? { nonTextualChanges: true as const } : {};
   if (status === "renamed") {
-    requireExactKeys(file, ["path", "previousPath", "status"], `changedFiles[${index}]`);
+    requireExactKeys(
+      file,
+      ["path", "previousPath", "status", ...nonTextualKeys],
+      `changedFiles[${index}]`,
+    );
     const previousPath = requireNonEmptyString(file.previousPath, `changedFiles[${index}].previousPath`);
     if (previousPath === path) throw new Error(`changedFiles[${index}] rename must change its path`);
-    return { path, status, previousPath };
+    return { path, status, previousPath, ...nonTextual };
   }
   if (status !== "added" && status !== "modified" && status !== "deleted") {
     throw new Error(`changedFiles[${index}] has invalid status '${String(status)}'`);
   }
-  requireExactKeys(file, ["path", "status"], `changedFiles[${index}]`);
-  return { path, status };
+  requireExactKeys(file, ["path", "status", ...nonTextualKeys], `changedFiles[${index}]`);
+  return { path, status, ...nonTextual };
 }
 
 function terminalAnalysis(records: readonly PrAnalysisRecord[]): PrAnalysisDone {

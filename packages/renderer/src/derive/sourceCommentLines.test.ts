@@ -1,6 +1,6 @@
 import type { ChangedDiffLine } from "@meridian/core";
 import { describe, expect, it } from "vitest";
-import { sourceCommentOnlyLines, withoutAddedSourceCommentDiffLines } from "./sourceCommentLines";
+import { sourceCommentOnlyLines, withoutSourceCommentDiffLines } from "./sourceCommentLines";
 
 describe("sourceCommentOnlyLines", () => {
   it("finds ordinary TypeScript line and block comments with absolute line numbers", () => {
@@ -15,6 +15,18 @@ describe("sourceCommentOnlyLines", () => {
     ].join("\n");
 
     expect([...sourceCommentOnlyLines("src/review.tsx", code, 10)]).toEqual([11, 12, 13, 14]);
+  });
+
+  it("fails open when a source slice begins in ambiguous asterisk-prefixed context", () => {
+    const code = [
+      " * Description continued from above.",
+      " *",
+      " * More documentation.",
+      " */",
+      "run();",
+    ].join("\n");
+
+    expect([...sourceCommentOnlyLines("src/service.ts", code, 20)]).toEqual([]);
   });
 
   it("finds JSDoc and directives while preserving mixed annotations and multiline templates", () => {
@@ -74,14 +86,14 @@ describe("sourceCommentOnlyLines", () => {
   });
 });
 
-describe("withoutAddedSourceCommentDiffLines", () => {
+describe("withoutSourceCommentDiffLines", () => {
   it("neutralizes comment-only rows in a pure insertion while retaining following code", () => {
     const lines = [
       added(2, "// Explain the rule."),
       added(3, "return chooseTier();"),
     ];
 
-    expect(withoutAddedSourceCommentDiffLines(lines, new Set([2]))).toEqual([lines[1]]);
+    expect(withoutSourceCommentDiffLines(lines, new Set([2]))).toEqual([lines[1]]);
   });
 
   it("neutralizes comment additions that belong to a replacement run", () => {
@@ -91,7 +103,7 @@ describe("withoutAddedSourceCommentDiffLines", () => {
       added(9, "return newTier();"),
     ];
 
-    expect(withoutAddedSourceCommentDiffLines(lines, new Set([8]))).toEqual([lines[0], lines[2]]);
+    expect(withoutSourceCommentDiffLines(lines, new Set([8]))).toEqual([lines[0], lines[2]]);
   });
 
   it("distinguishes a later insertion from an earlier deletion by coordinates", () => {
@@ -104,12 +116,31 @@ describe("withoutAddedSourceCommentDiffLines", () => {
     };
     const comment = added(20, "// Independent insertion.");
 
-    expect(withoutAddedSourceCommentDiffLines([deletion, comment], new Set([20]))).toEqual([deletion]);
+    expect(withoutSourceCommentDiffLines([deletion, comment], new Set([20]))).toEqual([deletion]);
   });
 
   it("returns the original collection when no row is neutralized", () => {
     const lines = [added(4, "run();")];
-    expect(withoutAddedSourceCommentDiffLines(lines, new Set([3]))).toBe(lines);
+    expect(withoutSourceCommentDiffLines(lines, new Set([3]))).toBe(lines);
+  });
+
+  it("removes both sides of a comment-only replacement proven from patch context", () => {
+    const lines: ChangedDiffLine[] = [
+      {
+        kind: "deleted",
+        oldLine: 8,
+        newLine: null,
+        beforeNewLine: 8,
+        text: " * Old docs.",
+        sourceCommentOnly: true,
+      },
+      {
+        ...added(8, " * New docs."),
+        sourceCommentOnly: true,
+      },
+    ];
+
+    expect(withoutSourceCommentDiffLines(lines, new Set())).toEqual([]);
   });
 });
 

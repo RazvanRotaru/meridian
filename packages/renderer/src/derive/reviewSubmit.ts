@@ -139,20 +139,7 @@ function resolveReviewPath(
   context: ReviewContext,
 ): string | null {
   const changedPaths = context.changedFiles.map((file) => file.path);
-  const visiblePaths = files
-    .map((file) => uniquePathAlias(file.path, changedPaths))
-    .filter((path): path is string => path !== null);
-  const candidates = visiblePaths.length > 0 ? [...new Set(visiblePaths)] : changedPaths;
-  const candidateSet = new Set(candidates);
-  if (draft.nodeId !== null) {
-    const owningPaths = new Set(
-      files
-        .filter((file) => file.units.some((unit) => unit.nodeId === draft.nodeId))
-        .map((file) => uniquePathAlias(file.path, changedPaths))
-        .filter((path): path is string => path !== null),
-    );
-    if (owningPaths.size === 1) return [...owningPaths][0]!;
-  }
+  const candidateSet = new Set(changedPaths);
   // A LEFT coordinate names the pre-image. Prefer an explicit rename's previous path before current
   // paths so `old.ts → new.ts` plus a newly-added `old.ts` cannot retarget the deletion to the new
   // file. Base-only semantic unit drafts get the same preference when their unit has vanished.
@@ -163,7 +150,51 @@ function resolveReviewPath(
     const previousPath = resolvePreviousReviewPath(draft.path, context, candidateSet);
     if (previousPath !== null) return previousPath;
   }
-  return uniquePathAlias(draft.path, candidates);
+  // An exact PR identity is stronger than whichever files happen to survive the current view
+  // projection. Filtering must never make a different suffix alias become the draft's new owner.
+  const exact = exactPathAlias(draft.path, changedPaths);
+  if (exact !== null) return exact;
+  if (draft.nodeId !== null) {
+    const owningPaths = new Set(
+      files
+        .filter((file) => file.units.some((unit) => unit.nodeId === draft.nodeId))
+        .map((file) => uniquePathAlias(file.path, changedPaths))
+        .filter((path): path is string => path !== null),
+    );
+    if (owningPaths.size === 1) return [...owningPaths][0]!;
+  }
+  return uniquePathAlias(draft.path, changedPaths);
+}
+
+/** Whether a draft still resolves to one unambiguous file in the current visible projection. */
+export function reviewDraftIsVisible(
+  draft: Pick<ReviewComment, "path" | "nodeId" | "line" | "side">,
+  files: readonly ReviewFileRow[],
+  context: ReviewContext,
+): boolean {
+  return visibleReviewFilePath(draft, files, context) !== null;
+}
+
+/** Resolve a draft to the exact path identity used by its currently visible checklist row. */
+export function visibleReviewFilePath(
+  draft: Pick<ReviewComment, "path" | "nodeId" | "line" | "side">,
+  files: readonly ReviewFileRow[],
+  context: ReviewContext,
+): string | null {
+  const changedPaths = context.changedFiles.map((file) => file.path);
+  const resolved = resolveReviewPath(draft, files, context);
+  if (resolved === null) return null;
+  const owners = files.filter((file) => uniquePathAlias(file.path, changedPaths) === resolved);
+  return owners.length === 1 ? owners[0]!.path : null;
+}
+
+/** Whether a canonical GitHub discussion path survives the current review projection. */
+export function reviewPathIsVisible(
+  path: string,
+  files: readonly ReviewFileRow[],
+  context: ReviewContext,
+): boolean {
+  return reviewDraftIsVisible({ path, nodeId: null, line: null, side: null }, files, context);
 }
 
 function resolvePreviousReviewPath(
@@ -245,6 +276,12 @@ function uniquePathAlias(path: string, candidates: readonly string[]): string | 
     }
   }
   return winners.length === 1 ? winners[0] : null;
+}
+
+function exactPathAlias(path: string, candidates: readonly string[]): string | null {
+  const canonical = stripLeadingDotSegments(path);
+  const exact = candidates.filter((candidate) => stripLeadingDotSegments(candidate) === canonical);
+  return exact.length === 1 ? exact[0] : null;
 }
 
 function stripLeadingDotSegments(path: string): string {

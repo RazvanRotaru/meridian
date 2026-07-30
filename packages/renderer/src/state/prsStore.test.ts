@@ -75,6 +75,8 @@ const SECOND_METHOD_ID = `${CLASS_ID}.stop`;
 const UNCHANGED_METHOD_ID = `${CLASS_ID}.idle`;
 const TEST_FILE_ID = "ts:src/a.test.ts";
 const TEST_METHOD_ID = `${TEST_FILE_ID}#coversRun`;
+const NEIGHBOR_FILE_ID = "ts:src/b.ts";
+const NEIGHBOR_METHOD_ID = `${NEIGHBOR_FILE_ID}#run`;
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -2190,6 +2192,209 @@ describe("PR store slice", () => {
     expect(store.getState().moduleSelected).toEqual(new Set());
   });
 
+  it("closes an open artifact-review flow before the source-comment projection changes", async () => {
+    const artifact: GraphArtifact = {
+      ...ARTIFACT,
+      extensions: {
+        ...ARTIFACT.extensions,
+        logicFlow: { [METHOD_ID]: [] },
+        review: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] }],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "artifact-comment-review",
+          warnings: [],
+        },
+        changedSince: {
+          baseRef: "main",
+          files: { "src/a.ts": [{ start: 10, end: 10 }] },
+          stats: { "src/a.ts": { added: 1, deleted: 1 } },
+          kinds: { "src/a.ts": [{ start: 10, end: 10, kind: "modified" }] },
+          diffLines: {
+            "src/a.ts": [
+              {
+                kind: "deleted",
+                oldLine: 10,
+                newLine: null,
+                beforeNewLine: 10,
+                text: "// Old docs.",
+                sourceCommentOnly: true,
+              },
+              {
+                kind: "added",
+                oldLine: null,
+                newLine: 10,
+                beforeNewLine: 10,
+                text: "// New docs.",
+                sourceCommentOnly: true,
+              },
+            ],
+          },
+        },
+      } as GraphArtifact["extensions"],
+    };
+    const store = freshStoreForArtifact(artifact);
+    store.setState({
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+      moduleSelected: new Set([METHOD_ID]),
+      reviewFlowSplitView: "graph",
+      reviewOpenFlowSplitOnSelect: true,
+    });
+    store.getState().selectFlowEntry({ rootId: METHOD_ID, blockPath: [] });
+    await vi.waitFor(() => expect(store.getState().flowPaneLayoutStatus).toBe("ready"));
+    expect(store.getState().flowSelection).not.toBeNull();
+    expect(store.getState().reviewFlowBaseline).not.toBeNull();
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().flowSelection).toBeNull();
+    expect(store.getState().flowPaneOrigin).toBeNull();
+    expect(store.getState().flowPaneRfNodes).toEqual([]);
+    expect(store.getState().flowPaneRfEdges).toEqual([]);
+    expect(store.getState().flowPaneLayoutStatus).toBe("idle");
+    expect(store.getState().logicSelected).toBeNull();
+    expect(store.getState().reviewFlowBaseline).toBeNull();
+    expect(store.getState().minimalMemberIds).toEqual([]);
+    expect(store.getState().minimalRfNodes).toEqual([]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+  });
+
+  it("keeps an artifact-carried non-textual change visible despite inconsistent comment proof", () => {
+    const artifact: GraphArtifact = {
+      ...ARTIFACT,
+      extensions: {
+        ...ARTIFACT.extensions,
+        review: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] }],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "artifact-non-textual-review",
+          warnings: [],
+        },
+        changedSince: {
+          baseRef: "main",
+          manifest: [{
+            path: "src/a.ts",
+            status: "modified",
+            nonTextualChanges: true,
+          }],
+          files: { "src/a.ts": [{ start: 10, end: 10 }] },
+          stats: { "src/a.ts": { added: 1, deleted: 1 } },
+          kinds: { "src/a.ts": [{ start: 10, end: 10, kind: "modified" }] },
+          diffLines: {
+            "src/a.ts": [
+              {
+                kind: "deleted",
+                oldLine: 10,
+                newLine: null,
+                beforeNewLine: 10,
+                text: "// Old docs.",
+                sourceCommentOnly: true,
+                sourceCommentLineOnly: true,
+              },
+              {
+                kind: "added",
+                oldLine: null,
+                newLine: 10,
+                beforeNewLine: 10,
+                text: "// New docs.",
+                sourceCommentOnly: true,
+                sourceCommentLineOnly: true,
+              },
+            ],
+          },
+        },
+      } as GraphArtifact["extensions"],
+    };
+    const store = freshStoreForArtifact(artifact);
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+  });
+
+  it("keeps an artifact-carried change visible when its valid manifest omits the proof path", () => {
+    const artifact: GraphArtifact = {
+      ...ARTIFACT,
+      extensions: {
+        ...ARTIFACT.extensions,
+        review: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 10 }] }],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature",
+          reviewKey: "artifact-omitted-manifest-path-review",
+          warnings: [],
+        },
+        changedSince: {
+          baseRef: "main",
+          manifest: [],
+          files: { "src/a.ts": [{ start: 10, end: 10 }] },
+          stats: { "src/a.ts": { added: 1, deleted: 1 } },
+          kinds: { "src/a.ts": [{ start: 10, end: 10, kind: "modified" }] },
+          diffLines: {
+            "src/a.ts": [
+              {
+                kind: "deleted",
+                oldLine: 10,
+                newLine: null,
+                beforeNewLine: 10,
+                text: "// Old docs.",
+                sourceCommentOnly: true,
+                sourceCommentLineOnly: true,
+              },
+              {
+                kind: "added",
+                oldLine: null,
+                newLine: 10,
+                beforeNewLine: 10,
+                text: "// New docs.",
+                sourceCommentOnly: true,
+                sourceCommentLineOnly: true,
+              },
+            ],
+          },
+        },
+      } as GraphArtifact["extensions"],
+    };
+    const store = freshStoreForArtifact(artifact);
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+  });
+
+  it("does not inject newly visible review files into an arbitrary artifact extraction", async () => {
+    const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS);
+    store.setState({ moduleSelected: new Set([METHOD_ID]) });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const extracted = {
+      minimalSeedIds: store.getState().minimalSeedIds,
+      minimalMemberIds: store.getState().minimalMemberIds,
+      moduleExpanded: store.getState().moduleExpanded,
+      moduleSelected: store.getState().moduleSelected,
+    };
+    expect(extracted.minimalMemberIds).toEqual([METHOD_ID]);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toContain("src/a.test.ts");
+    expect(store.getState().minimalSeedIds).toEqual(extracted.minimalSeedIds);
+    expect(store.getState().minimalMemberIds).toEqual(extracted.minimalMemberIds);
+    expect(store.getState().moduleExpanded).toEqual(extracted.moduleExpanded);
+    expect(store.getState().moduleSelected).toEqual(extracted.moduleSelected);
+  });
+
   it("does not call PR endpoints for a graph that is not connected to GitHub", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -2508,6 +2713,560 @@ describe("PR store slice", () => {
     expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden test draft");
   });
 
+  it.each([9, 10])(
+    "adds a revealed direct flow target across a root-scope rollup with %i extra production files",
+    async (extraFileCount) => {
+      const thresholdFiles = Array.from({ length: extraFileCount }, (_, index) => {
+        const path = `src/extra-${index}.ts`;
+        const fileId = `ts:${path}`;
+        return { path, fileId, methodId: `${fileId}#run` };
+      });
+      const artifact: GraphArtifact = {
+        ...REVIEW_WITH_TESTS_ARTIFACT,
+        nodes: [
+          ...REVIEW_WITH_TESTS_ARTIFACT.nodes,
+          ...thresholdFiles.flatMap((file) => [
+            node(file.fileId, "module", file.path, PACKAGE_ID),
+            node(file.methodId, "function", file.path, file.fileId, { start: 10, end: 12 }),
+          ]),
+        ],
+        edges: [
+          ...REVIEW_WITH_TESTS_ARTIFACT.edges,
+          ...thresholdFiles.map((file) => ({
+            id: `${file.methodId}:calls-run`,
+            source: file.methodId,
+            target: METHOD_ID,
+            kind: "calls",
+            resolution: "resolved" as const,
+          })),
+        ],
+        extensions: {
+          ...REVIEW_WITH_TESTS_ARTIFACT.extensions,
+          logicFlow: {
+            ...((REVIEW_WITH_TESTS_ARTIFACT.extensions?.logicFlow ?? {}) as Record<string, unknown>),
+            [METHOD_ID]: [{
+              kind: "call",
+              label: "test",
+              target: TEST_METHOD_ID,
+              resolution: "resolved",
+            }],
+          },
+        },
+      };
+      const store = freshStoreForArtifact(artifact);
+      store.setState({
+        viewMode: "prs",
+        prSelected: 7,
+        prsList: { open: [pr(7)], closed: null },
+        prFiles: [
+          { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+          { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+          ...thresholdFiles.map((file) => ({
+            path: file.path,
+            status: "modified" as const,
+            additions: 1,
+            deletions: 0,
+            hunks: [{ start: 10, end: 10 }],
+          })),
+        ],
+      });
+      await store.getState().reviewPrInGraph();
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      const group = store.getState().reviewGroups?.groups[0];
+      expect(group).toBeDefined();
+      store.getState().selectReviewGroup(group!.id);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      store.getState().selectReviewPathScope("src");
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      expect(store.getState().minimalGraphHistory).toEqual([]);
+      const productionFileIds = [FILE_ID, ...thresholdFiles.map((file) => file.fileId)].sort();
+      const allFileIds = [TEST_FILE_ID, ...productionFileIds].sort();
+      const productionBaseIds = productionFileIds.length > 10 ? [PACKAGE_ID] : productionFileIds;
+      expect(store.getState().minimalMemberIds).toEqual(productionBaseIds);
+      store.getState().selectFlowEntry({ rootId: METHOD_ID, blockPath: [] });
+      expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual(productionBaseIds);
+
+      store.getState().toggleShowTests();
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+      expect(store.getState().reviewFiles.map((file) => file.path).sort()).toEqual([
+        "src/a.test.ts",
+        "src/a.ts",
+        ...thresholdFiles.map((file) => file.path),
+      ].sort());
+      expect(store.getState().flowSelection?.rootId).toBe(METHOD_ID);
+      expect(store.getState().minimalSeedIds).toEqual(allFileIds);
+      expect(store.getState().minimalMemberIds).toEqual(allFileIds);
+      expect(store.getState().moduleSelected).toContain(TEST_METHOD_ID);
+      expect(store.getState().reviewFlowBaseline?.minimalSeedIds).toEqual([PACKAGE_ID]);
+      expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual([PACKAGE_ID]);
+      expect(store.getState().minimalRollups[PACKAGE_ID]).toEqual(allFileIds);
+      const openFlowScene = {
+        minimalSeedIds: store.getState().minimalSeedIds,
+        minimalMemberIds: store.getState().minimalMemberIds,
+        moduleExpanded: store.getState().moduleExpanded,
+      };
+      store.getState().selectFlowEntry(null);
+      await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+      expect(store.getState().minimalSeedIds).toEqual([PACKAGE_ID]);
+      expect(store.getState().minimalMemberIds).toEqual([PACKAGE_ID]);
+      store.getState().selectFlowEntry({ rootId: METHOD_ID, blockPath: [] });
+      expect(store.getState().minimalSeedIds).toEqual(openFlowScene.minimalSeedIds);
+      expect(store.getState().minimalMemberIds).toEqual(openFlowScene.minimalMemberIds);
+      expect(store.getState().moduleExpanded).toEqual(openFlowScene.moduleExpanded);
+    },
+  );
+
+  it("adds newly revealed files inside a focused review subgraph without a projection baseline", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().openReviewSubgraph(PACKAGE_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFocusedSubgraph?.filePaths).toEqual(["src/a.ts"]);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().reviewFocusedSubgraph?.filePaths).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+    ]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+  });
+
+  it("removes and losslessly restores source-comment-only files across the live review graph", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          hunks: [{ start: 10, end: 10 }],
+          oldHunks: [{ start: 10, end: 10 }],
+          diffComplete: true,
+          diffLines: [
+            {
+              kind: "deleted",
+              oldLine: 10,
+              newLine: null,
+              beforeNewLine: 10,
+              text: " * PlatformContextProvider owns this.",
+              sourceCommentOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 10,
+              beforeNewLine: 10,
+              text: " * DelegateComputerUseContextProvider owns this.",
+              sourceCommentOnly: true,
+            },
+          ],
+        },
+        {
+          path: "src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+          diffComplete: true,
+          diffLines: [{
+            kind: "added",
+            oldLine: null,
+            newLine: 5,
+            beforeNewLine: 5,
+            text: "expect(run()).toBe(true);",
+          }],
+        },
+      ],
+    });
+
+    await store.getState().reviewPrInGraph();
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    store.getState().addReviewComment("src/a.ts", METHOD_ID, "Keep this hidden source-comment draft");
+    store.setState({
+      moduleSelected: new Set([METHOD_ID, TEST_METHOD_ID]),
+      reviewSelectedId: METHOD_ID,
+      reviewLitNodeIds: new Set([METHOD_ID, TEST_METHOD_ID]),
+    });
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+
+    expect(store.getState().review?.context.changedFiles.map((file) => file.path)).toEqual([
+      "src/a.ts",
+      "src/a.test.ts",
+    ]);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.test.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([TEST_METHOD_ID]));
+    expect(store.getState().reviewSelectedId).toBeNull();
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([TEST_METHOD_ID]));
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalRfNodes.some((node) => node.id === FILE_ID || node.id === METHOD_ID)).toBe(false);
+    store.getState().resetMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalRfNodes.some((node) => node.id === FILE_ID || node.id === METHOD_ID)).toBe(false);
+    expect(
+      Object.keys((store.getState().artifact.extensions as { changedSince: { files: object } }).changedSince.files),
+    ).toEqual(["src/a.test.ts"]);
+    await store.getState().submitReviewComments();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden source-comment draft");
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual([
+      "src/a.test.ts",
+      "src/a.ts",
+    ]);
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+    expect(store.getState().reviewComments[0]?.body).toBe("Keep this hidden source-comment draft");
+  });
+
+  it("preserves a promoted root neighbour while source-comment-only files are hidden and restored", async () => {
+    const artifact: GraphArtifact = {
+      ...REVIEW_WITH_TESTS_ARTIFACT,
+      nodes: [
+        ...REVIEW_WITH_TESTS_ARTIFACT.nodes,
+        node(NEIGHBOR_FILE_ID, "module", "src/b.ts", PACKAGE_ID),
+        node(NEIGHBOR_METHOD_ID, "function", "src/b.ts", NEIGHBOR_FILE_ID),
+      ],
+      edges: [
+        ...REVIEW_WITH_TESTS_ARTIFACT.edges,
+        {
+          id: "neighbour-calls-run",
+          source: NEIGHBOR_METHOD_ID,
+          target: METHOD_ID,
+          kind: "calls",
+          resolution: "resolved",
+        },
+      ],
+    };
+    const store = freshStoreForArtifact(artifact);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{
+        path: "src/a.ts",
+        status: "modified",
+        additions: 1,
+        deletions: 1,
+        diffComplete: true,
+        diffLines: [
+          {
+            kind: "deleted",
+            oldLine: 10,
+            newLine: null,
+            beforeNewLine: 10,
+            text: "// Old docs.",
+            sourceCommentOnly: true,
+          },
+          {
+            kind: "added",
+            oldLine: null,
+            newLine: 10,
+            beforeNewLine: 10,
+            text: "// New docs.",
+            sourceCommentOnly: true,
+          },
+        ],
+      }],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().promoteGhost(NEIGHBOR_METHOD_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID, NEIGHBOR_FILE_ID]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([NEIGHBOR_FILE_ID]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID, NEIGHBOR_FILE_ID]);
+  });
+
+  it("preserves a promoted root neighbour while Tests are revealed and hidden", async () => {
+    const artifact: GraphArtifact = {
+      ...REVIEW_WITH_TESTS_ARTIFACT,
+      nodes: [
+        ...REVIEW_WITH_TESTS_ARTIFACT.nodes,
+        node(NEIGHBOR_FILE_ID, "module", "src/b.ts", PACKAGE_ID),
+        node(NEIGHBOR_METHOD_ID, "function", "src/b.ts", NEIGHBOR_FILE_ID),
+      ],
+      edges: [
+        ...REVIEW_WITH_TESTS_ARTIFACT.edges,
+        {
+          id: "neighbour-calls-run",
+          source: NEIGHBOR_METHOD_ID,
+          target: METHOD_ID,
+          kind: "calls",
+          resolution: "resolved",
+        },
+      ],
+    };
+    const store = freshStoreForArtifact(artifact);
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 10, end: 10 }],
+        },
+        {
+          path: "src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+        },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().promoteGhost(NEIGHBOR_METHOD_ID);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID, NEIGHBOR_FILE_ID]);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([TEST_FILE_ID, FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([
+      TEST_FILE_ID,
+      FILE_ID,
+      NEIGHBOR_FILE_ID,
+    ]);
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID, NEIGHBOR_FILE_ID]);
+  });
+
+  it("losslessly restores a surviving review flow baseline after source-comment filtering", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          diffComplete: true,
+          diffLines: [
+            {
+              kind: "deleted",
+              oldLine: 10,
+              newLine: null,
+              beforeNewLine: 10,
+              text: "// Old docs.",
+              sourceCommentOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 10,
+              beforeNewLine: 10,
+              text: "// New docs.",
+              sourceCommentOnly: true,
+            },
+          ],
+        },
+        {
+          path: "src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+        },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.setState({ moduleSelected: new Set([TEST_FILE_ID, FILE_ID]) });
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+
+    store.getState().selectFlowEntry({ rootId: TEST_METHOD_ID, blockPath: [] });
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().flowSelection?.rootId).toBe(TEST_METHOD_ID);
+    expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual([TEST_FILE_ID]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+
+    store.getState().selectFlowEntry(null);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID, FILE_ID]);
+
+    const exactPreFlowBase = {
+      minimalSeedIds: store.getState().minimalSeedIds,
+      minimalMemberIds: store.getState().minimalMemberIds,
+      moduleExpanded: store.getState().moduleExpanded,
+      moduleSelected: store.getState().moduleSelected,
+    };
+    store.getState().selectFlowEntry({ rootId: TEST_METHOD_ID, blockPath: [] });
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().reviewFlowBaseline?.minimalMemberIds).toEqual([TEST_FILE_ID]);
+    store.getState().selectFlowEntry(null);
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalSeedIds).toEqual(exactPreFlowBase.minimalSeedIds);
+    expect(store.getState().minimalMemberIds).toEqual(exactPreFlowBase.minimalMemberIds);
+    expect(store.getState().moduleExpanded).toEqual(exactPreFlowBase.moduleExpanded);
+    expect(store.getState().moduleSelected).toEqual(exactPreFlowBase.moduleSelected);
+  });
+
+  it("restores a fully filtered review group and path scope when comments are shown again", async () => {
+    const artifact = { ...REVIEW_WITH_TESTS_ARTIFACT, edges: [] };
+    const store = freshStoreForArtifact(artifact);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          diffComplete: true,
+          diffLines: [
+            {
+              kind: "deleted",
+              oldLine: 10,
+              newLine: null,
+              beforeNewLine: 10,
+              text: "// Old docs.",
+              sourceCommentOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 10,
+              beforeNewLine: 10,
+              text: "// New docs.",
+              sourceCommentOnly: true,
+            },
+          ],
+        },
+        {
+          path: "src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+        },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const sourceGroup = store.getState().reviewGroups?.groups
+      .find((group) => group.files.includes("src/a.ts"));
+    expect(sourceGroup).toBeDefined();
+    store.getState().selectReviewGroup(sourceGroup!.id);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().selectReviewPathScope("src/a.ts");
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().reviewActiveGroupId).toBeNull();
+    expect(store.getState().reviewPathScope).toBeNull();
+    expect(store.getState().minimalMemberIds).toEqual([]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewActiveGroupId).toBe(sourceGroup!.id);
+    expect(store.getState().reviewPathScope).toBe("src/a.ts");
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+  });
+
+  it("keeps an invisible raw seed when every live PR change is source-comment-only", async () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [{
+        path: "src/a.ts",
+        status: "modified",
+        additions: 1,
+        deletions: 0,
+        hunks: [{ start: 10, end: 10 }],
+        diffComplete: true,
+        diffLines: [{
+          kind: "added",
+          oldLine: null,
+          newLine: 10,
+          beforeNewLine: 10,
+          text: "/** Access cached routines outside React. */",
+          sourceCommentOnly: true,
+        }],
+      }],
+    });
+
+    await store.getState().reviewPrInGraph();
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+
+    expect(store.getState().reviewFiles).toEqual([]);
+    expect(store.getState().reviewAffectedIds).toEqual(new Set());
+    expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
+    expect(store.getState().minimalMemberIds).toEqual([]);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
+    expect(store.getState().minimalMemberIds).toEqual([FILE_ID]);
+  });
+
   it("syncs a newly revealed fully-complete legacy test file to GitHub", async () => {
     stubReviewStorage();
     const artifact: GraphArtifact = {
@@ -2580,6 +3339,182 @@ describe("PR store slice", () => {
     expect(store.getState().reviewFileViewedStates?.["src/a.test.ts"]).toBe("VIEWED");
     expect(store.getState().reviewUnitTicks).toEqual({});
     expect(store.getState().reviewFileTicks).toEqual({});
+  });
+
+  it("syncs a newly revealed fully-complete source-comment file to GitHub", async () => {
+    stubReviewStorage();
+    const artifact: GraphArtifact = {
+      ...REVIEW_WITH_TESTS_ARTIFACT,
+      extensions: {
+        ...REVIEW_WITH_TESTS_ARTIFACT.extensions,
+        ...reviewFingerprintFixture([
+          [CLASS_ID, "class", CLASS_ID],
+          [METHOD_ID, "method", METHOD_ID],
+          [TEST_METHOD_ID, "function", TEST_METHOD_ID],
+        ], ["src/a.ts", "src/a.test.ts"]),
+      },
+    };
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as { path: string; viewed: boolean };
+        return Promise.resolve(Response.json({
+          path: body.path,
+          state: body.viewed ? "VIEWED" : "UNVIEWED",
+          headSha: VIEWED_FILES_HEAD,
+          viewerId: VIEWED_FILES_VIEWER_ID,
+          viewerLogin: "Astrid",
+        }));
+      }
+      return Promise.resolve(Response.json({
+        files: [
+          { path: "src/a.ts", state: "UNVIEWED" },
+          { path: "src/a.test.ts", state: "UNVIEWED" },
+        ],
+        headSha: VIEWED_FILES_HEAD,
+        viewerId: VIEWED_FILES_VIEWER_ID,
+        viewerLogin: "Astrid",
+      }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(artifact, {
+      prViewedFilesUrl: "/api/prs/viewed-files?id=artifact-1",
+    });
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [{ ...pr(7), headSha: VIEWED_FILES_HEAD }], closed: null },
+      prFiles: [
+        {
+          path: "src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          hunks: [{ start: 10, end: 10 }],
+          oldHunks: [{ start: 10, end: 10 }],
+          diffComplete: true,
+          diffLines: [
+            {
+              kind: "deleted",
+              oldLine: 10,
+              newLine: null,
+              beforeNewLine: 10,
+              text: "// Old docs.",
+              sourceCommentOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 10,
+              beforeNewLine: 10,
+              text: "// New docs.",
+              sourceCommentOnly: true,
+            },
+          ],
+        },
+        {
+          path: "src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+        },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    store.setState({
+      reviewUnitTicks: {
+        [METHOD_ID]: {
+          at: "2026-07-24T10:00:00.000Z",
+          fingerprint: "a".repeat(64),
+          address: `unit:v1\0src/a.ts\0method\0${METHOD_ID}`,
+        },
+      },
+    });
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(store.getState().reviewViewedFileSyncPending.size).toBe(0));
+
+    const mutation = JSON.parse(String(fetchMock.mock.calls[2]![1]?.body));
+    expect(mutation).toMatchObject({
+      path: "src/a.ts",
+      viewed: true,
+      expectedViewerId: VIEWED_FILES_VIEWER_ID,
+    });
+    expect(store.getState().reviewFileViewedStates?.["src/a.ts"]).toBe("VIEWED");
+  });
+
+  it("keeps a nested live review filtered after Back with extraction-relative path aliases", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        {
+          path: "repo/src/a.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 1,
+          diffComplete: true,
+          diffLines: [
+            {
+              kind: "deleted",
+              oldLine: 10,
+              newLine: null,
+              beforeNewLine: 10,
+              text: "// Old docs.",
+              sourceCommentOnly: true,
+            },
+            {
+              kind: "added",
+              oldLine: null,
+              newLine: 10,
+              beforeNewLine: 10,
+              text: "// New docs.",
+              sourceCommentOnly: true,
+            },
+          ],
+        },
+        {
+          path: "repo/src/a.test.ts",
+          status: "modified",
+          additions: 1,
+          deletions: 0,
+          hunks: [{ start: 5, end: 5 }],
+        },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.getState().selectModule(METHOD_ID);
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    store.setState({ reviewLitNodeIds: new Set([METHOD_ID]) });
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().minimalMemberIds).not.toContain(METHOD_ID);
+    expect(store.getState().reviewLitNodeIds).toBeNull();
+    store.setState({ reviewLitNodeIds: new Set([TEST_METHOD_ID]) });
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(false);
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().minimalMemberIds).toContain(METHOD_ID);
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([METHOD_ID, TEST_METHOD_ID]));
+    expect(store.getState().minimalGraphHistory).toHaveLength(1);
+
+    store.getState().setReviewHideAddedSourceCommentDiffs(true);
+    expect(store.getState().minimalMemberIds).not.toContain(METHOD_ID);
+    store.getState().backMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["repo/src/a.test.ts"]);
+    expect(store.getState().minimalMemberIds).toEqual([TEST_FILE_ID]);
+    expect(store.getState().minimalRfNodes).not.toContainEqual(expect.objectContaining({ id: FILE_ID }));
   });
 
   it("reprojects Tests inside a nested live-PR graph without discarding its stack", async () => {

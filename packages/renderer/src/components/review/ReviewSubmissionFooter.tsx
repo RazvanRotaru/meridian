@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { isReviewTestPath } from "../../derive/reviewFiles";
+import { reviewDraftIsVisible } from "../../derive/reviewSubmit";
 import type { PrReviewSubmissionEvent } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
@@ -7,9 +7,11 @@ import { NO_FOCUS_RING } from "./reviewPanelKit";
 const SUMMARY_LIMIT = 10_000;
 
 export function ReviewSubmissionFooter() {
-  const count = useBlueprint((state) => state.showTests
+  const count = useBlueprint((state) => state.review === null
     ? state.reviewComments.length
-    : state.reviewComments.filter((comment) => !isReviewTestPath(comment.path, state.index, state.prReviewBaseline?.index ?? null)).length);
+    : state.reviewComments.filter((comment) =>
+        reviewDraftIsVisible(comment, state.reviewFiles, state.review!.context),
+      ).length);
   const live = useBlueprint((state) => state.prReviewed !== null);
   const status = useBlueprint((state) => state.reviewSubmitStatus);
   const stale = useBlueprint((state) => state.prReviewStale);

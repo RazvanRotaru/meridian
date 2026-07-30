@@ -89,6 +89,79 @@ describe("canonicalPrFiles", () => {
     });
   });
 
+  it("keeps a matching GitHub U3 source-comment proof on authoritative local rows", () => {
+    const localRows = [deleted(8, 8, " * Old docs."), added(8, " * New docs.")];
+    const githubRows = localRows.map((row) => ({
+      ...row,
+      sourceCommentOnly: true as const,
+      sourceCommentLineOnly: true as const,
+    }));
+    const github: PrChangedFile[] = [{
+      path: "src/docs.ts",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      diffComplete: true,
+      diffLines: githubRows,
+    }];
+    const artifact = changedSince({
+      manifest: [{ path: "src/docs.ts", status: "modified" }],
+      stats: { "src/docs.ts": { added: 1, deleted: 1 } },
+      diffLines: { "src/docs.ts": localRows },
+    });
+
+    expect(canonicalPrFiles(github, artifact)[0].diffLines).toEqual(githubRows);
+  });
+
+  it("does not restore GitHub comment proof across a local non-textual file change", () => {
+    const localRows = [deleted(8, 8, "# Old docs."), added(8, "# New docs.")];
+    const githubRows = localRows.map((row) => ({
+      ...row,
+      sourceCommentOnly: true as const,
+      sourceCommentLineOnly: true as const,
+    }));
+    const artifact = changedSince({
+      manifest: [{
+        path: "tools/docs.py",
+        status: "modified",
+        nonTextualChanges: true,
+      }],
+      stats: { "tools/docs.py": { added: 1, deleted: 1 } },
+      diffLines: { "tools/docs.py": localRows },
+    });
+
+    expect(canonicalPrFiles([{
+      path: "tools/docs.py",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      diffComplete: true,
+      diffLines: githubRows,
+    }], artifact)[0].diffLines).toEqual(localRows);
+  });
+
+  it("drops a GitHub source-comment proof when canonical rows diverge", () => {
+    const github: PrChangedFile[] = [{
+      path: "src/docs.ts",
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      diffComplete: true,
+      diffLines: [
+        { ...deleted(8, 8, "different old docs"), sourceCommentOnly: true },
+        { ...added(8, "different new docs"), sourceCommentOnly: true },
+      ],
+    }];
+    const localRows = [deleted(8, 8, "canonical old docs"), added(8, "canonical new docs")];
+    const artifact = changedSince({
+      manifest: [{ path: "src/docs.ts", status: "modified" }],
+      stats: { "src/docs.ts": { added: 1, deleted: 1 } },
+      diffLines: { "src/docs.ts": localRows },
+    });
+
+    expect(canonicalPrFiles(github, artifact)[0].diffLines).toEqual(localRows);
+  });
+
   it("treats a valid empty manifest as authoritative and falls back only when it is absent", () => {
     const github: PrChangedFile[] = [{ path: "src/api-only.ts", status: "added", additions: 1, deletions: 0 }];
 
