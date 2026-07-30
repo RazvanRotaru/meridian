@@ -655,6 +655,16 @@ async function analyzePr(baseUrl: string, sessionId: string, pr: DiffParityPr): 
 function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord | null {
   const record = requireRecord(value, `analysis record ${line}`);
   const stage = record.stage;
+  if (stage === "lane-complete") {
+    requireExactKeys(record, ["lane", "stage"], "analysis lane-complete record");
+    if (record.lane !== "head" && record.lane !== "mergeBase") {
+      throw new Error(`analysis lane-complete record has invalid lane '${String(record.lane)}'`);
+    }
+    // Lane completion is presentation telemetry rather than part of the graph/diff transaction
+    // asserted by this suite. Validate the exact protocol shape, then omit it like extraction
+    // progress; the dedicated progress E2E covers lane ordering and UI reduction.
+    return null;
+  }
   if (
     stage === "clone"
     || stage === "checkout"

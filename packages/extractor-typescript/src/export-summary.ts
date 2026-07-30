@@ -27,16 +27,19 @@ export function buildUnitSummary(
   moduleIdByRelPath: Map<string, string>,
   resolver: CrossPackageResolver,
   onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
 ): UnitSummary {
   const exportsByFile = new Map<string, Map<string, string>>();
   const pendingReexports: PendingReexport[] = [];
-  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
-    const relPath = loaded.relativePathOf(sourceFile);
+  const sourceFiles = loaded.sourceFiles
+    .map((sourceFile) => ({ sourceFile, relPath: loaded.relativePathOf(sourceFile) }))
+    .filter(({ relPath }) => selectedFiles === undefined || selectedFiles.has(relPath));
+  for (const [fileIndex, { sourceFile, relPath }] of sourceFiles.entries()) {
     reportRelationshipFileProgress(
       onSourceFile,
       relPath,
       fileIndex + 1,
-      loaded.sourceFiles.length,
+      sourceFiles.length,
     );
     exportsByFile.set(relPath, exportTable(sourceFile, index));
     collectPendingReexports(sourceFile, relPath, index, resolver, pendingReexports);
@@ -47,7 +50,9 @@ export function buildUnitSummary(
     entryFile: unit.entryFile,
     sourceDir: unit.sourceDir,
     exportsByFile,
-    moduleIdByRelPath,
+    moduleIdByRelPath: selectedFiles === undefined
+      ? moduleIdByRelPath
+      : new Map([...moduleIdByRelPath].filter(([file]) => selectedFiles.has(file))),
     pendingReexports,
   };
 }

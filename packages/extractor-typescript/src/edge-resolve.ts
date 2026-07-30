@@ -39,6 +39,46 @@ export interface PendingRef {
   targetFile?: string;
 }
 
+export interface TargetReferenceDerivation {
+  original: TsSymbol | undefined;
+  imported: ImportedSymbolReference | null;
+  symbol: TsSymbol | undefined;
+  declaration: Node | undefined;
+  /**
+   * Exact shorthand value-symbol queries consumed while selecting the implementation declaration.
+   * Observation records both missing and present values so ambient binding changes cannot collide.
+   */
+  shorthandValueSteps: readonly TargetShorthandValueStep[];
+}
+
+export interface TargetShorthandValueStep {
+  declaration: Node;
+  valueSymbol: TsSymbol | undefined;
+}
+
+/**
+ * Derive the exact checker/import view consumed by resolveTarget.
+ *
+ * Semantic cache observation uses this same seam so a future change to callee symbol selection or
+ * import recovery cannot silently diverge from the relationship pass.
+ */
+export function deriveTargetReference(callee: Node): TargetReferenceDerivation {
+  const original = calleeSymbol(callee);
+  const symbol = aliasedSymbol(original);
+  const shorthandValueSteps: TargetShorthandValueStep[] = [];
+  return {
+    original,
+    imported: importedSymbolReference(callee, original),
+    symbol,
+    declaration: implementationDeclaration(
+      symbol,
+      new Set(),
+      shorthandValueSteps,
+    ),
+    shorthandValueSteps,
+  };
+}
+
 const UNRESOLVED: TargetResolution = {
   resolution: "unresolved",
   resolvedTarget: null,
@@ -66,10 +106,7 @@ export function resolveTarget(
   moduleFallback?: Map<string, { finalId: string }>,
 ): TargetResolution {
   try {
-    const original = calleeSymbol(callee);
-    const imported = importedSymbolReference(callee, original);
-    const symbol = aliasedSymbol(original);
-    const declaration = implementationDeclaration(symbol);
+    const { imported, symbol, declaration } = deriveTargetReference(callee);
     const classified = symbol && declaration ? classifyDeclaration(declaration, symbol, index) : UNRESOLVED;
     const dependencyImport = classified.resolution === "resolved" || imported === null
       ? imported
@@ -168,7 +205,11 @@ function aliasedSymbol(symbol: TsSymbol | undefined): TsSymbol | undefined {
  * than to the lexical callable that supplies its value. Follow that compiler-provided value symbol
  * so a later `binding.replay()` keeps the real helper as its call target.
  */
-function implementationDeclaration(symbol: TsSymbol | undefined, seen = new Set<TsSymbol>()): Node | undefined {
+function implementationDeclaration(
+  symbol: TsSymbol | undefined,
+  seen: Set<TsSymbol>,
+  shorthandValueSteps: TargetShorthandValueStep[],
+): Node | undefined {
   if (!symbol || seen.has(symbol)) return undefined;
   seen.add(symbol);
   const declarations = symbol?.getDeclarations() ?? [];
@@ -176,7 +217,13 @@ function implementationDeclaration(symbol: TsSymbol | undefined, seen = new Set<
   if (body) return body;
   for (const declaration of declarations) {
     if (!Node.isShorthandPropertyAssignment(declaration)) continue;
-    const value = implementationDeclaration(declaration.getValueSymbol(), seen);
+    const valueSymbol = declaration.getValueSymbol();
+    shorthandValueSteps.push({ declaration, valueSymbol });
+    const value = implementationDeclaration(
+      valueSymbol,
+      seen,
+      shorthandValueSteps,
+    );
     if (value) return value;
   }
   return declarations[0];

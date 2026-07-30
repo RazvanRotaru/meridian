@@ -38,7 +38,10 @@ import {
   staticString,
   type StaticArgumentResolver,
 } from "./port-static-values";
-import { collectStaticRpcPorts } from "./rpc-ports-pass";
+import {
+  collectStaticRpcPorts,
+  isStaticRpcFactoryCallSyntax,
+} from "./rpc-ports-pass";
 import {
   reportRelationshipFileProgress,
   type RelationshipFileProgress,
@@ -94,6 +97,7 @@ export function collectPorts(
 ): Port[] {
   const ports: Port[] = [];
   const messageListeners: MessageListenerBoundary[] = [];
+  const rpcFactoryCalls: CallExpression[] = [];
   const argumentIndex = buildStaticArgumentIndex(loaded, index);
   for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
     const relPath = loaded.relativePathOf(sourceFile);
@@ -105,6 +109,7 @@ export function collectPorts(
     );
     const context = fileContext(sourceFile, models.factories, relPath);
     for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
+      if (isStaticRpcFactoryCallSyntax(call)) rpcFactoryCalls.push(call);
       const listenerSurface = matchingMessageListenerSurface(call, context, models.surfaces);
       if (listenerSurface) messageListeners.push({ call, surface: listenerSurface, relPath });
       ports.push(...matchCall(
@@ -122,7 +127,7 @@ export function collectPorts(
   return [
     ...ports,
     ...collectMessageDispatcherPorts(loaded, index, moduleByFilePath, messageListeners),
-    ...collectStaticRpcPorts(loaded, index, moduleByFilePath),
+    ...collectStaticRpcPorts(loaded, index, moduleByFilePath, rpcFactoryCalls),
   ];
 }
 
@@ -505,10 +510,9 @@ function buildStaticArgumentIndex(
       for (const call of sourceFile.getDescendantsOfKind(SyntaxKind.CallExpression)) {
         const target = resolveTarget(call.getExpression(), index);
         if (target.resolution !== "resolved" || target.resolvedTarget === null) continue;
-        callsByTarget.set(target.resolvedTarget, [
-          ...(callsByTarget.get(target.resolvedTarget) ?? []),
-          call,
-        ]);
+        const existing = callsByTarget.get(target.resolvedTarget);
+        if (existing) existing.push(call);
+        else callsByTarget.set(target.resolvedTarget, [call]);
       }
     }
     return callsByTarget;

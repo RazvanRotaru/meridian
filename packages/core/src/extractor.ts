@@ -25,6 +25,7 @@ export type ExtractionDepth = "package" | "module" | "class" | "function";
  */
 export type ExtractionProgressPhase =
   | "project-load"
+  | "input-proof"
   | "structure"
   | "relationships"
   | "stitch"

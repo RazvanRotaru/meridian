@@ -202,6 +202,17 @@ export function computeAnalysisExecutionFingerprint(
   return hash.digest("hex");
 }
 
+/**
+ * Resolve one declared runtime dependency with the same host-local rules used by the executable
+ * closure walker. Exported for narrower fingerprints rooted at a dependency package.
+ */
+export function resolveAnalysisDependencyManifest(
+  dependencyName: string,
+  fromPackageManifest: string,
+): string | undefined {
+  return defaultResolveDependencyManifest(dependencyName, fromPackageManifest);
+}
+
 function hashPackage(
   hash: Hash,
   packageEntry: ResolvedPackage,

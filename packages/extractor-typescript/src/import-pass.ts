@@ -39,15 +39,18 @@ export function collectImportEdges(
   index: ResolutionIndex,
   resolver?: CrossPackageResolver,
   onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
 ): RawEdge[] {
   const edges: RawEdge[] = [];
-  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
-    const relPath = loaded.relativePathOf(sourceFile);
+  const sourceFiles = loaded.sourceFiles
+    .map((sourceFile) => ({ sourceFile, relPath: loaded.relativePathOf(sourceFile) }))
+    .filter(({ relPath }) => selectedFiles === undefined || selectedFiles.has(relPath));
+  for (const [fileIndex, { sourceFile, relPath }] of sourceFiles.entries()) {
     reportRelationshipFileProgress(
       onSourceFile,
       relPath,
       fileIndex + 1,
-      loaded.sourceFiles.length,
+      sourceFiles.length,
     );
     collectFileImports(sourceFile, relPath, moduleByFilePath, index, edges, resolver);
   }

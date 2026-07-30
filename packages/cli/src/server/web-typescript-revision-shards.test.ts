@@ -6,8 +6,11 @@ import { runGit } from "./git-exec";
 import {
   parseTypeScriptRevisionShardMode,
   serverTypeScriptRevisionShardDecision,
+  tryWithServerTypeScriptRevisionShardAnalysisGroup,
+  withServerTypeScriptRevisionShardAnalysisGroup,
   withServerTypeScriptRevisionShards,
 } from "./web-typescript-revision-shards";
+import { tryWithTypeScriptRevisionShardBuildLock } from "./web-typescript-revision-shard-lock";
 
 vi.mock("./git-exec", () => ({ runGit: vi.fn() }));
 
@@ -153,6 +156,183 @@ describe("server-owned TypeScript revision shards", () => {
     });
   });
 
+  it("injects one ephemeral pair exchange only for an admitted exact workspace", async () => {
+    const root = temporaryDirectory();
+    const pairCacheDir = join(root, "pair-cache");
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
+    const common = {
+      cacheRoot: join(root, "server-cache"),
+      root,
+      exactWorkspaces: [activeWorkspace(root)],
+      runtimeFingerprint: runtimeFingerprint(),
+      pairCacheDir,
+    };
+
+    await expect(serverTypeScriptRevisionShardDecision({
+      ...common,
+      mode: "admitted",
+    })).resolves.toMatchObject({
+      kind: "enabled",
+      policy: { mode: "admitted", pairCacheDir },
+    });
+    await expect(serverTypeScriptRevisionShardDecision({
+      ...common,
+      mode: "shadow",
+    })).resolves.toMatchObject({
+      kind: "enabled",
+      policy: { mode: "shadow", pairCacheDir: null },
+    });
+  });
+
+  it("runs admitted readers concurrently under one cross-process build fence", async () => {
+    const owner = temporaryDirectory();
+    const head = join(owner, "head");
+    const comparison = join(owner, "comparison");
+    const cacheRoot = join(owner, "server-cache");
+    mkdirSync(head);
+    mkdirSync(comparison);
+    vi.mocked(runGit).mockImplementation(async (_args, options) =>
+      `${options.cwd}\n${COMMIT}\n${TREE}\n`);
+    const release = deferred<void>();
+    const bothStarted = deferred<void>();
+    let active = 0;
+    const repositoryAnalysis = vi.fn(async (_request, options) => {
+      active += 1;
+      if (active === 2) bothStarted.resolve();
+      expect(options.signal?.aborted).toBe(false);
+      expect(options.typeScriptRevisionShards).toMatchObject({ mode: "admitted" });
+      await release.promise;
+      active -= 1;
+      return options.artifactOutputPath;
+    });
+    const signal = new AbortController().signal;
+
+    const group = withServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: repositoryAnalysis as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [activeWorkspace(head), activeWorkspace(comparison)],
+      signal,
+      work: async (analysis, lockSignal) => Promise.all([
+        analysis(
+          { absoluteRoot: head, cwd: head },
+          { artifactOutputPath: join(owner, "head.json"), signal: lockSignal },
+        ),
+        analysis(
+          { absoluteRoot: comparison, cwd: comparison },
+          { artifactOutputPath: join(owner, "comparison.json"), signal: lockSignal },
+        ),
+      ]),
+    });
+
+    await bothStarted.promise;
+    expect(active).toBe(2);
+    await expect(tryWithTypeScriptRevisionShardBuildLock(
+      cacheRoot,
+      undefined,
+      () => "unexpected",
+    )).resolves.toBeUndefined();
+    const skippedWork = vi.fn(() => "unexpected");
+    await expect(tryWithServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: repositoryAnalysis as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [activeWorkspace(head)],
+      signal,
+      work: skippedWork,
+    })).resolves.toEqual({ kind: "unavailable" });
+    expect(skippedWork).not.toHaveBeenCalled();
+    release.resolve();
+    await expect(group).resolves.toEqual([
+      join(owner, "head.json"),
+      join(owner, "comparison.json"),
+    ]);
+  });
+
+  it("distinguishes an admitted undefined result from a busy shard fence", async () => {
+    const root = temporaryDirectory();
+    const cacheRoot = join(root, "server-cache");
+    const signal = new AbortController().signal;
+    const work = vi.fn(async () => undefined);
+
+    await expect(tryWithServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: vi.fn() as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [],
+      signal,
+      work,
+    })).resolves.toEqual({ kind: "admitted", value: undefined });
+    expect(work).toHaveBeenCalledOnce();
+
+    const lockHeld = deferred<void>();
+    const releaseLock = deferred<void>();
+    const owner = withServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: vi.fn() as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [],
+      signal,
+      work: async () => {
+        lockHeld.resolve();
+        await releaseLock.promise;
+      },
+    });
+    await lockHeld.promise;
+    const skippedWork = vi.fn(async () => undefined);
+    await expect(tryWithServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: vi.fn() as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [],
+      signal,
+      work: skippedWork,
+    })).resolves.toEqual({ kind: "unavailable" });
+    expect(skippedWork).not.toHaveBeenCalled();
+    releaseLock.resolve();
+    await owner;
+  });
+
+  it("preserves per-child cancellation while the admitted group fence remains live", async () => {
+    const root = temporaryDirectory();
+    const cacheRoot = join(root, "server-cache");
+    vi.mocked(runGit).mockResolvedValue(`${root}\n${COMMIT}\n${TREE}\n`);
+    const started = deferred<AbortSignal>();
+    const childController = new AbortController();
+    const failure = new Error("sibling extraction failed");
+    const repositoryAnalysis = vi.fn(async (_request, options) => {
+      const signal = options.signal;
+      if (signal === undefined) throw new Error("analysis signal is required");
+      started.resolve(signal);
+      return new Promise<never>((_resolve, reject) => {
+        const abort = () => reject(signal.reason);
+        signal.addEventListener("abort", abort, { once: true });
+        if (signal.aborted) abort();
+      });
+    });
+
+    await expect(withServerTypeScriptRevisionShardAnalysisGroup({
+      repositoryAnalysis: repositoryAnalysis as never,
+      cacheRoot,
+      mode: "admitted",
+      exactWorkspaces: [activeWorkspace(root)],
+      signal: new AbortController().signal,
+      work: async (analysis, lockSignal) => {
+        const child = analysis(
+          { absoluteRoot: root, cwd: root },
+          { artifactOutputPath: join(root, "artifact.json"), signal: childController.signal },
+        );
+        const executionSignal = await started.promise;
+        expect(executionSignal).not.toBe(childController.signal);
+        expect(lockSignal.aborted).toBe(false);
+        childController.abort(failure);
+        await expect(child).rejects.toBe(failure);
+        expect(executionSignal.aborted).toBe(true);
+        expect(lockSignal.aborted).toBe(false);
+      },
+    })).resolves.toBeUndefined();
+  });
+
   it("rejects unknown opt-in modes before server startup", () => {
     expect(parseTypeScriptRevisionShardMode("shadow")).toBe("shadow");
     expect(() => parseTypeScriptRevisionShardMode("on")).toThrow(/must be one of/);
@@ -184,4 +364,12 @@ function activeWorkspace(repoDir: string) {
     commit: COMMIT,
     isActive: () => true,
   };
+}
+
+function deferred<Value>() {
+  let resolve!: (value: Value | PromiseLike<Value>) => void;
+  const promise = new Promise<Value>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
 }

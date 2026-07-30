@@ -3,6 +3,8 @@
 Status: **implemented and validated locally; revise before production admission**  
 Baseline inspected before implementation: `origin/main`
 `72c38728cc5d6bb2bef98899ff82546f400b54f7` (2026-07-24)
+Performance follow-up inspected fetched `origin/main`
+`c4f8d6988d90a08d61d6a9f588be868316ab7b9d` (2026-07-27).
 
 This note is intentionally separate from the TypeScript incremental-extraction POC. This change
 can reuse a complete immutable graph for an exact revision. The per-package TypeScript shard
@@ -197,23 +199,24 @@ Recorded commands and outcomes:
 | Focused worker/runtime/shard-policy suites | 4 files, 38 tests passed |
 | Focused CLI authority/global-lock/retention/scheduler suites | 4 files, 39 tests passed |
 | Focused CLI mode/default-off PR-cache suites | 3 files, 22 tests passed |
-| `pnpm --filter @meridian/core test` | 23 files, 205 tests passed |
-| `pnpm --filter @meridian/extractor-typescript test` | 39 files, 316 tests passed |
+| `pnpm --filter @meridian/core test` | 23 files, 207 tests passed |
+| `pnpm --filter @meridian/extractor-typescript test` | Final follow-up: 40 files, 328 tests passed |
 | `pnpm --filter @meridian/extractor-python test` | 9 files, 54 tests passed |
 | `pnpm --filter @meridian/extractor-typescript typecheck` | Passed |
 | `pnpm --filter @meridian/cli typecheck` | Passed |
 | Focused renderer boot/navigation/PR suites | 7 files, 139 tests passed |
 | `pnpm --filter @meridian/renderer typecheck` | Passed |
-| `pnpm --filter @meridian/renderer test` | 236 files, 2,203 tests passed |
-| `pnpm --filter @meridian/cli exec vitest run --config vitest.e2e.config.ts e2e/pr-review-progress-layout.e2e.ts` | 1 file, 2 headless-browser geometry tests passed; short, pictured, maximum unbroken, and reused states retained the same reserved geometry with no horizontal overflow |
+| `pnpm --dir packages/cli exec vitest run --exclude src/server/folder-dialog.test.ts` | Final follow-up: 73 files, 785 tests passed and 3 intentionally skipped |
+| `pnpm --dir packages/cli exec vitest run src/server/folder-dialog.test.ts` | Final follow-up: isolated file, 5 tests passed in 0.34 s after its fixed 2-second child-start deadline was the only saturated full-pool failure |
+| `pnpm --filter @meridian/renderer test` | 236 files, 2,220 tests passed |
+| `pnpm --filter @meridian/cli exec vitest run --config vitest.e2e.config.ts e2e/pr-review-progress-layout.e2e.ts` | 1 file, 4 headless-browser tests passed; reserved geometry, long paths, independent concurrent lanes, and truthful capacity-one lane completion were preserved |
 | `pnpm typecheck` | All 6 workspace packages passed |
 | `pnpm build` | All package builds and renderer copy passed; existing renderer large-chunk warning remains |
 | `git diff --check` | Passed |
 
-The focused hardened suites, complete extractor and partitioned CLI suites, all workspace
-typechecks, browser geometry E2E, build, and final Autopilot runtime matrix were rerun against the
-frozen current worktree. Core, Python, and renderer full-suite rows are the preceding unchanged-
-package gate.
+The CLI split, complete core/renderer/TypeScript-extractor suites, focused hardened suites, all
+workspace typechecks, browser E2E, build, and final Autopilot runtime matrix were rerun against the
+final worktree. The Python row is the preceding unchanged-package gate.
 
 Sandboxed CLI/E2E attempts could not bind loopback listeners (`EPERM`). Running the complete CLI
 suite and focused browser suite with localhost permission produced the passing results above; the
@@ -467,6 +470,16 @@ The revision-safe TypeScript POC is now connected behind the server-owned
 by default. The client cannot choose the cache directory, tree, build/runtime fingerprint, policy,
 or admission authority.
 
+The shard build fingerprint is intentionally narrower than the process-scoped whole-artifact
+identity above. It hashes the exact installed TypeScript extractor entry and its complete declared
+runtime dependency closure, including core/schema and the TypeScript toolchain. Unrelated CLI,
+renderer, and Python implementation changes therefore invalidate whole artifacts but can still
+reuse already-admitted TypeScript shards. Exact shard requests, schema/repository policy, and
+Node/platform/toolchain coordinates remain independently bound. This does not depend on remembering
+to bump a repository-analysis version: a compile-time closed `ExtractOptions` boundary requires
+every semantic CLI-supplied extractor option to be fingerprinted or explicitly classified as
+exact-root, shard-disabling, supplemental-input, or observation-only data.
+
 - `empty` exercises the same pipeline in a disposable cache.
 - `shadow` uses a host-local Ed25519 signer, writes canonical semantic evidence one category at a
   time, stages immutable shard bytes without making them reusable, releases the incremental graph,
@@ -526,6 +539,17 @@ fingerprint: the measured warm runs still took 38.9-46.0 seconds of fingerprint 
 6.49-6.52 GB maximum RSS. The isolated cold HEAD peaked at 8.07 GB. The global lock bounds
 concurrent memory pressure but does not reduce that per-build cost.
 
+An isolated semantic-region planner now proves the intended graph algorithm without serving its
+output. It collapses complete cross-file dependency cycles into regions, evaluates providers before
+consumers, and rebuilds a changed region plus reverse-transitive consumers. It fails closed to the
+whole package unless module/type resolution, lookup inputs, symbol/type reads, extractor-specific
+reads, and ambient/augmentation scope are all complete. The present extractor cannot yet provide
+that proof or reassemble cached per-file contributions in exact cold byte order; its global
+ports/RPC/message-dispatch and Promise-resource passes must first become immutable local facts plus
+pure reducers. Module-resolution-only sizing suggests substantial potential reuse in ordinary
+source edits, but it is not a soundness boundary. Config and ambient changes such as the inspected
+Autopilot pair `aa579af…` versus `e191417…` must conservatively rebuild the full app.
+
 A final real service/browser pass used open Autopilot PR #4472. Forced-refresh `shadow` completed
 both exact revisions and their cold TypeScript oracles in 22m 05s with 988 progress events.
 Forced-refresh `admitted` then completed in 3m 18s with 63 events and no TypeScript
@@ -533,15 +557,105 @@ structure/relationship traversal. After a server restart, normal-policy `admitte
 30 unique receipt-authenticated shards in 2m 34s; an exact pair repeat returned only `done`,
 `cache:"hit"` in 1.38s. All runs produced 59,970 nodes and 230,792 edges.
 
+### Memory-admitted pair parallelism
+
+HEAD and merge-base extraction are independent pure computations once both exact workspaces and
+inputs have been resolved. A populated two-sided cache miss can therefore reserve two analysis
+slots atomically and run the two disposable workers concurrently. This is not commit-by-commit
+extraction: the two progress positions are the exact PR HEAD and exact Git merge base.
+
+The server enables this canary only when startup explicitly selects the loopback-only
+`--typescript-incremental admitted` mode, the memory policy admits two workers, and both sides are
+populated misses. The default server, capacity-one hosts, other shard modes, a one-side cache hit,
+and a materialized empty side remain sequential. On a capacity-two host, a populated pair remains
+a FIFO atomic two-slot request even when another pair is active; one busy probe no longer degrades
+the request permanently to a ten-minute one-worker sequence. Local slots and the host-wide shard
+fence are never held while waiting for the other resource: the request alternates fair local
+admission plus a non-blocking fence probe with a bounded process-local coordination admission,
+host-fence wait, and non-blocking local-capacity probe. Only one request per process polls the
+filesystem fence; later requests enter a bounded process-local FIFO whose default queue limit
+matches the analysis queue, and excess prepared requests receive the existing retryable overload
+error and discard their stage/workspace. Failed probes release their resource before retrying, and
+the local probe cannot bypass queued FIFO work. Capacity one is the only automatic sequential
+fallback. The first child failure aborts its sibling, but both promises are drained before capacity,
+the cache fence, or request staging is released.
+
+The two workers also receive one private request-scoped shard exchange. Each still fingerprints its
+exact Git tree and compiler program. On an admitted persistent-cache miss, an atomic lock keyed by
+the complete unit input fingerprint lets one worker run the canonical unit extraction; after the
+observed cross-package resolver trace completes the content address, the sibling can reuse those
+immutable bytes. Different unit fingerprints run independently and concurrently. The pair exchange
+is removed after both workers settle, has no admission receipt, never enters the persistent cache,
+and is inaccessible to later PRs. Focused real-Git tests prove that two identical fresh workers
+perform three unit builds rather than six, and that two different exact trees with one changed unit
+perform four builds rather than six. Both final results and revision manifests are canonical-JSON
+identical to empty-cache cold extractions. This is unit reuse between the two final trees, not
+per-commit replay.
+
+Exact-revision objects are also rechecked after the pair jointly acquires slots and the host fence.
+This closes the overlap race in which PR B observed a shared merge-base miss, waited behind PR A,
+then unnecessarily extracted the base that A had published while B was queued. A late base hit
+leaves only HEAD to extract; late hits on both sides start no workers. Refresh requests, disabled
+whole-revision sharing, corrupt entries, and materialized empty sides retain their conservative
+behavior.
+
+A controlled forced-refresh run on the exact PR #4472 revisions used the same built code and cache
+policy for both paths:
+
+| Path | End-to-end | Sampled aggregate peak RSS | Result |
+|---|---:|---:|---|
+| One analysis slot, sequential HEAD then merge base | 571.364 s | not comparable because the control used a larger heap only to force one slot | 59,970 nodes / 230,792 edges |
+| Two analysis slots, concurrent exact revisions | 321.905 s | 12.826 GiB | 59,970 nodes / 230,792 edges |
+
+Parallel extraction reduced cold-pair wall time by 43.66% (1.775x). After replacing only the
+top-level non-semantic `generatedAt`, the complete 339,943,767-byte HEAD artifacts were
+byte-identical with normalized SHA-256
+`19e633d9ef55a8a5c6e96a377b6150f03574f7920ec1d1c9fe8dcb1d8f3f9c00`; the complete
+353,965,032-byte merge-base artifacts were byte-identical with normalized SHA-256
+`fef88370ea99a0e08d6d32dcdfc6e73a027f9856315d05fec87c81cca3095375`.
+This comparison covers serialized node, edge, call-site, flow, port, diagnostic, review-fingerprint,
+and ordering parity, not only counts.
+
+The frozen final build completed another concurrent cold pair in 342.797 s with 13.407 GiB sampled
+peak RSS and the same two normalized artifact digests. Host contention invalidated the attempted
+same-build sequential timing, so the 40.00% comparison with the earlier valid sequential oracle is
+reported only as corroboration, not a second controlled speedup sample.
+
+A later rebuilt-service run prepared live Autopilot PR #4510 at HEAD `e19cd50…` and merge base
+`f59c9e1…`. It was a new-process whole-pair miss over the retained authenticated shard namespace.
+Both lanes became visible at 5.192 s, HEAD completed at 275.563 s, and the pair completed at
+277.072 s (4m37s) with 60,582 nodes and 234,221 edges. An immediate exact repeat returned one
+`done` event in 1.520 s with identical graph IDs. Progress showed seven TypeScript structure
+traversals across two 27-unit revisions; the large app and iframe were the only units traversed on
+both sides. This is about 22% below the earlier 5m54 observation of the same pair, but the hosts
+were not controlled, so it is corroboration rather than an attributed speedup. It confirms that
+the remaining first-review critical path is concentrated in changed large semantic units.
+
+The TypeScript RPC pass now reuses the ordinary call traversal as an exact
+`.createProxy`/`.createStub` syntax gate, lazily builds its call-target index only for parameter
+propagation, and uses order-preserving mutable accumulation instead of repeated array spreads.
+Autopilot has no accepted RPC factory calls in its 4,528-file app unit. The bounded progress trace
+places the old app-unit ports-to-exports segment at 29.3-30.9 s per revision and the final segment at
+16.1-16.5 s, a 43.8-47.9% phase reduction. Whole-run improvement is not claimed from one noisy
+sample. Exact normalized artifact bytes and positive, negative, alias, unresolved, and
+cross-package fixtures remained unchanged.
+
+An admitted-miss codec shortcut was explicitly rejected. It was semantically equal, but direct
+miss objects retained construction-order keys while shard-decoded objects were normalized; mixed
+hit/miss artifact byte digests and therefore graph IDs changed. The optimization was removed rather
+than weakening the byte-identity gate.
+
 Renderer restoration showed the same five-step model and revision lanes as landing preparation,
-including review-graph/unit/file/activity progress for TypeScript and Python. The reserved card remained
-stable while long paths and separate semantic traversals changed. It then rendered the complete
-21-file PR graph review with affected flows and submission controls. The final app remains in
-`meridian-app-99f9` on port 4187 using `admitted` plus the loopback-only exact-revision cache,
-without forced refresh.
+including review-graph/unit/file/activity progress for TypeScript and Python. The reserved card
+remained stable while long paths and separate semantic traversals changed. It then rendered the
+complete 21-file PR graph review with affected flows and submission controls. That validation app
+used `meridian-app-99f9` on port 4187 with `admitted` plus the loopback-only exact-revision cache,
+without forced refresh. The session was later stopped at the user's request after it became
+unresponsive; this note does not claim a currently running service.
 
 The complete model, parity matrix, disk/RSS measurements, risks, and production sequence are in
-`docs/revision-safe-incremental-extraction-poc.md`.
+`docs/revision-safe-incremental-extraction-poc.md`. The later file-grained experiment and its
+controlled Autopilot measurement are in `docs/revision-safe-file-shard-poc.md`.
 
 ## Recommendation
 
@@ -551,11 +665,14 @@ The complete model, parity matrix, disk/RSS measurements, risks, and production 
   PR-identity-safe Back/Forward resets as separable improvements.
 - Keep cross-pair whole-revision reuse off by default and loopback-only. It still needs bounded
   retention/GC, a cross-process artifact-byte handoff lease, cross-pair miss singleflight, fuller
-  external-runtime provenance, and controlled concurrency/restart benchmarks.
+  external-runtime provenance, and controlled multi-request/corpus rollout evidence.
 - Evaluate TypeScript shards through `shadow`, then explicitly populated `admitted` runs. Receipt
   authentication, lease-bound Git identity, the global lock, repair/quarantine, and bounded
   retention materially improve the POC, but warm Project construction, 6-7 GiB RSS, coarse large
   units, and limited corpus evidence remain.
+- Proceed with the memory-admitted two-worker pair path and the RPC no-candidate gate as separable
+  performance changes, but canary aggregate RSS, queue time, cancellation, and throughput before a
+  broad rollout. Do not generalize the one-repository timing to all codebases.
 - Keep the cold extractor as the semantic oracle. The runtime runs prove exact byte/reference or
   semantic parity only for the recorded revisions; they do not prove arbitrary environment
   soundness or authorize graph registration, renderer hydration, cache admission, or PR-serving

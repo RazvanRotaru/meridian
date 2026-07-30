@@ -20,6 +20,7 @@ import {
   extractRevisionCandidate,
   extractRevisionWithCache,
 } from "./incremental-poc/extract-revision";
+import type { AnalysisPolicyFingerprint } from "./incremental-poc/model";
 
 export const TYPESCRIPT_REVISION_SHARD_MODES = [
   "empty",
@@ -43,9 +44,16 @@ export interface TypeScriptRevisionShardPolicy {
   mode: TypeScriptRevisionShardMode;
   /** Server-owned persistent root, always outside the exact-revision checkout. */
   cacheDir: string;
+  /**
+   * Optional server-owned, request-scoped exchange for one exact PR revision pair.
+   *
+   * Its contents are never admitted to the persistent cache and are deleted after both workers
+   * settle. Complete unit fingerprints plus observed resolver traces remain the reuse boundary.
+   */
+  pairCacheDir: string | null;
   /** Exact full Git tree object id, never a branch, abbreviated id, or mutable ref. */
   treeOid: string;
-  /** Build-time digest over extractor, schema, compiler configuration, and lock inputs. */
+  /** Digest over the exact executable extractor and its declared runtime dependency closure. */
   buildFingerprint: string;
   /** Digest of the fixed repository-analysis policy and its version. */
   analysisPolicyFingerprint: string;
@@ -57,6 +65,54 @@ export interface TypeScriptRevisionShardPolicy {
   /** Stable runtime coordinates; process nonces are intentionally not reusable provenance. */
   runtimeFingerprint: TypeScriptRevisionShardRuntimeFingerprint;
 }
+
+/**
+ * Closed provenance boundary for values supplied by the CLI bridge.
+ *
+ * `root` is bound to the verified exact Git checkout; `project` and `include` disable shards;
+ * `supplementalFiles` is normalized into the exact revision request; and `onProgress` is
+ * observation-only. Every other ExtractOptions field is copied into `analysisPolicy()` and thus
+ * every unit fingerprint. Adding a new ExtractOptions field without classifying it here is a
+ * compile-time error rather than a manual version-bump obligation.
+ */
+type RevisionShardRoutedExtractOption =
+  | "root"
+  | "project"
+  | "include"
+  | "supplementalFiles"
+  | "onProgress";
+type RevisionShardFingerprintedExtractOption =
+  | "depth"
+  | "exclude"
+  | "includeExternal"
+  | "includeUnresolved"
+  | "emitImportEdges"
+  | "valueRefs";
+type UnaccountedRevisionShardExtractOption = Exclude<
+  keyof ExtractOptions,
+  RevisionShardRoutedExtractOption | RevisionShardFingerprintedExtractOption
+>;
+type UnknownRevisionShardExtractOption = Exclude<
+  RevisionShardRoutedExtractOption | RevisionShardFingerprintedExtractOption,
+  keyof ExtractOptions
+>;
+type MissingRevisionShardPolicyField = Exclude<
+  RevisionShardFingerprintedExtractOption,
+  keyof AnalysisPolicyFingerprint
+>;
+type UnknownRevisionShardPolicyField = Exclude<
+  keyof AnalysisPolicyFingerprint,
+  RevisionShardFingerprintedExtractOption
+>;
+const ALL_REVISION_SHARD_EXTRACT_OPTIONS_ARE_ACCOUNTED_FOR:
+  Record<UnaccountedRevisionShardExtractOption, never> = {};
+const ALL_CLASSIFIED_REVISION_SHARD_OPTIONS_EXIST:
+  Record<UnknownRevisionShardExtractOption, never> = {};
+const ALL_FINGERPRINTED_OPTIONS_ARE_POLICY_FIELDS:
+  Record<MissingRevisionShardPolicyField | UnknownRevisionShardPolicyField, never> = {};
+void ALL_REVISION_SHARD_EXTRACT_OPTIONS_ARE_ACCOUNTED_FOR;
+void ALL_CLASSIFIED_REVISION_SHARD_OPTIONS_EXIST;
+void ALL_FINGERPRINTED_OPTIONS_ARE_POLICY_FIELDS;
 
 export type TypeScriptRevisionShardDecision =
   | { useShards: true }
@@ -108,6 +164,7 @@ export function isTypeScriptRevisionShardPolicy(
     "buildFingerprint",
     "cacheDir",
     "mode",
+    "pairCacheDir",
     "runtimeFingerprint",
     "treeOid",
     "version",
@@ -123,6 +180,9 @@ export function isTypeScriptRevisionShardPolicy(
     && TYPESCRIPT_REVISION_SHARD_MODES.includes(policy.mode)
     && isAbsolute(policy.cacheDir)
     && Buffer.byteLength(policy.cacheDir) <= 4_096
+    && (policy.pairCacheDir === null
+      || (isAbsolute(policy.pairCacheDir) && Buffer.byteLength(policy.pairCacheDir) <= 4_096))
+    && (policy.mode === "admitted" || policy.pairCacheDir === null)
     && /^[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(policy.treeOid)
     && /^[a-f0-9]{64}$/.test(policy.buildFingerprint)
     && /^[a-f0-9]{64}$/.test(policy.analysisPolicyFingerprint)
@@ -180,6 +240,9 @@ export async function extractTypeScriptRevisionWithPolicy(
     // later shadow run admits them.
     return (await extractRevisionCandidate(request, {
       requiredAdmission: policy.admission as RevisionShardAdmissionVerifier,
+      ...(policy.pairCacheDir === null
+        ? {}
+        : { ephemeralPairCacheDir: policy.pairCacheDir }),
     })).result;
   }
 

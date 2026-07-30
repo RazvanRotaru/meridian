@@ -34,6 +34,13 @@ import {
   type RelationshipFileProgress,
 } from "./progress";
 
+/** One target-file's value-reference outputs, with diagnostic provenance retained structurally. */
+export interface ValueRefFileContribution {
+  readonly file: string;
+  readonly edges: RawEdge[];
+  readonly diagnostics: ExtractionDiagnostic[];
+}
+
 export function collectValueRefEdges(
   loaded: LoadedProject,
   index: ResolutionIndex,
@@ -41,22 +48,63 @@ export function collectValueRefEdges(
   diagnostics: ExtractionDiagnostic[],
   resolver?: CrossPackageResolver,
   onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
 ): RawEdge[] {
-  const edges: RawEdge[] = [];
-  for (const [fileIndex, sourceFile] of loaded.sourceFiles.entries()) {
+  const contributions = collectValueRefContributions(
+    loaded,
+    index,
+    moduleByFilePath,
+    resolver,
+    onSourceFile,
+    selectedFiles,
+  );
+  diagnostics.push(...contributions.flatMap((file) => file.diagnostics));
+  return contributions.flatMap((file) => file.edges);
+}
+
+/**
+ * Collect file-owned value-reference contributions. Selection is exact and always replayed in
+ * target-program order rather than caller Set iteration order.
+ */
+export function collectValueRefContributions(
+  loaded: LoadedProject,
+  index: ResolutionIndex,
+  moduleByFilePath: Map<string, NodeDescriptor>,
+  resolver?: CrossPackageResolver,
+  onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
+): ValueRefFileContribution[] {
+  const sourceFiles = loaded.sourceFiles
+    .map((sourceFile) => ({ sourceFile, relPath: loaded.relativePathOf(sourceFile) }))
+    .filter(({ relPath }) => selectedFiles === undefined || selectedFiles.has(relPath));
+  return sourceFiles.map(({ sourceFile, relPath }, fileIndex) => {
+    const contribution: ValueRefFileContribution = {
+      file: relPath,
+      edges: [],
+      diagnostics: [],
+    };
     reportRelationshipFileProgress(
       onSourceFile,
-      loaded.relativePathOf(sourceFile),
+      relPath,
       fileIndex + 1,
-      loaded.sourceFiles.length,
+      sourceFiles.length,
     );
     const names = importedLocalNames(sourceFile);
     if (names.size === 0) {
-      continue; // no imports → no value references to surface; skip the identifier walk entirely
+      return contribution; // no imports → no value references to surface
     }
-    collectFileValueRefs(sourceFile, loaded.relativePathOf(sourceFile), names, index, moduleByFilePath, diagnostics, edges, resolver);
-  }
-  return edges;
+    collectFileValueRefs(
+      sourceFile,
+      relPath,
+      names,
+      index,
+      moduleByFilePath,
+      contribution.diagnostics,
+      contribution.edges,
+      resolver,
+    );
+    return contribution;
+  });
 }
 
 function collectFileValueRefs(

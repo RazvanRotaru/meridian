@@ -2,6 +2,7 @@ import {
   chmod,
   mkdir,
   mkdtemp,
+  readFile,
   readdir,
   rm,
   stat,
@@ -12,7 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { sha256Hex } from "./canonical-json";
+import { canonicalJson, sha256Hex } from "./canonical-json";
 import {
   ImmutableCacheCollisionError,
   ImmutableCacheCorruptionError,
@@ -43,6 +44,12 @@ describe("immutable JSON cache", () => {
     expect(reread?.value).toEqual(value);
     expect(reread?.payloadDigest).toBe(written.payloadDigest);
     expect(reread?.byteSize).toBe((await stat(written.path)).size);
+    expect(await readFile(written.path, "utf8")).toBe(canonicalJson({
+      address,
+      format: "meridian.incremental-poc.immutable-json.v1",
+      payloadDigest: written.payloadDigest,
+      value,
+    }));
   });
 
   it("deduplicates concurrent writes of the same payload", async () => {

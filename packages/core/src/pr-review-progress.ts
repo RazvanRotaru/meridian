@@ -97,11 +97,11 @@ export const PR_REVIEW_PROGRESS_MODEL = Object.freeze({
     },
     clone: {
       step: "workspace",
-      label: "Cloning repository…",
+      label: "Preparing repository mirror…",
     },
     checkout: {
       step: "workspace",
-      label: "Fetching PR HEAD and merge base…",
+      label: "Fetching exact PR revisions…",
     },
     extract: {
       step: "graphs",
@@ -155,6 +155,7 @@ export const PR_REVIEW_PROGRESS_MODEL = Object.freeze({
     },
     phaseLabels: {
       "project-load": "project load",
+      "input-proof": "input proof",
       structure: "structure",
       relationships: "relationships",
       stitch: "stitch",
@@ -213,6 +214,7 @@ export interface PrReviewProgressSnapshot {
 
 export type PrReviewProgressEvent =
   | { type: "stage"; stage: PrReviewProgressStage; progress?: unknown }
+  | { type: "lane-complete"; lane: PrReviewProgressRevisionId }
   | { type: "analysis-done"; cache: "hit" | "miss" | null }
   | { type: "success" }
   | { type: "error"; message?: string | null }
@@ -295,6 +297,7 @@ export function reducePrReviewProgress(
     return current;
   }
   if (event.type === "stage") return applyStage(current, event.stage, event.progress ?? null);
+  if (event.type === "lane-complete") return completeRevisionLane(current, event.lane);
   if (event.type === "analysis-done") return finishAnalysis(current, event.cache);
   if (event.type === "success") {
     // Review preparation is complete only after the renderer's canonical projection step.
@@ -361,17 +364,38 @@ function applyStage(
   next.progress = sanitizePrReviewExtractionProgress(stage, progress);
   next.message = null;
   if (stage === "extract-head") {
-    finishOtherActiveRevision(next.revisions, "head");
     next.revisions.head = "active";
   } else if (stage === "reuse-head") {
-    finishOtherActiveRevision(next.revisions, "head");
     next.revisions.head = "reused";
   } else if (stage === "extract-merge-base") {
-    finishOtherActiveRevision(next.revisions, "mergeBase");
     next.revisions.mergeBase = "active";
   } else if (stage === "reuse-merge-base") {
-    finishOtherActiveRevision(next.revisions, "mergeBase");
     next.revisions.mergeBase = "reused";
+  }
+  return next;
+}
+
+function completeRevisionLane(
+  current: PrReviewProgressSnapshot,
+  lane: PrReviewProgressRevisionId,
+): PrReviewProgressSnapshot {
+  if (current.status !== "running" || current.steps.graphs !== "active") return current;
+  const state = current.revisions[lane];
+  if (state === "done" || state === "reused" || state === "error" || state === "canceled") {
+    return current;
+  }
+  const next = cloneSnapshot(current);
+  next.revisions[lane] = "done";
+
+  const completedStage = lane === "head" ? "extract-head" : "extract-merge-base";
+  const otherLane: PrReviewProgressRevisionId = lane === "head" ? "mergeBase" : "head";
+  if (next.activeStage === completedStage) {
+    next.activeStage = next.revisions[otherLane] === "active"
+      ? otherLane === "head" ? "extract-head" : "extract-merge-base"
+      : "extract";
+    // Telemetry belongs to the completed lane and must not be presented under its sibling or the
+    // neutral graph-preparation umbrella while the immutable pair is finalized.
+    next.progress = null;
   }
   return next;
 }
@@ -453,14 +477,6 @@ function cloneSnapshot(snapshot: PrReviewProgressSnapshot): PrReviewProgressSnap
     steps: { ...snapshot.steps },
     revisions: { ...snapshot.revisions },
   };
-}
-
-function finishOtherActiveRevision(
-  revisions: PrReviewProgressSnapshot["revisions"],
-  next: keyof PrReviewProgressSnapshot["revisions"],
-): void {
-  const other = next === "head" ? "mergeBase" : "head";
-  if (revisions[other] === "active") revisions[other] = "done";
 }
 
 function finalWorkState(state: PrReviewProgressStepState): PrReviewProgressStepState {

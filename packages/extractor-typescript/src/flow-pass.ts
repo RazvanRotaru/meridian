@@ -49,20 +49,30 @@ export function buildLogicFlows(
   moduleSourcesById: ReadonlyMap<string, SourceFile>,
   includeExitOnly: ReadonlySet<string> = new Set(),
   onSourceFile?: RelationshipFileProgress,
+  selectedFiles?: ReadonlySet<string>,
 ): LogicFlows {
   const flows: LogicFlows = {};
   let sourceFileCurrent = 0;
+  const sourceFileTotal = selectedFiles === undefined
+    ? moduleSourcesById.size
+    : descriptors.filter((descriptor) => (
+        moduleSourcesById.has(descriptor.finalId)
+        && selectedFiles.has(descriptor.location.file)
+      )).length;
   // Promise-return analysis is memoized across every callable; only the file-aware walking
   // context varies per descriptor.
   const annotate = createCallAnnotator();
   for (const descriptor of descriptors) {
+    if (selectedFiles !== undefined && !selectedFiles.has(descriptor.location.file)) {
+      continue;
+    }
     if (onSourceFile !== undefined && moduleSourcesById.has(descriptor.finalId)) {
       sourceFileCurrent += 1;
       reportRelationshipFileProgress(
         onSourceFile,
         descriptor.location.file,
         sourceFileCurrent,
-        moduleSourcesById.size,
+        sourceFileTotal,
       );
     }
     if (!keepIds.has(descriptor.finalId)) {

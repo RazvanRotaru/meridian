@@ -38,7 +38,8 @@ import {
   moduleSourcesById,
   portsWithin,
 } from "./extract-common";
-import { extractPerPackage, survivorIdsAtDepth } from "./extract-per-package";
+import { extractPerPackage } from "./extract-per-package";
+import { survivorIdsAtDepth } from "./extraction-depth";
 import { absoluteRoot } from "./paths";
 import { discoverWorkspaceUnits, workspaceFromMemberDirs, type Workspace } from "./workspace-units";
 import { manifestMemberDirs } from "./workspace-scope";

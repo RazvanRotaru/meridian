@@ -12,7 +12,10 @@ import {
 } from "../analysis-runtime-fingerprint";
 import { generatorVersion } from "../version";
 import { SCHEMA_VERSION } from "@meridian/core";
-import type { ChangedFileManifestEntry } from "@meridian/core";
+import type {
+  ChangedFileManifestEntry,
+  PrReviewProgressRevisionId,
+} from "@meridian/core";
 import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript";
 import { parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { runGit } from "./git-exec";
@@ -41,7 +44,10 @@ import {
 import { WebError } from "./web-error";
 import type { PrAnalyzeRequest } from "./web-pr-request";
 import type { ArtifactSource } from "./web-source";
-import type { PhaseAdmission } from "./web-analysis-coordinator";
+import type {
+  CoordinationAdmission,
+  PhaseAdmission,
+} from "./web-analysis-coordinator";
 import {
   repositoryKeyFor,
   type ExpectedRemoteRef,
@@ -57,7 +63,10 @@ import {
   type CachedPrRevisionArtifact,
   type PrRevisionArtifactReference,
 } from "./web-pr-revision-cache";
-import { withServerTypeScriptRevisionShards } from "./web-typescript-revision-shards";
+import {
+  tryWithServerTypeScriptRevisionShardAnalysisGroup,
+  withServerTypeScriptRevisionShardAnalysisGroup,
+} from "./web-typescript-revision-shards";
 
 export type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrStage =
@@ -161,10 +170,14 @@ export async function cachedPrGraph(inputs: {
   token?: string;
   refresh?: boolean;
   onStage(stage: PrStage): void | Promise<void>;
+  onRevisionComplete(lane: PrReviewProgressRevisionId): void | Promise<void>;
   onExtractionProgress?(progress: RepositoryAnalysisProgress): void;
   signal?: AbortSignal;
   runPreparation: PhaseAdmission;
+  runCoordination: CoordinationAdmission;
   runAnalysis: PhaseAdmission;
+  /** Process-local worker capacity already bounded by the server memory policy. */
+  analysisCapacity?: number;
   /** Server startup policy; no field in the PR analysis HTTP request can override it. */
   typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
   /** Explicit loopback-only opt-in for cross-pair exact revision artifact reuse. */
@@ -296,16 +309,54 @@ async function createCachedGraph(
     throwIfAborted(inputs.signal);
     if (headResult === null || comparisonResult === null) {
       await inputs.onStage("extract");
+      const pairCacheDir = headResult === null
+        && comparisonResult === null
+        && !roots.headMaterialized
+        && !comparisonRoot.materialized
+        && inputs.typeScriptRevisionShardMode === "admitted"
+        ? join(preparedStage, "typescript-revision-pair-shards")
+        : undefined;
       const runAnalysis = inputs.runAnalysis;
-      const analyzed = await runAnalysis(async (phaseSignal) => {
+      const repositoryAnalysis = inputs.repositoryAnalysis ?? runRepositoryAnalysisChild;
+      const exactWorkspaces = [workspace.head, workspace.comparison];
+      const recheckSharedRevisionArtifacts = async (analysisSignal: AbortSignal) => {
+        if (inputs.refresh || inputs.experimentalPrRevisionCache !== true) return;
+        if (headResult === null && headIdentity !== null) {
+          const lateCachedHead = await readPrRevisionArtifact({
+            cacheRoot: inputs.cacheRoot,
+            identity: headIdentity,
+            signal: analysisSignal,
+          });
+          if (lateCachedHead !== null) {
+            headResult = sharedRevisionArtifact(lateCachedHead);
+            await inputs.onStage("reuse-head");
+          }
+        }
+        if (comparisonResult === null && comparisonIdentity !== null) {
+          const lateCachedComparison = await readPrRevisionArtifact({
+            cacheRoot: inputs.cacheRoot,
+            identity: comparisonIdentity,
+            signal: analysisSignal,
+          });
+          if (lateCachedComparison !== null) {
+            comparisonResult = sharedRevisionArtifact(lateCachedComparison);
+            await inputs.onStage("reuse-merge-base");
+          }
+        }
+      };
+      const analyzeRevisions = async (
+        admittedRepositoryAnalysis: typeof runRepositoryAnalysisChild,
+        analysisSignal: AbortSignal,
+      ) => {
+        // Cache verification before analysis admission is intentionally optimistic: another pair
+        // can publish either exact revision while this request waits for local slots or the
+        // host-wide shard fence. Recheck only unresolved, populated identities after both resources
+        // are jointly owned and before starting any worker. Refreshes, disabled sharing, and
+        // materialized empty sides remain ineligible by construction.
+        await recheckSharedRevisionArtifacts(analysisSignal);
+        throwIfAborted(analysisSignal);
         const artifactPath = join(preparedStage, "artifact.json");
         const comparisonArtifactPath = join(preparedStage, "comparison-artifact.json");
-        const repositoryAnalysis = withServerTypeScriptRevisionShards(
-          inputs.repositoryAnalysis ?? runRepositoryAnalysisChild,
-          inputs.cacheRoot,
-          inputs.typeScriptRevisionShardMode,
-          [workspace.head, workspace.comparison],
-        );
         if (roots.headMaterialized) {
           // A whole-subtree deletion has no HEAD files to detect. Analyze the populated comparison
           // first, then use its bounded per-extractor hints to select every applicable empty side.
@@ -314,21 +365,22 @@ async function createCachedGraph(
             identity: comparisonIdentity!,
             publishSharedRevision: inputs.experimentalPrRevisionCache === true,
             artifactOutputPath: comparisonArtifactPath,
-            repositoryAnalysis,
+            repositoryAnalysis: admittedRepositoryAnalysis,
             root: roots.comparison,
             source: inputs.source,
             remoteUrl,
             mergeBaseSha,
             token: inputs.token,
-            signal: phaseSignal,
+            signal: analysisSignal,
             onStage: inputs.onStage,
+            onRevisionComplete: inputs.onRevisionComplete,
             execution: { current: 1, total: 2 },
             onExtractionProgress: inputs.onExtractionProgress,
           });
-          throwIfAborted(phaseSignal);
+          throwIfAborted(analysisSignal);
           await inputs.onStage("extract-head");
           headResult = localRevisionArtifact(await extractPrHead(
-            repositoryAnalysis,
+            admittedRepositoryAnalysis,
             roots.head,
             inputs.source,
             inputs.body,
@@ -338,19 +390,24 @@ async function createCachedGraph(
             artifactPath,
             inputs.token,
             emptySideAnalysis(comparisonResult!.facts),
-            phaseSignal,
+            analysisSignal,
             {
               execution: { current: 2, total: 2 },
               onProgress: inputs.onExtractionProgress,
             },
           ));
+          await inputs.onRevisionComplete("head");
         } else {
-          headResult ??= await extractPopulatedHeadArtifact({
+          // The admitted pair cache is intentionally seeded by the canonical merge base before
+          // HEAD starts. This lets HEAD reuse immutable whole-unit and semantic-region shards while
+          // retaining the cold extractor as the oracle. Other modes keep their established order.
+          const extractMergeBaseFirst = pairCacheDir !== undefined;
+          const extractHead = (signal: AbortSignal) => extractPopulatedHeadArtifact({
             cacheRoot: inputs.cacheRoot,
             identity: headIdentity!,
             publishSharedRevision: inputs.experimentalPrRevisionCache === true,
             artifactOutputPath: artifactPath,
-            repositoryAnalysis,
+            repositoryAnalysis: admittedRepositoryAnalysis,
             root: roots.head,
             source: inputs.source,
             body: inputs.body,
@@ -358,25 +415,49 @@ async function createCachedGraph(
             revisions: revisionCoords,
             mergeBaseSha,
             token: inputs.token,
-            signal: phaseSignal,
+            signal,
             onStage: inputs.onStage,
-            execution: { current: 1, total: 2 },
+            onRevisionComplete: inputs.onRevisionComplete,
+            execution: { current: extractMergeBaseFirst ? 2 : 1, total: 2 },
             onExtractionProgress: inputs.onExtractionProgress,
           });
-          throwIfAborted(phaseSignal);
-          // Normal two-sided analysis remains independently auto-detected. Only a materialized empty
-          // comparison (a whole-subtree addition) inherits language hints from the populated HEAD.
+          const extractComparison = (signal: AbortSignal) => extractCanonicalComparisonArtifact({
+            cacheRoot: inputs.cacheRoot,
+            identity: comparisonIdentity!,
+            publishSharedRevision: inputs.experimentalPrRevisionCache === true,
+            artifactOutputPath: comparisonArtifactPath,
+            repositoryAnalysis: admittedRepositoryAnalysis,
+            root: comparisonRoot.root,
+            source: inputs.source,
+            remoteUrl,
+            mergeBaseSha,
+            token: inputs.token,
+            signal,
+            onStage: inputs.onStage,
+            onRevisionComplete: inputs.onRevisionComplete,
+            execution: { current: extractMergeBaseFirst ? 1 : 2, total: 2 },
+            onExtractionProgress: inputs.onExtractionProgress,
+          });
+
+          if (extractMergeBaseFirst && comparisonResult === null) {
+            comparisonResult = await extractComparison(analysisSignal);
+            throwIfAborted(analysisSignal);
+          }
+          headResult ??= await extractHead(analysisSignal);
+          throwIfAborted(analysisSignal);
+          // A materialized empty comparison (a whole-subtree addition) inherits language
+          // hints from the populated HEAD and is therefore intentionally sequential.
           if (comparisonRoot.materialized) {
             await inputs.onStage("extract-merge-base");
             comparisonResult = localRevisionArtifact(await extractPrComparison(
-              repositoryAnalysis,
+              admittedRepositoryAnalysis,
               comparisonRoot.root,
               inputs.source,
               remoteUrl,
               mergeBaseSha,
               comparisonArtifactPath,
               inputs.token,
-              phaseSignal,
+              analysisSignal,
               emptySideAnalysis(headResult.facts),
               comparisonFingerprintFiles(headResult.facts.changedFiles),
               {
@@ -384,28 +465,100 @@ async function createCachedGraph(
                 onProgress: inputs.onExtractionProgress,
               },
             ));
+            await inputs.onRevisionComplete("mergeBase");
           } else if (comparisonResult === null) {
-            comparisonResult = await extractCanonicalComparisonArtifact({
-              cacheRoot: inputs.cacheRoot,
-              identity: comparisonIdentity!,
-              publishSharedRevision: inputs.experimentalPrRevisionCache === true,
-              artifactOutputPath: comparisonArtifactPath,
-              repositoryAnalysis,
-              root: comparisonRoot.root,
-              source: inputs.source,
-              remoteUrl,
-              mergeBaseSha,
-              token: inputs.token,
-              signal: phaseSignal,
-              onStage: inputs.onStage,
-              execution: { current: 2, total: 2 },
-              onExtractionProgress: inputs.onExtractionProgress,
-            });
+            comparisonResult = await extractComparison(analysisSignal);
           }
         }
-        throwIfAborted(phaseSignal);
+        throwIfAborted(analysisSignal);
         return { head: headResult, comparison: comparisonResult };
-      });
+      };
+      const analyze = (
+        phaseSignal: AbortSignal,
+      ) => {
+        const group = {
+          repositoryAnalysis,
+          cacheRoot: inputs.cacheRoot,
+          mode: inputs.typeScriptRevisionShardMode,
+          exactWorkspaces,
+          pairCacheDir,
+          signal: phaseSignal,
+          work: (
+            admittedRepositoryAnalysis: typeof runRepositoryAnalysisChild,
+            analysisSignal: AbortSignal,
+          ) => analyzeRevisions(admittedRepositoryAnalysis, analysisSignal),
+        };
+        return withServerTypeScriptRevisionShardAnalysisGroup(group);
+      };
+      const tryAnalyze = (
+        phaseSignal: AbortSignal,
+      ) => {
+        const group = {
+          repositoryAnalysis,
+          cacheRoot: inputs.cacheRoot,
+          mode: inputs.typeScriptRevisionShardMode,
+          exactWorkspaces,
+          pairCacheDir,
+          signal: phaseSignal,
+          work: (
+            admittedRepositoryAnalysis: typeof runRepositoryAnalysisChild,
+            analysisSignal: AbortSignal,
+          ) => analyzeRevisions(admittedRepositoryAnalysis, analysisSignal),
+        };
+        return tryWithServerTypeScriptRevisionShardAnalysisGroup(group);
+      };
+      const runElasticAnalysis = async () => {
+        if (inputs.typeScriptRevisionShardMode !== "admitted") {
+          return runAnalysis(
+            (phaseSignal) => analyze(phaseSignal),
+            { slots: 1 },
+          );
+        }
+        // The local worker slots and host-wide shard fence are independent bounded resources.
+        // Never wait for either while owning the other: queue fairly for the complete atomic local
+        // reservation and probe the fence, then wait for the fence and probe local capacity. A
+        // failed probe releases its held resource before retrying.
+        const requestSignal = inputs.signal ?? new AbortController().signal;
+        while (true) {
+          const localFirst = await runAnalysis(
+            (phaseSignal) => tryAnalyze(phaseSignal),
+            { slots: 1 },
+          );
+          if (localFirst.kind === "admitted") {
+            return localFirst.value;
+          }
+
+          const fenceFirst = await inputs.runCoordination(
+            (coordinationSignal, tryRunAnalysis) => withServerTypeScriptRevisionShardAnalysisGroup({
+              repositoryAnalysis,
+              cacheRoot: inputs.cacheRoot,
+              mode: "admitted",
+              exactWorkspaces,
+              pairCacheDir,
+              signal: AbortSignal.any([requestSignal, coordinationSignal]),
+              work: (admittedRepositoryAnalysis, fenceSignal) => tryRunAnalysis(
+                (phaseSignal) => analyzeRevisions(
+                  admittedRepositoryAnalysis,
+                  AbortSignal.any([fenceSignal, phaseSignal]),
+                ),
+                { slots: 1 },
+              ),
+            }),
+          );
+          if (fenceFirst.kind === "admitted") {
+            return fenceFirst.value;
+          }
+        }
+      };
+      let analyzed: Awaited<ReturnType<typeof analyzeRevisions>> | undefined;
+      try {
+        analyzed = await runElasticAnalysis();
+        if (analyzed === undefined) {
+          throw new Error("blocking PR revision analysis did not acquire the shard fence");
+        }
+      } finally {
+        if (pairCacheDir !== undefined) removeEntry(pairCacheDir);
+      }
       headResult = analyzed.head;
       comparisonResult = analyzed.comparison;
     }
@@ -1048,12 +1201,14 @@ async function extractPopulatedHeadArtifact(inputs: {
   token?: string;
   signal?: AbortSignal;
   onStage(stage: PrStage): void | Promise<void>;
+  onRevisionComplete(lane: PrReviewProgressRevisionId): void | Promise<void>;
   execution: { current: number; total: number };
   onExtractionProgress?: (progress: RepositoryAnalysisProgress) => void;
 }): Promise<CompletedRevisionArtifact> {
   await inputs.onStage("extract-head");
+  let completed: CompletedRevisionArtifact;
   if (!inputs.publishSharedRevision) {
-    return localRevisionArtifact(await extractPrHead(
+    completed = localRevisionArtifact(await extractPrHead(
       inputs.repositoryAnalysis,
       inputs.root,
       inputs.source,
@@ -1070,38 +1225,41 @@ async function extractPopulatedHeadArtifact(inputs: {
         onProgress: inputs.onExtractionProgress,
       },
     ));
+  } else {
+    const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
+    try {
+      const result = await extractPrHead(
+        inputs.repositoryAnalysis,
+        inputs.root,
+        inputs.source,
+        inputs.body,
+        inputs.remoteUrl,
+        inputs.revisions,
+        inputs.mergeBaseSha,
+        stage.artifactOutputPath,
+        inputs.token,
+        undefined,
+        inputs.signal,
+        {
+          execution: inputs.execution,
+          onProgress: inputs.onExtractionProgress,
+        },
+      );
+      const published = await publishPrRevisionArtifact({
+        cacheRoot: inputs.cacheRoot,
+        identity: inputs.identity,
+        stage,
+        result,
+        signal: inputs.signal,
+      });
+      completed = sharedRevisionArtifact(published);
+    } catch (error) {
+      removeEntry(stage.directory);
+      throw error;
+    }
   }
-  const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
-  try {
-    const result = await extractPrHead(
-      inputs.repositoryAnalysis,
-      inputs.root,
-      inputs.source,
-      inputs.body,
-      inputs.remoteUrl,
-      inputs.revisions,
-      inputs.mergeBaseSha,
-      stage.artifactOutputPath,
-      inputs.token,
-      undefined,
-      inputs.signal,
-      {
-        execution: inputs.execution,
-        onProgress: inputs.onExtractionProgress,
-      },
-    );
-    const published = await publishPrRevisionArtifact({
-      cacheRoot: inputs.cacheRoot,
-      identity: inputs.identity,
-      stage,
-      result,
-      signal: inputs.signal,
-    });
-    return sharedRevisionArtifact(published);
-  } catch (error) {
-    removeEntry(stage.directory);
-    throw error;
-  }
+  await inputs.onRevisionComplete("head");
+  return completed;
 }
 
 async function extractCanonicalComparisonArtifact(inputs: {
@@ -1117,12 +1275,14 @@ async function extractCanonicalComparisonArtifact(inputs: {
   token?: string;
   signal?: AbortSignal;
   onStage(stage: PrStage): void | Promise<void>;
+  onRevisionComplete(lane: PrReviewProgressRevisionId): void | Promise<void>;
   execution: { current: number; total: number };
   onExtractionProgress?: (progress: RepositoryAnalysisProgress) => void;
 }): Promise<CompletedRevisionArtifact> {
   await inputs.onStage("extract-merge-base");
+  let completed: CompletedRevisionArtifact;
   if (!inputs.publishSharedRevision) {
-    return localRevisionArtifact(await extractPrComparison(
+    completed = localRevisionArtifact(await extractPrComparison(
       inputs.repositoryAnalysis,
       inputs.root,
       inputs.source,
@@ -1138,37 +1298,40 @@ async function extractCanonicalComparisonArtifact(inputs: {
         onProgress: inputs.onExtractionProgress,
       },
     ));
+  } else {
+    const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
+    try {
+      const result = await extractPrComparison(
+        inputs.repositoryAnalysis,
+        inputs.root,
+        inputs.source,
+        inputs.remoteUrl,
+        inputs.mergeBaseSha,
+        stage.artifactOutputPath,
+        inputs.token,
+        inputs.signal,
+        undefined,
+        null,
+        {
+          execution: inputs.execution,
+          onProgress: inputs.onExtractionProgress,
+        },
+      );
+      const published = await publishPrRevisionArtifact({
+        cacheRoot: inputs.cacheRoot,
+        identity: inputs.identity,
+        stage,
+        result,
+        signal: inputs.signal,
+      });
+      completed = sharedRevisionArtifact(published);
+    } catch (error) {
+      removeEntry(stage.directory);
+      throw error;
+    }
   }
-  const stage = createPrRevisionArtifactStage(inputs.cacheRoot);
-  try {
-    const result = await extractPrComparison(
-      inputs.repositoryAnalysis,
-      inputs.root,
-      inputs.source,
-      inputs.remoteUrl,
-      inputs.mergeBaseSha,
-      stage.artifactOutputPath,
-      inputs.token,
-      inputs.signal,
-      undefined,
-      null,
-      {
-        execution: inputs.execution,
-        onProgress: inputs.onExtractionProgress,
-      },
-    );
-    const published = await publishPrRevisionArtifact({
-      cacheRoot: inputs.cacheRoot,
-      identity: inputs.identity,
-      stage,
-      result,
-      signal: inputs.signal,
-    });
-    return sharedRevisionArtifact(published);
-  } catch (error) {
-    removeEntry(stage.directory);
-    throw error;
-  }
+  await inputs.onRevisionComplete("mergeBase");
+  return completed;
 }
 
 function revisionProgressOptions(

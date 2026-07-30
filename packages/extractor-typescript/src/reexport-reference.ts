@@ -10,11 +10,18 @@ import {
 export function throughLocalReexports(
   imported: ImportedSymbolReference,
   selectedFiles: ReadonlySet<string>,
+  onVisitSelectedSourceFile?: (sourceFile: SourceFile) => void,
 ): ImportedSymbolReference | null {
   if (!isSelectedTarget(imported, selectedFiles) || imported.targetSourceFile === null || imported.exportedName === null) {
     return null;
   }
-  return findReexport(imported.targetSourceFile, imported.exportedName, selectedFiles, new Set());
+  return findReexport(
+    imported.targetSourceFile,
+    imported.exportedName,
+    selectedFiles,
+    new Set(),
+    onVisitSelectedSourceFile,
+  );
 }
 
 function findReexport(
@@ -22,12 +29,14 @@ function findReexport(
   exportedName: string,
   selectedFiles: ReadonlySet<string>,
   visited: Set<string>,
+  onVisitSelectedSourceFile: ((sourceFile: SourceFile) => void) | undefined,
 ): ImportedSymbolReference | null {
   const key = `${sourceFile.getFilePath()}#${exportedName}`;
   if (visited.has(key)) {
     return null;
   }
   visited.add(key);
+  onVisitSelectedSourceFile?.(sourceFile);
   const { root, suffix } = splitRoot(exportedName);
   for (const declaration of sourceFile.getExportDeclarations()) {
     for (const candidate of reexportCandidates(declaration, root, suffix)) {
@@ -35,7 +44,13 @@ function findReexport(
         return candidate;
       }
       if (candidate.targetSourceFile !== null && candidate.exportedName !== null) {
-        const nested = findReexport(candidate.targetSourceFile, candidate.exportedName, selectedFiles, visited);
+        const nested = findReexport(
+          candidate.targetSourceFile,
+          candidate.exportedName,
+          selectedFiles,
+          visited,
+          onVisitSelectedSourceFile,
+        );
         if (nested !== null) {
           return nested;
         }

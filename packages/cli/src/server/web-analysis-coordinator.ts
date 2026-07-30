@@ -3,15 +3,38 @@
  *
  * Equal in-flight keys share one job, but jobs themselves start immediately: cache reads and Git
  * preparation must not wait behind CPU-heavy extraction. Callers explicitly enter independent,
- * bounded preparation and analysis pools around only the resource-owning phases. Cache probes stay
- * outside both pools, so warm requests are never queued behind cold work.
+ * bounded preparation, process-local coordination, and analysis pools around only the
+ * resource-owning phases. Cache probes stay outside those pools, so warm requests are never queued
+ * behind cold work.
  */
 
 import { ServiceShutdownError } from "./service-shutdown";
 
 export type AnalysisProgressListener<Progress> = (progress: Progress) => void | Promise<void>;
 export type AnalysisWork<Result> = (signal: AbortSignal) => Result | Promise<Result>;
-export type PhaseAdmission = <Result>(work: AnalysisWork<Result>) => Promise<Result>;
+export interface PhaseAdmissionOptions {
+  /** Number of memory-accounted worker slots this one phase owns atomically. */
+  slots?: number;
+}
+export type PhaseAdmission = <Result>(
+  work: AnalysisWork<Result>,
+  options?: PhaseAdmissionOptions,
+) => Promise<Result>;
+export type PhaseTryAdmissionResult<Result> =
+  | { readonly kind: "admitted"; readonly value: Result }
+  | { readonly kind: "unavailable" };
+export type PhaseTryAdmission = <Result>(
+  work: AnalysisWork<Result>,
+  options?: PhaseAdmissionOptions,
+) => Promise<PhaseTryAdmissionResult<Result>>;
+export type CoordinationWork<Result> = (
+  signal: AbortSignal,
+  tryRunAnalysis: PhaseTryAdmission,
+) => Result | Promise<Result>;
+/** Bounded process-local admission for waiting on an external coordination resource. */
+export type CoordinationAdmission = <Result>(
+  work: CoordinationWork<Result>,
+) => Promise<Result>;
 
 export interface AnalysisWaiterOptions<Progress> {
   signal?: AbortSignal;
@@ -19,22 +42,44 @@ export interface AnalysisWaiterOptions<Progress> {
 }
 
 export interface AnalysisJobContext<Progress> {
+  /** Immutable process-local worker capacity resolved from the server memory policy. */
+  readonly analysisCapacity: number;
   readonly signal: AbortSignal;
-  report(progress: Progress): void;
+  /**
+   * Retain one latest value per optional replay key for waiters joining concurrent progress lanes.
+   * Omitting the key preserves the historical single-latest-value behavior.
+   */
+  report(progress: Progress, replayKey?: string): void;
   runPreparation<Result>(work: AnalysisWork<Result>): Promise<Result>;
-  runAnalysis<Result>(work: AnalysisWork<Result>): Promise<Result>;
+  /**
+   * Enter the bounded FIFO for an external coordination wait without owning an analysis slot.
+   * Its callback may probe `tryRunAnalysis`, but blocking analysis admission is forbidden while
+   * this admission is held.
+   */
+  runCoordination<Result>(work: CoordinationWork<Result>): Promise<Result>;
+  runAnalysis<Result>(
+    work: AnalysisWork<Result>,
+    options?: PhaseAdmissionOptions,
+  ): Promise<Result>;
+  /** Acquire analysis capacity only when all requested slots are immediately available. */
+  tryRunAnalysis<Result>(
+    work: AnalysisWork<Result>,
+    options?: PhaseAdmissionOptions,
+  ): Promise<PhaseTryAdmissionResult<Result>>;
 }
 
 export interface AnalysisCoordinatorOptions {
   maxConcurrentAnalyses: number;
   maxConcurrentPreparations?: number;
   maxQueuedAnalyses?: number;
+  maxQueuedCoordinations?: number;
   maxQueuedPreparations?: number;
 }
 
-export type AnalysisAdmissionPhase = "preparation" | "analysis";
+export type AnalysisAdmissionPhase = "preparation" | "coordination" | "analysis";
 
 const DEFAULT_MAX_CONCURRENT_PREPARATIONS = 2;
+const DEFAULT_PROGRESS_REPLAY_KEY = "";
 
 export class AnalysisCoordinatorClosedError extends ServiceShutdownError {
   constructor() {
@@ -77,12 +122,13 @@ interface Waiter<Result, Progress> {
 type JobState = "running" | "abandoned" | "settled";
 
 interface JobEntry<Result, Progress> {
+  activeCoordination?: boolean;
   activePhase?: AnalysisAdmissionPhase;
+  coordinationScope?: object;
   controller: AbortController;
   done: Promise<void>;
-  hasLatestProgress: boolean;
   key: string;
-  latestProgress?: Progress;
+  latestProgress: Map<string, Progress>;
   resolveDone(): void;
   state: JobState;
   waiters: Set<Waiter<Result, Progress>>;
@@ -94,6 +140,7 @@ interface AdmissionTask<Result> {
   controller: AbortController;
   reject(error: unknown): void;
   resolve(result: Result): void;
+  slots: number;
   sourceListener: () => void;
   sourceSignal: AbortSignal;
   state: AdmissionTaskState;
@@ -107,6 +154,7 @@ class BoundedAdmission {
   readonly #phase: AnalysisAdmissionPhase;
   readonly #queue: Array<AdmissionTask<unknown>> = [];
   readonly #running = new Set<AdmissionTask<unknown>>();
+  #runningSlots = 0;
   #closedReason: AnalysisCoordinatorClosedError | undefined;
   #closePromise: Promise<void> | undefined;
   #resolveClose: (() => void) | undefined;
@@ -117,14 +165,29 @@ class BoundedAdmission {
     this.#maxQueued = maxQueued;
   }
 
-  run<Result>(sourceSignal: AbortSignal, work: AnalysisWork<Result>): Promise<Result> {
+  get capacity(): number {
+    return this.#limit;
+  }
+
+  run<Result>(
+    sourceSignal: AbortSignal,
+    work: AnalysisWork<Result>,
+    slots = 1,
+  ): Promise<Result> {
+    requirePositiveInteger(slots, `${this.#phase} slots`);
+    if (slots > this.#limit) {
+      return Promise.reject(new RangeError(
+        `${this.#phase} slots cannot exceed the configured capacity of ${this.#limit}`,
+      ));
+    }
     if (this.#closedReason) {
       return Promise.reject(this.#closedReason);
     }
     if (sourceSignal.aborted) {
       return Promise.reject(signalAbortReason(sourceSignal));
     }
-    if (this.#running.size >= this.#limit && this.#queue.length >= this.#maxQueued) {
+    const mustQueue = this.#queue.length > 0 || this.#runningSlots + slots > this.#limit;
+    if (mustQueue && this.#queue.length >= this.#maxQueued) {
       return Promise.reject(new AnalysisCoordinatorOverloadedError(this.#phase));
     }
 
@@ -134,6 +197,7 @@ class BoundedAdmission {
         controller,
         reject,
         resolve,
+        slots,
         sourceListener: () => {
           const reason = signalAbortReason(sourceSignal);
           if (!controller.signal.aborted) {
@@ -151,6 +215,25 @@ class BoundedAdmission {
       this.#queue.push(task as AdmissionTask<unknown>);
       this.#drain();
     });
+  }
+
+  tryRun<Result>(
+    sourceSignal: AbortSignal,
+    work: AnalysisWork<Result>,
+    slots = 1,
+  ): Promise<PhaseTryAdmissionResult<Result>> {
+    requirePositiveInteger(slots, `${this.#phase} slots`);
+    if (slots > this.#limit) {
+      return Promise.reject(new RangeError(
+        `${this.#phase} slots cannot exceed the configured capacity of ${this.#limit}`,
+      ));
+    }
+    if (this.#closedReason) return Promise.reject(this.#closedReason);
+    if (sourceSignal.aborted) return Promise.reject(signalAbortReason(sourceSignal));
+    if (this.#queue.length > 0 || this.#runningSlots + slots > this.#limit) {
+      return Promise.resolve({ kind: "unavailable" });
+    }
+    return this.run(sourceSignal, work, slots).then((value) => ({ kind: "admitted", value }));
   }
 
   close(reason: AnalysisCoordinatorClosedError): Promise<void> {
@@ -196,15 +279,21 @@ class BoundedAdmission {
     if (this.#closedReason) {
       return;
     }
-    while (this.#running.size < this.#limit && this.#queue.length > 0) {
-      const task = this.#queue.shift()!;
+    while (this.#queue.length > 0) {
+      const task = this.#queue[0]!;
       if (task.state !== "queued") {
+        this.#queue.shift();
         continue;
       }
       if (task.controller.signal.aborted) {
         this.#cancelQueued(task, signalAbortReason(task.controller.signal));
         continue;
       }
+      // Strict FIFO avoids starving a two-slot PR pair behind a stream of one-slot jobs.
+      if (this.#runningSlots + task.slots > this.#limit) {
+        return;
+      }
+      this.#queue.shift();
       this.#start(task);
     }
   }
@@ -217,6 +306,7 @@ class BoundedAdmission {
     task.work = undefined;
     task.state = "running";
     this.#running.add(task);
+    this.#runningSlots += task.slots;
 
     void Promise.resolve()
       .then(() => {
@@ -246,6 +336,7 @@ class BoundedAdmission {
     }
     task.state = "settled";
     this.#running.delete(task as AdmissionTask<unknown>);
+    this.#runningSlots -= task.slots;
     removeAdmissionSourceListener(task);
     if ("error" in outcome) {
       task.reject(outcome.error);
@@ -273,6 +364,7 @@ class BoundedAdmission {
  */
 export class AnalysisCoordinator {
   readonly #analysisAdmission: BoundedAdmission;
+  readonly #coordinationAdmission: BoundedAdmission;
   readonly #preparationAdmission: BoundedAdmission;
   readonly #jobs = new Map<string, JobEntry<unknown, unknown>>();
   readonly #activeJobs = new Set<JobEntry<unknown, unknown>>();
@@ -284,15 +376,22 @@ export class AnalysisCoordinator {
     const maxConcurrentPreparations = options.maxConcurrentPreparations
       ?? DEFAULT_MAX_CONCURRENT_PREPARATIONS;
     const maxQueuedAnalyses = options.maxQueuedAnalyses ?? options.maxConcurrentAnalyses * 2;
+    const maxQueuedCoordinations = options.maxQueuedCoordinations ?? maxQueuedAnalyses;
     const maxQueuedPreparations = options.maxQueuedPreparations ?? maxConcurrentPreparations * 2;
     requirePositiveInteger(options.maxConcurrentAnalyses, "maxConcurrentAnalyses");
     requirePositiveInteger(maxConcurrentPreparations, "maxConcurrentPreparations");
     requireNonNegativeInteger(maxQueuedAnalyses, "maxQueuedAnalyses");
+    requireNonNegativeInteger(maxQueuedCoordinations, "maxQueuedCoordinations");
     requireNonNegativeInteger(maxQueuedPreparations, "maxQueuedPreparations");
     this.#analysisAdmission = new BoundedAdmission(
       "analysis",
       options.maxConcurrentAnalyses,
       maxQueuedAnalyses,
+    );
+    this.#coordinationAdmission = new BoundedAdmission(
+      "coordination",
+      1,
+      maxQueuedCoordinations,
     );
     this.#preparationAdmission = new BoundedAdmission(
       "preparation",
@@ -328,7 +427,7 @@ export class AnalysisCoordinator {
   }
 
   /**
-   * Stop new jobs and both admissions, reject every waiter, abort active work, and wait for every
+   * Stop new jobs and all admissions, reject every waiter, abort active work, and wait for every
    * coordinated job and admitted phase to settle. Repeated calls return the same promise.
    */
   close(): Promise<void> {
@@ -346,6 +445,7 @@ export class AnalysisCoordinator {
     const jobSettlements = [...this.#activeJobs].map((entry) => entry.done);
     const admissionSettlements = [
       this.#preparationAdmission.close(error),
+      this.#coordinationAdmission.close(error),
       this.#analysisAdmission.close(error),
     ];
 
@@ -384,8 +484,8 @@ export class AnalysisCoordinator {
       }
       entry.waiters.add(waiter);
       this.#activeWaiters.add(waiter as Waiter<unknown, unknown>);
-      if (entry.hasLatestProgress) {
-        this.#deliverProgress(entry, waiter, entry.latestProgress as Progress);
+      for (const progress of entry.latestProgress.values()) {
+        this.#deliverProgress(entry, waiter, progress);
       }
     });
   }
@@ -410,12 +510,18 @@ export class AnalysisCoordinator {
     });
   }
 
-  #report<Result, Progress>(entry: JobEntry<Result, Progress>, progress: Progress): void {
+  #report<Result, Progress>(
+    entry: JobEntry<Result, Progress>,
+    progress: Progress,
+    replayKey = DEFAULT_PROGRESS_REPLAY_KEY,
+  ): void {
     if (entry.state !== "running" || entry.waiters.size === 0) {
       return;
     }
-    entry.hasLatestProgress = true;
-    entry.latestProgress = progress;
+    // Map iteration is the replay order. Move an updated lane to the end so a late waiter finishes
+    // on the globally newest observation instead of an older sibling lane.
+    entry.latestProgress.delete(replayKey);
+    entry.latestProgress.set(replayKey, progress);
     for (const waiter of [...entry.waiters]) {
       this.#deliverProgress(entry, waiter, progress);
     }
@@ -446,8 +552,7 @@ export class AnalysisCoordinator {
       this.#jobs.delete(entry.key);
     }
     entry.state = "abandoned";
-    entry.hasLatestProgress = false;
-    entry.latestProgress = undefined;
+    entry.latestProgress.clear();
     if (!entry.controller.signal.aborted) {
       entry.controller.abort(
         abortReason ?? new AnalysisCoordinatorAbortError("coordinated job has no remaining waiters"),
@@ -461,10 +566,23 @@ export class AnalysisCoordinator {
   ): void {
     this.#activeJobs.add(entry as JobEntry<unknown, unknown>);
     const context: AnalysisJobContext<Progress> = {
+      analysisCapacity: this.#analysisAdmission.capacity,
       signal: entry.controller.signal,
-      report: (progress) => this.#report(entry, progress),
+      report: (progress, replayKey) => this.#report(entry, progress, replayKey),
       runPreparation: (preparation) => this.#runPhase(entry, "preparation", preparation),
-      runAnalysis: (analysis) => this.#runPhase(entry, "analysis", analysis),
+      runCoordination: (coordination) => this.#runCoordination(entry, coordination),
+      runAnalysis: (analysis, options) => this.#runPhase(
+        entry,
+        "analysis",
+        analysis,
+        options?.slots,
+      ),
+      tryRunAnalysis: (analysis, options) => this.#tryRunPhase(
+        entry,
+        "analysis",
+        analysis,
+        options?.slots,
+      ),
     };
 
     void Promise.resolve()
@@ -484,6 +602,7 @@ export class AnalysisCoordinator {
     entry: JobEntry<unknown, Progress>,
     phase: AnalysisAdmissionPhase,
     work: AnalysisWork<Result>,
+    slots = 1,
   ): Promise<Result> {
     if (this.#closed) {
       return Promise.reject(new AnalysisCoordinatorClosedError());
@@ -494,14 +613,108 @@ export class AnalysisCoordinator {
     if (entry.state !== "running") {
       return Promise.reject(new AnalysisCoordinatorAbortError("coordinated job is no longer active"));
     }
-    if (entry.activePhase) {
+    if (entry.activePhase || entry.activeCoordination) {
       return Promise.reject(new Error("one coordinated job cannot run overlapping admitted phases"));
     }
     entry.activePhase = phase;
     const admission = phase === "preparation" ? this.#preparationAdmission : this.#analysisAdmission;
-    return admission.run(entry.controller.signal, work).finally(() => {
+    try {
+      return admission.run(entry.controller.signal, work, slots).finally(() => {
+        entry.activePhase = undefined;
+      });
+    } catch (error) {
       entry.activePhase = undefined;
+      return Promise.reject(error);
+    }
+  }
+
+  #runCoordination<Result, Progress>(
+    entry: JobEntry<unknown, Progress>,
+    work: CoordinationWork<Result>,
+  ): Promise<Result> {
+    if (this.#closed) {
+      return Promise.reject(new AnalysisCoordinatorClosedError());
+    }
+    if (entry.controller.signal.aborted) {
+      return Promise.reject(signalAbortReason(entry.controller.signal));
+    }
+    if (entry.state !== "running") {
+      return Promise.reject(new AnalysisCoordinatorAbortError("coordinated job is no longer active"));
+    }
+    if (entry.activePhase || entry.activeCoordination) {
+      return Promise.reject(new Error("one coordinated job cannot run overlapping admitted phases"));
+    }
+    entry.activeCoordination = true;
+    let admitted: Promise<Result>;
+    try {
+      admitted = this.#coordinationAdmission.run(
+        entry.controller.signal,
+        async (coordinationSignal) => {
+          const scope = {};
+          entry.coordinationScope = scope;
+          try {
+            return await work(
+              coordinationSignal,
+              (analysis, options) => this.#tryRunPhase(
+                entry,
+                "analysis",
+                analysis,
+                options?.slots,
+                scope,
+              ),
+            );
+          } finally {
+            if (entry.coordinationScope === scope) entry.coordinationScope = undefined;
+          }
+        },
+      );
+    } catch (error) {
+      entry.activeCoordination = undefined;
+      return Promise.reject(error);
+    }
+    return admitted.finally(() => {
+      entry.activeCoordination = undefined;
     });
+  }
+
+  #tryRunPhase<Result, Progress>(
+    entry: JobEntry<unknown, Progress>,
+    phase: AnalysisAdmissionPhase,
+    work: AnalysisWork<Result>,
+    slots = 1,
+    coordinationScope?: object,
+  ): Promise<PhaseTryAdmissionResult<Result>> {
+    if (this.#closed) {
+      return Promise.reject(new AnalysisCoordinatorClosedError());
+    }
+    if (entry.controller.signal.aborted) {
+      return Promise.reject(signalAbortReason(entry.controller.signal));
+    }
+    if (entry.state !== "running") {
+      return Promise.reject(new AnalysisCoordinatorAbortError("coordinated job is no longer active"));
+    }
+    // Only the scoped capability supplied to the currently executing coordination callback may
+    // make this non-blocking probe while it owns an external fence. The ordinary context method,
+    // leaked/expired capabilities, and `#runPhase` all reject in the same state.
+    const scopedCoordination = coordinationScope !== undefined
+      && entry.coordinationScope === coordinationScope;
+    if (
+      entry.activePhase
+      || (entry.activeCoordination && !scopedCoordination)
+      || (coordinationScope !== undefined && !scopedCoordination)
+    ) {
+      return Promise.reject(new Error("one coordinated job cannot run overlapping admitted phases"));
+    }
+    entry.activePhase = phase;
+    const admission = phase === "preparation" ? this.#preparationAdmission : this.#analysisAdmission;
+    try {
+      return admission.tryRun(entry.controller.signal, work, slots).finally(() => {
+        entry.activePhase = undefined;
+      });
+    } catch (error) {
+      entry.activePhase = undefined;
+      return Promise.reject(error);
+    }
   }
 
   #settle<Result, Progress>(
@@ -516,8 +729,7 @@ export class AnalysisCoordinator {
       this.#jobs.delete(entry.key);
     }
     this.#activeJobs.delete(entry as JobEntry<unknown, unknown>);
-    entry.hasLatestProgress = false;
-    entry.latestProgress = undefined;
+    entry.latestProgress.clear();
 
     const waiters = [...entry.waiters];
     entry.waiters.clear();
@@ -555,8 +767,8 @@ function createJobEntry<Result, Progress>(key: string): JobEntry<Result, Progres
   return {
     controller: new AbortController(),
     done,
-    hasLatestProgress: false,
     key,
+    latestProgress: new Map(),
     resolveDone: () => resolveDone?.(),
     state: "running",
     waiters: new Set(),

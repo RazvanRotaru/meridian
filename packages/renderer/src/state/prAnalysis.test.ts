@@ -50,16 +50,26 @@ describe("streamPrAnalysis", () => {
     });
   });
 
-  it("routes detailed extraction and verified revision reuse stages", async () => {
+  it("routes detailed extraction, lane completion, and verified revision reuse", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(ndjsonResponse([
-        '{"stage":"extract"}\n{"stage":"reuse-head"}\n{"stage":"extract-merge-base"}\n{"stage":"reuse-merge-base"}\n{"stage":"done","graphId":"pr-abc"}\n',
+        '{"stage":"extract"}\n{"stage":"reuse-head"}\n{"stage":"extract-merge-base"}\n'
+          + '{"stage":"lane-complete","lane":"mergeBase"}\n'
+          + '{"stage":"lane-complete","lane":"unknown"}\n'
+          + '{"stage":"reuse-merge-base"}\n{"stage":"done","graphId":"pr-abc"}\n',
       ])),
     );
     const stages: PrAnalyzeStage[] = [];
-    await streamPrAnalysis("/api/pr/analyze", REQUEST, (stage) => stages.push(stage));
+    const completedLanes: string[] = [];
+    await streamPrAnalysis(
+      "/api/pr/analyze",
+      REQUEST,
+      (stage) => stages.push(stage),
+      (lane) => completedLanes.push(lane),
+    );
     expect(stages).toEqual(["extract", "reuse-head", "extract-merge-base", "reuse-merge-base"]);
+    expect(completedLanes).toEqual(["mergeBase"]);
   });
 
   it("preserves optional extraction observations and ignores unknown future stages", async () => {

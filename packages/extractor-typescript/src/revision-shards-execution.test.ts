@@ -39,7 +39,12 @@ describe("TypeScript revision-shard execution modes", () => {
       root: "/repo",
       supplementalFiles: ["packages/new/src/index.ts"],
       onProgress,
+      depth: "class" as const,
+      exclude: ["**/*.generated.ts"],
       includeExternal: true,
+      includeUnresolved: true,
+      emitImportEdges: false,
+      valueRefs: true,
     };
     const policy = shardPolicy("verified-experimental");
 
@@ -50,7 +55,14 @@ describe("TypeScript revision-shard execution modes", () => {
       cacheDir: policy.cacheDir,
       supplementalFiles: ["packages/new/src/index.ts"],
       onProgress,
-      options: expect.objectContaining({ includeExternal: true }),
+      options: {
+        depth: "class",
+        exclude: ["**/*.generated.ts"],
+        includeExternal: true,
+        includeUnresolved: true,
+        emitImportEdges: false,
+        valueRefs: true,
+      },
     }));
     expect(extractRevisionDifferential).not.toHaveBeenCalled();
   });
@@ -73,15 +85,22 @@ describe("TypeScript revision-shard execution modes", () => {
 
   it("serves admitted shards plus canonical misses without publishing", async () => {
     vi.mocked(extractRevisionCandidate).mockResolvedValue({ result: INCREMENTAL } as never);
+    const policy = {
+      ...shardPolicy("admitted"),
+      pairCacheDir: "/cache/ephemeral-pair",
+    };
 
     await expect(extractTypeScriptRevisionWithPolicy(
       { root: "/repo" },
-      shardPolicy("admitted"),
+      policy,
     )).resolves.toBe(INCREMENTAL);
 
     expect(extractRevisionCandidate).toHaveBeenCalledWith(
       expect.objectContaining({ root: "/repo" }),
-      { requiredAdmission: expect.objectContaining({ kind: "verifier" }) },
+      {
+        requiredAdmission: expect.objectContaining({ kind: "verifier" }),
+        ephemeralPairCacheDir: "/cache/ephemeral-pair",
+      },
     );
     expect(extractRevisionDifferential).not.toHaveBeenCalled();
     expect(extractRevisionWithCache).not.toHaveBeenCalled();
@@ -112,6 +131,7 @@ function shardPolicy(
     version: 1 as const,
     mode,
     cacheDir,
+    pairCacheDir: null,
     treeOid: "a".repeat(40),
     buildFingerprint: "b".repeat(64),
     analysisPolicyFingerprint: "c".repeat(64),

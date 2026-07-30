@@ -4,6 +4,15 @@ Status: **implemented and validated as an opt-in POC; revise before production c
 POC baseline: fetched `origin/main` commit
 `72c38728cc5d6bb2bef98899ff82546f400b54f7`, tree
 `33d6af7b3087ac18980cfacc638433da648cf83b` (2026-07-24)
+Performance follow-up baseline: fetched `origin/main` commit
+`c4f8d6988d90a08d61d6a9f588be868316ab7b9d`, tree
+`766feb757de9186c6e0260d545916d7964f1a32c` (2026-07-27).
+
+> **2026-07-28 follow-up:** the file-grained compiler-observation experiment, current format
+> versions, and final Autopilot benchmark supersede this note's earlier shard-version numbers,
+> SCC-oriented semantic-region design, and measurements. See
+> [revision-safe-file-shard-poc.md](./revision-safe-file-shard-poc.md). The package-shard,
+> cold-oracle, admission, retention, and production non-goals below remain relevant.
 
 ## Recommendation
 
@@ -55,10 +64,15 @@ exact clean Git tree + fixed policy/build/runtime provenance
        enumerate small immutable candidates for that base input
        replay each candidate's recorded workspace-resolver observations
        in shadow/admitted, unique exact match with a valid receipt: decode the unit shard
-       no match/ineligible: run the ordinary unit extractor with a tracing resolver
+       no unit match:
+         address compiler-derived semantic SCCs against one exact context
+         consume only exact admitted or request-private region hits
+         run the canonical contribution pipeline for every miss and every fresh global lane
+         materialize hit/miss contributions through the ordinary phase schedule
+       ineligible/unsafe/oversized semantic proof: run the same pipeline with an empty region map
        re-fingerprint and reject any input movement
        encode and decode the exact persisted representation
-       in shadow: stage the new shard and candidate reference for cold-oracle comparison
+       in shadow: stage unit + region bytes for cold-oracle comparison
        in admitted: leave every newly computed miss unpublished
   -> run the ordinary canonical stitch/finalization
   -> reverify exact tree and HEAD commit
@@ -67,7 +81,7 @@ exact clean Git tree + fixed policy/build/runtime provenance
 
 ### Revision manifest
 
-Manifest schema v1 is content-addressed and bound to the exact Git tree OID. It records:
+Manifest schema v2 is content-addressed and bound to the exact Git tree OID. It records:
 
 - workspace topology digest;
 - analysis policy and implementation/runtime provenance;
@@ -76,7 +90,7 @@ Manifest schema v1 is content-addressed and bound to the exact Git tree OID. It 
 
 Timing, process ID, RSS, cache size, and reuse counters never enter identity.
 
-### Unit shard schema v6
+### Unit and semantic-region shard schema v7
 
 The base unit fingerprint contains:
 
@@ -93,7 +107,7 @@ The base unit fingerprint contains:
 - present/absent ancestor package manifests observed by external-import classification;
 - the structural npm-package membership outcome for every emitted package path;
 - analysis policy, graph/extractor/shard versions, TypeScript and `ts-morph` versions, and the
-  server's deterministic analysis-build fingerprint.
+  server's deterministic TypeScript executable-closure fingerprint.
 
 Unobserved README, workflow, lock, image, CSS, and other non-TypeScript blobs are not copied into
 every unit key. Imported JSON/JavaScript, relevant manifests, configs, and resolver reads remain in
@@ -183,12 +197,23 @@ extractor independently checks the clean tree and HEAD before extraction and aga
 publication. This binds normal service use to an owned exact-revision workspace; it is not a
 defense against a hostile same-user process performing an ABA mutation inside that workspace.
 
-Each shard-enabled child recomputes the current analysis-build and dependency runtime fingerprint
-before extraction and again afterward; it fails closed if either differs from the parent-bound
-policy. Source-mode children also run from the fixed CLI package directory with the fixed CLI
-`tsconfig`, strip ambient `NODE_*` injection and every inherited `TSX_*` setting, and install only
-the explicit loader/configuration. Semantic ordering uses locale-independent code-point comparison,
-so host locale cannot change graph or shard bytes.
+Each shard-enabled child recomputes the exact installed TypeScript extractor subtree and its
+complete declared runtime dependency closure before extraction and again afterward; it fails closed
+if either differs from the parent-bound policy. This deliberately excludes unrelated CLI,
+renderer, and Python bytes while retaining the executable extractor, `@meridian/core`, schema,
+`ts-morph`, TypeScript, and transitive runtime packages. Source-mode children also run from the
+fixed CLI package directory with the fixed CLI `tsconfig`, strip ambient `NODE_*` injection and
+every inherited `TSX_*` setting, and install only the explicit loader/configuration. Semantic
+ordering uses locale-independent code-point comparison, so host locale cannot change graph or
+shard bytes.
+
+The CLI-to-extractor bridge is a closed data boundary, not a manual invalidation list. The
+extractor classifies every `ExtractOptions` key at compile time: exact root, shard-disabling
+`project`/`include`, separately fingerprinted supplemental files, non-semantic progress, or the
+complete fingerprinted analysis policy. An added option fails typecheck until it is classified.
+The raw shard is stored inside the TypeScript extractor before CLI merging, tagging, boundary
+materialization, artifact stamping, and validation; those later stages remain covered by the
+whole-artifact analysis identity rather than the shard identity.
 
 `shadow` and `admitted` share the `shadow-admitted` namespace and the same host-local global build
 lock. The lock serializes memory-intensive shard builds across Meridian processes, heartbeats a
@@ -208,10 +233,12 @@ will not overwrite a conflicting shard that still has a valid admission.
 
 The scheduled `shadow-admitted` retention pass starts after 60 seconds and then runs hourly. It
 uses an 8 GiB high/6 GiB low watermark, a 30-day idle lifetime, and a hard 500,000-entry scan bound.
-It removes dangling support entries first, treats a shard with its candidates and receipts as one
-eviction group, and classifies receipt-less failed shadow staging as orphaned. It removes
-candidates and receipts before the shard payload, quarantines before unlink, drains crash trash
-without following links, and removes only exact interrupted immutable publication temporary names.
+It removes dangling support entries first, treats a unit shard with its candidates and receipts as
+one eviction group, and treats each semantic context with all of its region shards and supports as
+one dependency-ordered cluster. Receipt-less failed shadow staging is orphaned. It removes
+candidates and receipts before payloads and semantic contexts last, quarantines before unlink,
+drains crash trash without following links, and removes only exact interrupted immutable
+publication temporary names.
 Lone temporary payloads are reclaimed; a temporary/final hardlink pair is reduced to its canonical
 link before accounting. Symlinks and lookalike names remain untouched. The pass skips when the
 cache root, trash root, scan bound, or exclusive coordination cannot be proven safe. `empty` is
@@ -222,12 +249,83 @@ establish graph and per-unit parity and issue receipts, then run that revision o
 in `admitted`. An admitted miss remains useful for the current graph but does not become reusable
 until a later shadow run proves and signs it.
 
+### Semantic-region POC
+
+The finer-grained layer is now wired into the same candidate, pair-exchange, shadow admission,
+canonical stitch, and retention pipeline as whole-unit shards. It does not use folders or a Git
+changed-file queue as a semantic boundary. For each already-loaded unit it derives a directed
+TypeScript dependency graph, collapses strongly connected files into immutable regions, and
+addresses providers before consumers. A provider edit recursively changes its consumer keys; a
+consumer-only edit leaves independent providers reusable.
+
+One immutable context record contains every input that is not safely local to a region:
+
+- exact unit/configuration/compiler options and non-local realized program inputs;
+- non-local module/type-reference resolutions and all resolution lookup state;
+- analysis policy and executable/runtime provenance;
+- exact workspace topology; and
+- planner/evidence versions.
+
+Each region key contains its exact source blob and realized program identities, its containing-file
+module/type-reference resolutions, the context digest, and the exact keys of its direct provider
+regions. This recursive construction invalidates consumers for implementation changes without
+pretending that a public-API hash is sufficient.
+
+The cached payload is deliberately narrower than a file or module graph. It stores only ordered
+per-file behavioural, inheritance, import, and value-reference raw edges with call sites,
+relationship diagnostics, and export/re-export summaries. Structural nodes, implementation
+members, Promise correlation, logic flows, ports/RPC/message-dispatch correlation, target order,
+cross-package resolver observations, and final stitching are recomputed from the exact current
+program. The canonical contribution materializer uses the same phase order for hits and misses.
+Even on a region hit the inexpensive import observation pass runs for every current source so the
+whole-unit workspace-resolver trace remains complete.
+
+Region data uses a strict bounded codec and context-scoped layout:
+
+```text
+semantic-region-contexts/<prefix>/<context-digest>.json
+semantic-region-shards/<context-digest>/<prefix>/<region-key>.json
+admissions/<authority-key>/<prefix>/<region-key>.json
+```
+
+Admitted reads authenticate the small receipt before opening the larger shard and then bind the
+receipt to the actual payload digest. Request-private merge-base-to-HEAD reuse needs no receipt and
+is deleted after the pair settles. Pair-consumed envelopes are retained in the candidate so later
+shadow publication does not depend on the temporary directory.
+
+Shadow compares the complete graph plus exact region context/shard bytes against an empty-cache
+oracle before issuing receipts. A full-unit hit may bypass the region layer, so region evidence is
+checked as a canonical multiset subset of the cold evidence; every evidence item that is present
+must still be byte-identical. Corrupt context, shard, or receipt data is repairable only inside the
+exclusive shadow transaction. Resource ceilings are typed availability conditions: an oversized
+legitimate context/SCC/payload reruns the exact unit with an empty region map, publishes no region
+evidence, and records a conservative whole-unit fallback. Malformed identities or cache contents
+remain hard failures outside admitted conservative-miss handling.
+
+Retention treats a context, every region below it, and their candidate/admission supports as one
+cluster. It deletes supports before payloads and the context last; any failed support/payload
+quarantine preserves its dependants. Receipt-less clusters and missing-context regions are
+reclaimed, duplicate region keys across contexts fail the sweep closed, and the partition assertion
+requires every scanned path and byte to belong to exactly one eviction unit.
+
+The remaining soundness boundary is explicit. Dependency discovery proves an over-approximation
+from TypeScript's complete resolved-module graph, triple-slash referenced sources, and all-to-all
+script/global/module-augmentation/UMD providers. It labels the symbol/type/extractor-read classes
+that external-module scoping says must enter through those edges. The current test corpus exercises
+the known escapes, but this is not direct per-pass checker-read instrumentation. Consequently the
+semantic-region path remains an opt-in POC and must continue through shadow/cold-oracle admission
+until a representative corpus has zero unexplained mismatches or the dependency theorem is replaced
+with observed read attribution.
+
 ## Invalidation behavior
 
 | Change or condition | Behavior |
 |---|---|
-| Modify/add/delete/rename selected TypeScript | Rebuild the owning unit and any unit whose realized program/resolution inputs change. |
-| Provider export changes while consumer has a stable pending reference | Reuse the consumer contribution and rerun the current global stitch. |
+| Modify/add/delete/rename selected TypeScript | Reuse unchanged semantic regions only when the target program proves the same recursive region key; otherwise rebuild the owning unit. |
+| Provider implementation/export/type changes | Rebuild the provider region and every reverse-transitive consumer; preserve independent providers. |
+| Consumer-only implementation changes | Rebuild its region; preserve provider regions whose recursive inputs are unchanged. |
+| Script/global, `declare global`, module augmentation, or UMD namespace changes | Conservatively invalidate every region in the affected unit through the ambient-provider closure. |
+| Cross-package provider export changes while a consumer unit has a stable pending reference | Reuse the consumer unit contribution and rerun the current global stitch. |
 | New unrelated supplemental package | Build only the new unit; reuse existing units whose structural and resolver observations still match. |
 | New package satisfies an old bare/relative/alias lookup | Rebuild the observing unit because trace replay differs. |
 | Root config used by all units changes | Rebuild all consumers of that config. |
@@ -237,6 +335,7 @@ until a later shadow run proves and signs it.
 | External/untracked compiler, config, manifest, or resolution input | Rebuild every run; never admit a reusable candidate. |
 | Missing, corrupt, forged, wrong-key, or wrong-payload admission receipt | Treat the shard as a miss; admitted mode computes but does not publish the replacement. |
 | More than 128 candidate variants for one base input or an oversized cache entry | Conservatively rebuild the unit without allocating the unbounded entry. |
+| Legitimate semantic context/SCC/payload exceeds its codec/cache ceiling | Rerun the exact whole-unit contribution pipeline with an empty region map and publish no semantic evidence. |
 | Shadow encounters corrupt unadmitted immutable data | Quarantine the old entry under the exclusive build lock, publish the cold-parity replacement, and issue a new receipt. |
 | Admitted/shadow root lacks a matching active exact-workspace lease | Fall back to the ordinary canonical extractor; do not read or write the shard cache. |
 | Dirty/wrong tree, unsafe Git mode/link, corrupt/colliding cache, cache path inside checkout | Fail closed without a provisional graph. |
@@ -388,6 +487,48 @@ HEAD/merge-base lanes and formatter used by landing preparation. Live examples i
 The final review rendered 21 changed graph files, affected logic flows, added/deleted symbols,
 blast-radius counts, and submission controls.
 
+### Concurrent cold-pair evidence
+
+Package-shard reuse and pair scheduling are independent. As an explicit loopback-only
+`--typescript-incremental admitted` canary, when both exact populated revisions miss, the same cold
+pipeline can run in two disposable workers after one atomic two-slot reservation. The default
+server and every other shard mode remain sequential. This does not extract intermediate commits. It
+evaluates exactly HEAD and merge base, then publishes nothing until both immutable artifacts
+complete.
+
+On PR #4472, a one-slot forced-refresh oracle completed in 571.364 seconds. The two-slot path
+completed in 321.905 seconds, a 43.66% wall-time reduction, with 12.826 GiB sampled aggregate peak
+RSS. A frozen-final-build repetition completed in 342.797 seconds with 13.407 GiB peak RSS. The
+automatic policy reserves each worker's configured heap plus 25% native overhead, retains 2 GiB for
+the parent/OS, caps automatic concurrency at two, and therefore falls back to the sequential
+pipeline on smaller hosts.
+
+After normalizing only `generatedAt`, complete HEAD and merge-base artifact files were byte-identical
+between concurrent, sequential, and final-build runs. Their normalized SHA-256 values are
+`19e633d9ef55a8a5c6e96a377b6150f03574f7920ec1d1c9fe8dcb1d8f3f9c00` and
+`fef88370ea99a0e08d6d32dcdfc6e73a027f9856315d05fec87c81cca3095375`.
+The stronger whole-file comparison includes every graph extension and ordering decision.
+
+The admitted-cache fence remains group-exclusive across processes, but two authenticated read-only
+children may execute inside one held group. A non-blocking two-slot/fence attempt prevents a pair
+from occupying worker capacity while waiting on another process. The elastic fallback alternates
+local-first and fence-first acquisition, probes the second resource without waiting, and releases
+the first resource before retrying when the probe fails. Fence-first waits enter a separate
+capacity-one process-local admission with a bounded FIFO, so at most one request polls the
+filesystem fence and excess prepared requests fail with retryable overload after discarding their
+stage/workspace. It therefore neither holds the host fence while queued for local capacity nor
+holds local capacity while queued for the fence; non-blocking local admission also refuses to
+bypass queued FIFO work. Tests compose sustained waiting PR arrivals with unrelated trailing work,
+cover both resource-ordering directions, process-local FIFO/overload/cancellation/close cleanup,
+and first-failure sibling abort/drain. `shadow` stays sequential because it stages and publishes
+oracle evidence.
+
+The safe RPC no-candidate gate reduced the dominant app unit's observed ports-to-exports segment
+from 29.3-30.9 seconds to 16.1-16.5 seconds without changing either normalized artifact. A proposed
+admitted-miss codec shortcut was removed because mixed hit/miss object ordering changed raw artifact
+digests even though semantic digests matched. Artifact/graph-ID identity remains the acceptance
+boundary.
+
 ## Proven versus assumed
 
 Proven by tests and the real benchmark:
@@ -405,11 +546,13 @@ Proven by tests and the real benchmark:
 - cross-process builds and retention share one fenced host-local lock, and the admitted namespace
   has bounded reads, candidate enumeration, scheduled retention, and no-follow quarantine;
 - real base/HEAD convergence on exact semantic digests, manifests, and shard keys;
-- source workers pin cwd/tsconfig, strip ambient loader settings, and recompute build/runtime
-  provenance before and after extraction;
+- source workers pin cwd/tsconfig, strip ambient loader settings, and recompute the TypeScript
+  executable closure/runtime provenance before and after extraction;
 - unrelated topology does not invalidate every unit, while observed topology does;
 - canonical cold and incremental paths use the same reducer, codec, stitcher, and finalization;
-- two revisions share on-disk shards without concurrent full-graph residency.
+- two revisions share on-disk shards without concurrent full-graph residency;
+- memory-admitted concurrent HEAD/merge-base extraction produces exact normalized artifact bytes
+  and reduces the controlled cold pair by 43.66%.
 
 Still assumptions or production blockers:
 
@@ -423,14 +566,16 @@ Still assumptions or production blockers:
   conservatively ineligible rather than hermetically modeled;
 - Ed25519 receipts prove admission by this host-local oracle authority, not that the authority file,
   build host, dependency installation, or broader operating environment was uncompromised;
-- the global lock deliberately serializes complete shadow/admitted builds across processes. It
-  avoids concurrent memory spikes but can increase queue time, and it is not distributed locking
+- the global lock deliberately serializes shadow/admitted groups across processes. One admitted
+  group may contain two memory-accounted workers; the persistent admitted namespace remains
+  read-only while those workers may exchange canonical misses through one request-scoped directory.
+  Shadow stays sequential. This can still increase queue time, and it is not distributed locking
   for a multi-host cache. A crashed or ambiguous recovery claim intentionally requires explicit
   operator repair rather than automatic ownership theft;
 - retention is implemented only for the `shadow-admitted` TypeScript namespace. The separate PR
   pair and whole-revision artifact caches still have process-nonce orphan growth, no byte handoff
   lease, and no quota/GC;
-- corpus-wide parity and operational failure rates are not yet known.
+- corpus-wide parity, multi-request throughput, and operational failure rates are not yet known.
 
 The isolated cold HEAD reached 8,071,479,296 bytes maximum RSS. The 8 GB V8 heap reservation is
 therefore an operational requirement for this corpus, not comfortable production headroom.
@@ -444,7 +589,9 @@ proof inputs, not a substitute for differential evidence.
    conservative-miss, repair, lock-wait, and retention results. Shadow must continue serving the
    cold result.
 2. Use `admitted` only after the exact revision or relevant shard population has passed shadow.
-   Monitor receipt-hit ratio and always keep canonical misses unpublished.
+   Monitor receipt-hit ratio and always keep canonical misses out of the persistent namespace.
+   A two-worker exact pair may exchange a miss only through its private, drained-and-deleted
+   request directory after complete input and resolver-trace equality.
 3. Add bounded, cross-process-safe retention and an artifact-byte handoff lease to the separate PR
    pair/revision caches before enabling cross-pair whole-graph reuse outside loopback experiments.
 4. Replace hit-time Project construction with a Git/config/dependency manifest that proves the
@@ -456,10 +603,133 @@ proof inputs, not a substitute for differential evidence.
    snapshot if the production threat model includes a hostile peer process.
 7. Extend corpus coverage for project references, package managers, generated files, ambient
    types, custom resolution, flows, ports, authority recovery, process crashes, and cache pressure.
-8. Only after zero unexplained shadow mismatches and acceptable latency/memory/disk/queue results,
+8. Canary the two-worker pair path with aggregate RSS, queue/fence wait, cancellation, and
+   throughput telemetry; capacity-one behavior must remain the automatic fallback.
+9. Only after zero unexplained shadow mismatches and acceptable latency/memory/disk/queue results,
    plan a separate production PR-serving and cache-admission cutover.
 
 ## Validation log
+
+Semantic-region follow-up on the final pre-benchmark source:
+
+```text
+pnpm --dir packages/extractor-typescript test
+  45 files, 380 tests passed
+
+pnpm --dir packages/extractor-typescript exec vitest run \
+  src/incremental-poc/admitted-reuse.test.ts
+  25 admitted-versus-cold scenarios passed
+
+pnpm --dir packages/extractor-typescript exec vitest run \
+  src/incremental-poc/semantic-regions.test.ts \
+  src/incremental-poc/semantic-region-inputs.test.ts \
+  src/incremental-poc/revision-parity.test.ts
+  3 files, 31 tests passed
+
+pnpm --dir packages/extractor-typescript exec vitest run \
+  src/incremental-poc/semantic-region-codec.test.ts \
+  src/incremental-poc/semantic-region-extraction.test.ts
+  isolated results: 21 codec tests and 6 availability/parity tests passed
+
+pnpm --dir packages/cli exec vitest run \
+  src/typescript-revision-shard-runtime-fingerprint.test.ts \
+  src/server/repository-analysis-child.test.ts \
+  src/server/repository-analysis-worker-job.test.ts \
+  src/server/web-analysis-coordinator.test.ts \
+  src/server/web-pr-analyze.test.ts \
+  src/server/web-pr-cache.test.ts \
+  src/server/web-typescript-revision-shards.test.ts \
+  src/server/web-typescript-revision-shard-retention.test.ts \
+  src/server/web-typescript-revision-shard-retention-scheduler.test.ts
+  9 files, 173 tests passed
+
+pnpm --dir packages/cli exec vitest run \
+  src/server/web-typescript-revision-shard-retention.test.ts \
+  src/server/web-typescript-revision-shard-retention-scheduler.test.ts \
+  src/server/web-typescript-revision-shards.test.ts
+  3 files, 41 tests passed
+
+pnpm --dir packages/extractor-typescript typecheck
+pnpm --dir packages/cli typecheck
+git diff --check
+  passed
+```
+
+The admitted corpus includes ordinary modification/add/delete/rename, configuration and re-export
+changes, two histories reaching the same tree, process-cold/warm reuse, `declare global`, string
+module augmentation, type-only inferred receivers, compiler triple-slash path directives, classic
+JSX factory resolution, cross-file declaration merging, and UMD globals. Each case compares the
+complete normalized graph, canonical manifest and unit envelopes, and every present semantic
+context/region evidence item against an isolated empty-cache target.
+
+Pair-unit co-scheduling and elastic-admission follow-up:
+
+```text
+pnpm --dir packages/extractor-typescript test
+  40 files, 328 tests passed
+
+pnpm --dir packages/cli exec vitest run --exclude src/server/folder-dialog.test.ts
+  73 files, 785 tests passed and 3 intentionally skipped
+
+pnpm --dir packages/cli exec vitest run src/server/folder-dialog.test.ts
+  1 file, 5 tests passed
+
+pnpm --dir packages/cli exec vitest run \
+  src/server/web-analysis-coordinator.test.ts \
+  src/server/web-pr-cache.test.ts
+  2 files, 56 tests passed
+
+pnpm --dir packages/extractor-typescript typecheck
+pnpm --dir packages/cli typecheck
+git diff --check
+  passed
+```
+
+The semantic-region planner has six focused tests covering deterministic SCCs, provider/consumer
+invalidation direction, missing-evidence fallback, deletion fallback, invalid endpoints, and an
+iterative 4,528-file chain. It is included in the 328-test extractor result; the large-chain plan
+completed in 18 ms in the focused run.
+
+The cross-process tests use two real exact Git worktrees and fresh Node processes. With three units
+per revision, identical trees performed three total canonical unit builds rather than six. Trees
+with one divergent unit performed four total builds and two pair reuses rather than six builds.
+Both complete extraction results and both manifests were canonical-JSON identical to independent
+empty-cache runs. The server regression holds an active pair on both analysis slots and the shard
+fence, queues a second pair, and proves that the second starts with two workers after release.
+Sibling failure abort/drain also leaves the pair-exchange staging root empty.
+
+Independent final-diff review found and closed two additional lifecycle gaps:
+
+- a request that waited for slots/fence now re-verifies still-missing exact HEAD/merge-base objects
+  after joint admission. If an earlier pair published the same revision while it waited, it starts
+  zero or one remaining worker rather than using the stale pre-queue miss. Reuse stages are emitted
+  only for late hits and lane-complete only for actual extraction;
+- a candidate that consumed a pair-only shard retains the exact immutable envelope in its
+  publication set. Deleting the pair directory before generic publication still produces a
+  self-contained manifest whose every shard and candidate reference resolves byte-for-byte, and a
+  later run reuses all three fixture units.
+
+A rebuilt persistent service then prepared live Autopilot PR #4510 at exact HEAD
+`e19cd50df6cc41b2c8989b669c1c6ac81a8ef0b3` and merge base
+`f59c9e11d7aa931b2eca13ed6cd08ddcdc3b5667`. This was a new-process whole-pair miss with the
+previously admitted shard namespace retained, not a completely empty semantic cache:
+
+| Observation | Result |
+|---|---:|
+| Clone visible | 1.095 s |
+| Both exact extraction lanes visible | 5.192 s |
+| HEAD lane complete | 275.563 s |
+| Merge-base lane / pair complete | 277.072 s |
+| Immediate exact-pair repeat | 1.520 s, one `done` event |
+| Result | 60,582 nodes, 234,221 edges, identical cold/warm graph IDs |
+
+Across the two 27-unit TypeScript revisions, progress showed seven canonical structure traversals:
+four on the merge base and three on HEAD. Only the large app and iframe units traversed on both
+sides; one-side-only and previously admitted units avoided the other traversal. The run was about
+22% faster than an earlier 5m54 observation of the same pair, but that comparison was not controlled
+for host/runtime noise and is corroboration only. The main result is diagnostic: authenticated
+package reuse and pair co-scheduling work, yet two changed large units still dominate the 4m37
+critical path. A finer sound semantic boundary and cheaper hit proof remain necessary.
 
 Frozen-source final validation:
 
@@ -487,36 +757,44 @@ pnpm --filter @meridian/cli exec vitest run \
 Real Autopilot base cold/warm, HEAD shared-base, HEAD isolated oracle, and HEAD warm
   5 separate, non-overlapping process runs passed with the metrics and exact parity above
 
-pnpm --filter @meridian/extractor-typescript test
-  39 files, 316 tests passed
+pnpm --dir packages/extractor-typescript test
+  39 files, 318 tests passed
 
-pnpm --filter @meridian/cli exec vitest run \
-  --exclude src/server/folder-dialog.test.ts --testTimeout=30000
-  72 files, 749 tests passed and 3 intentionally skipped
+pnpm --dir packages/cli test
+  saturated full pool: 73 files and 789 tests passed; one unrelated folder-dialog child-start
+  fixture missed its fixed 2-second deadline
 
-pnpm --filter @meridian/cli exec vitest run \
-  src/server/folder-dialog.test.ts --testTimeout=30000
-  1 file, 5 tests passed
+pnpm --dir packages/cli exec vitest run --exclude src/server/folder-dialog.test.ts
+pnpm --dir packages/cli exec vitest run src/server/folder-dialog.test.ts
+  clean split: 73 files / 785 passed and 3 skipped; isolated file / 5 passed
 
-pnpm typecheck
-  all 6 package typechecks passed
+pnpm --dir packages/core test
+  23 files, 207 tests passed
+
+pnpm --dir packages/renderer test
+  236 files, 2,220 tests passed
+
+pnpm --dir packages/cli typecheck
+pnpm --dir packages/extractor-typescript typecheck
+pnpm --dir packages/core typecheck
+  all passed
 
 pnpm build
   all package builds and renderer copy passed; existing renderer large-chunk warning remains
 
-pnpm --filter @meridian/cli exec vitest run \
+pnpm --dir packages/cli exec vitest run \
   --config vitest.e2e.config.ts e2e/pr-review-progress-layout.e2e.ts
-  1 file, 2 tests passed
+  1 file, 4 tests passed
 
 git diff --check
   passed
 ```
 
-The unpartitioned CLI suite twice reached 72 passing files and one failure because
+The unpartitioned CLI suite again had only one failure:
 `folder-dialog.test.ts` missed its fixed 2-second child-start deadline under the saturated parallel
-pool. The exact suite passed alone in 0.36 seconds; the complete remaining 72-file suite then passed
-with a 30-second test timeout. This is recorded as a test scheduling flake, not a product pass or a
-reason to change the unrelated picker contract.
+pool. The exact suite passed alone in 0.34 seconds; the complete remaining 73-file suite passed
+cleanly. This is recorded as a test scheduling flake, not a product failure or a reason to change
+the unrelated picker contract.
 
 Earlier unchanged-package coverage in this worktree also passed core (23 files/205 tests), Python
 extractor (9 files/54 tests), and renderer (236 files/2,203 tests). The frozen-source gates above

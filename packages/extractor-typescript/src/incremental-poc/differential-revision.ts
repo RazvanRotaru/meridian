@@ -68,6 +68,7 @@ export async function extractRevisionDifferential(
         throw new Error("tree-bound revision manifests disagree after semantic differential parity");
       }
       assertRevisionUnitShardParity(incrementalCandidate!, coldCandidate);
+      assertRevisionSemanticRegionParity(incrementalCandidate!, coldCandidate);
       incremental = await publishRevisionCandidate(request.cacheDir, incrementalCandidate!);
     } else {
       const publication = await publishStagedRevisionAdmission(
@@ -90,10 +91,79 @@ export async function extractRevisionDifferential(
     // and dropping its unit evidence prevents it from surviving alongside the returned graph.
     coldCandidate.pendingShards.length = 0;
     coldCandidate.unitShards.length = 0;
+    coldCandidate.semanticRegionContexts.length = 0;
+    coldCandidate.pendingSemanticRegions.length = 0;
+    coldCandidate.semanticRegionEvidence.length = 0;
     return { incremental, cold, differential };
   } finally {
     if (staged !== null) discardStagedRevisionAdmissionEvidence(staged);
     rmSync(coldCache, { recursive: true, force: true });
+  }
+}
+
+function assertRevisionSemanticRegionParity(
+  incremental: PendingRevisionExtraction,
+  cold: PendingRevisionExtraction,
+): void {
+  assertCanonicalSubset(
+    incremental.semanticRegionContexts,
+    cold.semanticRegionContexts,
+    (context) => context,
+    (context) => (
+      `incremental semantic-region context differs from the empty-cache cold oracle: ${context.key}`
+    ),
+  );
+  assertCanonicalSubset(
+    incremental.semanticRegionEvidence,
+    cold.semanticRegionEvidence,
+    semanticRegionParityRecord,
+    (region) => (
+      `incremental semantic-region shard differs from the empty-cache cold oracle: `
+      + `${region.unitId}/${region.regionId}`
+    ),
+  );
+}
+
+function semanticRegionParityRecord(
+  region: PendingRevisionExtraction["semanticRegionEvidence"][number],
+) {
+  return {
+    unitId: region.unitId,
+    regionId: region.regionId,
+    key: region.key,
+    baseInputKey: region.baseInputKey,
+    payloadDigest: region.payloadDigest,
+    value: region.value,
+  };
+}
+
+/**
+ * Full-unit hits legitimately bypass semantic-region execution, so incremental evidence is a
+ * subset of the empty-cache oracle. Treat the lists as canonical-byte multisets: ordering is not
+ * semantic, and consuming counts prevents duplicate candidate entries from sharing one cold match.
+ */
+function assertCanonicalSubset<T, TRecord>(
+  candidate: readonly T[],
+  cold: readonly T[],
+  parityRecord: (entry: T) => TRecord,
+  mismatchMessage: (entry: T) => string,
+): void {
+  const availableColdEntries = new Map<string, number>();
+  for (const entry of cold) {
+    const bytes = canonicalJson(parityRecord(entry));
+    availableColdEntries.set(bytes, (availableColdEntries.get(bytes) ?? 0) + 1);
+  }
+  for (const entry of candidate) {
+    const bytes = canonicalJson(parityRecord(entry));
+    const available = availableColdEntries.get(bytes) ?? 0;
+    if (available === 0) {
+      throw new Error(mismatchMessage(entry));
+    }
+    if (available === 1) {
+      availableColdEntries.delete(bytes);
+    } else {
+      availableColdEntries.set(bytes, available - 1);
+    }
   }
 }
 

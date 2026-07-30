@@ -88,12 +88,12 @@ const STAGE_COPY: Record<BootProgressStage, { title: string; detail: string }> =
     detail: "Checking live HEAD and base refs plus verified graph caches.",
   },
   "review-clone": {
-    title: "Cloning the repository…",
-    detail: "Preparing an isolated workspace for this pull request.",
+    title: "Preparing the repository mirror…",
+    detail: "Reusing or creating the mirror and an isolated pull-request workspace.",
   },
   "review-checkout": {
-    title: "Fetching PR HEAD and merge base…",
-    detail: "Checking out the exact revisions that Git compares.",
+    title: "Fetching exact PR revisions…",
+    detail: "Checking out the exact PR HEAD and merge base that Git compares.",
   },
   "review-extract": {
     title: "Extracting exact revision graphs…",

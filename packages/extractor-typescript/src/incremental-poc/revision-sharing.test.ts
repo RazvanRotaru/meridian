@@ -1,19 +1,22 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   chmodSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { ExtractionResult } from "@meridian/core";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extractRevisionDifferential } from "./differential-revision";
 import {
   extractRevisionCandidate,
   extractRevisionWithCache,
+  publishRevisionCandidate,
 } from "./extract-revision";
 import { createGitMonorepoFixture, type GitMonorepoFixture } from "./git-fixture";
 import {
@@ -30,9 +33,10 @@ import {
 import { canonicalJson, canonicalJsonSha256 } from "./canonical-json";
 
 interface WorkerReport {
+  result?: ExtractionResult;
   manifest: RevisionManifest;
   metrics: RevisionExtractionMetrics;
-  manifestPath: string;
+  manifestPath?: string;
 }
 
 describe("revision-safe shard sharing and process boundaries", { timeout: 30_000 }, () => {
@@ -105,6 +109,247 @@ describe("revision-safe shard sharing and process boundaries", { timeout: 30_000
     expect(second.manifest.normalizedResultDigest).toBe(cold.manifest.normalizedResultDigest);
   });
 
+  it("shares canonical misses only within one ephemeral exact-revision pair", async () => {
+    const pairCacheDir = join(dirname(fixture.cacheDir), "ephemeral-pair");
+    const base = await extractRevisionCandidate(
+      fixtureRequest(fixture, fixture.seedRevision),
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    replaceInFixture(
+      fixture,
+      "packages/consumer/src/index.ts",
+      "normalizeOrder(raw)",
+      "normalizeOrder(normalizeOrder(raw))",
+    );
+    const headRevision = fixture.commit("pair head changes one unit");
+    const head = await extractRevisionCandidate(
+      fixtureRequest(fixture, headRevision),
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    const cold = await extractRevisionCandidate({
+      ...fixtureRequest(fixture, headRevision),
+      cacheDir: join(dirname(fixture.cacheDir), "ephemeral-pair-cold"),
+    });
+
+    expect(base.metrics).toMatchObject({ rebuiltUnits: 3, reusedUnits: 0 });
+    expect(head.metrics).toMatchObject({ rebuiltUnits: 1, reusedUnits: 2 });
+    expect(canonicalJson(head.result)).toBe(canonicalJson(cold.result));
+    expect(head.manifest).toEqual(cold.manifest);
+    expect(readdirSync(fixture.cacheDir)).toEqual([]);
+  });
+
+  it("retains pair-consumed shards for exact publication after the pair cache is deleted", async () => {
+    const pairCacheDir = join(dirname(fixture.cacheDir), "ephemeral-pair-publication");
+    await extractRevisionCandidate(
+      fixtureRequest(fixture, fixture.seedRevision),
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    replaceInFixture(
+      fixture,
+      "packages/consumer/src/index.ts",
+      "normalizeOrder(raw)",
+      "normalizeOrder(normalizeOrder(raw))",
+    );
+    const headRevision = fixture.commit("publish pair consumer");
+    const request = fixtureRequest(fixture, headRevision);
+    const candidate = await extractRevisionCandidate(
+      request,
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    const pairConsumed = candidate.unitShards.filter(
+      (unit) => unit.value.inputs.unit.dir !== "packages/consumer",
+    );
+    const exactPairEnvelopes = pairConsumed.map((unit) => ({
+      unit,
+      shard: readFileSync(
+        immutableJsonCachePath(join(pairCacheDir, "shards"), unit.shardKey),
+        "utf8",
+      ),
+      reference: readFileSync(
+        immutableJsonCachePath(
+          join(pairCacheDir, "candidates", unit.value.baseInputKey),
+          unit.shardKey,
+        ),
+        "utf8",
+      ),
+    }));
+
+    expect(candidate.metrics).toMatchObject({ rebuiltUnits: 1, reusedUnits: 2 });
+    expect(candidate.pendingShards).toHaveLength(candidate.metrics.totalUnits);
+    rmSync(pairCacheDir, { recursive: true });
+    await publishRevisionCandidate(fixture.cacheDir, candidate);
+
+    for (const { unit, shard, reference } of exactPairEnvelopes) {
+      expect(readFileSync(
+        immutableJsonCachePath(join(fixture.cacheDir, "shards"), unit.shardKey),
+        "utf8",
+      )).toBe(shard);
+      expect(readFileSync(
+        immutableJsonCachePath(
+          join(fixture.cacheDir, "candidates", unit.value.baseInputKey),
+          unit.shardKey,
+        ),
+        "utf8",
+      )).toBe(reference);
+    }
+    for (const unit of candidate.manifest.units) {
+      expect(() => readFileSync(
+        immutableJsonCachePath(join(fixture.cacheDir, "shards"), unit.shardKey),
+      )).not.toThrow();
+    }
+
+    const warm = await extractRevisionCandidate(request);
+    expect(warm.metrics).toMatchObject({ rebuiltUnits: 0, reusedUnits: 3 });
+    expect(canonicalJson(warm.result)).toBe(canonicalJson(candidate.result));
+    expect(warm.manifest).toEqual(candidate.manifest);
+  });
+
+  it("retains pair-consumed semantic regions for publication after pair cleanup", async () => {
+    const pairCacheDir = join(dirname(fixture.cacheDir), "ephemeral-region-publication");
+    await extractRevisionCandidate(
+      fixtureRequest(fixture, fixture.seedRevision),
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    fixture.writeFile(
+      "packages/consumer/src/status.ts",
+      'export function statusLabel(ok: boolean): string {\n  return ok ? "ok" : "failed";\n}\n',
+    );
+    const headRevision = fixture.commit("add pair semantic region");
+    const request = fixtureRequest(fixture, headRevision);
+    const candidate = await extractRevisionCandidate(
+      request,
+      { ephemeralPairCacheDir: pairCacheDir },
+    );
+    const semanticEnvelopes = candidate.pendingSemanticRegions.map((region) => ({
+      region,
+      bytes: readFileSync(
+        immutableJsonCachePath(
+          join(pairCacheDir, "semantic-region-shards", region.baseInputKey),
+          region.key,
+        ),
+        "utf8",
+      ),
+    }));
+
+    expect(candidate.metrics.semanticRegions).toMatchObject({
+      totalRegions: 2,
+      reusedRegions: 1,
+      rebuiltRegions: 1,
+    });
+    expect(candidate.pendingSemanticRegions).toHaveLength(2);
+    rmSync(pairCacheDir, { recursive: true });
+    await publishRevisionCandidate(fixture.cacheDir, candidate);
+
+    for (const { region, bytes } of semanticEnvelopes) {
+      expect(readFileSync(
+        immutableJsonCachePath(
+          join(fixture.cacheDir, "semantic-region-shards", region.baseInputKey),
+          region.key,
+        ),
+        "utf8",
+      )).toBe(bytes);
+    }
+
+    replaceInFixture(
+      fixture,
+      "packages/consumer/src/status.ts",
+      '"failed"',
+      '"not-ready"',
+    );
+    const nextRevision = fixture.commit("change one published semantic region");
+    const next = await extractRevisionDifferential(
+      fixtureRequest(fixture, nextRevision),
+    );
+    expect(next.incremental.metrics.semanticRegions).toMatchObject({
+      totalRegions: 2,
+      reusedRegions: 1,
+      rebuiltRegions: 1,
+    });
+    expect(next.differential).toMatchObject({ equal: true, mismatches: [] });
+  });
+
+  it("singleflights simultaneous identical unit misses across fresh workers", async () => {
+    const pairCacheDir = join(dirname(fixture.cacheDir), "concurrent-ephemeral-pair");
+    const requestPath = join(dirname(fixture.cacheDir), "pair-worker-request.json");
+    writeFileSync(requestPath, JSON.stringify({
+      request: fixtureRequest(fixture, fixture.seedRevision),
+      ephemeralPairCacheDir: pairCacheDir,
+    }));
+
+    const [left, right] = await Promise.all([
+      runPairWorker(requestPath),
+      runPairWorker(requestPath),
+    ]);
+    const cold = await extractRevisionCandidate({
+      ...fixtureRequest(fixture, fixture.seedRevision),
+      cacheDir: join(dirname(fixture.cacheDir), "concurrent-pair-cold"),
+    });
+
+    expect(left.metrics.rebuiltUnits + right.metrics.rebuiltUnits).toBe(3);
+    expect(left.metrics.reusedUnits + right.metrics.reusedUnits).toBe(3);
+    expect(canonicalJson(left.result)).toBe(canonicalJson(cold.result));
+    expect(canonicalJson(right.result)).toBe(canonicalJson(cold.result));
+    expect(left.manifest).toEqual(cold.manifest);
+    expect(right.manifest).toEqual(cold.manifest);
+    expect(readdirSync(fixture.cacheDir)).toEqual([]);
+  });
+
+  it("co-schedules two exact trees so shared units execute once and divergent units once per tree", async () => {
+    replaceInFixture(
+      fixture,
+      "packages/consumer/src/index.ts",
+      "normalizeOrder(raw)",
+      "normalizeOrder(normalizeOrder(raw))",
+    );
+    const headRevision = fixture.commit("concurrent pair head changes one unit");
+    const owner = dirname(fixture.root);
+    const baseRoot = join(owner, "pair-base-worktree");
+    const headRoot = join(owner, "pair-head-worktree");
+    addWorktree(fixture.root, baseRoot, fixture.seedRevision.commitOid);
+    addWorktree(fixture.root, headRoot, headRevision.commitOid);
+
+    const pairCacheDir = join(owner, "different-tree-pair-cache");
+    const baseRequest = {
+      ...fixtureRequest(fixture, fixture.seedRevision),
+      root: baseRoot,
+    };
+    const headRequest = {
+      ...fixtureRequest(fixture, headRevision),
+      root: headRoot,
+    };
+    const baseRequestPath = join(owner, "base-pair-worker-request.json");
+    const headRequestPath = join(owner, "head-pair-worker-request.json");
+    writeFileSync(baseRequestPath, JSON.stringify({
+      request: baseRequest,
+      ephemeralPairCacheDir: pairCacheDir,
+    }));
+    writeFileSync(headRequestPath, JSON.stringify({
+      request: headRequest,
+      ephemeralPairCacheDir: pairCacheDir,
+    }));
+
+    const [base, head] = await Promise.all([
+      runPairWorker(baseRequestPath),
+      runPairWorker(headRequestPath),
+    ]);
+    const coldBase = await extractRevisionCandidate({
+      ...baseRequest,
+      cacheDir: join(owner, "different-tree-base-cold"),
+    });
+    const coldHead = await extractRevisionCandidate({
+      ...headRequest,
+      cacheDir: join(owner, "different-tree-head-cold"),
+    });
+
+    expect(base.metrics.rebuiltUnits + head.metrics.rebuiltUnits).toBe(4);
+    expect(base.metrics.reusedUnits + head.metrics.reusedUnits).toBe(2);
+    expect(canonicalJson(base.result)).toBe(canonicalJson(coldBase.result));
+    expect(canonicalJson(head.result)).toBe(canonicalJson(coldHead.result));
+    expect(base.manifest).toEqual(coldBase.manifest);
+    expect(head.manifest).toEqual(coldHead.manifest);
+    expect(readdirSync(fixture.cacheDir)).toEqual([]);
+  });
+
   it("persists shards across genuinely fresh warm worker processes", () => {
     const requestPath = join(dirname(fixture.cacheDir), "worker-request.json");
     writeFileSync(requestPath, JSON.stringify(fixtureRequest(fixture, fixture.seedRevision)));
@@ -149,10 +394,11 @@ describe("revision-safe shard sharing and process boundaries", { timeout: 30_000
 
     const scoped = await extractRevisionDifferential(scopedRequest);
     expect(scoped.differential.equal).toBe(true);
+    // The scoped workspace has a distinct semantic-plan context and therefore distinct shards.
     expect(scoped.incremental.metrics).toMatchObject({
       totalUnits: 4,
-      rebuiltUnits: 2,
-      reusedUnits: 2,
+      rebuiltUnits: 4,
+      reusedUnits: 0,
     });
     expect(
       scoped.incremental.result.edges.some(
@@ -289,4 +535,47 @@ function runWorker(requestPath: string): WorkerReport {
     throw new Error(`fresh process worker failed: ${result.stderr.trim() || `exit ${result.status}`}`);
   }
   return JSON.parse(result.stdout) as WorkerReport;
+}
+
+function runPairWorker(requestPath: string): Promise<Required<Pick<
+  WorkerReport,
+  "result" | "manifest" | "metrics"
+>>> {
+  const worker = fileURLToPath(new URL("./pair-process-worker.ts", import.meta.url));
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--import", "tsx", worker, requestPath], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.once("error", reject);
+    child.once("close", (status) => {
+      if (status !== 0) {
+        reject(new Error(
+          `fresh pair worker failed: ${Buffer.concat(stderr).toString("utf8").trim()
+            || `exit ${status ?? "unknown"}`}`,
+        ));
+        return;
+      }
+      resolve(JSON.parse(Buffer.concat(stdout).toString("utf8")) as Required<Pick<
+        WorkerReport,
+        "result" | "manifest" | "metrics"
+      >>);
+    });
+  });
+}
+
+function addWorktree(repository: string, destination: string, commit: string): void {
+  const result = spawnSync("git", ["worktree", "add", "--detach", destination, commit], {
+    cwd: repository,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(`could not create exact test worktree: ${result.stderr.trim()}`);
+  }
 }
