@@ -16,22 +16,24 @@ export type ReviewFlowSplitView = StaticLogicViewMode;
 export type ReviewCodePreviewTrigger = "hover" | "click";
 
 export interface ReviewPreferences {
-  version: 4;
+  version: 5;
   flowSplitView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
   codePreviewTrigger: ReviewCodePreviewTrigger;
   hideAddedSourceCommentDiffs: boolean;
+  excludeFormatOnlyChanges: boolean;
 }
 
 export const DEFAULT_REVIEW_PREFERENCES: Readonly<ReviewPreferences> = {
-  version: 4,
+  version: 5,
   flowSplitView: "timeline",
   openFlowSplitOnSelect: true,
   codePreviewTrigger: "hover",
   hideAddedSourceCommentDiffs: false,
+  excludeFormatOnlyChanges: true,
 };
 
-/** Load the current reader's preferences, migrating v1-v3 and defaulting malformed v4 fields
+/** Load the current reader's preferences, migrating v1-v4 and defaulting malformed v5 fields
  * independently so one damaged choice does not erase the other valid one. */
 export function readReviewPreferences(): ReviewPreferences {
   try {
@@ -64,14 +66,15 @@ function coerce(value: unknown): ReviewPreferences {
       return defaults();
     }
     return {
-      version: 4,
+      version: 5,
       flowSplitView: record.flowSplitView,
       openFlowSplitOnSelect: true,
       codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
+      excludeFormatOnlyChanges: true,
     };
   }
-  if (record.version !== 2 && record.version !== 3 && record.version !== 4) {
+  if (record.version !== 2 && record.version !== 3 && record.version !== 4 && record.version !== 5) {
     return defaults();
   }
   const flowSplitView = typeof record.flowSplitView === "string" && isReviewFlowSplitView(record.flowSplitView)
@@ -80,16 +83,27 @@ function coerce(value: unknown): ReviewPreferences {
   const openFlowSplitOnSelect = typeof record.openFlowSplitOnSelect === "boolean"
     ? record.openFlowSplitOnSelect
     : DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect;
-  const codePreviewTrigger = (record.version === 3 || record.version === 4)
+  const codePreviewTrigger = (record.version === 3 || record.version === 4 || record.version === 5)
     && typeof record.codePreviewTrigger === "string"
     && isReviewCodePreviewTrigger(record.codePreviewTrigger)
     ? record.codePreviewTrigger
     : DEFAULT_REVIEW_PREFERENCES.codePreviewTrigger;
-  const hideAddedSourceCommentDiffs = record.version === 4
+  const hideAddedSourceCommentDiffs = (record.version === 4 || record.version === 5)
     && typeof record.hideAddedSourceCommentDiffs === "boolean"
     ? record.hideAddedSourceCommentDiffs
     : DEFAULT_REVIEW_PREFERENCES.hideAddedSourceCommentDiffs;
-  return { version: 4, flowSplitView, openFlowSplitOnSelect, codePreviewTrigger, hideAddedSourceCommentDiffs };
+  const excludeFormatOnlyChanges = record.version === 5
+    && typeof record.excludeFormatOnlyChanges === "boolean"
+    ? record.excludeFormatOnlyChanges
+    : DEFAULT_REVIEW_PREFERENCES.excludeFormatOnlyChanges;
+  return {
+    version: 5,
+    flowSplitView,
+    openFlowSplitOnSelect,
+    codePreviewTrigger,
+    hideAddedSourceCommentDiffs,
+    excludeFormatOnlyChanges,
+  };
 }
 
 function defaults(): ReviewPreferences {

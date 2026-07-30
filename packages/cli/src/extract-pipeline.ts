@@ -18,6 +18,7 @@ import type {
   ExtractionDiagnostic,
   ExtractionProgress,
   ExtractionResult,
+  FormattingOnlyProof,
   GraphArtifact,
   LanguageExtractor,
 } from "@meridian/core";
@@ -118,6 +119,7 @@ export async function extractToArtifact(request: PipelineRequest): Promise<Pipel
             kinds: changedSince.kinds,
             diffLines: changedSince.diffLines,
             manifest: changedSince.manifest,
+            formattingOnly: changedSince.formattingOnly,
           }
         : undefined,
   });
@@ -202,6 +204,7 @@ async function changedRangesFor(
   kinds: ChangedLineKinds;
   diffLines: ChangedDiffLines;
   manifest: ChangedFileManifestEntry[];
+  formattingOnly: FormattingOnlyProof;
 } | null> {
   if (!request.changedSince) {
     return null;

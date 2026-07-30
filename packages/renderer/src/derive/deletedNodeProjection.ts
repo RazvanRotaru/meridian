@@ -95,8 +95,12 @@ export interface DeletedNodeProjectionArgs {
   baseIndex: GraphIndex;
   /** Usually the Tests-filtered visible review context. */
   context: ReviewContext;
-  /** Raw PR files retain exact deleted rows and completeness proof absent from ReviewContext. */
+  /** PR files retain exact deleted rows and completeness proof absent from ReviewContext. */
   prFiles: readonly PrChangedFile[];
+  /** Files whose exact `prFiles` rows are an intentionally filtered review projection. For those
+   * paths, the caller-provided rows supersede the artifact's lossless raw diff so excluded edits
+   * cannot leak back through base-side deletion impact. */
+  effectiveDiffPaths?: ReadonlySet<string>;
 }
 
 interface FilePlan {
@@ -157,8 +161,9 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
       canonicalStats,
     );
     const rawRows = exactRawDiff(raw);
-    const diffLines = canonicalRows ?? rawRows ?? [];
-    const exactDiff = canonicalRows !== null || rawRows !== null;
+    const useEffectiveRows = args.effectiveDiffPaths?.has(changed.path) === true;
+    const diffLines = useEffectiveRows ? rawRows ?? [] : canonicalRows ?? rawRows ?? [];
+    const exactDiff = useEffectiveRows ? rawRows !== null : canonicalRows !== null || rawRows !== null;
     const deletedRanges = deletedRangesFromRows(diffLines);
     const plan: FilePlan = {
       path: changed.path,

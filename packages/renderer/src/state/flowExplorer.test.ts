@@ -73,7 +73,7 @@ describe("flow explorer store slice", () => {
     expect(freshStore().getState().reviewCodePreviewEnabled).toBe(true);
   });
 
-  it("persists projection, split-opening, code-preview, and source-comment preferences without clobbering another choice", () => {
+  it("persists review preferences without clobbering another choice", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -87,56 +87,74 @@ describe("flow explorer store slice", () => {
     expect(store.getState().reviewOpenFlowSplitOnSelect).toBe(true);
     expect(store.getState().reviewCodePreviewTrigger).toBe("hover");
     expect(store.getState().reviewHideAddedSourceCommentDiffs).toBe(false);
+    expect(store.getState().reviewExcludeFormatOnlyChanges).toBe(true);
     store.getState().setReviewOpenFlowSplitOnSelect(false);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 4,
+      version: 5,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
       codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
+      excludeFormatOnlyChanges: true,
     });
     for (const { mode } of STATIC_LOGIC_VIEW_MODES) {
       store.getState().setReviewFlowSplitView(mode);
       expect(store.getState().reviewFlowSplitView).toBe(mode);
       expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-        version: 4,
+        version: 5,
         flowSplitView: mode,
         openFlowSplitOnSelect: false,
         codePreviewTrigger: "hover",
         hideAddedSourceCommentDiffs: false,
+        excludeFormatOnlyChanges: true,
       });
       expect(freshStore().getState().reviewFlowSplitView).toBe(mode);
       expect(freshStore().getState().reviewOpenFlowSplitOnSelect).toBe(false);
       expect(freshStore().getState().reviewCodePreviewTrigger).toBe("hover");
       expect(freshStore().getState().reviewHideAddedSourceCommentDiffs).toBe(false);
+      expect(freshStore().getState().reviewExcludeFormatOnlyChanges).toBe(true);
     }
     store.getState().setReviewCodePreviewTrigger("click");
     expect(store.getState().reviewCodePreviewTrigger).toBe("click");
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 4,
+      version: 5,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
       codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: false,
+      excludeFormatOnlyChanges: true,
     });
     expect(freshStore().getState().reviewCodePreviewTrigger).toBe("click");
     store.getState().setReviewHideAddedSourceCommentDiffs(true);
     expect(store.getState().reviewHideAddedSourceCommentDiffs).toBe(true);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 4,
+      version: 5,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
       codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
+      excludeFormatOnlyChanges: true,
     });
     expect(freshStore().getState().reviewHideAddedSourceCommentDiffs).toBe(true);
+    store.getState().setReviewExcludeFormatOnlyChanges(false);
+    expect(store.getState().reviewExcludeFormatOnlyChanges).toBe(false);
+    expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
+      version: 5,
+      flowSplitView: "timeline",
+      openFlowSplitOnSelect: false,
+      codePreviewTrigger: "click",
+      hideAddedSourceCommentDiffs: true,
+      excludeFormatOnlyChanges: false,
+    });
+    expect(freshStore().getState().reviewExcludeFormatOnlyChanges).toBe(false);
     store.getState().setReviewOpenFlowSplitOnSelect(true);
     expect(JSON.parse(persisted.get("meridian.prReviewPreferences") ?? "null")).toEqual({
-      version: 4,
+      version: 5,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: true,
       codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
+      excludeFormatOnlyChanges: false,
     });
   });
 

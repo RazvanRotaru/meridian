@@ -9,6 +9,7 @@ import type { ReviewCodePreviewTrigger, ReviewFlowSplitView } from "../../state/
 
 const HEADING_ID = "review-preferences-heading";
 const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
+const FORMAT_ONLY_DESCRIPTION_ID = "review-format-only-description";
 const DIFF_ONLY_DESCRIPTION_ID = "review-diff-only-description";
 const ADDED_SOURCE_COMMENTS_DESCRIPTION_ID = "review-added-source-comments-description";
 const CODE_PREVIEW_DESCRIPTION_ID = "review-code-preview-description";
@@ -19,12 +20,14 @@ const CODE_PREVIEW_RADIO_NAME = "review-code-preview-trigger";
 
 interface ReviewPreferencesPaneProps {
   excludeTestChanges: boolean;
+  excludeFormatOnlyChanges: boolean;
   hideNodesNotInDiff: boolean;
   flowView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
   codePreviewTrigger: ReviewCodePreviewTrigger;
   hideAddedSourceCommentDiffs: boolean;
   onExcludeTestChangesChange: (exclude: boolean) => void;
+  onExcludeFormatOnlyChangesChange: (exclude: boolean) => void;
   onHideNodesNotInDiffChange: (hide: boolean) => void;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
@@ -88,22 +91,43 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </button>
       </div>
 
-      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={TEST_CHANGES_DESCRIPTION_ID}>
+      <fieldset
+        style={BEHAVIOR_FIELDSET}
+        aria-describedby={`${TEST_CHANGES_DESCRIPTION_ID} ${FORMAT_ONLY_DESCRIPTION_ID} ${NOTE_ID}`}
+      >
         <legend style={LEGEND}>Review content</legend>
-        <label style={optionStyle(props.excludeTestChanges)}>
-          <input
-            type="checkbox"
-            checked={props.excludeTestChanges}
-            style={RADIO}
-            onChange={(event) => props.onExcludeTestChangesChange(event.currentTarget.checked)}
-          />
-          <span style={OPTION_COPY}>
-            <span style={OPTION_TITLE}>Exclude test changes</span>
-            <span id={TEST_CHANGES_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
-              Remove test files, affected nodes, flows, and comments from this PR review. Drafts and viewed progress return when tests are included again.
+        <div style={OPTION_LIST}>
+          <label style={optionStyle(props.excludeTestChanges)}>
+            <input
+              type="checkbox"
+              checked={props.excludeTestChanges}
+              style={RADIO}
+              aria-describedby={TEST_CHANGES_DESCRIPTION_ID}
+              onChange={(event) => props.onExcludeTestChangesChange(event.currentTarget.checked)}
+            />
+            <span style={OPTION_COPY}>
+              <span style={OPTION_TITLE}>Exclude test changes</span>
+              <span id={TEST_CHANGES_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+                Remove test files, affected nodes, flows, and comments from this PR review. Drafts and viewed progress return when tests are included again.
+              </span>
             </span>
-          </span>
-        </label>
+          </label>
+          <label style={optionStyle(props.excludeFormatOnlyChanges)}>
+            <input
+              type="checkbox"
+              checked={props.excludeFormatOnlyChanges}
+              style={RADIO}
+              aria-describedby={FORMAT_ONLY_DESCRIPTION_ID}
+              onChange={(event) => props.onExcludeFormatOnlyChangesChange(event.currentTarget.checked)}
+            />
+            <span style={OPTION_COPY}>
+              <span style={OPTION_TITLE}>Exclude formatting-only changes</span>
+              <span id={FORMAT_ONLY_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+                Remove proven formatting-only edits from affected nodes, files, and flows. Uncertain or mixed changes stay in the review.
+              </span>
+            </span>
+          </label>
+        </div>
       </fieldset>
 
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={DIFF_ONLY_DESCRIPTION_ID}>
@@ -216,7 +240,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
       </fieldset>
 
       <p id={NOTE_ID} style={NOTE}>
-        Flow, code preview, and source diff preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
+        Formatting-only filtering, flow, code preview, and source diff preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
       </p>
     </section>
   );

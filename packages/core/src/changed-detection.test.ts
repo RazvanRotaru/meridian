@@ -9,9 +9,16 @@ import {
   changedLinesWithin,
   changedRangesFromExtensions,
   collectChangedIds,
+  formattingOnlyEditsFromExtensions,
   tagChangedNodes,
 } from "./changed-detection";
-import type { ChangedLineKinds, ChangedLineStats, ChangedRanges, GraphNode } from "./index";
+import type {
+  ChangedLineKinds,
+  ChangedLineStats,
+  ChangedRanges,
+  FormattingOnlyEdit,
+  GraphNode,
+} from "./index";
 
 function node(id: string, kind: string, file: string, startLine: number, endLine?: number): GraphNode {
   return { id, kind, qualifiedName: id, displayName: id, location: { file, startLine, endLine } };
@@ -21,6 +28,30 @@ const MODULE = node("ts:src/a.ts", "module", "src/a.ts", 1, 40);
 const ALPHA = node("ts:src/a.ts#alpha", "function", "src/a.ts", 3, 10);
 const BETA = node("ts:src/a.ts#beta", "function", "src/a.ts", 12, 20);
 const OTHER = node("ts:src/b.ts#gamma", "function", "src/b.ts", 1, 5);
+
+function formattingEdit(
+  path: string,
+  oldStart: number,
+  oldLines: number,
+  newStart: number,
+  newLines: number,
+): FormattingOnlyEdit {
+  return {
+    path,
+    oldStart,
+    oldLines,
+    newStart,
+    newLines,
+    oldRows: Array.from({ length: oldLines }, (_, index) => ({
+      text: `old ${oldStart + index}`,
+      noNewline: false,
+    })),
+    newRows: Array.from({ length: newLines }, (_, index) => ({
+      text: `new ${newStart + index}`,
+      noNewline: false,
+    })),
+  };
+}
 
 describe("tagChangedNodes", () => {
   it("tags only the declarations whose span overlaps a changed range", () => {
@@ -110,6 +141,100 @@ describe("changedFileManifestFromExtensions", () => {
       expect(changedFileManifestFromExtensions({
         changedSince: { manifest: [{ path, status: "modified" }] },
       })).toEqual([{ path, status: "modified" }]);
+    }
+  });
+});
+
+describe("formattingOnlyEditsFromExtensions", () => {
+  const manifest = [
+    { path: "src/a.ts", status: "modified" },
+    { path: "src/b.ts", status: "modified" },
+  ];
+
+  it("groups one canonical v1 proof transaction by exact file path", () => {
+    const first = formattingEdit("src/a.ts", 10, 1, 10, 5);
+    first.newRows[4].noNewline = true;
+    const second = formattingEdit("src/a.ts", 30, 2, 34, 2);
+    const third = formattingEdit("src/b.ts", 4, 1, 4, 1);
+    const extensions = {
+      changedSince: {
+        manifest,
+        formattingOnly: {
+          version: 1,
+          edits: [first, second, third],
+        },
+      },
+    };
+
+    expect(formattingOnlyEditsFromExtensions(extensions)).toEqual({
+      "src/a.ts": [first, second],
+      "src/b.ts": [third],
+    });
+  });
+
+  it("accepts an empty proof but fails open on unknown, partial, or risky proof data", () => {
+    expect(formattingOnlyEditsFromExtensions({
+      changedSince: { manifest, formattingOnly: { version: 1, edits: [] } },
+    })).toEqual({});
+
+    for (const formattingOnly of [
+      undefined,
+      { version: 2, edits: [] },
+      { version: 1 },
+      { version: 1, edits: [], extra: true },
+      { version: 1, edits: [{ path: "src/a.ts", oldStart: 1, oldLines: 0, newStart: 1, newLines: 0 }] },
+      { version: 1, edits: [{ path: "../a.ts", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1 }] },
+      { version: 1, edits: [{ path: "src/a.ts", oldStart: 0, oldLines: 1, newStart: 1, newLines: 1 }] },
+      {
+        version: 1,
+        edits: [{ path: "src/a.ts", oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, extra: true }],
+      },
+    ]) {
+      expect(formattingOnlyEditsFromExtensions({
+        changedSince: { manifest, formattingOnly },
+      })).toBeNull();
+    }
+  });
+
+  it("rejects incomplete, malformed, or unbounded exact row bindings", () => {
+    const valid = formattingEdit("src/a.ts", 1, 1, 1, 1);
+    for (const edit of [
+      { ...valid, oldRows: [] },
+      { ...valid, newRows: [{ text: "new\nrow", noNewline: false }] },
+      { ...valid, newRows: [{ text: "new", noNewline: "no" }] },
+      { ...valid, newRows: [{ text: "new", noNewline: false, extra: true }] },
+    ]) {
+      expect(formattingOnlyEditsFromExtensions({
+        changedSince: { manifest, formattingOnly: { version: 1, edits: [edit] } },
+      })).toBeNull();
+    }
+
+    const tooManyForOneFile = Array.from({ length: 65 }, (_, index) =>
+      formattingEdit("src/a.ts", index * 2 + 1, 1, index * 2 + 1, 1)
+    );
+    expect(formattingOnlyEditsFromExtensions({
+      changedSince: {
+        manifest,
+        formattingOnly: { version: 1, edits: tooManyForOneFile },
+      },
+    })).toBeNull();
+  });
+
+  it("rejects stale paths, non-modified files, noncanonical order, duplicates, and overlap", () => {
+    const edit = formattingEdit("src/a.ts", 10, 1, 10, 5);
+    for (const [candidateManifest, edits] of [
+      [manifest, [{ ...edit, path: "src/missing.ts" }]],
+      [[{ path: "src/a.ts", status: "renamed", previousPath: "src/old.ts" }], [edit]],
+      [manifest, [{ ...edit, path: "src/b.ts" }, edit]],
+      [manifest, [edit, edit]],
+      [manifest, [edit, formattingEdit("src/a.ts", 10, 1, 14, 1)]],
+    ] as const) {
+      expect(formattingOnlyEditsFromExtensions({
+        changedSince: {
+          manifest: candidateManifest,
+          formattingOnly: { version: 1, edits },
+        },
+      })).toBeNull();
     }
   });
 });

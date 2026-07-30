@@ -19,8 +19,13 @@ import type {
   ChangedLineKinds,
   ChangedLineStats,
   ChangedRanges,
+  FormattingOnlyProof,
 } from "@meridian/core";
 import { CliError, EXIT } from "./errors";
+import {
+  proveFormattingOnlyEdits,
+  type FormattingProofCandidate,
+} from "./formatting-only";
 import { parseUnifiedDiffBody } from "./unified-diff";
 
 const DIFF_TIMEOUT_MS = 15_000;
@@ -47,6 +52,7 @@ export async function changedSinceMetadata(
   kinds: ChangedLineKinds;
   diffLines: ChangedDiffLines;
   manifest: ChangedFileManifestEntry[];
+  formattingOnly: FormattingOnlyProof;
 }> {
   const ref = validatedRef(baseRef);
   const patchArgs = [
@@ -79,16 +85,33 @@ export async function changedSinceMetadata(
   ];
   // Keep both views all-or-nothing. Line details are never published if the exact file inventory
   // is malformed/truncated, and the manifest is never published beside a partial patch body.
-  const manifest = parseNameStatusManifest(await executeGitDiff(absoluteRoot, manifestArgs, timeoutMs));
+  const manifestOutput = await executeGitDiff(absoluteRoot, manifestArgs, timeoutMs);
+  const manifest = parseNameStatusManifest(manifestOutput);
+  const formattingOnly = await proveFormattingOnlyEdits(
+    absoluteRoot,
+    parsed.formattingCandidates,
+    manifest,
+  );
+  const verifiedManifestOutput = await executeGitDiff(absoluteRoot, manifestArgs, timeoutMs);
+  if (!Buffer.from(manifestOutput, "utf8").equals(Buffer.from(verifiedManifestOutput, "utf8"))) {
+    throw new CliError(EXIT.io, "working tree changed while reading git diff manifest; retry the analysis");
+  }
   // `git diff` reads the index and working tree independently on every invocation. If either
   // changes between the patch and name-status reads, their otherwise-valid outputs can describe
-  // different revisions. Re-read the patch after the manifest and publish nothing unless the
-  // exact UTF-8 bytes still match the first read.
+  // different revisions. Re-read after the proof's HEAD-side file reads and publish nothing unless
+  // the exact UTF-8 patch bytes still match the first read.
   const verifiedPatch = await executeGitDiff(absoluteRoot, patchArgs, timeoutMs);
   if (!Buffer.from(patch, "utf8").equals(Buffer.from(verifiedPatch, "utf8"))) {
     throw new CliError(EXIT.io, "working tree changed while reading git diff metadata; retry the analysis");
   }
-  return { ranges: parsed.ranges, stats: parsed.stats, kinds: parsed.kinds, diffLines: parsed.diffLines, manifest };
+  return {
+    ranges: parsed.ranges,
+    stats: parsed.stats,
+    kinds: parsed.kinds,
+    diffLines: parsed.diffLines,
+    manifest,
+    formattingOnly,
+  };
 }
 
 export function validatedRef(baseRef: string): string {
@@ -207,6 +230,7 @@ interface ParsedFullUnifiedDiff {
   stats: ChangedLineStats;
   kinds: ChangedLineKinds;
   diffLines: ChangedDiffLines;
+  formattingCandidates: FormattingProofCandidate[];
   complete: boolean;
 }
 
@@ -217,6 +241,7 @@ function parseFullUnifiedDiff(diff: string): ParsedFullUnifiedDiff {
   const stats = Object.create(null) as ChangedLineStats;
   const kinds = Object.create(null) as ChangedLineKinds;
   const diffLines = Object.create(null) as ChangedDiffLines;
+  const formattingCandidates: FormattingProofCandidate[] = [];
   let complete = true;
 
   for (const section of splitFileSections(diff)) {
@@ -251,8 +276,28 @@ function parseFullUnifiedDiff(diff: string): ParsedFullUnifiedDiff {
     if (metadataPath !== null && detail.diffLines.length > 0) {
       (diffLines[metadataPath] ??= []).push(...detail.diffLines);
     }
+    if (headPath !== null) {
+      for (const edit of detail.edits) {
+        formattingCandidates.push({
+          path: headPath,
+          ...edit,
+          addedRows: detail.diffLines.filter((row) =>
+            row.kind === "added"
+            && row.newLine !== null
+            && row.newLine >= edit.newStart
+            && row.newLine < edit.newStart + edit.newLines
+          ),
+          deletedRows: detail.diffLines.filter((row) =>
+            row.kind === "deleted"
+            && row.oldLine !== null
+            && row.oldLine >= edit.oldStart
+            && row.oldLine < edit.oldStart + edit.oldLines
+          ),
+        });
+      }
+    }
   }
-  return { ranges: changed, stats, kinds, diffLines, complete };
+  return { ranges: changed, stats, kinds, diffLines, formattingCandidates, complete };
 }
 
 function splitFileSections(diff: string): string[] {

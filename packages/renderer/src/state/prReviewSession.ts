@@ -8,8 +8,6 @@
  */
 
 import {
-  changedDiffLinesFromExtensions,
-  changedLineKindsFromExtensions,
   collectChangedIds,
   computeCoverage,
   syntheticScenarioDescriptorSchema,
@@ -27,6 +25,10 @@ import type { FileMatch } from "../derive/matchAffectedFiles";
 import { deriveReviewData, type ReviewData } from "../derive/reviewData";
 import { promoteFullyViewedUnitTicks } from "../derive/reviewFiles";
 import { deriveReviewProjection } from "../derive/reviewProjection";
+import {
+  filterFormattingOnlyReviewContext,
+  formattingAwareArtifactDiff,
+} from "../derive/formattingOnlyReviewContext";
 import { readReviewProgress, writeReviewProgress } from "./reviewTicksPref";
 import { reviewNodeStatusEntries, reviewNodeStatusSourcesFromDiff } from "./reviewNodeStatus";
 import type { BlueprintState } from "./store";
@@ -211,8 +213,15 @@ export function restorePrReviewBaseline(
   // An artifact-sourced review (the boot artifact carried one) gets its checklist + progress back;
   // a plain session clears every review-owned field.
   const progress = baseline.review ? readReviewProgress(baseline.review.context.reviewKey) : null;
+  const effectiveContext = baseline.review === null
+    ? null
+    : filterFormattingOnlyReviewContext(
+        baseline.review.context,
+        baseline.artifact,
+        get().reviewExcludeFormatOnlyChanges,
+      );
   const projection = baseline.review
-    ? deriveReviewProjection(baseline.review.context, baseline.artifact, baseline.index, {
+    ? deriveReviewProjection(effectiveContext!, baseline.artifact, baseline.index, {
         baseIndex: null,
         showTests: get().showTests,
       })
@@ -234,6 +243,10 @@ export function restorePrReviewBaseline(
     });
   }
   if (projection !== null) {
+    const statusDiff = formattingAwareArtifactDiff(
+      baseline.artifact,
+      get().reviewExcludeFormatOnlyChanges,
+    );
     applyChangedIds(baseline.index, projection.affected.map((node) => node.nodeId));
     applyChangedStatus(
       baseline.index,
@@ -241,8 +254,8 @@ export function restorePrReviewBaseline(
         baseline.index,
         projection.affected,
         reviewNodeStatusSourcesFromDiff(
-          changedLineKindsFromExtensions(baseline.artifact.extensions),
-          changedDiffLinesFromExtensions(baseline.artifact.extensions),
+          statusDiff.kinds,
+          statusDiff.diffLines,
         ),
       ),
     );

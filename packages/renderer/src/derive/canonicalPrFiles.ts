@@ -11,9 +11,20 @@ import {
   changedLineKindsFromExtensions,
   changedLineStatsFromExtensions,
   changedRangesFromExtensions,
+  formattingOnlyEditsFromExtensions,
 } from "@meridian/core";
-import type { ChangedDiffLine, GraphArtifact, LineRange } from "@meridian/core";
+import type {
+  ChangedDiffLine,
+  FormattingOnlyEdit,
+  FormattingOnlyRow,
+  GraphArtifact,
+  LineRange,
+} from "@meridian/core";
 import type { PrChangedFile, PrFileStatus } from "../state/prTypes";
+import {
+  exactPrDiffMetadata,
+  type ExactPrDiffMetadata,
+} from "./formattingOnlyPrFiles";
 
 /**
  * Return `githubFiles` unchanged when paired with an older/malformed artifact. Once a valid
@@ -35,6 +46,18 @@ export function canonicalPrFiles(
   const stats = changedLineStatsFromExtensions(artifact.extensions);
   const kinds = changedLineKindsFromExtensions(artifact.extensions);
   const diffLines = changedDiffLinesFromExtensions(artifact.extensions);
+  const exactByPath = new Map<string, ExactPrDiffMetadata | null>();
+  for (const entry of manifest) {
+    const rows = ownValue(diffLines, entry.path);
+    exactByPath.set(entry.path, rows === undefined ? null : exactPrDiffMetadata(rows));
+  }
+  const formattingOnlyEdits = verifiedFormattingOnlyEdits(
+    formattingOnlyEditsFromExtensions(artifact.extensions),
+    exactByPath,
+    stats,
+    ranges,
+    kinds,
+  );
 
   return manifest.map((entry) => {
     // Git paths are opaque byte-derived identities. In particular, `a\\b.ts` and `a/b.ts` are
@@ -45,9 +68,9 @@ export function canonicalPrFiles(
     const delta = ownValue(stats, path);
     const fileRanges = ownValue(ranges, path);
     const fileKinds = ownValue(kinds, path);
-    const exactBody = rows !== undefined && delta !== undefined
-      && countRows(rows, "added") === delta.added
-      && countRows(rows, "deleted") === delta.deleted;
+    const exact = exactByPath.get(path) ?? null;
+    const exactBody = canonicalBodyIsExact(exact, delta, fileRanges, fileKinds, ranges, kinds);
+    const formattingProof = ownValue(formattingOnlyEdits, path);
     const file: PrChangedFile = {
       ...(raw ?? {}),
       path,
@@ -61,11 +84,29 @@ export function canonicalPrFiles(
     } else {
       delete file.previousPath;
     }
-    if (fileRanges !== undefined) file.hunks = fileRanges.map(copyRange);
-    if (fileKinds !== undefined) file.kinds = fileKinds.map((span) => ({ ...span }));
-    if (rows !== undefined) {
+    if (exact !== null) {
+      file.hunks = exact.hunks;
+      file.oldHunks = exact.oldHunks;
+      file.edits = exact.edits;
+      file.kinds = exact.kinds;
+      file.diffLines = exact.diffLines;
+    } else {
+      if (fileRanges !== undefined) file.hunks = fileRanges.map(copyRange);
+      if (fileKinds !== undefined) file.kinds = fileKinds.map((span) => ({ ...span }));
+    }
+    if (rows !== undefined && exact === null) {
       file.diffLines = rows.map((row) => ({ ...row }));
       file.oldHunks = deletedRanges(rows);
+    }
+    if (formattingProof !== undefined) {
+      file.formattingOnlyEdits = formattingProof.map((edit) => ({
+        oldStart: edit.oldStart,
+        oldLines: edit.oldLines,
+        newStart: edit.newStart,
+        newLines: edit.newLines,
+      }));
+    } else {
+      delete file.formattingOnlyEdits;
     }
     if (exactBody) {
       file.diffComplete = true;
@@ -102,6 +143,92 @@ function deletedRanges(rows: readonly ChangedDiffLine[]): LineRange[] {
 
 function copyRange(range: LineRange): LineRange {
   return { start: range.start, end: range.end };
+}
+
+function sameRanges(left: readonly LineRange[], right: readonly LineRange[]): boolean {
+  return left.length === right.length
+    && left.every((range, index) => range.start === right[index].start && range.end === right[index].end);
+}
+
+function sameKinds(
+  left: readonly { start: number; end: number; kind: string }[],
+  right: readonly { start: number; end: number; kind: string }[],
+): boolean {
+  return left.length === right.length
+    && left.every((span, index) =>
+      span.start === right[index].start
+      && span.end === right[index].end
+      && span.kind === right[index].kind);
+}
+
+function verifiedFormattingOnlyEdits(
+  proof: Readonly<Record<string, readonly FormattingOnlyEdit[]>> | null,
+  exactByPath: ReadonlyMap<string, ExactPrDiffMetadata | null>,
+  stats: ReturnType<typeof changedLineStatsFromExtensions>,
+  ranges: ReturnType<typeof changedRangesFromExtensions>,
+  kinds: ReturnType<typeof changedLineKindsFromExtensions>,
+): Readonly<Record<string, readonly FormattingOnlyEdit[]>> | null {
+  if (proof === null) {
+    return null;
+  }
+  for (const [path, edits] of Object.entries(proof)) {
+    const exact = exactByPath.get(path) ?? null;
+    if (!canonicalBodyIsExact(
+      exact,
+      ownValue(stats, path),
+      ownValue(ranges, path),
+      ownValue(kinds, path),
+      ranges,
+      kinds,
+    )) {
+      return null;
+    }
+    const runs = new Map(exact.runs.map((run) => [editKey(run.edit), run]));
+    for (const edit of edits) {
+      const run = edit.path === path ? runs.get(editKey(edit)) : undefined;
+      if (
+        run === undefined
+        || !sameBoundRows(edit.oldRows, run.rows, "deleted")
+        || !sameBoundRows(edit.newRows, run.rows, "added")
+      ) {
+        return null;
+      }
+    }
+  }
+  return proof;
+}
+
+function canonicalBodyIsExact(
+  exact: ExactPrDiffMetadata | null,
+  delta: { added: number; deleted: number } | undefined,
+  fileRanges: readonly LineRange[] | undefined,
+  fileKinds: readonly { start: number; end: number; kind: string }[] | undefined,
+  ranges: ReturnType<typeof changedRangesFromExtensions>,
+  kinds: ReturnType<typeof changedLineKindsFromExtensions>,
+): exact is ExactPrDiffMetadata {
+  return exact !== null && delta !== undefined
+    && exact.additions === delta.added
+    && exact.deletions === delta.deleted
+    && (ranges === null || (fileRanges !== undefined && sameRanges(exact.hunks, fileRanges)))
+    && (kinds === null || (
+      fileKinds === undefined ? exact.kinds.length === 0 : sameKinds(exact.kinds, fileKinds)
+    ));
+}
+
+function sameBoundRows(
+  expected: readonly FormattingOnlyRow[],
+  rows: readonly ChangedDiffLine[],
+  kind: ChangedDiffLine["kind"],
+): boolean {
+  const matching = rows.filter((row) => row.kind === kind);
+  return expected.length === matching.length
+    && expected.every((row, index) =>
+      row.text === matching[index].text
+      && row.noNewline === (matching[index].noNewline === true));
+}
+
+function editKey(edit: Pick<FormattingOnlyEdit, "oldStart" | "oldLines" | "newStart" | "newLines">): string {
+  return `${edit.oldStart}:${edit.oldLines}:${edit.newStart}:${edit.newLines}`;
 }
 
 function ownValue<T>(record: Readonly<Record<string, T>> | null, path: string): T | undefined {
