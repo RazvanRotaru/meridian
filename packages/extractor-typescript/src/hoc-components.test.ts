@@ -388,6 +388,9 @@ describe("no phantom nodes from non-component callback wrappers (fix 1/2/3)", ()
     expect(nodeIn("phantoms.tsx", "p")).toBeUndefined();
     expect(nodeIn("phantoms.tsx", "api")).toBeUndefined();
     expect(nodeIn("phantoms.tsx", "cached")).toBeUndefined();
+    expect(nodeIn("phantoms.tsx", "p.<callback>")).toBeUndefined();
+    expect(nodeIn("phantoms.tsx", "api.<callback>")).toBeUndefined();
+    expect(nodeIn("phantoms.tsx", "cached.<callback>")).toBeUndefined();
   });
 
   it("mints no method node for a class field bound to a non-component call (Widget.subscription)", () => {

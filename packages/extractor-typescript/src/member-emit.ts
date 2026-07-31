@@ -1,9 +1,10 @@
 /**
- * The recursive declaration walk: classes -> methods, interfaces -> method signatures, type aliases,
- * top-level and lexically nested functions plus callable-binding consts/properties/default exports (see
- * `resolveCallableBinding` — inline callables, possibly under `memo`/`forwardRef`), object-literal
- * consts -> methods, constructed singleton objects, and namespaces (recursed). Emission is top-down
- * so a child's parent descriptor always already exists.
+ * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
+ * type aliases, top-level and lexically nested functions plus callable-binding consts/properties/
+ * default exports (see `resolveCallableBinding` — inline callables, possibly under
+ * `memo`/`forwardRef`), explicit module-scope value-call callbacks that own named helpers,
+ * object-literal consts -> methods, constructed singleton objects, and namespaces (recursed).
+ * Emission is top-down so a child's parent descriptor always already exists.
  */
 
 import {
@@ -22,12 +23,19 @@ import {
 } from "ts-morph";
 import type { NodeKind } from "@meridian/core";
 import { memberDescriptor, type IdContext } from "./descriptor-factory";
-import { resolveCallableBinding, type CallableBinding } from "./inline-callables";
+import {
+  ITERATION_METHODS,
+  isInlineCallback,
+  resolveCallableBinding,
+  type CallableBinding,
+  unwrapTransparentExpression,
+} from "./inline-callables";
 import type { NodeDescriptor } from "./model";
 import type { SignatureLike } from "./node-fields";
 
 type Container = SourceFile | ModuleDeclaration;
 type CallableMember = ConstructorDeclaration | MethodDeclaration | GetAccessorDeclaration | SetAccessorDeclaration;
+const CALLBACK_NAME = "<callback>";
 
 export interface EmitContext extends IdContext {
   emit: (descriptor: NodeDescriptor) => NodeDescriptor;
@@ -155,6 +163,11 @@ function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosi
     emitBinding(binding, "function", node.getName(), node, parent, enclosingNames, context);
     return;
   }
+  const valueCallback = meaningfulValueCallback(node.getInitializer());
+  if (valueCallback) {
+    emitValueCallback(valueCallback, node.getName(), parent, enclosingNames, context);
+    return;
+  }
   const initializer = node.getInitializer();
   if (Node.isObjectLiteralExpression(initializer)) {
     emitObjectLiteralConst(node, parent, enclosingNames, context);
@@ -163,6 +176,96 @@ function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosi
   if (Node.isNewExpression(initializer)) {
     emitConstructedObject(node, parent, enclosingNames, context);
   }
+}
+
+/**
+ * A call result remains a value, so it must never flow through `emitBinding`. When its first
+ * argument is a block-bodied inline callback that owns a named lexical callable, however, that
+ * callback needs an explicit structural owner or both its body and the helper disappear.
+ *
+ * This is deliberately a syntax-based "meaningful value callback" rule, not a claim that the
+ * callee is a factory or that it invokes the callback immediately. It also truthfully represents
+ * rich subscription/continuation callbacks while adding no scheduling/call edge to the callback.
+ * Requiring an actually emittable nested callable keeps module/namespace admission conservative:
+ * ordinary concise callbacks remain flow-only. Known Array iteration callbacks remain loop steps.
+ * Transparent parentheses/assertions do not alter the classification.
+ */
+function meaningfulValueCallback(initializer: Node | undefined): Node | null {
+  const call = unwrapTransparentExpression(initializer);
+  if (!call || !Node.isCallExpression(call)) {
+    return null;
+  }
+  const callee = unwrapTransparentExpression(call.getExpression());
+  if (Node.isPropertyAccessExpression(callee) && ITERATION_METHODS.has(callee.getName())) {
+    return null;
+  }
+  const callback = unwrapTransparentExpression(call.getArguments()[0]);
+  if (!callback || !isInlineCallback(callback) || !Node.isBlock(callback.getBody())) {
+    return null;
+  }
+  return hasNestedNamedCallable(callback) ? callback : null;
+}
+
+/**
+ * The callback is the declaration and callable anchor. Using the variable declaration here would
+ * make references to the call RESULT resolve to this function, recreating the exact phantom
+ * callable this representation is designed to avoid.
+ */
+function emitValueCallback(
+  callback: Node,
+  bindingName: string,
+  parent: NodeDescriptor,
+  enclosingNames: string[],
+  context: EmitContext,
+): void {
+  const callbackScope = [...enclosingNames, bindingName];
+  const self = context.emit(
+    memberDescriptor(context, {
+      kind: "function",
+      localName: CALLBACK_NAME,
+      displayName: `${bindingName} callback`,
+      enclosingNames: callbackScope,
+      parent,
+      declarationNode: callback,
+      callableNode: callback,
+      signatureSource: asSignature(callback),
+      // A synthetic callback identity has no source-level function name to join to runtime spans.
+      emitTelemetry: false,
+    }),
+  );
+  emitNestedCallables(callback, self, [...callbackScope, CALLBACK_NAME], context);
+}
+
+/** Mirror `emitNestedCallables`' lexical admission without emitting anything. */
+function hasNestedNamedCallable(callable: Node): boolean {
+  let found = false;
+  const visit = (node: Node): void => {
+    for (const child of node.getChildren()) {
+      if (Node.isFunctionDeclaration(child)) {
+        found = true;
+        return;
+      }
+      if (
+        Node.isVariableDeclaration(child) &&
+        Node.isIdentifier(child.getNameNode()) &&
+        resolveCallableBinding(child.getInitializer())
+      ) {
+        found = true;
+        return;
+      }
+      if (
+        Node.isClassDeclaration(child) ||
+        Node.isInterfaceDeclaration(child) ||
+        Node.isModuleDeclaration(child)
+      ) {
+        continue;
+      }
+      visit(child);
+      if (found) return;
+    }
+  };
+  visit(callable);
+  return found;
 }
 
 function emitConstructedObject(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {

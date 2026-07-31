@@ -13,7 +13,11 @@ import type { ArrowFunction, CallExpression, FunctionExpression, NewExpression, 
 import type { FlowStep } from "@meridian/core";
 import { iterationLabel } from "./flow-labels";
 import { bodyOf, type FlowWalker } from "./flow-walker";
-import { ITERATION_METHODS, isInlineCallback } from "./inline-callables";
+import {
+  ITERATION_METHODS,
+  isInlineCallback,
+  unwrapTransparentExpression,
+} from "./inline-callables";
 import { nodeKey } from "./model";
 
 /** One nested `callback` step per inline callback the call was handed (own-body ones excluded). */
@@ -23,14 +27,18 @@ export function inlineCallbackSteps(
   walker: FlowWalker,
   depth: number,
 ): FlowStep[] {
-  return node
-    .getArguments()
-    .filter(isInlineCallback)
-    .filter((callback) => !walker.index.sourceByCallableKey.has(nodeKey(callback)))
-    .flatMap((callback) => {
-      const step = callbackStep(callback, receiver, walker, depth);
-      return step ? [step] : [];
-    });
+  return node.getArguments().flatMap((argument) => {
+    const callback = unwrapTransparentExpression(argument);
+    if (
+      !callback ||
+      !isInlineCallback(callback) ||
+      walker.index.sourceByCallableKey.has(nodeKey(callback))
+    ) {
+      return [];
+    }
+    const step = callbackStep(callback, receiver, walker, depth);
+    return step ? [step] : [];
+  });
 }
 
 // A JSX-embedded inline callback (`onClick={() => …}`, including one wrapped in pure expressions
@@ -89,17 +97,23 @@ function callbackStep(callback: Node, receiver: string | null, walker: FlowWalke
 export interface IterationCall {
   callee: PropertyAccessExpression;
   callback: ArrowFunction | FunctionExpression;
+  callbackArgument: Node;
 }
 
 // An Array-iteration call with an INLINE callback — the shape we lift into a loop. A named
 // callback (`items.forEach(handler)`) is not inline, so it falls through to a plain call.
 export function iterationCall(node: CallExpression): IterationCall | null {
-  const callee = node.getExpression();
-  if (!Node.isPropertyAccessExpression(callee) || !ITERATION_METHODS.has(callee.getName())) {
+  const callee = unwrapTransparentExpression(node.getExpression());
+  if (!callee || !Node.isPropertyAccessExpression(callee) || !ITERATION_METHODS.has(callee.getName())) {
     return null;
   }
-  const callback = node.getArguments().find(isInlineCallback);
-  return callback ? { callee, callback } : null;
+  for (const argument of node.getArguments()) {
+    const callback = unwrapTransparentExpression(argument);
+    if (callback && isInlineCallback(callback)) {
+      return { callee, callback, callbackArgument: argument };
+    }
+  }
+  return null;
 }
 
 // The receiver and any non-callback args evaluate BEFORE the callback iterates, so emit their
@@ -107,7 +121,10 @@ export function iterationCall(node: CallExpression): IterationCall | null {
 // whose body is the callback walked inline — NOT stopped at the arrow's callable boundary, since
 // this callback genuinely runs as part of THIS flow rather than being its own callable.
 export function iterationSteps(node: CallExpression, call: IterationCall, walker: FlowWalker, depth: number): FlowStep[] {
-  const preludeNodes = [call.callee.getExpression(), ...node.getArguments().filter((arg) => arg !== call.callback)];
+  const preludeNodes = [
+    call.callee.getExpression(),
+    ...node.getArguments().filter((argument) => argument !== call.callbackArgument),
+  ];
   const steps = preludeNodes.flatMap((child) => walker.walk(child, depth + 1));
   const body = call.callback.getBody();
   steps.push({

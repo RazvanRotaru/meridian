@@ -28,6 +28,12 @@ describe("syntax-only progressive source index", () => {
         }
         export const api = { __private(): void {}, save(): void {} };
         export const service = new Service();
+        declare function create<T>(initializer: () => T): T;
+        export const store = create(() => {
+          const helper = (): void => {};
+          helper();
+          return {};
+        });
       `,
       "src/b.ts": `
         export class Service {
@@ -48,6 +54,20 @@ describe("syntax-only progressive source index", () => {
     expect(indexed.symbols.map(({ id }) => id).sort()).toEqual(canonicalIds);
     expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "api.__private"))
       .toMatchObject({ isPrivateMethod: true, fileId: "ts:src/a.ts", stepCount: null });
+    expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "store.<callback>"))
+      .toMatchObject({
+        id: "ts:src/a.ts#store.<callback>",
+        displayName: "store callback",
+        kind: "function",
+        fileId: "ts:src/a.ts",
+      });
+    expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "store.<callback>.helper"))
+      .toMatchObject({
+        id: "ts:src/a.ts#store.<callback>.helper",
+        displayName: "helper",
+        kind: "function",
+        fileId: "ts:src/a.ts",
+      });
     expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "ToolExecutionTargetAuthorizer"))
       .toMatchObject({
         id: "ts:src/b.ts#ToolExecutionTargetAuthorizer",
