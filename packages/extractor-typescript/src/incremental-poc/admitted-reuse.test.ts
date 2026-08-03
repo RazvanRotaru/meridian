@@ -417,6 +417,66 @@ const ADMITTED_REVISION_CASES: readonly AdmittedRevisionCase[] = [
     },
   },
   {
+    id: "constructed-receiver-inherited-member",
+    name: "constructed receiver inherited member appearance",
+    prepareBase: (fixture) => {
+      fixture.writeFile(
+        "packages/provider/src/constructed-base.ts",
+        "export class FrameworkBase {}\n",
+      );
+      fixture.writeFile(
+        "packages/provider/src/constructed-framework.ts",
+        [
+          'import { FrameworkBase } from "./constructed-base";',
+          "export class ChatFramework extends FrameworkBase {}",
+          "",
+        ].join("\n"),
+      );
+      fixture.writeFile(
+        "packages/provider/src/constructed-consumer.ts",
+        [
+          "export class DelegateClient {",
+          "  private framework: any = null;",
+          "  async init(): Promise<void> {",
+          '    const [{ ChatFramework }] = await Promise.all([import("./constructed-framework")]);',
+          "    this.framework = new ChatFramework();",
+          "    await this.framework.initialize();",
+          "  }",
+          "}",
+          "",
+        ].join("\n"),
+      );
+      return fixture.commit("prepare admitted constructed receiver inheritance");
+    },
+    mutateTarget: (fixture) => {
+      replaceInFixture(
+        fixture,
+        "packages/provider/src/constructed-base.ts",
+        "export class FrameworkBase {}",
+        [
+          "export class FrameworkBase {",
+          "  initialize(): void {}",
+          "}",
+        ].join("\n"),
+      );
+      return fixture.commit("add inherited constructed receiver member");
+    },
+    expected: { totalUnits: 3, rebuiltUnits: 1, reusedUnits: 2 },
+    semantic: {
+      reusedRegions: 3,
+      stableFiles: [
+        "packages/provider/src/index.ts",
+        "packages/provider/src/normalize.ts",
+        "packages/provider/src/version.ts",
+      ],
+      invalidatedFiles: [
+        "packages/provider/src/constructed-base.ts",
+        "packages/provider/src/constructed-framework.ts",
+        "packages/provider/src/constructed-consumer.ts",
+      ],
+    },
+  },
+  {
     id: "type-only-receiver",
     name: "type-only import and inferred receiver provider change",
     prepareBase: (fixture) => {

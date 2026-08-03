@@ -406,6 +406,58 @@ describe("semantic compiler observations", () => {
       .toEqual(fileObservation(before.files, "repo:src/provider.ts"));
   });
 
+  it("observes the constructed receiver member that recovers an any-typed call", () => {
+    const consumer = [
+      'import * as FrameworkModule from "./framework";',
+      "export class DelegateClient {",
+      "  private framework: any = null;",
+      "  init(): void {",
+      "    const { ChatFramework } = FrameworkModule;",
+      "    this.framework = new ChatFramework();",
+      "    this.framework.initialize();",
+      "  }",
+      "  destroy(): void { this.framework = null; }",
+      "}",
+      "",
+    ].join("\n");
+    const common = {
+      "src/consumer.ts": consumer,
+      "src/framework.ts": [
+        'import { FrameworkBase } from "./base";',
+        "export class ChatFramework extends FrameworkBase {}",
+        "",
+      ].join("\n"),
+    };
+    const before = loadedProject("/constructed-member/before", {
+      ...common,
+      "src/base.ts": "export class FrameworkBase {}\n",
+    });
+    const after = loadedProject("/constructed-member/after", {
+      ...common,
+      "src/base.ts": "export class FrameworkBase { initialize(): void {} }\n",
+    });
+    const beforeObservation = fileObservation(
+      collectSemanticCompilerObservations(before).files,
+      CONSUMER,
+    );
+    const afterObservation = fileObservation(
+      collectSemanticCompilerObservations(after).files,
+      CONSUMER,
+    );
+
+    expect(afterObservation.digest).not.toBe(beforeObservation.digest);
+    expect(afterObservation.providerAddresses).toContain("repo:src/base.ts");
+    const inspected = inspectSemanticCompilerObservation(after, CONSUMER);
+    expect(inspected.transcript).toContainEqual(expect.objectContaining({
+      kind: "constructed-receiver-member",
+      value: expect.objectContaining({
+        consensus: expect.objectContaining({
+          declaration: expect.objectContaining({ address: "repo:src/base.ts" }),
+        }),
+      }),
+    }));
+  });
+
   it("is portable across absolute checkout roots, including quoted module symbols", () => {
     const files = {
       "src/consumer.ts": [

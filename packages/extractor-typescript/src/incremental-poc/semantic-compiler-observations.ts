@@ -20,6 +20,9 @@ import {
   deriveTargetReference,
   type TargetReferenceDerivation,
 } from "../edge-resolve";
+import {
+  traceConstructedReceiverMember,
+} from "../constructed-receiver";
 import type { ImportedSymbolReference } from "../import-reference";
 import type { LoadedProject } from "../project-loader";
 import { toPosix } from "../paths";
@@ -27,7 +30,7 @@ import { throughLocalReexports } from "../reexport-reference";
 import { canonicalJson, compareCanonicalStrings } from "./canonical-json";
 import { portableFingerprintAddress } from "./fingerprints";
 
-export const SEMANTIC_COMPILER_OBSERVATION_VERSION = 3 as const;
+export const SEMANTIC_COMPILER_OBSERVATION_VERSION = 4 as const;
 
 export interface SemanticCompilerFileObservation {
   version: typeof SEMANTIC_COMPILER_OBSERVATION_VERSION;
@@ -311,6 +314,24 @@ function observeSourceFile(input: {
   visit(input.sourceFile);
 
   if (input.selectedSourceFile !== undefined) {
+    observeConstructedReceiverMembers({
+      observeDeclaration: (declaration) => declarationObservation(
+        declaration.compilerNode as ts.Declaration,
+        input.addressBySourceFile,
+        input.knownAddresses,
+        input.address,
+        providerAddresses,
+      ),
+      observeSymbol: (symbol) => symbolObservation(
+        symbol?.compilerSymbol,
+        input.addressBySourceFile,
+        input.knownAddresses,
+        input.address,
+        providerAddresses,
+      ),
+      record,
+      sourceFile: input.selectedSourceFile,
+    });
     observeLocalReexportProviders({
       addressByFilePath: input.addressByFilePath,
       consumerAddress: input.address,
@@ -360,6 +381,37 @@ function observeSourceFile(input: {
     queryCount,
     providerAddresses: [...providerAddresses].sort(compareCanonicalStrings),
   };
+}
+
+/** Record the exact extra checker query used to recover an any-typed receiver's member target. */
+function observeConstructedReceiverMembers(input: {
+  observeDeclaration: (declaration: Node) => DeclarationObservation;
+  observeSymbol: (symbol: import("ts-morph").Symbol | undefined) => SymbolObservation | null;
+  record: (kind: string, node: ts.Node, value: unknown) => void;
+  sourceFile: SourceFile;
+}): void {
+  for (const call of input.sourceFile.getDescendantsOfKind(ts.SyntaxKind.CallExpression)) {
+    const callee = call.getExpression();
+    const trace = traceConstructedReceiverMember(callee);
+    if (trace === null) continue;
+    input.record("constructed-receiver-member", callee.compilerNode, {
+      construction: {
+        end: trace.construction.getEnd(),
+        kind: trace.construction.getKind(),
+        start: trace.construction.getStart(),
+      },
+      consensus: trace.consensus === null
+        ? null
+        : {
+            declaration: input.observeDeclaration(trace.consensus.declaration),
+            symbol: input.observeSymbol(trace.consensus.symbol),
+          },
+      memberDeclarations: trace.memberDeclarations.map(input.observeDeclaration),
+      memberSymbol: input.observeSymbol(trace.memberSymbol),
+      storageDeclaration: input.observeDeclaration(trace.storageDeclaration),
+      typeSymbol: input.observeSymbol(trace.typeSymbol),
+    });
+  }
 }
 
 function observeLocalReexportProviders(input: {
