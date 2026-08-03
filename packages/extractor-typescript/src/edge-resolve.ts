@@ -7,6 +7,7 @@
 
 import { Node, type Symbol as TsSymbol } from "ts-morph";
 import type { EdgeResolution } from "@meridian/core";
+import { traceConstructedReceiverMember } from "./constructed-receiver";
 import { importedSymbolReference, type ImportedSymbolReference } from "./import-reference";
 import { nodeKey } from "./model";
 import { posixBasename } from "./paths";
@@ -107,7 +108,16 @@ export function resolveTarget(
 ): TargetResolution {
   try {
     const { imported, symbol, declaration } = deriveTargetReference(callee);
-    const classified = symbol && declaration ? classifyDeclaration(declaration, symbol, index) : UNRESOLVED;
+    const direct = symbol && declaration ? classifyDeclaration(declaration, symbol, index) : UNRESOLVED;
+    const constructed = direct.resolution === "unresolved"
+      ? traceConstructedReceiverMember(callee)?.consensus ?? null
+      : null;
+    const recovered = constructed
+      ? classifyDeclaration(constructed.declaration, constructed.symbol, index)
+      : UNRESOLVED;
+    // Constructed-receiver recovery is intentionally in-graph only. Cross-package and external
+    // identities still require their ordinary import proof instead of a physical checker path.
+    const classified = recovered.resolution === "resolved" ? recovered : direct;
     const dependencyImport = classified.resolution === "resolved" || imported === null
       ? imported
       : throughLocalReexports(imported, index.sourceFilePaths) ?? imported;
