@@ -144,13 +144,22 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       && boot.graphSymbolsUrl !== null
       && boot.graphSymbolsUrl !== undefined
       && prApi.graphId !== null;
-    if (provisionalBoot && !progressiveRestore) {
+    // A review opened from an ordinary repository graph keeps that source id in the URL and
+    // re-derives its exact partial pair during restore. Only a server-owned partial graph id can
+    // be booted directly through the projection endpoint; asking an ordinary graph for changed-file
+    // roots before PR analysis has attached a manifest fails closed and strands reload on the splash.
+    const partialGraphPairId = partialPrGraphPairId(prApi.graphId);
+    const projectionBoot = progressiveRestore && partialGraphPairId !== null;
+    if (
+      provisionalBoot
+      && (!projectionBoot || pairMarkers[0] !== partialGraphPairId)
+    ) {
       throw new Error("the provisional PR graph cannot boot without its verified depth-one projection");
     }
     if (restoringReview && progressiveRequested && !progressiveRestore) {
       throw new Error("the partial PR graph cannot boot without projection and symbol capabilities");
     }
-    if (progressiveRestore) {
+    if (projectionBoot) {
       performanceMark("meridian:progressive-graph-request-start");
       const projectionGeneration = initialRestoreGeneration;
       const controller = new AbortController();
@@ -361,6 +370,18 @@ function performanceMark(name: string): void {
 
 export function progressiveGraphDeliveryEnabled(restoringReview: boolean, search: string): boolean {
   return !restoringReview || new URLSearchParams(search).get("progressive") !== "0";
+}
+
+/** Partial PR registrations are the only graph documents whose raw artifact is intentionally
+ * unavailable. Their server-owned id makes the boot transport decision deterministic even after
+ * a copied review URL has lost its one-tab `partial`/`pair` handoff markers. */
+export function isPartialPrGraphId(graphId: string | null): boolean {
+  return partialPrGraphPairId(graphId) !== null;
+}
+
+function partialPrGraphPairId(graphId: string | null): string | null {
+  if (graphId === null) return null;
+  return /^pr-partial-([a-f0-9]{20})-[a-f0-9]{40}(?:[a-f0-9]{24})?$/.exec(graphId)?.[1] ?? null;
 }
 
 export function progressiveGraphDeliveryForAcceptedSearch(

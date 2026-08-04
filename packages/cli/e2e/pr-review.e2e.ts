@@ -172,8 +172,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await page.getByRole("region", { name: "Extracted graph" }).waitFor();
     await syncProvenance.waitFor();
 
-    // 4c — both added languages' files are immediately in the prepared HEAD graph with reviewable
-    // units. The deeply nested Python callable opens the actual head source.
+    // 4c — changed files are immediately reviewable, while an unchanged module outside the
+    // prepared slice must hydrate its depth-one neighbourhood before it can be added. The deeply
+    // nested Python callable opens the actual head source.
     const extractedReviewSurface = page.getByRole("region", { name: "Extracted graph" });
     const paletteAddition = extractedReviewSurface.locator(
       `.react-flow__node:not(.react-flow__node-ghost)[data-id="${EXECUTION_GALLERY_MODULE_ID}"]`,
@@ -183,7 +184,16 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const palette = page.getByRole("dialog", { name: "Reveal or add a node in the current view" });
     await palette.waitFor();
     await palette.locator("input").fill("executionGraphGallery.ts");
-    await palette.getByRole("button", { name: "Add executionGraphGallery.ts to the current view" }).click();
+    const paletteRow = palette.locator(`[data-symbol-id="${EXECUTION_GALLERY_MODULE_ID}"]`);
+    await paletteRow.getByRole("button", { name: "Load nearby graph for executionGraphGallery.ts" }).click();
+    await palette.locator(
+      `[data-symbol-id="${EXECUTION_GALLERY_MODULE_ID}"][data-symbol-readiness="ready"]`,
+    ).waitFor({ timeout: 30_000 });
+    const addPaletteNode = paletteRow.getByRole("button", {
+      name: "Add executionGraphGallery.ts to the current view",
+    });
+    expect(await addPaletteNode.isEnabled()).toBe(true);
+    await addPaletteNode.click();
     await paletteAddition.waitFor({ timeout: 30_000 });
     expect(await palette.isVisible()).toBe(true);
     await page.keyboard.press("Control+P");
