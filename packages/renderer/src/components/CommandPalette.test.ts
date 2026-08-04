@@ -116,6 +116,21 @@ describe("collectSymbols", () => {
     expect(countSearchScopes(symbols)).toEqual({ public: 5, all: 7, private: 2 });
   });
 
+  it("collects loaded type aliases for Map search but not Logic search", () => {
+    const typeAlias = node(
+      "ts:example.ts#ToolExecutionTargetAuthorizer",
+      "typeAlias",
+      "ToolExecutionTargetAuthorizer",
+    );
+    const artifact = { ...ARTIFACT, nodes: [typeAlias] } as GraphArtifact;
+    const nodesById = new Map([[typeAlias.id, typeAlias]]);
+
+    const mapSymbols = collectSymbols(artifact, nodesById, true);
+    expect(selectResults(mapSymbols, "ToolExecutionTargetAuthorizer", true, "public"))
+      .toMatchObject([{ id: typeAlias.id, kind: "typeAlias", isLoaded: true }]);
+    expect(collectSymbols(artifact, nodesById, false)).toEqual([]);
+  });
+
   it("adds repository-indexed symbols while loaded artifact rows remain authoritative", () => {
     const loaded = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), true);
     const merged = mergeSearchSymbols(loaded, [{

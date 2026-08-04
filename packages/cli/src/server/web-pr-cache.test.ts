@@ -159,9 +159,9 @@ describe("persistent PR graph artifact paths", () => {
       expect(path).not.toContain(HEAD_SHA);
       expect(path).not.toContain(BASE_SHA);
     }
-    // Changing the partial artifact identity must rotate both pair snapshots and shared exact-
-    // revision objects, so a restart cannot restore pre-v12 language-varying slices.
-    expect(REPOSITORY_ANALYSIS_VERSION).toBe(13);
+    // Changing canonical TypeScript declaration identity must rotate both pair snapshots and shared
+    // exact-revision objects, so a restart cannot restore artifacts that omitted type aliases.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(14);
     const pairMetadata = JSON.parse(readFileSync(currentPrSnapshotMetadataPath(), "utf8"));
     expect(pairMetadata).toMatchObject({
       formatVersion: 12,

@@ -1,7 +1,7 @@
 /**
- * The bare-import shape from real protocol code: the ONLY uses of `./wire` are a type alias in an
- * augmentation (no emitted node → invisible to the type pass) and a plain-const read (no emitted
- * node → invisible to the value path without the module fallback).
+ * The bare-import shape from real protocol code: the ONLY uses of `./wire` are a named type alias in
+ * an augmentation (owned by the ordinary type pass) and a plain-const read (no emitted node →
+ * invisible to the value path without the module fallback).
  */
 import type { VoidRequest } from './wire';
 import { RETRY_LIMIT } from './wire';

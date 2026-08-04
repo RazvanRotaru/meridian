@@ -70,7 +70,7 @@ describe("value-refs over orders-service", () => {
   });
 });
 
-describe("value-refs module fallback (unemitted symbols)", () => {
+describe("value-refs module fallback", () => {
   const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "value-refs");
   let off: ExtractionResult;
   let on: ExtractionResult;
@@ -81,17 +81,20 @@ describe("value-refs module fallback (unemitted symbols)", () => {
     on = await extract(true);
   });
 
-  it("without the flag the pair stays a bare import (the bug being fixed)", () => {
-    const pair = off.edges.filter((edge) => moduleOf(edge.source).includes("feature") && moduleOf(edge.target).includes("wire"));
-    expect(pair.map((edge) => edge.kind)).toEqual(["imports"]);
-  });
-
-  it("a type alias used only inside a `declare module` augmentation resolves to the declaring module", () => {
-    // VoidRequest has no emitted node; its two augmentation uses must land on wire.ts's MODULE node.
-    const refs = references(on).filter((edge) => edge.target === moduleIdOf(on, "wire"));
-    expect(refs.length).toBeGreaterThan(0);
-    const augmentation = refs.find((edge) => edge.source === moduleIdOf(on, "feature"));
-    expect(augmentation?.weight).toBe(2); // ping + pong requests
+  it("an imported type alias resolves precisely without the value-reference fallback", () => {
+    const alias = off.nodes.find((node) => node.qualifiedName === "VoidRequest");
+    expect(alias).toMatchObject({ kind: "typeAlias", parentId: moduleIdOf(off, "wire") });
+    const ref = references(off).find((edge) => edge.target === alias?.id);
+    expect(ref).toMatchObject({
+      resolution: "resolved",
+      weight: 2,
+      callSites: [
+        expect.objectContaining({ file: "src/feature.ts", line: 11 }),
+        expect.objectContaining({ file: "src/feature.ts", line: 12 }),
+      ],
+    });
+    // Enabling value refs must not re-emit the ordinary type-pass edge through a module fallback.
+    expect(references(on).filter((edge) => edge.target === alias?.id)).toEqual([ref]);
   });
 
   it("a plain-const read resolves to the declaring module, sourced from the enclosing callable", () => {

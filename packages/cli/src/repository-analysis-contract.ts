@@ -11,9 +11,10 @@ import type { GitDiffExecutor } from "./git-diff";
  * calls through any-typed storage when an adjacent construction of the same receiver proves one
  * directly invoked member. Version 12 persists the exact bounded initial-graph seed set used for
  * durable partial projection replay. Version 13 preserves the detected mixed-language target
- * identity across independently extracted slices.
+ * identity across independently extracted slices. Version 14 emits TypeScript type aliases as
+ * graph declarations so type-reference edges and symbol search resolve them consistently.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 13;
+export const REPOSITORY_ANALYSIS_VERSION = 14;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",

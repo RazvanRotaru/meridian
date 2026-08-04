@@ -36,7 +36,16 @@ export interface RepositoryGraphSymbolSearchIndex {
   query(request: GraphSymbolSearchQuery): GraphSymbolSearchQueryResult;
 }
 
-const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
+const MAP_KINDS = new Set([
+  "function",
+  "method",
+  "module",
+  "package",
+  "class",
+  "interface",
+  "typeAlias",
+  "object",
+]);
 const LOGIC_KINDS = new Set(["function", "method", "module"]);
 
 /** Build the exact ranked inventory off the UI thread. Map insertion order deliberately matches the

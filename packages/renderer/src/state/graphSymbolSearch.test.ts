@@ -70,6 +70,31 @@ describe("repository graph symbol search", () => {
       .toMatchObject([{ id: "flowless" }]);
   });
 
+  it("includes type aliases in Map search while excluding them from Logic search", () => {
+    const repository = [
+      indexed("alias", "ToolExecutionTargetAuthorizer", { kind: "typeAlias" }),
+      indexed("callable", "authorizeTarget"),
+    ];
+    expect(mergeGraphSymbolSearchEntries(repository, [], true).map(({ id }) => id))
+      .toContain("alias");
+    expect(mergeGraphSymbolSearchEntries(repository, [], false).map(({ id }) => id))
+      .not.toContain("alias");
+
+    const workerIndex = createRepositoryGraphSymbolSearchIndex(repository);
+    workerIndex.synchronize([], true);
+    expect(workerIndex.query({
+      query: "ToolExecutionTargetAuthorizer",
+      isMap: true,
+      scope: "public",
+    }).results).toMatchObject([{ id: "alias", kind: "typeAlias" }]);
+    workerIndex.synchronize([], false);
+    expect(workerIndex.query({
+      query: "ToolExecutionTargetAuthorizer",
+      isMap: false,
+      scope: "public",
+    }).results).toEqual([]);
+  });
+
   it("matches the legacy merged ordering for loaded overrides in map and logic searches", () => {
     const repository = [
       indexed("z", "same", { qualifiedName: "z", stepCount: null }),

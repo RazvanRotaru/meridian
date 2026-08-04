@@ -1,5 +1,5 @@
 /**
- * The recursive declaration walk: classes -> methods, interfaces -> method signatures,
+ * The recursive declaration walk: classes -> methods, interfaces -> method signatures, type aliases,
  * top-level and lexically nested functions plus callable-binding consts/properties/default exports (see
  * `resolveCallableBinding` — inline callables, possibly under `memo`/`forwardRef`), object-literal
  * consts -> methods, constructed singleton objects, and namespaces (recursed). Emission is top-down
@@ -17,6 +17,7 @@ import {
   type ModuleDeclaration,
   type SetAccessorDeclaration,
   type SourceFile,
+  type TypeAliasDeclaration,
   type VariableDeclaration,
 } from "ts-morph";
 import type { NodeKind } from "@meridian/core";
@@ -40,10 +41,31 @@ export function emitContainer(
 ): void {
   for (const declaration of container.getClasses()) emitClass(declaration, parent, enclosingNames, context);
   for (const declaration of container.getInterfaces()) emitInterface(declaration, parent, enclosingNames, context);
+  for (const declaration of container.getTypeAliases()) emitTypeAlias(declaration, parent, enclosingNames, context);
   for (const declaration of container.getFunctions()) emitFunction(declaration, parent, enclosingNames, context);
   emitDefaultExports(container, parent, enclosingNames, context);
   for (const declaration of container.getVariableDeclarations()) emitVariable(declaration, parent, enclosingNames, context);
   for (const declaration of container.getModules()) emitNamespace(declaration, parent, enclosingNames, context);
+}
+
+function emitTypeAlias(
+  node: TypeAliasDeclaration,
+  parent: NodeDescriptor,
+  enclosingNames: string[],
+  context: EmitContext,
+): void {
+  context.emit(
+    memberDescriptor(context, {
+      kind: "typeAlias",
+      localName: node.getName(),
+      enclosingNames,
+      parent,
+      declarationNode: node,
+      callableNode: null,
+      signatureSource: null,
+      emitTelemetry: false,
+    }),
+  );
 }
 
 function emitClass(node: ClassDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
