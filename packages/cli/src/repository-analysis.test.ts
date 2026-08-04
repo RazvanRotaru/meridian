@@ -24,9 +24,9 @@ describe("canonical repository analysis", () => {
     });
 
     expect(Object.isFrozen(REPOSITORY_ANALYSIS_POLICY)).toBe(true);
-    // Version 12 invalidates persisted partial slices whose target language varied with whichever
-    // parser happened to produce files in that individual slice.
-    expect(REPOSITORY_ANALYSIS_VERSION).toBe(13);
+    // Type aliases now participate in canonical graph identity, reference resolution, and symbol
+    // search, so persisted artifacts from earlier analysis versions are not reusable.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(14);
     expect(extractToArtifact).toHaveBeenCalledWith({
       absoluteRoot: "/repo",
       cwd: "/repo",

@@ -662,10 +662,27 @@ describe("graph projector", () => {
   });
 
   it("builds the complete deterministic compact symbol index", () => {
-    const result = indexCanonicalGraphSymbols(fixture, "graph", "1".repeat(64));
+    const typeAlias = node(
+      "type:a",
+      "typeAlias",
+      "src/a.ts",
+      moduleA.id,
+      "ToolExecutionTargetAuthorizer",
+    );
+    const result = indexCanonicalGraphSymbols(
+      { ...fixture, nodes: [...fixture.nodes, typeAlias] },
+      "graph",
+      "1".repeat(64),
+    );
     expect(result.complete).toBe(true);
-    expect(result.indexedSymbolCount).toBe(9);
+    expect(result.indexedSymbolCount).toBe(10);
     expect(result.symbols.map(({ id }) => id)).not.toContain(packageNode.id);
+    expect(result.symbols.find(({ id }) => id === typeAlias.id)).toMatchObject({
+      kind: "typeAlias",
+      fileId: moduleA.id,
+      isPrivateMethod: false,
+      stepCount: null,
+    });
     expect(result.symbols.find(({ id }) => id === fnD.id)).toMatchObject({
       fileId: moduleD.id,
       isPrivateMethod: true,

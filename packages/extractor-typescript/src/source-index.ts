@@ -20,7 +20,15 @@ import {
 import { emitContainer } from "./member-emit";
 import type { NodeDescriptor } from "./model";
 
-const INDEXED_KINDS = new Set(["function", "method", "module", "class", "interface", "object"]);
+const INDEXED_KINDS = new Set([
+  "function",
+  "method",
+  "module",
+  "class",
+  "interface",
+  "typeAlias",
+  "object",
+]);
 const MAX_SOURCE_INDEX_PATH_BYTES = 8 * 1024 * 1024;
 
 export interface TypeScriptSourceIndexLimits {

@@ -34,19 +34,28 @@ describe("syntax-only progressive source index", () => {
           load(): Promise<unknown> { return import("./c"); }
         }
         export interface Contract { execute(): void; }
+        export type ToolExecutionTargetAuthorizer = (target: string) => Promise<void>;
       `,
       "src/c.ts": "export default function (): void {}",
     });
     const canonical = await createTypeScriptExtractor().extract({ root, include: ["src/**/*.ts"] });
     const indexed = indexTypeScriptWorkspaceSources({ root, seeds: ["src/a.ts"], limits: LIMITS });
     const canonicalIds = canonical.nodes
-      .filter((node) => ["function", "method", "module", "class", "interface", "object"].includes(node.kind))
+      .filter((node) => ["function", "method", "module", "class", "interface", "typeAlias", "object"].includes(node.kind))
       .map((node) => node.id)
       .sort();
 
     expect(indexed.symbols.map(({ id }) => id).sort()).toEqual(canonicalIds);
     expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "api.__private"))
       .toMatchObject({ isPrivateMethod: true, fileId: "ts:src/a.ts", stepCount: null });
+    expect(indexed.symbols.find(({ qualifiedName }) => qualifiedName === "ToolExecutionTargetAuthorizer"))
+      .toMatchObject({
+        id: "ts:src/b.ts#ToolExecutionTargetAuthorizer",
+        kind: "typeAlias",
+        fileId: "ts:src/b.ts",
+        isPrivateMethod: false,
+        stepCount: null,
+      });
     expect(indexed.topology).toEqual([
       { path: "src/a.ts", fileId: "ts:src/a.ts", neighbors: ["ts:src/b.ts"], uncertain: false },
       {
@@ -94,7 +103,7 @@ describe("syntax-only progressive source index", () => {
       limits: LIMITS,
     });
     const canonicalOwnership = canonical.nodes
-      .filter((node) => ["function", "method", "module", "class", "interface", "object"].includes(node.kind))
+      .filter((node) => ["function", "method", "module", "class", "interface", "typeAlias", "object"].includes(node.kind))
       .map((node) => ({ id: node.id, fileId: `ts:${node.location.file}` }))
       .sort((left, right) => left.id.localeCompare(right.id));
     const indexedOwnership = indexed.symbols

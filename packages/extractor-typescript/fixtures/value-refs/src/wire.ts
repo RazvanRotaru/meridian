@@ -1,4 +1,4 @@
-/** A protocol-style module: a type alias (never emitted as a node) plus an augmentable map. */
+/** A protocol-style module: a named type alias plus an augmentable map. */
 export type VoidRequest = Record<string, never>;
 
 export interface EventMap {}

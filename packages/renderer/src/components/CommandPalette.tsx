@@ -33,7 +33,16 @@ import {
 // The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
 const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "ui"]);
 // Map mode searches every navigable node — a bare function resolves to its owning unit/module on pick.
-const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
+const MAP_KINDS = new Set([
+  "function",
+  "method",
+  "module",
+  "package",
+  "class",
+  "interface",
+  "typeAlias",
+  "object",
+]);
 // Logic mode: only callables and modules have a meaningful logic flow to open.
 const LOGIC_KINDS = new Set(["function", "method", "module"]);
 export type SearchScope = GraphSymbolSearchScope;
@@ -654,7 +663,7 @@ export function ResultRow(props: {
 
 /**
  * The searchable rows for the current mode. Map lenses: every navigable node (function/method/module/
- * package/class/interface/object), sorted by name — a pick resolves to its drawable card on
+ * package/class/interface/typeAlias/object), sorted by name — a pick resolves to its drawable card on
  * reveal/add. Logic/UI: every function/method/module, flow-bearing first (then alphabetically) so
  * flow-openable symbols rank above those without. Both preserve their order through the substring
  * filter. Dunder methods are classified here, then filtered at query time so the user can opt back

@@ -24,7 +24,15 @@ import {
 
 const MODULE_KIND = "module";
 // Package nodes may span many files and therefore have no honest single file hydration root.
-const SYMBOL_KINDS = new Set(["function", "method", "module", "class", "interface", "object"]);
+const SYMBOL_KINDS = new Set([
+  "function",
+  "method",
+  "module",
+  "class",
+  "interface",
+  "typeAlias",
+  "object",
+]);
 const COUPLING_KINDS = new Set([
   "registers",
   "binds",
