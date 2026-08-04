@@ -7452,7 +7452,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           ghostId,
           drawnGhostMembers(state.moduleRfNodes, ghostId),
         ).filter((id) => isCanonicalFileNode(state.index.nodesById.get(id)));
-        const incompletePins = candidatePins.filter((id) => !readyFiles.has(id));
+        // Comparison-only canonical file pins are complete tombstones in the displayed artifact.
+        // They have no HEAD projection roots to hydrate, so let ordinary promotion admit them
+        // locally. A deleted declaration inside a surviving file still resolves to that HEAD file
+        // and keeps the normal readiness preflight.
+        const incompletePins = candidatePins.filter((id) =>
+          !readyFiles.has(id) && !state.reviewBaseNodeIds.has(id));
         if (incompletePins.length > 0) {
           if (state.progressivePendingNodeIds.has(ghostId)) return;
           const nodeSequence = progressiveNodeSeq;
