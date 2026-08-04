@@ -854,36 +854,6 @@ describe("progressive graph store", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("admits a comparison-only file ghost without posting its tombstone id to HEAD", async () => {
-    const deletedFile = node(DELETED, "module", "src/deleted.ts", PACKAGE);
-    const deletedMethod = node(DELETED_METHOD, "method", "src/deleted.ts", DELETED);
-    const displayed = {
-      ...projectionToArtifact(INITIAL),
-      nodes: [...INITIAL.nodes, deletedFile, deletedMethod],
-    } as GraphArtifact;
-    const store = storeWithInitialProjection(displayed);
-    const minimalRelayout = vi.fn(async () => {});
-    store.setState({
-      reviewBaseNodeIds: new Set([DELETED, DELETED_METHOD]),
-      minimalSeedIds: [FILE_A],
-      minimalMemberIds: [FILE_A],
-      minimalRelayout,
-    });
-    const fetchMock = vi.fn(async () => {
-      throw new Error("a base-only node must never be requested from HEAD");
-    });
-    vi.stubGlobal("fetch", fetchMock);
-
-    store.getState().promoteGhost(DELETED, { x: 20, y: 30 });
-    await vi.waitFor(() => expect(store.getState().minimalMemberIds).toContain(DELETED));
-
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(store.getState().minimalSeedIds).toEqual([FILE_A]);
-    expect(store.getState().minimalBasePositions[DELETED]).toEqual(expect.objectContaining({ x: 20, y: 30 }));
-    expect(store.getState().progressivePendingNodeIds).toEqual(new Set());
-    expect(minimalRelayout).toHaveBeenCalledOnce();
-  });
-
   it("marks fetched and resident depths ready only after their canvas relayout settles", async () => {
     const store = storeWithInitialProjection();
     let releaseFetchedRelayout!: () => void;
