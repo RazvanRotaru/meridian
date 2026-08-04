@@ -10,6 +10,10 @@ import { chromiumInstalled, FIXTURE, generateGraphFrom, nodeHeader, startView } 
 
 const SHOPFRONT = join(FIXTURE, "..", "shopfront");
 const ROOT = "ts:src";
+const DOMAIN = "ts:src/domain";
+const PRODUCT_FILE = "ts:src/domain/product.ts";
+const CATEGORY = "ts:src/domain/product.ts#Category";
+const CATEGORY_FILTER_FILE = "ts:src/ui/CategoryFilter.tsx";
 const SERVICES = "ts:src/services";
 const MEMBER_FILES = [
   "auditService.ts",
@@ -51,6 +55,56 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
   afterAll(async () => {
     await browser?.close();
     server?.kill("SIGINT");
+  });
+
+  it("promotes an incoming module reference into the extracted graph", async () => {
+    await dive(page, ROOT);
+    await page.waitForSelector(`[data-id="${DOMAIN}"]`);
+    await dive(page, DOMAIN);
+    const productFile = page.locator(`[data-id="${PRODUCT_FILE}"]`);
+    await productFile.waitFor();
+    await productFile.getByRole("button", { name: "Expand product.ts" }).click();
+    const category = page.locator(`[data-id="${CATEGORY}"]`);
+    await category.waitFor();
+    await nodeHeader(category).dispatchEvent("click");
+
+    const actionBar = page.getByRole("group", { name: "Canvas actions" });
+    await actionBar.getByRole("button", { name: "Extract selection (1)" }).click();
+    const extractedGraph = page.getByRole("region", { name: "Extracted graph" });
+    await extractedGraph.waitFor();
+    const callerGhost = extractedGraph.locator(
+      `.react-flow__node-ghost[data-id="${CATEGORY_FILTER_FILE}"]`,
+    );
+    await callerGhost.waitFor();
+    const addCaller = extractedGraph.locator(
+      `button[aria-label="Add to the graph"][data-ghost-id="${CATEGORY_FILTER_FILE}"]`,
+    );
+    for (let attempt = 0; attempt < 6 && !(await addCaller.isVisible()); attempt += 1) {
+      await extractedGraph.getByRole("button", { name: "Zoom Out" }).click();
+    }
+    await addCaller.waitFor();
+
+    const [callerBounds, categoryBounds] = await Promise.all([
+      callerGhost.boundingBox(),
+      extractedGraph.locator(`[data-id="${CATEGORY}"]`).boundingBox(),
+    ]);
+    if (callerBounds === null || categoryBounds === null) {
+      throw new Error("Expected the incoming caller ghost and referenced category to be visible");
+    }
+    expect(callerBounds.x).toBeLessThan(categoryBounds.x);
+
+    await addCaller.click();
+    await callerGhost.waitFor({ state: "detached" });
+    const promotedCaller = extractedGraph.locator(
+      `.react-flow__node[data-id="${CATEGORY_FILTER_FILE}"]:not(.react-flow__node-ghost)`,
+    );
+    await promotedCaller.waitFor();
+    await nodeHeader(promotedCaller).getByText("CategoryFilter.tsx", { exact: true }).waitFor();
+    expect(pageErrors).toEqual([]);
+
+    await actionBar.getByRole("button", { name: "Close extracted graph" }).click();
+    await page.goto(page.url().split("?", 1)[0], { waitUntil: "networkidle" });
+    await page.waitForSelector(".react-flow__node", { state: "attached" });
   });
 
   it("keeps contextual controls together, responsive, and wired to their state", async () => {
