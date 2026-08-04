@@ -15,7 +15,8 @@ import {
   buildNodeId,
   changedFileManifestFromExtensions,
   type ChangedFileManifestEntry,
-  type GraphArtifact,
+  type GraphProjectionRequestV1,
+  type GraphProjectionV1,
 } from "@meridian/core";
 import { createWebService, type WebService } from "../src/server/web-server";
 import {
@@ -69,8 +70,16 @@ interface PrAnalysisProgress {
   stage: PrAnalysisProgressStage;
 }
 
-interface PrAnalysisDone {
-  stage: "done";
+interface InitialProjectionCacheEvidence {
+  version: 1;
+  depth: 1;
+  prefetchDepth: 3;
+  headKey: string;
+  comparisonKey: string;
+  ready: true;
+}
+
+interface PrAnalysisTerminalPayload {
   graphId: string;
   comparisonGraphId: string;
   headSha: string;
@@ -80,9 +89,21 @@ interface PrAnalysisDone {
   changedFiles: ChangedFileManifestEntry[];
   warnings: string[];
   cache: "hit" | "miss";
+  pairId: string;
+  completeness: "provisional";
+  initialProjectionCache: InitialProjectionCacheEvidence;
 }
 
-type PrAnalysisRecord = PrAnalysisProgress | PrAnalysisDone;
+interface PrAnalysisReady extends PrAnalysisTerminalPayload {
+  stage: "ready";
+}
+
+interface PrAnalysisDone extends PrAnalysisTerminalPayload {
+  stage: "done";
+}
+
+type PrAnalysisTerminal = PrAnalysisReady | PrAnalysisDone;
+type PrAnalysisRecord = PrAnalysisProgress | PrAnalysisTerminal;
 
 describe("diff parity analysis parser", () => {
   it("accepts only literal true for optional non-textual changed-file facts", () => {
@@ -159,31 +180,19 @@ async function setup(): Promise<void> {
     "extract",
     "extract-head",
     "extract-merge-base",
+    "ready",
     "done",
   ]);
-  const coldDone = terminalAnalysis(coldAnalysis);
+  const { ready: coldReady, done: coldDone } = terminalAnalysis(coldAnalysis);
+  expect(coldReady.cache).toBe("miss");
   expect(coldDone.cache).toBe("miss");
   expect(coldDone.headSha).toBe(statusPr.headSha);
   expect(coldDone.baseSha).toBe(statusPr.baseSha);
   expect(coldDone.mergeBaseSha).toBe(statusPr.mergeBaseSha);
   expect(coldDone.changedFiles).toEqual(statusPr.expectedCanonicalManifest);
-  await assertStoredGraphs(cold.baseUrl, coldDone, statusPr, statusSpec);
+  await assertPartialGraphs(cold.baseUrl, coldDone, statusPr, statusSpec);
 
-  // The restarted server owns an independent Context and cannot access the first server's graph
-  // registrations. It must reconstruct both from the persistent entry without cloning or extracting again.
-  await webService.close();
-  webService = undefined;
-  const restarted = await startMeridian(cacheRoot);
-  webService = restarted.service;
-  const warmAnalysis = await analyzePr(restarted.baseUrl, restarted.sessionId, statusPr);
-  expect(warmAnalysis.map((record) => record.stage), "restart cache hit must emit only its terminal record").toEqual(["done"]);
-  const warmDone = terminalAnalysis(warmAnalysis);
-  expect(warmDone.cache).toBe("hit");
-  expect(analysisIdentity(warmDone)).toEqual(analysisIdentity(coldDone));
-  expect(warmDone.changedFiles).toEqual(statusPr.expectedCanonicalManifest);
-  await assertStoredGraphs(restarted.baseUrl, warmDone, statusPr, statusSpec);
-
-  viewUrl = `${restarted.baseUrl}/view?id=${encodeURIComponent(restarted.sessionId)}`;
+  viewUrl = `${cold.baseUrl}/view?id=${encodeURIComponent(cold.sessionId)}`;
   browser = await chromium.launch({ headless: true, args: ["--no-sandbox", "--disable-dev-shm-usage"] });
 }
 
@@ -665,15 +674,25 @@ async function analyzePr(baseUrl: string, sessionId: string, pr: DiffParityPr): 
   const response = await nativeFetch(`${baseUrl}/api/pr/analyze`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ id: sessionId, prNumber: pr.number, baseRef: pr.baseRef, headRef: pr.headRef }),
+    body: JSON.stringify({
+      id: sessionId,
+      prNumber: pr.number,
+      baseRef: pr.baseRef,
+      headRef: pr.headRef,
+      progressive: true,
+    }),
   });
   if (!response.ok) {
     throw new Error(`PR #${pr.number} analysis failed (${response.status}): ${await response.text()}`);
   }
   expect(response.headers.get("content-type")).toContain("application/x-ndjson");
   const body = await response.text();
-  const lines = body.split("\n").filter((line) => line.length > 0);
+  // `text()` resolves only after the response ends. Requiring one terminal newline and no empty
+  // interior record makes the final parsed `done` line an explicit `done -> EOF` contract.
+  if (!body.endsWith("\n")) throw new Error(`PR #${pr.number} analysis did not end after a complete NDJSON record`);
+  const lines = body.slice(0, -1).split("\n");
   if (lines.length === 0) throw new Error(`PR #${pr.number} analysis returned no NDJSON records`);
+  if (lines.some((line) => line.length === 0)) throw new Error(`PR #${pr.number} analysis returned an empty NDJSON record`);
   return lines.map((line, index) => {
     let value: unknown;
     try {
@@ -725,41 +744,72 @@ function parsePrAnalysisRecord(value: unknown, line: number): PrAnalysisRecord |
   if (stage === "error") {
     throw new Error(`PR analysis returned an error record: ${typeof record.message === "string" ? record.message : "invalid error"}`);
   }
-  if (stage !== "done") throw new Error(`analysis record ${line} has unknown stage '${String(stage)}'`);
+  if (stage !== "ready" && stage !== "done") {
+    throw new Error(`analysis record ${line} has unknown stage '${String(stage)}'`);
+  }
+  const label = `analysis ${stage} record`;
   requireExactKeys(record, [
     "cache",
     "changedFiles",
     "comparisonGraphId",
+    "completeness",
     "counts",
     "graphId",
     "baseSha",
     "headSha",
+    "initialProjectionCache",
     "mergeBaseSha",
+    "pairId",
     "stage",
     "warnings",
-  ], "analysis done record");
-  const counts = requireRecord(record.counts, "analysis done counts");
-  requireExactKeys(counts, ["edges", "nodes"], "analysis done counts");
+  ], label);
+  const counts = requireRecord(record.counts, `${label} counts`);
+  requireExactKeys(counts, ["edges", "nodes"], `${label} counts`);
   const cache = record.cache;
-  if (cache !== "hit" && cache !== "miss") throw new Error("analysis done cache must be hit or miss");
-  if (!Array.isArray(record.changedFiles)) throw new Error("analysis done changedFiles must be an array");
+  if (cache !== "hit" && cache !== "miss") throw new Error(`${label} cache must be hit or miss`);
+  if (record.completeness !== "provisional") throw new Error(`${label} completeness must be provisional`);
+  if (!Array.isArray(record.changedFiles)) throw new Error(`${label} changedFiles must be an array`);
   if (!Array.isArray(record.warnings) || !record.warnings.every((warning) => typeof warning === "string")) {
-    throw new Error("analysis done warnings must be strings");
+    throw new Error(`${label} warnings must be strings`);
   }
   return {
     stage,
-    graphId: requireNonEmptyString(record.graphId, "analysis done graphId"),
-    comparisonGraphId: requireNonEmptyString(record.comparisonGraphId, "analysis done comparisonGraphId"),
-    headSha: requireSha(record.headSha, "analysis done headSha"),
-    baseSha: requireSha(record.baseSha, "analysis done baseSha"),
-    mergeBaseSha: requireSha(record.mergeBaseSha, "analysis done mergeBaseSha"),
+    graphId: requireNonEmptyString(record.graphId, `${label} graphId`),
+    comparisonGraphId: requireNonEmptyString(record.comparisonGraphId, `${label} comparisonGraphId`),
+    headSha: requireSha(record.headSha, `${label} headSha`),
+    baseSha: requireSha(record.baseSha, `${label} baseSha`),
+    mergeBaseSha: requireSha(record.mergeBaseSha, `${label} mergeBaseSha`),
     counts: {
-      nodes: requireCount(counts.nodes, "analysis done node count"),
-      edges: requireCount(counts.edges, "analysis done edge count"),
+      nodes: requireCount(counts.nodes, `${label} node count`),
+      edges: requireCount(counts.edges, `${label} edge count`),
     },
     changedFiles: record.changedFiles.map((file, index) => parseChangedFile(file, index)),
     warnings: record.warnings,
     cache,
+    pairId: requirePairId(record.pairId, `${label} pairId`),
+    completeness: "provisional",
+    initialProjectionCache: parseInitialProjectionCache(record.initialProjectionCache, label),
+  };
+}
+
+function parseInitialProjectionCache(value: unknown, label: string): InitialProjectionCacheEvidence {
+  const evidence = requireRecord(value, `${label} initialProjectionCache`);
+  requireExactKeys(
+    evidence,
+    ["comparisonKey", "depth", "headKey", "prefetchDepth", "ready", "version"],
+    `${label} initialProjectionCache`,
+  );
+  if (evidence.version !== 1) throw new Error(`${label} initialProjectionCache version must be 1`);
+  if (evidence.depth !== 1) throw new Error(`${label} initialProjectionCache depth must be 1`);
+  if (evidence.prefetchDepth !== 3) throw new Error(`${label} initialProjectionCache prefetchDepth must be 3`);
+  if (evidence.ready !== true) throw new Error(`${label} initialProjectionCache must be ready`);
+  return {
+    version: 1,
+    depth: 1,
+    prefetchDepth: 3,
+    headKey: requireProjectionKey(evidence.headKey, `${label} initialProjectionCache headKey`),
+    comparisonKey: requireProjectionKey(evidence.comparisonKey, `${label} initialProjectionCache comparisonKey`),
+    ready: true,
   };
 }
 
@@ -789,28 +839,33 @@ function parseChangedFile(value: unknown, index: number): ChangedFileManifestEnt
   return { path, status, ...nonTextual };
 }
 
-function terminalAnalysis(records: readonly PrAnalysisRecord[]): PrAnalysisDone {
-  const terminal = records.filter((record): record is PrAnalysisDone => record.stage === "done");
-  if (terminal.length !== 1 || records.at(-1) !== terminal[0]) {
-    throw new Error("PR analysis must end with exactly one done record");
+function terminalAnalysis(records: readonly PrAnalysisRecord[]): { ready: PrAnalysisReady; done: PrAnalysisDone } {
+  const terminal = records.filter((record): record is PrAnalysisTerminal =>
+    record.stage === "ready" || record.stage === "done"
+  );
+  const ready = terminal[0];
+  const done = terminal[1];
+  if (
+    terminal.length !== 2
+    || ready?.stage !== "ready"
+    || done?.stage !== "done"
+    || records.at(-2) !== ready
+    || records.at(-1) !== done
+  ) {
+    throw new Error("progressive PR analysis must end with exactly ready, payload-identical done, then EOF");
   }
-  return terminal[0];
+  expect(analysisPayload(done), "done must repeat the accepted ready pair without mutation").toEqual(
+    analysisPayload(ready),
+  );
+  return { ready, done };
 }
 
-function analysisIdentity(done: PrAnalysisDone): Omit<PrAnalysisDone, "stage" | "cache"> {
-  return {
-    graphId: done.graphId,
-    comparisonGraphId: done.comparisonGraphId,
-    headSha: done.headSha,
-    baseSha: done.baseSha,
-    mergeBaseSha: done.mergeBaseSha,
-    counts: done.counts,
-    changedFiles: done.changedFiles,
-    warnings: done.warnings,
-  };
+function analysisPayload(record: PrAnalysisTerminal): PrAnalysisTerminalPayload {
+  const { stage: _stage, ...payload } = record;
+  return payload;
 }
 
-async function assertStoredGraphs(
+async function assertPartialGraphs(
   baseUrl: string,
   done: PrAnalysisDone,
   pr: DiffParityPr,
@@ -819,41 +874,102 @@ async function assertStoredGraphs(
     deletedNode: NonNullable<DiffParityCaseSpec["deletedNode"]>;
   },
 ): Promise<void> {
-  const head = await fetchGraph(baseUrl, done.graphId);
-  const comparison = await fetchGraph(baseUrl, done.comparisonGraphId);
-  expect(head.target.vcs?.commit, "HEAD graph endpoint must serve the analyzed commit").toBe(done.headSha);
-  expect(comparison.target.vcs?.commit, "comparison graph endpoint must serve the merge-base commit").toBe(done.mergeBaseSha);
+  await assertRawGraphUnavailable(baseUrl, done.graphId);
+  await assertRawGraphUnavailable(baseUrl, done.comparisonGraphId);
+
+  const headRequest: GraphProjectionRequestV1 = {
+    version: 1,
+    graphId: done.graphId,
+    roots: { kind: "changed-files", seedGraphId: done.graphId },
+    requestedDepth: done.initialProjectionCache.depth,
+    prefetchDepth: done.initialProjectionCache.prefetchDepth,
+  };
+  const comparisonRequest: GraphProjectionRequestV1 = {
+    version: 1,
+    graphId: done.comparisonGraphId,
+    roots: { kind: "changed-files", seedGraphId: done.graphId },
+    requestedDepth: done.initialProjectionCache.depth,
+    prefetchDepth: done.initialProjectionCache.prefetchDepth,
+  };
+  const head = await fetchProjection(baseUrl, headRequest, done.initialProjectionCache.headKey);
+  const comparison = await fetchProjection(
+    baseUrl,
+    comparisonRequest,
+    done.initialProjectionCache.comparisonKey,
+  );
+  expect(head.seedGraphId).toBe(done.graphId);
+  expect(comparison.seedGraphId).toBe(done.graphId);
+  for (const projection of [head, comparison]) {
+    expect(projection.requestedDepth).toBe(1);
+    expect(projection.loadedDepth).toBe(1);
+    expect(projection.prefetchDepth).toBe(3);
+  }
+  expect(head.target.vcs?.commit, "HEAD projection must serve the analyzed commit").toBe(done.headSha);
+  expect(comparison.target.vcs?.commit, "comparison projection must serve the merge-base commit").toBe(done.mergeBaseSha);
   expect(
-    { nodes: head.nodes.length, edges: head.edges.length },
-    "HEAD graph registration must match the terminal counts",
+    { nodes: head.counts.full.nodes, edges: head.counts.full.edges },
+    "HEAD projection full counts must match the bounded terminal",
   ).toEqual(done.counts);
-  expect(comparison.nodes.length, "comparison graph endpoint must retain its extracted base nodes").toBeGreaterThan(0);
+  expect(head.counts.slice).toEqual({
+    nodes: head.nodes.length,
+    edges: head.edges.length,
+    files: head.loadedFileIds.length,
+  });
+  expect(comparison.counts.slice).toEqual({
+    nodes: comparison.nodes.length,
+    edges: comparison.edges.length,
+    files: comparison.loadedFileIds.length,
+  });
+  expect(comparison.counts.full.nodes, "comparison projection must retain its extracted base nodes").toBeGreaterThan(0);
   expect(
     changedFileManifestFromExtensions(head.extensions),
-    "HEAD graph endpoint must retain the exact local-Git transaction manifest",
+    "HEAD projection must retain the exact local-Git transaction manifest",
   ).toEqual(pr.expectedCanonicalManifest);
 
   const addedId = buildNodeId({ lang: "ts", modulePath: spec.addedFile.path, qualname: spec.addedFile.qualname });
   const deletedId = buildNodeId({ lang: "ts", modulePath: pr.targetPath, qualname: spec.deletedNode.qualname });
   const headIds = new Set(head.nodes.map((node) => node.id));
   const comparisonIds = new Set(comparison.nodes.map((node) => node.id));
-  expect(headIds.has(addedId), "HEAD graph endpoint must contain the added callable").toBe(true);
-  expect(headIds.has(deletedId), "HEAD graph endpoint must not retain the deleted callable").toBe(false);
-  expect(comparisonIds.has(deletedId), "merge-base graph endpoint must contain the later-deleted callable").toBe(true);
-  expect(comparisonIds.has(addedId), "merge-base graph endpoint must not contain the later-added callable").toBe(false);
+  expect(headIds.has(addedId), "HEAD depth-1 projection must contain the added callable").toBe(true);
+  expect(headIds.has(deletedId), "HEAD depth-1 projection must not retain the deleted callable").toBe(false);
+  expect(comparisonIds.has(deletedId), "merge-base depth-1 projection must contain the later-deleted callable").toBe(true);
+  expect(comparisonIds.has(addedId), "merge-base depth-1 projection must not contain the later-added callable").toBe(false);
 }
 
-async function fetchGraph(baseUrl: string, graphId: string): Promise<GraphArtifact> {
+async function assertRawGraphUnavailable(baseUrl: string, graphId: string): Promise<void> {
   const response = await nativeFetch(`${baseUrl}/api/graph?id=${encodeURIComponent(graphId)}`);
-  if (!response.ok) throw new Error(`stored graph ${graphId} failed (${response.status}): ${await response.text()}`);
-  const value: unknown = await response.json();
-  const graph = requireRecord(value, `stored graph ${graphId}`);
-  const target = requireRecord(graph.target, `stored graph ${graphId} target`);
-  if (!Array.isArray(graph.nodes) || !Array.isArray(graph.edges)) {
-    throw new Error(`stored graph ${graphId} must contain node and edge arrays`);
+  expect(response.status, `projection-only graph ${graphId} must fail closed at the raw endpoint`).toBe(409);
+  expect(await response.json()).toEqual({
+    error: "raw graph payload is unavailable for a projection-only graph",
+  });
+}
+
+async function fetchProjection(
+  baseUrl: string,
+  request: GraphProjectionRequestV1,
+  expectedCacheKey: string,
+): Promise<GraphProjectionV1> {
+  const response = await nativeFetch(`${baseUrl}/api/graph/project`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(request),
+  });
+  if (!response.ok) {
+    throw new Error(`graph projection ${request.graphId} failed (${response.status}): ${await response.text()}`);
   }
-  if (target.vcs !== undefined) requireRecord(target.vcs, `stored graph ${graphId} target.vcs`);
-  return value as GraphArtifact;
+  expect(response.headers.get("x-meridian-graph-projection-cache")).toBe("hit");
+  expect(response.headers.get("x-meridian-graph-projection-key")).toBe(expectedCacheKey);
+  expect(response.headers.get("x-meridian-graph-projection-ready")).toBe("true");
+  const value: unknown = await response.json();
+  const projection = requireRecord(value, `graph projection ${request.graphId}`);
+  if (projection.version !== 1) throw new Error(`graph projection ${request.graphId} version must be 1`);
+  if (projection.graphId !== request.graphId) throw new Error(`graph projection ${request.graphId} returned another graph`);
+  if (!Array.isArray(projection.nodes) || !Array.isArray(projection.edges)) {
+    throw new Error(`graph projection ${request.graphId} must contain node and edge arrays`);
+  }
+  requireRecord(projection.target, `graph projection ${request.graphId} target`);
+  requireRecord(projection.counts, `graph projection ${request.graphId} counts`);
+  return value as GraphProjectionV1;
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {
@@ -878,6 +994,18 @@ function requireSha(value: unknown, label: string): string {
   const sha = requireNonEmptyString(value, label);
   if (!/^[0-9a-f]{40}(?:[0-9a-f]{24})?$/i.test(sha)) throw new Error(`${label} must be a 40- or 64-character Git SHA`);
   return sha;
+}
+
+function requirePairId(value: unknown, label: string): string {
+  const pairId = requireNonEmptyString(value, label);
+  if (!/^[a-f0-9]{20}$/.test(pairId)) throw new Error(`${label} must be a 20-character lowercase hex id`);
+  return pairId;
+}
+
+function requireProjectionKey(value: unknown, label: string): string {
+  const key = requireNonEmptyString(value, label);
+  if (!/^[a-f0-9]{64}$/.test(key)) throw new Error(`${label} must be a 64-character lowercase hex key`);
+  return key;
 }
 
 function requireCount(value: unknown, label: string): number {

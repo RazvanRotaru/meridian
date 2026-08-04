@@ -143,6 +143,7 @@ vi.mock("./graphViewLease", () => ({
 import {
   bootstrap,
   isInitialProgressiveProjectionReady,
+  isPartialPrGraphId,
   progressiveGraphDeliveryForAcceptedSearch,
   progressiveGraphDeliveryEnabled,
 } from "./bootstrap";
@@ -153,8 +154,9 @@ import { loadEnvironments } from "./loadEnvironments";
 import { DEFAULT_NAV, mergeNavIntoSearch } from "../state/urlState";
 
 const PROVISIONAL_PAIR_ID = "0123456789abcdefabcd";
+const PARTIAL_GRAPH_ID = `pr-partial-${PROVISIONAL_PAIR_ID}-${"a".repeat(40)}`;
 const PROVISIONAL_PROJECTION = {
-  graphId: "partial-head",
+  graphId: PARTIAL_GRAPH_ID,
   rootFileIds: [],
   readyFileIds: [],
   requestedDepth: 1,
@@ -249,12 +251,36 @@ describe("bootstrap initial URL restoration", () => {
     }));
   });
 
+  it("loads an ordinary source graph before re-preparing its partial review on reload", async () => {
+    const sourceGraphId = "source-session";
+    vi.stubGlobal("window", {
+      location: {
+        origin: "http://meridian.local",
+        pathname: "/view",
+        search: `?id=${sourceGraphId}&view=modules&prn=7&rev=1&progressive=1`,
+        hash: "",
+      },
+    });
+    useProvisionalBoot({}, sourceGraphId);
+
+    await bootstrap();
+
+    expect(loadArtifact).toHaveBeenCalledWith(`/api/graph?id=${sourceGraphId}`);
+    expect(fetchGraphProjection).not.toHaveBeenCalled();
+    expect(mocks.restoreFromUrl).toHaveBeenCalledOnce();
+    expect(mocks.createBlueprintStore).toHaveBeenCalledWith(expect.objectContaining({
+      initialGraphProjection: null,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    }));
+  });
+
   it("boots an unmarked copied review from its depth-one partial projection", async () => {
     vi.stubGlobal("window", {
       location: {
         origin: "http://meridian.local",
         pathname: "/view",
-        search: "?id=partial-head&prn=7&rev=1",
+        search: `?id=${PARTIAL_GRAPH_ID}&prn=7&rev=1`,
         hash: "",
       },
     });
@@ -265,8 +291,8 @@ describe("bootstrap initial URL restoration", () => {
 
     expect(fetchGraphProjection).toHaveBeenCalledOnce();
     expect(vi.mocked(fetchGraphProjection).mock.calls[0]?.[1]).toMatchObject({
-      graphId: "partial-head",
-      roots: { kind: "changed-files", seedGraphId: "partial-head" },
+      graphId: PARTIAL_GRAPH_ID,
+      roots: { kind: "changed-files", seedGraphId: PARTIAL_GRAPH_ID },
       requestedDepth: 1,
       prefetchDepth: 3,
     });
@@ -496,10 +522,38 @@ describe("progressive graph delivery opt-in", () => {
     expect(mocks.createBlueprintStore).not.toHaveBeenCalled();
   });
 
+  it("fails closed when a provisional marker names a different partial pair", async () => {
+    const mismatchedPairId = "fedcba98765432100123";
+    vi.stubGlobal("window", {
+      location: {
+        origin: "http://meridian.local",
+        pathname: "/view",
+        search: `?id=${PARTIAL_GRAPH_ID}&prn=7&rev=1&progressive=1&partial=1&pair=${mismatchedPairId}`,
+        hash: "",
+      },
+    });
+    useProvisionalBoot();
+
+    await expect(bootstrap()).rejects.toThrow(
+      "the provisional PR graph cannot boot without its verified depth-one projection",
+    );
+    expect(fetchGraphProjection).not.toHaveBeenCalled();
+    expect(loadArtifact).not.toHaveBeenCalled();
+    expect(mocks.createBlueprintStore).not.toHaveBeenCalled();
+  });
+
   it("defaults copied review URLs to partial-only and honors the benchmark opt-out", () => {
     expect(progressiveGraphDeliveryEnabled(true, "?id=head&prn=7&rev=1")).toBe(true);
     expect(progressiveGraphDeliveryEnabled(true, "?id=head&prn=7&rev=1&progressive=0")).toBe(false);
     expect(progressiveGraphDeliveryEnabled(true, "?id=head&prn=7&rev=1&progressive=1")).toBe(true);
+  });
+
+  it("recognizes only server-owned partial HEAD graph ids for projection boot", () => {
+    expect(isPartialPrGraphId(PARTIAL_GRAPH_ID)).toBe(true);
+    expect(isPartialPrGraphId(`pr-partial-${PROVISIONAL_PAIR_ID}-${"a".repeat(64)}`)).toBe(true);
+    expect(isPartialPrGraphId(`pr-partial-base-${PROVISIONAL_PAIR_ID}-${"a".repeat(40)}`)).toBe(false);
+    expect(isPartialPrGraphId("source-session")).toBe(false);
+    expect(isPartialPrGraphId(null)).toBe(false);
   });
 
   it("allows a PR selected later from an ordinary SPA session to use the capability", () => {
@@ -538,14 +592,17 @@ function provisionalWindowLocation() {
   return {
     origin: "http://meridian.local",
     pathname: "/view",
-    search: `?id=partial-head&prn=7&rev=1&progressive=1&partial=1&pair=${PROVISIONAL_PAIR_ID}`,
+    search: `?id=${PARTIAL_GRAPH_ID}&prn=7&rev=1&progressive=1&partial=1&pair=${PROVISIONAL_PAIR_ID}`,
     hash: "",
   };
 }
 
-function useProvisionalBoot(overrides: Partial<BootConfig> = {}): void {
+function useProvisionalBoot(
+  overrides: Partial<BootConfig> = {},
+  graphId = PARTIAL_GRAPH_ID,
+): void {
   vi.mocked(readBootConfig).mockReturnValueOnce({
-    graphUrl: "/api/graph?id=partial-head",
+    graphUrl: `/api/graph?id=${graphId}`,
     graphProjectUrl: "/api/graph/project",
     graphSymbolsUrl: "/api/graph/symbols",
     graphViewLease: {
@@ -575,16 +632,16 @@ function useProvisionalBoot(overrides: Partial<BootConfig> = {}): void {
     ...overrides,
   });
   vi.mocked(prApiUrlsFromGraphUrl).mockReturnValueOnce({
-    prsUrl: "/api/prs?id=partial-head",
-    prOneUrl: "/api/prs/one?id=partial-head",
-    prFilesUrl: "/api/prs/files?id=partial-head",
-    prViewedFilesUrl: "/api/prs/viewed-files?id=partial-head",
-    prRelatedUrl: "/api/prs/related?id=partial-head",
-    prCommentsUrl: "/api/prs/comments?id=partial-head",
-    prChecksUrl: "/api/prs/checks?id=partial-head",
-    prFileUrl: "/api/prs/file?id=partial-head",
-    prReviewUrl: "/api/prs/review?id=partial-head",
-    analyzeUrl: "/api/pr/analyze?id=partial-head",
-    graphId: "partial-head",
+    prsUrl: `/api/prs?id=${graphId}`,
+    prOneUrl: `/api/prs/one?id=${graphId}`,
+    prFilesUrl: `/api/prs/files?id=${graphId}`,
+    prViewedFilesUrl: `/api/prs/viewed-files?id=${graphId}`,
+    prRelatedUrl: `/api/prs/related?id=${graphId}`,
+    prCommentsUrl: `/api/prs/comments?id=${graphId}`,
+    prChecksUrl: `/api/prs/checks?id=${graphId}`,
+    prFileUrl: `/api/prs/file?id=${graphId}`,
+    prReviewUrl: `/api/prs/review?id=${graphId}`,
+    analyzeUrl: `/api/pr/analyze?id=${graphId}`,
+    graphId,
   } satisfies PrApiUrls);
 }
