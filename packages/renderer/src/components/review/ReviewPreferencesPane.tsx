@@ -11,6 +11,7 @@ const HEADING_ID = "review-preferences-heading";
 const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
 const FORMAT_ONLY_DESCRIPTION_ID = "review-format-only-description";
 const DIFF_ONLY_DESCRIPTION_ID = "review-diff-only-description";
+const CONTEXT_DEPTH_DESCRIPTION_ID = "review-context-depth-description";
 const ADDED_SOURCE_COMMENTS_DESCRIPTION_ID = "review-added-source-comments-description";
 const CODE_PREVIEW_DESCRIPTION_ID = "review-code-preview-description";
 const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
@@ -26,6 +27,14 @@ interface ReviewPreferencesPaneProps {
   openFlowSplitOnSelect: boolean;
   codePreviewTrigger: ReviewCodePreviewTrigger;
   hideAddedSourceCommentDiffs: boolean;
+  progressiveContext?: {
+    requestedDepth: number;
+    loadedDepth: number;
+    loadedFiles: number;
+    totalFiles: number;
+    status: "ready" | "expanding" | "error";
+    error: string | null;
+  } | null;
   onExcludeTestChangesChange: (exclude: boolean) => void;
   onExcludeFormatOnlyChangesChange: (exclude: boolean) => void;
   onHideNodesNotInDiffChange: (hide: boolean) => void;
@@ -33,6 +42,7 @@ interface ReviewPreferencesPaneProps {
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
   onCodePreviewTriggerChange: (trigger: ReviewCodePreviewTrigger) => void;
   onHideAddedSourceCommentDiffsChange: (hide: boolean) => void;
+  onProgressiveDepthChange?: (depth: number) => void;
   onClose: () => void;
 }
 
@@ -147,6 +157,34 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
             </span>
           </span>
         </label>
+        {props.progressiveContext ? (
+          <div style={DEPTH_CONTROL}>
+            <label htmlFor="review-context-depth" style={OPTION_TITLE}>Loaded context depth</label>
+            <div style={DEPTH_ROW}>
+              <select
+                id="review-context-depth"
+                value={props.progressiveContext.requestedDepth}
+                disabled={props.progressiveContext.status === "expanding"}
+                aria-describedby={CONTEXT_DEPTH_DESCRIPTION_ID}
+                style={DEPTH_SELECT}
+                onChange={(event) => props.onProgressiveDepthChange?.(Number(event.currentTarget.value))}
+              >
+                {[1, 2, 3, 4, 5, 6].map((depth) => (
+                  <option key={depth} value={depth}>{depth} edge{depth === 1 ? "" : "s"}</option>
+                ))}
+              </select>
+              <span role="status" style={DEPTH_STATUS}>
+                {props.progressiveContext.status === "expanding"
+                  ? "Loading…"
+                  : `${props.progressiveContext.loadedFiles.toLocaleString()} of ${props.progressiveContext.totalFiles.toLocaleString()} files resident per revision`}
+              </span>
+            </div>
+            <span id={CONTEXT_DEPTH_DESCRIPTION_ID} style={OPTION_DESCRIPTION}>
+              Start from every affected file and traverse resolved imports (including literal dynamic imports) and exact IPC joins in either direction. Depth 2 is prepared after the canvas becomes actionable; deeper levels load only when chosen. Lowering the value keeps already-loaded context until the next fresh review.
+            </span>
+            {props.progressiveContext.error ? <span role="alert" style={DEPTH_ERROR}>{props.progressiveContext.error}</span> : null}
+          </div>
+        ) : null}
       </fieldset>
 
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={`${ADDED_SOURCE_COMMENTS_DESCRIPTION_ID} ${NOTE_ID}`}>
@@ -258,6 +296,26 @@ const PANE: CSSProperties = {
 };
 
 const HEADER: CSSProperties = { display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 };
+const DEPTH_CONTROL: CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 7,
+  marginTop: 12,
+  paddingTop: 12,
+  borderTop: "1px solid #272E38",
+};
+const DEPTH_ROW: CSSProperties = { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" };
+const DEPTH_SELECT: CSSProperties = {
+  minWidth: 104,
+  height: 30,
+  padding: "0 8px",
+  border: "1px solid #3A424D",
+  borderRadius: 6,
+  background: "#151B23",
+  color: "#E6EDF3",
+};
+const DEPTH_STATUS: CSSProperties = { fontSize: 11, color: "#8E99A8" };
+const DEPTH_ERROR: CSSProperties = { fontSize: 11, color: "#F0A5A5" };
 const HEADER_COPY: CSSProperties = { flex: 1, minWidth: 0 };
 const HEADING: CSSProperties = { margin: 0, color: "#E6EDF3", fontSize: 14, fontWeight: 700, lineHeight: 1.3 };
 const INTRO: CSSProperties = { margin: "3px 0 0", color: "#7D8695", fontSize: 11, lineHeight: 1.45 };

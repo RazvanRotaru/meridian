@@ -80,6 +80,7 @@ async function generateRemote(
         ctx.graphStore.publish({
           id,
           material: cached.material,
+          rawGraphPayload: "complete",
           metadata: {
             sourceRoot: cached.sourceDir,
             sourceLease: cached.checkout.sourceLease,
@@ -150,6 +151,7 @@ async function generateLocal(
         ctx.graphStore.publish({
           id,
           material: result.material,
+          rawGraphPayload: "complete",
           metadata: {
             sourceRoot: source.dir,
             source: artifactSourceFor(request),

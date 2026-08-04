@@ -98,9 +98,13 @@ export async function deriveMinimalGraphLayout(
 }
 
 /** Canonical review visibility: exact hunk-matched nodes plus their root-to-node containment chain.
- * Keeping this predicate beside the layout filter prevents UI wording or graph curation tiers from
- * becoming an accidental second definition of "in the diff". */
-export function reviewDiffVisibleIds(index: GraphIndex, affectedIds: ReadonlySet<string>): Set<string> {
+ * An explicit root is a reader-curated exception: keep its contained card subtree after it has been
+ * added to the canvas, without admitting any ordinary unchanged context into Diff-only mode. */
+export function reviewDiffVisibleIds(
+  index: GraphIndex,
+  affectedIds: ReadonlySet<string>,
+  explicitRootIds: Iterable<string> = [],
+): Set<string> {
   const visible = new Set<string>();
   for (const id of affectedIds) {
     const ancestors = index.ancestorsOf(id);
@@ -111,6 +115,32 @@ export function reviewDiffVisibleIds(index: GraphIndex, affectedIds: ReadonlySet
       continue;
     }
     ancestors.forEach((node) => visible.add(node.id));
+  }
+  for (const id of explicitRootVisibleIds(index, explicitRootIds)) visible.add(id);
+  return visible;
+}
+
+/** Ancestor + subtree closure for roots the reader explicitly added. This narrow provenance is also
+ * used to subtract a picked test root from the ordinary Tests-off hidden set without revealing any
+ * unrelated test code or flipping the global Tests preference. */
+export function explicitRootVisibleIds(index: GraphIndex, explicitRootIds: Iterable<string>): Set<string> {
+  const visible = new Set<string>();
+  for (const rootId of explicitRootIds) {
+    const ancestors = index.ancestorsOf(rootId);
+    if (ancestors.length === 0) {
+      visible.add(rootId);
+      continue;
+    }
+    ancestors.forEach((node) => visible.add(node.id));
+    const pending = [rootId];
+    while (pending.length > 0) {
+      const parentId = pending.pop()!;
+      for (const child of index.childrenOf(parentId)) {
+        if (visible.has(child.id)) continue;
+        visible.add(child.id);
+        pending.push(child.id);
+      }
+    }
   }
   return visible;
 }

@@ -1,6 +1,6 @@
 /** Lightweight product-analysis contract shared by the web parent and disposable worker. */
 
-import type { ExtractionProgress, GraphArtifact } from "@meridian/core";
+import type { ChangedFileManifestEntry, ExtractionProgress, GraphArtifact } from "@meridian/core";
 import type { TypeScriptRevisionShardPolicy } from "@meridian/extractor-typescript";
 import type { GitDiffExecutor } from "./git-diff";
 
@@ -9,9 +9,11 @@ import type { GitDiffExecutor } from "./git-diff";
  * Version 9 adds formatting-only syntax proofs. Version 10 distinguishes
  * executable-comment-only edits from physically comment-only source rows. Version 11 resolves
  * calls through any-typed storage when an adjacent construction of the same receiver proves one
- * directly invoked member.
+ * directly invoked member. Version 12 persists the exact bounded initial-graph seed set used for
+ * durable partial projection replay. Version 13 preserves the detected mixed-language target
+ * identity across independently extracted slices.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 11;
+export const REPOSITORY_ANALYSIS_VERSION = 13;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
@@ -38,8 +40,38 @@ export interface RepositoryAnalysisRequest {
   hintedFiles?: readonly string[];
   /** Allow a deliberately empty immutable PR side to produce a valid zero-node artifact. */
   allowEmpty?: boolean;
+  /**
+   * Internal cold-PR fast path. The disposable worker first discovers the complete weak
+   * TypeScript file neighbourhood for these roots, then runs the ordinary extractor against that
+   * bounded file set. Omitting `seedFiles` uses the verified HEAD changed-file manifest. This is
+   * never accepted from HTTP and never replaces the canonical repository analysis contract.
+   */
+  initialGraph?: {
+    depth: number;
+    seedFiles?: readonly string[];
+    /**
+     * Server-proven selection from the exact-revision source topology. These three fields are an
+     * all-or-nothing capability: ordinary provisional extraction omits them and performs its own
+     * scan, while later expansion supplies sorted paths and bypasses that repository-wide scan.
+     */
+    selectedFiles?: readonly string[];
+    /** Hidden exact-ID allocator stabilizers; must contain every selected file. */
+    extractionFiles?: readonly string[];
+    frontierFiles?: readonly string[];
+    /** Stable logical identity shared by independently extracted slices of one exact revision. */
+    lineage?: {
+      graphId: string;
+      generation: string;
+    };
+  };
   /** Non-semantic extractor observations; never serialized or included in cache identity. */
   onExtractionProgress?: (progress: ExtractionProgress) => void;
+  /**
+   * One observation of the exact, fully verified changed-file manifest. The pipeline emits it after
+   * the diff transaction is complete and before language extraction starts. A consumer cannot
+   * mutate graph semantics through this hook.
+   */
+  onChangedManifest?: (manifest: readonly ChangedFileManifestEntry[]) => void;
   /**
    * Internal worker capability selected by the server. Public HTTP requests never populate it;
    * the private worker protocol transfers and strictly validates it out-of-band.

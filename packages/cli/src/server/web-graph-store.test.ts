@@ -74,6 +74,7 @@ describe("WebGraphStore", () => {
       formatVersion: 1,
       id: "graph-1",
       byteDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+      rawGraphPayload: "complete",
       summary: {
         schemaVersion: ARTIFACT.schemaVersion,
         generatedAt: ARTIFACT.generatedAt,
@@ -88,6 +89,33 @@ describe("WebGraphStore", () => {
     expect(raw).not.toHaveProperty("artifact");
     expect(raw).not.toHaveProperty("nodes");
     expect(JSON.stringify(raw)).not.toContain(NODE_ID);
+  });
+
+  it("persists and validates oversized projection roots for the registration lifetime", () => {
+    const store = createStore();
+    const projectionRootChunks = [["src/a.ts"], ["src/b.ts"]] as const;
+    const descriptor = store.publish(registration("partial", {
+      rawGraphPayload: "projection-only",
+      metadata: {
+        sourceRoot: "/workspace/shop",
+        projectionRootChunks,
+        source: { kind: "path" },
+        synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+      },
+    }));
+
+    expect(descriptor.projectionRootChunks).toEqual(projectionRootChunks);
+    expect(registrationDescriptor(store, "partial")?.projectionRootChunks).toEqual(projectionRootChunks);
+    expect(() => store.publish(registration("invalid-partial", {
+      rawGraphPayload: "projection-only",
+      metadata: {
+        sourceRoot: "/workspace/shop",
+        projectionRootChunks: [["src/b.ts"], ["src/a.ts"]],
+        source: { kind: "path" },
+        synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
+      },
+    }))).toThrow(/projection root chunks are invalid/);
+    expect(hasRegistration(store, "invalid-partial")).toBe(false);
   });
 
   it("accepts an exact republish and rejects every conflicting immutable coordinate", () => {
@@ -107,6 +135,20 @@ describe("WebGraphStore", () => {
     expect(() => store.publish(registration("graph-1", {
       material: materializeValidatedArtifact({ ...ARTIFACT, generatedAt: "2026-07-20T00:00:01.000Z" }),
     }))).toThrow(/different immutable coordinates/);
+    expect(() => store.publish(registration("graph-1", {
+      rawGraphPayload: "projection-only",
+    }))).toThrow(/different immutable coordinates/);
+  });
+
+  it("fails closed when publication does not classify raw graph delivery", () => {
+    const store = createStore();
+    const unclassified = {
+      ...registration("unclassified"),
+      rawGraphPayload: undefined,
+    } as unknown as WebGraphRegistration;
+
+    expect(() => store.publish(unclassified)).toThrow(/raw graph payload must be complete or projection-only/);
+    expect(hasRegistration(store, "unclassified")).toBe(false);
   });
 
   it("retains a newly published source lease until disposal", () => {
@@ -281,6 +323,40 @@ describe("WebGraphStore", () => {
     expect(releaseSecond).toHaveBeenCalledTimes(1);
   });
 
+  it("lets a receipt publication shorten but never extend its handoff protection", () => {
+    let now = 1_000;
+    const store = createStore({
+      maxEntries: 1,
+      lowWaterEntries: 0,
+      publicationHandoffTtlMs: 500,
+      now: () => now,
+    });
+    const releaseShort = vi.fn();
+    const releasePressure = vi.fn();
+    store.publishBatch([registrationWithLease("short", releaseShort)], {
+      receipt: true,
+      publicationHandoffTtlMs: 100,
+    });
+    const view = store.createViewLease("short");
+
+    now += 100;
+    store.publish(registrationWithLease("pressure", releasePressure));
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2, viewLeases: 1 });
+    expect(releaseShort).not.toHaveBeenCalled();
+
+    store.releaseViewLease(view.leaseId);
+    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1, viewLeases: 0 });
+    expect(releaseShort).toHaveBeenCalledTimes(1);
+    expect(releasePressure).not.toHaveBeenCalled();
+
+    const releaseInvalid = vi.fn();
+    expect(() => store.publishBatch([registrationWithLease("too-long", releaseInvalid)], {
+      receipt: true,
+      publicationHandoffTtlMs: 501,
+    })).toThrow(/no greater than 500 milliseconds/);
+    expect(releaseInvalid).toHaveBeenCalledTimes(1);
+  });
+
   it("publishes an oversized batch atomically and returns to its retention target on sweep", () => {
     const removePath = vi.fn((path: string) => rmSync(path, { recursive: true, force: true }));
     const store = createStore({
@@ -329,6 +405,97 @@ describe("WebGraphStore", () => {
     expect(hasRegistration(store, "comparison")).toBe(true);
     expect(releaseHead).not.toHaveBeenCalled();
     expect(releaseComparison).not.toHaveBeenCalled();
+  });
+
+  it("discards every newly created registration in a publication receipt despite handoff TTL", () => {
+    const store = createStore({ publicationHandoffTtlMs: 60_000 });
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+    const publication = store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ], { receipt: true });
+
+    expect(publication.receipt.createdIds).toEqual(["head", "comparison"]);
+    expect(store.discardPublication(publication.receipt)).toBe(true);
+
+    expect(store.stats()).toMatchObject({ registrations: 0, sourceLeases: 0 });
+    expect(hasRegistration(store, "head")).toBe(false);
+    expect(hasRegistration(store, "comparison")).toBe(false);
+    expect(releaseHead).toHaveBeenCalledTimes(1);
+    expect(releaseComparison).toHaveBeenCalledTimes(1);
+    expect(store.discardPublication(publication.receipt)).toBe(false);
+  });
+
+  it("rolls a receipt discard back atomically when one member cannot be reserved", () => {
+    const comparisonPathSuffix = createHash("sha256").update("comparison").digest("hex");
+    const onError = vi.fn();
+    const renamePath = vi.fn((source: string, destination: string) => {
+      if (destination.includes(".eviction-") && source.endsWith(comparisonPathSuffix)) {
+        throw new Error("injected receipt discard failure");
+      }
+      renameSync(source, destination);
+    });
+    const store = createStore({}, { onError, renamePath });
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+    const publication = store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ], { receipt: true });
+
+    expect(store.discardPublication(publication.receipt)).toBe(false);
+
+    expect(hasRegistration(store, "head")).toBe(true);
+    expect(hasRegistration(store, "comparison")).toBe(true);
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
+    expect(releaseHead).not.toHaveBeenCalled();
+    expect(releaseComparison).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({
+      message: "injected receipt discard failure",
+    }));
+  });
+
+  it("preserves the whole receipt set when any newly created registration is pinned", () => {
+    const store = createStore({ publicationHandoffTtlMs: 60_000 });
+    const releaseHead = vi.fn();
+    const releaseComparison = vi.fn();
+    const publication = store.publishBatch([
+      registrationWithLease("head", releaseHead),
+      registrationWithLease("comparison", releaseComparison),
+    ], { receipt: true });
+    const pinnedHead = store.acquire("head")!;
+
+    expect(store.discardPublication(publication.receipt)).toBe(false);
+
+    expect(store.stats()).toMatchObject({ registrations: 2, sourceLeases: 2 });
+    expect(hasRegistration(store, "head")).toBe(true);
+    expect(hasRegistration(store, "comparison")).toBe(true);
+    expect(releaseHead).not.toHaveBeenCalled();
+    expect(releaseComparison).not.toHaveBeenCalled();
+    pinnedHead.release();
+  });
+
+  it("leaves exact reused registrations outside a publication receipt", () => {
+    const store = createStore({ publicationHandoffTtlMs: 60_000 });
+    const releaseOriginal = vi.fn();
+    const releaseCandidate = vi.fn();
+    const releaseComparison = vi.fn();
+    store.publish(registrationWithLease("head", releaseOriginal));
+    const publication = store.publishBatch([
+      registrationWithLease("head", releaseCandidate),
+      registrationWithLease("comparison", releaseComparison),
+    ], { receipt: true });
+
+    expect(publication.receipt.createdIds).toEqual(["comparison"]);
+    expect(releaseCandidate).toHaveBeenCalledTimes(1);
+    expect(store.discardPublication(publication.receipt)).toBe(true);
+
+    expect(hasRegistration(store, "head")).toBe(true);
+    expect(hasRegistration(store, "comparison")).toBe(false);
+    expect(store.stats()).toMatchObject({ registrations: 1, sourceLeases: 1 });
+    expect(releaseOriginal).not.toHaveBeenCalled();
+    expect(releaseComparison).toHaveBeenCalledTimes(1);
   });
 
   it("keeps publishing while victim cleanup is pending and recovers after maintenance succeeds", () => {
@@ -694,6 +861,7 @@ function registration(
       synthetic: { scenarios: [], sourceFingerprint: null, trust: null },
     },
     ...overrides,
+    rawGraphPayload: overrides.rawGraphPayload ?? "complete",
   };
 }
 

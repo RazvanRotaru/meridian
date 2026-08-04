@@ -17,9 +17,18 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
-import type { GraphArtifact, GraphNode, NodeId } from "@meridian/core";
+import type { CompactGraphSymbolEntry, GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
+import {
+  countGraphSymbolSearchScopes,
+  mergeGraphSymbolSearchEntries,
+  queryRankedGraphSymbols,
+  type GraphSymbolSearchEntry,
+  type GraphSymbolSearchQueryResult,
+  type GraphSymbolSearchScope,
+  type GraphSymbolSearchScopeCounts,
+} from "../state/graphSymbolSearch";
 
 // The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
 const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "ui"]);
@@ -27,16 +36,8 @@ const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "
 const MAP_KINDS = new Set(["function", "method", "module", "package", "class", "interface", "object"]);
 // Logic mode: only callables and modules have a meaningful logic flow to open.
 const LOGIC_KINDS = new Set(["function", "method", "module"]);
-// Cap the list so a huge graph never renders thousands of rows into the scroll container.
-const MAX_ROWS = 40;
-
-export type SearchScope = "public" | "all" | "private";
-
-export interface SearchScopeCounts {
-  public: number;
-  all: number;
-  private: number;
-}
+export type SearchScope = GraphSymbolSearchScope;
+export type SearchScopeCounts = GraphSymbolSearchScopeCounts;
 
 const SEARCH_SCOPE_OPTIONS: ReadonlyArray<{ id: SearchScope; label: string }> = [
   { id: "public", label: "Public" },
@@ -45,70 +46,226 @@ const SEARCH_SCOPE_OPTIONS: ReadonlyArray<{ id: SearchScope; label: string }> = 
 ];
 
 /** One searchable node row, pre-computed once so keystrokes only filter (never re-scan the graph). */
-export interface SymbolEntry {
-  id: NodeId;
-  displayName: string;
-  qualifiedName: string;
-  file: string;
-  kind: string;
-  /** The palette's opt-in private surface: methods whose names begin with Python's `__` prefix. */
-  isPrivateMethod: boolean;
-  /** Steps in this node's logic flow, or null when it ships none (a container, or an empty body). */
-  stepCount: number | null;
+export type SymbolEntry = GraphSymbolSearchEntry;
+
+/** Monotonic ownership for async palette actions. Hydration may be shared and therefore continue in
+ * the store, but only the latest still-open pick may reveal/add a node or publish an error afterward. */
+export interface PaletteActionGate {
+  begin(): number;
+  isCurrent(intent: number): boolean;
+  invalidate(): void;
+}
+
+export function createPaletteActionGate(): PaletteActionGate {
+  let latestIntent = 0;
+  return {
+    begin: () => ++latestIntent,
+    isCurrent: (intent) => intent === latestIntent,
+    invalidate: () => { latestIntent += 1; },
+  };
+}
+
+/** Window-owned Escape closes the palette only when no focused child already consumed the key. */
+export function shouldClosePaletteFromWindow(
+  event: Pick<KeyboardEvent, "key" | "defaultPrevented">,
+  open: boolean,
+): boolean {
+  return open && event.key === "Escape" && !event.defaultPrevented;
+}
+
+/** Await one pick's hydration and return null when a newer pick/close took ownership meanwhile. */
+export async function awaitLatestPaletteReadiness(
+  gate: PaletteActionGate,
+  ensureReady: () => Promise<boolean>,
+): Promise<boolean | null> {
+  const intent = gate.begin();
+  const ready = await ensureReady();
+  return gate.isCurrent(intent) ? ready : null;
+}
+
+export type PaletteActionOutcome = "stale" | "failed" | "loaded" | "acted";
+
+export type PaletteKeyboardActivation = "load" | "open" | "add" | null;
+
+/** Resolve Enter without bypassing the same readiness state rendered by the row controls. */
+export function paletteKeyboardActivation(
+  entry: Pick<SymbolEntry, "isLoaded">,
+  options: {
+    progressive: boolean;
+    busy: boolean;
+    failed: boolean;
+    canAdd: boolean;
+    addModifier: boolean;
+  },
+): PaletteKeyboardActivation {
+  if (options.progressive && options.busy) return null;
+  if (options.progressive && (!entry.isLoaded || options.failed)) return "load";
+  if (options.canAdd && options.addModifier) return "add";
+  return "open";
+}
+
+/** A repository row has two deliberate phases. The first successful intent may hydrate it, but it
+ * cannot also reveal/add it: only a later intent against the visibly ready row may run the action. */
+export async function runPaletteAction(
+  gate: PaletteActionGate,
+  rowWasReady: boolean,
+  ensureReady: () => Promise<boolean>,
+  action: () => void,
+): Promise<PaletteActionOutcome> {
+  const ready = await awaitLatestPaletteReadiness(gate, ensureReady);
+  if (ready === null) return "stale";
+  if (!ready) return "failed";
+  if (!rowWasReady) return "loaded";
+  action();
+  return "acted";
 }
 
 export function CommandPalette() {
   const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
+  const progressiveSymbols = useBlueprint((state) => state.progressiveSymbols);
+  const progressivePendingNodeIds = useBlueprint((state) => state.progressivePendingNodeIds);
+  const progressiveReadyFileIds = useBlueprint((state) => state.progressiveGraph?.head.readyFileIds ?? null);
+  const reviewBaseNodeIds = useBlueprint((state) => state.reviewBaseNodeIds);
   const viewMode = useBlueprint((state) => state.viewMode);
-  const { openLogicFlow, revealInView, addToView } = useBlueprintActions();
+  const {
+    openLogicFlow,
+    revealInView,
+    addToView,
+    ensureNodeReady,
+    queryProgressiveSymbols,
+    startProgressiveSymbolIndex,
+    synchronizeProgressiveSymbolSearch,
+  } = useBlueprintActions();
   // In a map lens, the palette reveals/adds a graph node; elsewhere it opens a logic flow.
   const isMap = MAP_VIEWS.has(viewMode);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [highlighted, setHighlighted] = useState(0);
+  const [highlightedId, setHighlightedId] = useState<NodeId | null>(null);
   const [scope, setScope] = useState<SearchScope>("public");
   const [scopeMenuOpen, setScopeMenuOpen] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [failedNodeIds, setFailedNodeIds] = useState<Set<NodeId>>(() => new Set());
+  const [workerCounts, setWorkerCounts] = useState<SearchScopeCounts | null>(null);
+  const [workerResults, setWorkerResults] = useState<SymbolEntry[] | null>(null);
+  const [workerSyncRevision, setWorkerSyncRevision] = useState(0);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const activeRowRef = useRef<HTMLDivElement | null>(null);
+  const workerSyncSequence = useRef(0);
+  const workerQuerySequence = useRef(0);
+  const actionGateRef = useRef<PaletteActionGate | null>(null);
+  actionGateRef.current ??= createPaletteActionGate();
+  const actionGate = actionGateRef.current;
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
   // without it the print window steals the keystroke and the palette never opens. Pressing it again
-  // toggles the palette shut. Registered once (functional setState needs no `open` in deps).
+  // toggles the palette shut. Escape is window-owned as a fallback because an async Add action can
+  // disable its focused button and move focus outside the input; focused children consume Escape
+  // first when they have narrower semantics (for example, closing only the scope menu).
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
         event.preventDefault();
+        actionGate.invalidate();
         setOpen((wasOpen) => !wasOpen);
+      } else if (shouldClosePaletteFromWindow(event, open)) {
+        event.preventDefault();
+        actionGate.invalidate();
+        setOpen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [actionGate, open]);
+
+  // An embedding can unmount the canvas while hydration is in flight. Fence that completion just as
+  // strictly as Escape/backdrop close so it cannot call a stale store action or set local error state.
+  useEffect(() => () => actionGate.invalidate(), [actionGate]);
 
   // A fresh open starts empty with the top row primed, so the reader never inherits a stale query.
   useEffect(() => {
     if (open) {
       setQuery("");
-      setHighlighted(0);
+      setHighlightedId(null);
       setScope("public");
       setScopeMenuOpen(false);
+      setActionError(null);
+      setFailedNodeIds(new Set());
+      void startProgressiveSymbolIndex();
     }
-  }, [open]);
+  }, [open, startProgressiveSymbolIndex]);
 
-  // Rank once per artifact + mode (not on every keystroke): map lists every navigable node by name;
-  // logic ranks flow-bearing symbols first. The order carries through the substring filter below.
-  const symbols = useMemo(() => collectSymbols(artifact, index.nodesById, isMap), [artifact, index.nodesById, isMap]);
-  const scopeCounts = useMemo(() => countSearchScopes(symbols), [symbols]);
-  const results = useMemo(
+  // Rank the currently loaded bounded slice on the UI thread. A repository-wide progressive index
+  // remains in its persistent Worker; opening the palette never clones or sorts those 500k rows.
+  const readyFileIds = useMemo(() => {
+    if (!open) return null;
+    if (progressiveReadyFileIds === null) return null;
+    const ready = new Set(progressiveReadyFileIds);
+    // Tombstones are complete, comparison-owned declarations already present in the review
+    // composite. Mark their owning base modules locally ready; their IDs are invalid HEAD roots.
+    for (const id of reviewBaseNodeIds) {
+      const node = index.nodesById.get(id);
+      if (node !== undefined) ready.add(owningModuleId(node, index.nodesById));
+    }
+    return ready;
+  }, [index.nodesById, open, progressiveReadyFileIds, reviewBaseNodeIds]);
+  const repositoryWorkerBacked = progressiveSymbols.workerBacked === true;
+  const symbols = useMemo(() => derivePaletteSymbols(
+    open,
+    artifact,
+    progressiveSymbols.symbols,
+    index.nodesById,
+    isMap,
+    readyFileIds,
+    repositoryWorkerBacked,
+  ), [artifact, index.nodesById, isMap, open, progressiveSymbols.symbols, readyFileIds, repositoryWorkerBacked]);
+  const localScopeCounts = useMemo(() => countSearchScopes(symbols), [symbols]);
+  const localResults = useMemo(
     () => selectResults(symbols, query, isMap, scope),
     [symbols, query, isMap, scope],
   );
+  const workerSearchPending = repositoryWorkerBacked && workerResults === null;
+  const scopeCounts = repositoryWorkerBacked
+    ? workerCounts ?? { public: 0, all: 0, private: 0 }
+    : localScopeCounts;
+  const results = paletteVisibleResults(repositoryWorkerBacked, workerResults, localResults);
+
+  // Synchronize only the loaded projection when its graph/mode/readiness changes. Repository rows
+  // never cross this boundary; the worker merges these authoritative overrides into its own index.
+  useEffect(() => {
+    const sequence = ++workerSyncSequence.current;
+    workerQuerySequence.current += 1;
+    setWorkerCounts(null);
+    setWorkerResults(null);
+    setWorkerSyncRevision(0);
+    if (!open || !repositoryWorkerBacked) return;
+    void synchronizeProgressiveSymbolSearch(symbols, isMap).then((counts) => {
+      if (sequence !== workerSyncSequence.current || counts === null) return;
+      setWorkerCounts(counts);
+      setWorkerSyncRevision(sequence);
+    });
+  }, [isMap, open, repositoryWorkerBacked, symbols, synchronizeProgressiveSymbolSearch]);
+
+  // Each keystroke sends only its tiny query tuple. Results are capped inside the worker; sequence
+  // ownership prevents a slow no-match scan from replacing a newer query's rows.
+  useEffect(() => {
+    const sequence = ++workerQuerySequence.current;
+    setWorkerResults(null);
+    if (!open || !repositoryWorkerBacked || workerSyncRevision === 0) return;
+    void queryProgressiveSymbols({ query, isMap, scope }).then((result: GraphSymbolSearchQueryResult | null) => {
+      if (sequence !== workerQuerySequence.current || result === null) return;
+      setWorkerCounts(result.counts);
+      setWorkerResults(result.results);
+    });
+  }, [isMap, open, query, queryProgressiveSymbols, repositoryWorkerBacked, scope, workerSyncRevision]);
+  // Identity, not row number, owns keyboard selection. Background index completion can insert and
+  // reorder rows while the palette is open; retaining the ID prevents Enter opening a different node.
+  const highlighted = Math.max(0, results.findIndex((entry) => entry.id === highlightedId));
 
   // Typing or changing the search scope shifts the result set, so re-prime the highlight.
   useEffect(() => {
-    setHighlighted(0);
+    setHighlightedId(null);
   }, [query, scope]);
   // Keep the highlighted row in view as arrow keys walk past the fold. Block body is REQUIRED: a
   // concise arrow would return scrollIntoView's result, which React treats as a cleanup function and
@@ -121,24 +278,53 @@ export function CommandPalette() {
     return null;
   }
 
-  const close = () => setOpen(false);
-  // Enter/click a row: a map lens reveals it (go-to / pin+select), logic/ui opens its logic flow. Close.
-  const openPick = (id: NodeId) => {
-    if (isMap) {
-      revealInView(id);
-    } else {
-      openLogicFlow(id);
+  const close = () => {
+    actionGate.invalidate();
+    setOpen(false);
+  };
+  const settlePick = async (entry: SymbolEntry, action: () => void): Promise<PaletteActionOutcome> => {
+    setActionError(null);
+    const outcome = await runPaletteAction(
+      actionGate,
+      entry.isLoaded,
+      () => ensureNodeReady(entry.id, entry.fileId),
+      action,
+    );
+    if (outcome === "stale") return outcome;
+    if (outcome === "failed") {
+      setFailedNodeIds((current) => new Set(current).add(entry.id));
+      setActionError("That symbol's nearby graph could not be loaded. Try again.");
+      return outcome;
     }
-    close();
+    setFailedNodeIds((current) => {
+      if (!current.has(entry.id)) return current;
+      const next = new Set(current);
+      next.delete(entry.id);
+      return next;
+    });
+    return outcome;
+  };
+  // A nonresident pick only hydrates its depth-1 context. The re-rendered ready row owns the later
+  // reveal/add intent, making the readiness mark an actual interaction boundary rather than copy.
+  const loadPick = async (entry: SymbolEntry) => {
+    await settlePick(entry, () => undefined);
+  };
+  // Enter/click a ready row: a map lens reveals it (go-to / pin+select), logic opens its flow. Close.
+  const openPick = async (entry: SymbolEntry) => {
+    const outcome = await settlePick(entry, () => {
+      if (isMap) revealInView(entry.id);
+      else openLogicFlow(entry.id);
+    });
+    if (outcome === "acted") close();
   };
   // The "+" (map lenses only): add the node to the visible graph WITHOUT navigating. Stay open so a
   // reader can add several nodes before dismissing to see the result on the canvas.
-  const addPick = (id: NodeId) => {
-    addToView(id);
+  const addPick = async (entry: SymbolEntry) => {
+    await settlePick(entry, () => addToView(entry.id));
   };
 
-  // Arrow keys move the highlight (clamped to the list); Enter reveals it, ⌘/Ctrl+Enter adds it (map
-  // lenses); Escape closes. Option/Alt+P opens the extensible scope menu without changing the query.
+  // Arrow keys move the highlight (clamped to the list). Enter loads a nonresident row or opens a
+  // ready one; Cmd/Ctrl+Enter adds only a ready map row. Escape closes. Option/Alt+P opens scope.
   // preventDefault on the arrows stops the caret jumping to the input's ends.
   const onInputKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
     if (event.altKey && event.code === "KeyP") {
@@ -146,20 +332,31 @@ export function CommandPalette() {
       setScopeMenuOpen(true);
     } else if (event.key === "ArrowDown") {
       event.preventDefault();
-      setHighlighted((row) => Math.min(row + 1, results.length - 1));
+      const next = Math.min(highlighted + 1, results.length - 1);
+      setHighlightedId(results[next]?.id ?? null);
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setHighlighted((row) => Math.max(row - 1, 0));
+      const next = Math.max(highlighted - 1, 0);
+      setHighlightedId(results[next]?.id ?? null);
     } else if (event.key === "Enter") {
       event.preventDefault();
       const pick = results[highlighted];
       if (!pick) {
         return;
       }
-      if (isMap && (event.metaKey || event.ctrlKey)) {
-        addPick(pick.id);
-      } else {
-        openPick(pick.id);
+      const activation = paletteKeyboardActivation(pick, {
+        progressive: progressiveReadyFileIds !== null,
+        busy: progressivePendingNodeIds.has(pick.id),
+        failed: failedNodeIds.has(pick.id),
+        canAdd: isMap,
+        addModifier: event.metaKey || event.ctrlKey,
+      });
+      if (activation === "load") {
+        void loadPick(pick);
+      } else if (activation === "add") {
+        void addPick(pick);
+      } else if (activation === "open") {
+        void openPick(pick);
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
@@ -176,7 +373,11 @@ export function CommandPalette() {
             ref={inputRef}
             style={INPUT_STYLE}
             autoFocus
-            placeholder={isMap ? "Reveal a node — Enter to go there, + to add it here…" : "Search a symbol to open its logic flow…"}
+            placeholder={isMap
+              ? progressiveReadyFileIds === null
+                ? "Reveal a node — Enter to go there, + to add it here…"
+                : "Search a node — load its context, then reveal or add it…"
+              : "Search a symbol to open its logic flow…"}
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             onKeyDown={onInputKeyDown}
@@ -198,17 +399,46 @@ export function CommandPalette() {
                 entry={entry}
                 active={row === highlighted}
                 canAdd={isMap}
+                progressive={progressiveReadyFileIds !== null}
+                resident={index.nodesById.has(entry.id)}
+                failed={failedNodeIds.has(entry.id)}
                 activeRef={row === highlighted ? activeRowRef : undefined}
-                onHover={() => setHighlighted(row)}
-                onOpen={() => openPick(entry.id)}
-                onAdd={() => addPick(entry.id)}
+                onHover={() => setHighlightedId(entry.id)}
+                busy={progressivePendingNodeIds.has(entry.id)}
+                onOpen={() => { void openPick(entry); }}
+                onLoad={() => { void loadPick(entry); }}
+                onAdd={() => { void addPick(entry); }}
               />
             ))
           ) : (
-            <div style={EMPTY_STYLE}>No node matches “{query.trim()}”.</div>
+            <div style={EMPTY_STYLE}>
+              {progressiveSymbols.status === "indexing"
+                ? "Indexing repository symbols…"
+                : workerSearchPending
+                  ? "Searching repository symbols…"
+                : progressiveSymbols.status === "error"
+                  ? "Repository symbol index unavailable; showing the loaded graph only."
+                : `No node matches “${query.trim()}”.`}
+            </div>
           )}
         </div>
-        <div style={FOOTER_STYLE}>{isMap ? "↑↓ navigate · ↵ reveal · ⌘↵ add · esc close" : "↑↓ navigate · ↵ open · esc close"}</div>
+        {actionError !== null ? <div role="alert" style={ERROR_STYLE}>{actionError}</div> : null}
+        <div style={FOOTER_STYLE}>
+          <span>{isMap
+            ? progressiveReadyFileIds === null
+              ? "↑↓ navigate · ↵ reveal · ⌘↵ add · esc close"
+              : "↑↓ navigate · ↵ load/reveal · ⌘↵ add when ready · esc close"
+            : progressiveReadyFileIds === null
+              ? "↑↓ navigate · ↵ open · esc close"
+              : "↑↓ navigate · ↵ load/open · esc close"}</span>
+          {progressiveSymbols.status === "indexing" ? (
+            <span role="status">Indexing {progressiveSymbols.indexed}/{progressiveSymbols.total || "…"}</span>
+          ) : progressiveSymbols.status === "ready" ? (
+            <span>{progressiveSymbols.total.toLocaleString()} symbols</span>
+          ) : progressiveSymbols.status === "error" ? (
+            <span role="alert" title={progressiveSymbols.error ?? undefined}>Repository index unavailable</span>
+          ) : null}
+        </div>
       </div>
     </div>
   );
@@ -339,32 +569,77 @@ export function SearchScopeControl(props: {
 
 /** One result: name over a faint (mono) qualified name/path, a step-count chip when it has a flow, a
  * kind tag, and — in a map lens — a "+" that adds the node to the current view without navigating. */
-function ResultRow(props: {
+export type SymbolRowReadiness = "canonical" | "loadable" | "hydrating" | "ready" | "retry";
+
+export function symbolRowReadiness(
+  entry: Pick<SymbolEntry, "isLoaded">,
+  progressive: boolean,
+  busy: boolean,
+  failed: boolean,
+): SymbolRowReadiness {
+  if (!progressive) return "canonical";
+  if (busy) return "hydrating";
+  if (failed) return "retry";
+  return entry.isLoaded ? "ready" : "loadable";
+}
+
+export function ResultRow(props: {
   entry: SymbolEntry;
   active: boolean;
   canAdd: boolean;
+  progressive: boolean;
+  resident: boolean;
+  failed: boolean;
+  busy: boolean;
   activeRef?: React.Ref<HTMLDivElement>;
   onHover: () => void;
   onOpen: () => void;
+  onLoad: () => void;
   onAdd: () => void;
 }) {
   const { entry } = props;
+  const readiness = symbolRowReadiness(entry, props.progressive, props.busy, props.failed);
+  const actionable = readiness === "canonical" || readiness === "ready";
+  const mainLabel = readiness === "retry"
+    ? `Retry loading nearby graph for ${entry.displayName}`
+    : readiness === "loadable"
+      ? `Load nearby graph for ${entry.displayName}`
+      : `Open ${entry.displayName}`;
   return (
-    <div ref={props.activeRef} style={props.active ? ROW_ACTIVE_STYLE : ROW_STYLE} onMouseEnter={props.onHover}>
-      <button type="button" style={ROW_MAIN_BUTTON_STYLE} title={entry.id} onClick={props.onOpen}>
+    <div
+      ref={props.activeRef}
+      style={props.active ? ROW_ACTIVE_STYLE : ROW_STYLE}
+      data-symbol-id={entry.id}
+      data-symbol-readiness={readiness}
+      data-symbol-resident={props.resident ? "true" : "false"}
+      onMouseEnter={props.onHover}
+    >
+      <button
+        type="button"
+        style={ROW_MAIN_BUTTON_STYLE}
+        title={entry.id}
+        aria-label={mainLabel}
+        disabled={readiness === "hydrating"}
+        onClick={actionable ? props.onOpen : props.onLoad}
+      >
         <span style={ROW_MAIN_STYLE}>
           <span style={ROW_NAME_STYLE}>{entry.displayName}</span>
           <span style={ROW_SECONDARY_STYLE}>{entry.qualifiedName || entry.file}</span>
         </span>
       </button>
       {entry.stepCount !== null ? <span style={STEP_CHIP_STYLE}>{entry.stepCount} steps</span> : null}
+      {readiness === "ready" ? <span style={READY_CHIP_STYLE}><CheckIcon aria-hidden width={10} height={10} /> ready</span> : null}
+      {readiness === "loadable" ? <span style={NEARBY_CHIP_STYLE}>Load nearby graph</span> : null}
+      {readiness === "retry" ? <span style={RETRY_CHIP_STYLE}>Retry load</span> : null}
+      {readiness === "hydrating" ? <span style={LOADING_CHIP_STYLE}>loading nearby graph…</span> : null}
       <span style={kindTagStyle(entry.kind)}>{entry.kind}</span>
       {props.canAdd ? (
         <button
           type="button"
-          style={ADD_BUTTON_STYLE}
-          title="Add this node to the current view"
+          style={actionable ? ADD_BUTTON_STYLE : ADD_BUTTON_DISABLED_STYLE}
+          title={actionable ? "Add this node to the current view" : "Load nearby graph before adding this node"}
           aria-label={`Add ${entry.displayName} to the current view`}
+          disabled={!actionable}
           onClick={(event) => {
             event.stopPropagation();
             props.onAdd();
@@ -396,6 +671,7 @@ export function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<s
     const steps = flows[node.id];
     entries.push({
       id: node.id,
+      fileId: owningModuleId(node, nodesById),
       displayName: node.displayName,
       qualifiedName: node.qualifiedName,
       file: node.location?.file ?? "",
@@ -403,21 +679,69 @@ export function collectSymbols(artifact: GraphArtifact, nodesById: ReadonlyMap<s
       isPrivateMethod: node.kind === "method" && node.displayName.startsWith("__"),
       // Exit steps are charted control flow, not WORK — the size hint counts only executable steps.
       stepCount: Array.isArray(steps) ? steps.filter((step) => (step as { kind?: string }).kind !== "exit").length : null,
+      isLoaded: true,
     });
   }
-  entries.sort(isMap ? byName : byFlowThenName);
-  return entries;
+  return mergeGraphSymbolSearchEntries([], entries, isMap);
 }
 
-// Plain alphabetical, for the map lenses where every row is equally navigable.
-function byName(a: SymbolEntry, b: SymbolEntry): number {
-  return a.displayName.localeCompare(b.displayName);
+/** Combine the compact repository-wide index with already-loaded symbols. Loaded rows win so
+ * artifact-local flow details remain authoritative; both paths preserve the old ranking rules. */
+export function mergeSearchSymbols(
+  loaded: readonly SymbolEntry[],
+  indexed: readonly CompactGraphSymbolEntry[],
+  _nodesById: ReadonlyMap<string, GraphNode>,
+  isMap: boolean,
+  readyFileIds: ReadonlySet<string> | null = null,
+): SymbolEntry[] {
+  const authoritative = loaded.map((entry) => ({
+      ...entry,
+      isLoaded: entry.isLoaded && (
+        entry.kind === "package" || (readyFileIds?.has(entry.fileId) ?? true)
+      ),
+    }));
+  return mergeGraphSymbolSearchEntries(indexed, authoritative, isMap);
 }
 
-// Flow-bearing symbols float to the top; ties break alphabetically for a stable, scannable list.
-function byFlowThenName(a: SymbolEntry, b: SymbolEntry): number {
-  const flowRank = Number(b.stepCount !== null) - Number(a.stepCount !== null);
-  return flowRank || a.displayName.localeCompare(b.displayName);
+/** Keep repository-wide indexing independent from repository-wide main-thread ranking. The compact
+ * index may finish with hundreds of thousands of rows while this globally mounted component is
+ * closed; do not clone, merge, or sort any of them until the reader actually opens Cmd/Ctrl+P. */
+export function derivePaletteSymbols(
+  open: boolean,
+  artifact: GraphArtifact,
+  indexed: readonly CompactGraphSymbolEntry[],
+  nodesById: ReadonlyMap<string, GraphNode>,
+  isMap: boolean,
+  readyFileIds: ReadonlySet<string> | null = null,
+  repositoryWorkerBacked = false,
+): SymbolEntry[] {
+  if (!open) return [];
+  return mergeSearchSymbols(
+    collectSymbols(artifact, nodesById, isMap),
+    repositoryWorkerBacked ? [] : indexed,
+    nodesById,
+    isMap,
+    readyFileIds,
+  );
+}
+
+function owningModuleId(node: GraphNode, nodesById: ReadonlyMap<string, GraphNode>): NodeId {
+  let current: GraphNode | undefined = node;
+  const seen = new Set<string>();
+  while (current !== undefined && !seen.has(current.id)) {
+    // Python package initializers are canonical file roots in the graph (there is deliberately no
+    // duplicate module node for `__init__.py`). Namespace/synthetic packages keep walking because
+    // they do not identify one source file that a partial projection can hydrate.
+    if (
+      current.kind === "module"
+      || (current.kind === "package" && current.location.file.endsWith(".py"))
+    ) return current.id;
+    seen.add(current.id);
+    current = current.parentId ? nodesById.get(current.parentId) : undefined;
+  }
+  // Full-artifact search never needs to hydrate this fallback. Keeping a canonical ID makes the
+  // shared row shape total for lenient artifacts with missing containment.
+  return node.id;
 }
 
 /**
@@ -431,42 +755,21 @@ export function selectResults(
   isMap: boolean,
   scope: SearchScope = "public",
 ): SymbolEntry[] {
-  const needle = query.trim().toLowerCase();
-  if (!needle) {
-    const base = symbols.filter(
-      (entry) => isEntryInScope(entry, scope) && (isMap || entry.stepCount !== null),
-    );
-    return base.slice(0, MAX_ROWS);
-  }
-  const matched: SymbolEntry[] = [];
-  for (const entry of symbols) {
-    if (!isEntryInScope(entry, scope)) {
-      continue;
-    }
-    if (entry.displayName.toLowerCase().includes(needle) || entry.qualifiedName.toLowerCase().includes(needle)) {
-      matched.push(entry);
-      if (matched.length >= MAX_ROWS) {
-        break;
-      }
-    }
-  }
-  return matched;
+  return queryRankedGraphSymbols(symbols, { query, isMap, scope }).results;
 }
 
 export function countSearchScopes(symbols: readonly SymbolEntry[]): SearchScopeCounts {
-  const privateCount = symbols.reduce((count, entry) => count + Number(entry.isPrivateMethod), 0);
-  return {
-    public: symbols.length - privateCount,
-    all: symbols.length,
-    private: privateCount,
-  };
+  return countGraphSymbolSearchScopes(symbols);
 }
 
-function isEntryInScope(entry: SymbolEntry, scope: SearchScope): boolean {
-  if (scope === "all") {
-    return true;
-  }
-  return scope === "private" ? entry.isPrivateMethod : !entry.isPrivateMethod;
+/** Until the authoritative worker result lands, local rows are deliberately non-actionable: their
+ * rank may move outside the global top 40, so a fast Enter must not open the wrong symbol. */
+export function paletteVisibleResults(
+  repositoryWorkerBacked: boolean,
+  workerResults: readonly SymbolEntry[] | null,
+  localResults: readonly SymbolEntry[],
+): SymbolEntry[] {
+  return repositoryWorkerBacked ? [...(workerResults ?? [])] : [...localResults];
 }
 
 // The palette floats above every view (and the code modal at zIndex 30), pinned near the top-center
@@ -599,11 +902,21 @@ const LIST_STYLE: React.CSSProperties = {
 const EMPTY_STYLE: React.CSSProperties = { fontSize: 12, color: "#6C7683", padding: "10px 8px" };
 const FOOTER_STYLE: React.CSSProperties = {
   flexShrink: 0,
+  display: "flex",
+  justifyContent: "space-between",
+  gap: 12,
   borderTop: "1px solid #2A2F37",
   padding: "6px 12px",
   fontSize: 10,
   color: "#6C7683",
   background: "#10151C",
+};
+const ERROR_STYLE: React.CSSProperties = {
+  borderTop: "1px solid #4A2B2B",
+  padding: "6px 12px",
+  fontSize: 11,
+  color: "#F0A5A5",
+  background: "#211416",
 };
 
 const ROW_STYLE: React.CSSProperties = {
@@ -657,6 +970,39 @@ const STEP_CHIP_STYLE: React.CSSProperties = {
   borderRadius: 4,
   padding: "1px 6px",
 };
+const LOADING_CHIP_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  fontSize: 9,
+  color: "#D9B866",
+  border: "1px solid #4A4027",
+  borderRadius: 4,
+  padding: "1px 6px",
+};
+const NEARBY_CHIP_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  fontSize: 9,
+  color: "#8FA9C4",
+  border: "1px solid #304157",
+  borderRadius: 4,
+  padding: "1px 6px",
+};
+const READY_CHIP_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 3,
+  fontSize: 9,
+  fontWeight: 600,
+  color: "#56C271",
+  border: "1px solid #2C4133",
+  borderRadius: 4,
+  padding: "1px 6px",
+};
+const RETRY_CHIP_STYLE: React.CSSProperties = {
+  ...NEARBY_CHIP_STYLE,
+  color: "#E28B78",
+  borderColor: "#5A332D",
+};
 const KIND_TAG_STYLE: React.CSSProperties = {
   flex: "0 0 auto",
   fontSize: 9,
@@ -686,6 +1032,11 @@ const ADD_BUTTON_STYLE: React.CSSProperties = {
   color: "#56C271",
   cursor: "pointer",
   font: "inherit",
+};
+const ADD_BUTTON_DISABLED_STYLE: React.CSSProperties = {
+  ...ADD_BUTTON_STYLE,
+  cursor: "not-allowed",
+  opacity: 0.35,
 };
 
 // Accent the module tag green — a module's top-level flow is the app/boot init, the place to start.

@@ -36,6 +36,7 @@ export interface WebOptions extends GlobalOptions {
   testCoverage?: string;
   allowSyntheticExecution?: boolean;
   allowSyntheticPrExecution?: boolean;
+  benchmarkPrFullBaseline?: boolean;
 }
 
 export async function runWeb(source: string | undefined, options: WebOptions): Promise<void> {
@@ -57,6 +58,12 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
       ? "--experimental-pr-revision-cache"
       : `--typescript-incremental ${options.typescriptIncremental}`;
     throw new CliError(EXIT.usage, `${flag} requires a loopback --host`);
+  }
+  if (options.benchmarkPrFullBaseline === true && !isLoopbackHost(options.host)) {
+    throw new CliError(
+      EXIT.usage,
+      "--benchmark-pr-full-baseline requires a loopback --host",
+    );
   }
   const cwd = resolveCwd(options.cwd);
   if (source && isFile(resolveAgainst(cwd, source))) {
@@ -95,6 +102,7 @@ export async function runWeb(source: string | undefined, options: WebOptions): P
     experimentalPrRevisionCache: options.experimentalPrRevisionCache === true,
     allowSyntheticExecution: options.allowSyntheticExecution === true,
     allowSyntheticPrExecution: options.allowSyntheticPrExecution === true,
+    benchmarkPrFullBaseline: options.benchmarkPrFullBaseline === true,
   });
   await serve(
     service,

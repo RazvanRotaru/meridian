@@ -4,11 +4,14 @@ import type {
   GraphViewLeaseHandoff,
 } from "../boot/graphViewLease";
 import {
+  GRAPH_PROJECTION_VERSION,
+  GRAPH_SYMBOL_SEARCH_VERSION,
   createPrReviewProgressSnapshot,
   prReviewProgressStatusText,
   reducePrReviewProgress,
   type GraphArtifact,
   type GraphNode,
+  type GraphProjectionV1,
   type SyntheticExecution,
   type SyntheticScenarioDescriptor,
 } from "@meridian/core";
@@ -77,6 +80,9 @@ const TEST_FILE_ID = "ts:src/a.test.ts";
 const TEST_METHOD_ID = `${TEST_FILE_ID}#coversRun`;
 const NEIGHBOR_FILE_ID = "ts:src/b.ts";
 const NEIGHBOR_METHOD_ID = `${NEIGHBOR_FILE_ID}#run`;
+const READY_HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const READY_MERGE_BASE_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+const OTHER_READY_HEAD_SHA = "cccccccccccccccccccccccccccccccccccccccc";
 
 const ARTIFACT: GraphArtifact = {
   schemaVersion: "1.0.0",
@@ -185,6 +191,39 @@ function freshStoreForArtifact(artifact: GraphArtifact, extra?: Partial<StoreDep
     prReviewUrl: "/api/prs/review?id=artifact-1",
     ...extra,
   });
+}
+
+function readyProjection(
+  graphId: string,
+  seedGraphId: string,
+  artifact: GraphArtifact,
+  requestedDepth = 1,
+  prefetchDepth = 3,
+): GraphProjectionV1 {
+  return {
+    version: GRAPH_PROJECTION_VERSION,
+    graphId,
+    seedGraphId,
+    generation: `generation-${graphId}`,
+    requestedDepth,
+    prefetchDepth,
+    loadedDepth: requestedDepth,
+    schemaVersion: artifact.schemaVersion,
+    generatedAt: artifact.generatedAt,
+    generator: artifact.generator,
+    target: artifact.target,
+    ...(artifact.extensions === undefined ? {} : { extensions: artifact.extensions }),
+    nodes: artifact.nodes,
+    edges: artifact.edges,
+    rootFileIds: [FILE_ID],
+    readyFileIds: [FILE_ID],
+    loadedFileIds: [FILE_ID],
+    frontier: [{ fileId: FILE_ID, hasMore: false, completeThroughDepth: requestedDepth }],
+    counts: {
+      full: { nodes: artifact.nodes.length, edges: artifact.edges.length, files: 1 },
+      slice: { nodes: artifact.nodes.length, edges: artifact.edges.length, files: 1 },
+    },
+  };
 }
 
 const VIEWED_FILES_HEAD = "a".repeat(40);
@@ -4230,7 +4269,7 @@ describe("PR store slice", () => {
     const submitResponse = new Promise<Response>((resolve) => {
       resolveSubmit = resolve;
     });
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
       const url = input.toString();
       return url.includes("/api/prs/review")
         ? submitResponse
@@ -5614,7 +5653,9 @@ async function swappedReviewStore(
   });
   const bootIndex = store.getState().index;
   store.setState(headSelectedPrState(7));
-  await store.getState().reviewPrInGraph();
+  // This helper constructs the explicit complete-artifact benchmark/control baseline. Progressive
+  // preparation tests build their bounded pair directly below instead of inheriting this fixture.
+  await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
   return { store, bootIndex, fetchMock };
 }
 
@@ -5629,8 +5670,8 @@ describe("PR head preparation (prepareHeadGraph)", () => {
           stage: "done",
           graphId: headGraphId,
           comparisonGraphId,
-          headSha: "abc1234def5678900000",
-          mergeBaseSha: "base1234def567890000",
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
         }]));
       }
       if (url.pathname === "/api/graph" && url.searchParams.get("id") === comparisonGraphId) {
@@ -5648,7 +5689,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const bootIndex = store.getState().index;
     store.setState(headSelectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().index).toBe(bootIndex);
     expect(store.getState().prPreparedGraphId).toBe(headGraphId);
@@ -5698,7 +5739,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const bootIndex = store.getState().index;
     store.setState(headSelectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().index).not.toBe(bootIndex);
     expect(store.getState().prPreparedGraphId).toBe(nextHeadGraphId);
@@ -5709,13 +5750,171 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(graphIds).toEqual(expect.arrayContaining([nextHeadGraphId, nextComparisonGraphId]));
   });
 
+  it("aborts a surviving comparison projection and fails closed without a complete-artifact fallback", async () => {
+    let comparisonSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          pairId: "0123456789abcdefabcd",
+          completeness: "provisional",
+          graphId: "pr-head-fallback",
+          comparisonGraphId: "pr-base-fallback",
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+        }]));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as { graphId: string };
+        if (request.graphId === "pr-head-fallback") {
+          return Promise.resolve(new Response("head projector unavailable", { status: 503 }));
+        }
+        comparisonSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+          comparisonSignal?.addEventListener("abort", abort, { once: true });
+          if (comparisonSignal?.aborted) abort();
+        });
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === "pr-base-fallback" ? ARTIFACT : HEAD_ARTIFACT,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-fallback",
+          READY_HEAD_SHA,
+        )));
+      }
+      return Promise.resolve(Response.json({ files: [], truncated: false }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewed).toBeNull();
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().progressiveGraph).toBeNull();
+    expect(comparisonSignal?.aborted).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph/project"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph?"))).toBe(false);
+  });
+
+  it("fails a partial-only handoff safely instead of loading its bounded artifact as complete", async () => {
+    const pairId = "0123456789abcdefabcd";
+    const headGraphId = `pr-partial-${pairId}-${READY_HEAD_SHA}`;
+    const comparisonGraphId = `pr-partial-base-${pairId}-${READY_MERGE_BASE_SHA}`;
+    const terminal = {
+      pairId,
+      completeness: "provisional" as const,
+      graphId: headGraphId,
+      comparisonGraphId,
+      headSha: READY_HEAD_SHA,
+      mergeBaseSha: READY_MERGE_BASE_SHA,
+      cache: "miss" as const,
+    };
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([
+          { stage: "ready", ...terminal },
+          { stage: "done", ...terminal },
+        ]));
+      }
+      if (url.pathname === "/api/graph/project") {
+        return Promise.resolve(new Response("projection unavailable", { status: 503 }));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(headGraphId, READY_HEAD_SHA)));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.reject(new Error("a partial artifact must never be loaded as a complete graph"));
+      }
+      return Promise.resolve(Response.json({ files: [], truncated: false }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph();
+
+    expect(store.getState()).toMatchObject({
+      viewMode: "prs",
+      prReviewed: null,
+      prPreparedGraphId: null,
+      prReviewStatus: "error",
+    });
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toBe(false);
+  });
+
+  it("honors an explicit canonical history restore without probing projection delivery", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: "pr-head-canonical-history",
+          headSha: "abc1234def5678900000",
+        }]));
+      }
+      if (url.pathname === "/api/graph/project") {
+        return Promise.reject(new Error("canonical history must not probe the projector"));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-canonical-history",
+          "abc1234def5678900000",
+        )));
+      }
+      return Promise.resolve(Response.json({ files: [], truncated: false }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
+
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().progressiveGraph).toBeNull();
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph/project"
+    ))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toBe(true);
+  });
+
   it("commits graph protection only after the prepared review is installed", async () => {
     const lease = graphLeaseMock();
     vi.stubGlobal("fetch", routedFetch());
     const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
     store.setState(headSelectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(lease.beginPreparedGraphHandoff).toHaveBeenCalledWith(["pr-head-1"]);
     expect(lease.handoffs).toHaveLength(1);
@@ -5751,7 +5950,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: controller });
     store.setState(selectedPrState(7));
 
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     await vi.waitFor(() => expect(beginPreparedGraphHandoff).toHaveBeenCalledWith(["artifact-1"]));
     expect(store.getState().prPrepareStage).toBe("handoff");
     expect(store.getState().prReviewProgress.steps.artifacts).toBe("active");
@@ -5767,32 +5966,60 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       .toContain("lease admission failed");
   });
 
-  it("releases a protected handoff immediately when preparation is canceled during graph fetch", async () => {
+  it("aborts progressive projection work and releases its handoff when preparation is canceled", async () => {
     const lease = graphLeaseMock();
-    let releaseGraph!: (response: Response) => void;
-    const graphResponse = new Promise<Response>((resolve) => { releaseGraph = resolve; });
-    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/api/pr/analyze")) {
-        return Promise.resolve(ndjsonResponse([{ stage: "done", graphId: "pr-cancel", headSha: "cancel123" }]));
+    const pairId = "0123456789abcdefabcd";
+    const headGraphId = `pr-partial-${pairId}-${READY_HEAD_SHA}`;
+    const comparisonGraphId = `pr-partial-base-${pairId}-${READY_MERGE_BASE_SHA}`;
+    let projectionSignal: AbortSignal | null = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          pairId,
+          completeness: "provisional",
+          graphId: headGraphId,
+          comparisonGraphId,
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+        }]));
       }
-      if (url.includes("/api/meta")) {
-        return Promise.resolve(Response.json(preparedSyntheticMeta("pr-cancel", "cancel123")));
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(headGraphId, READY_HEAD_SHA)));
       }
-      if (url.includes("/api/graph")) return graphResponse;
+      if (url.pathname === "/api/graph/project") {
+        projectionSignal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+          projectionSignal!.addEventListener("abort", abort, { once: true });
+          if (projectionSignal!.aborted) abort();
+        });
+      }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
-    }));
-    const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphViewLease: lease.controller,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
     store.setState(headSelectedPrState(7));
 
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: true });
     await vi.waitFor(() => expect(lease.handoffs).toHaveLength(1));
+    await vi.waitFor(() => expect(projectionSignal).not.toBeNull());
     store.getState().cancelPrReviewPreparation();
+    expect((projectionSignal as unknown as AbortSignal).aborted).toBe(true);
     await vi.waitFor(() => expect(lease.handoffs[0]!.release).toHaveBeenCalledTimes(1));
     expect(lease.handoffs[0]!.commit).not.toHaveBeenCalled();
 
-    releaseGraph(Response.json(HEAD_ARTIFACT));
     await review;
+    expect(fetchMock.mock.calls.some(([input]) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      return url.pathname === "/api/graph";
+    })).toBe(false);
     expect(store.getState().viewMode).toBe("prs");
     expect(store.getState().prPreparedGraphId).toBeNull();
   });
@@ -5844,7 +6071,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     }));
     const store = freshStore({ ...ANALYZE_DEPS, graphViewLease: lease.controller });
     store.setState(headSelectedPrState(7));
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(lease.beginPreparedGraphHandoff).toHaveBeenNthCalledWith(
       1,
@@ -5897,7 +6124,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
 
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     // The base graph is not an intermediate review while the stream is open.
     expect(store.getState().viewMode).toBe("prs");
     expect(store.getState().prReviewed).toBe(null);
@@ -5926,6 +6153,658 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().prPreparedGraphId).toBe("pr-gated");
   });
 
+  it.each([
+    ["projection capability is missing", { graphSymbolsUrl: "/api/graph/symbols" }, {}, true, false],
+    ["symbol capability is missing", { graphProjectUrl: "/api/graph/project" }, {}, true, false],
+    [
+      "progressive delivery is explicitly disabled",
+      { graphProjectUrl: "/api/graph/project", graphSymbolsUrl: "/api/graph/symbols" },
+      { progressiveGraphDelivery: false },
+      false,
+      true,
+    ],
+  ] as const)("keeps the complete terminal isolated when %s", async (
+    _case,
+    capabilities,
+    options,
+    progressiveRequested,
+    benchmarkAccepted,
+  ) => {
+    const encoder = new TextEncoder();
+    let finishCanonical!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          stage: "ready",
+          pairId: "abcdef0123456789abcd",
+          completeness: "provisional",
+          graphId: "pr-provisional-ignored",
+          comparisonGraphId: "base-provisional-ignored",
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+        })}\n`));
+        finishCanonical = () => {
+          controller.enqueue(encoder.encode(`${JSON.stringify({
+            stage: "done",
+            graphId: "pr-canonical-only",
+            comparisonGraphId: "base-canonical-only",
+            headSha: READY_HEAD_SHA,
+            mergeBaseSha: READY_MERGE_BASE_SHA,
+          })}\n`));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === "base-canonical-only" ? ARTIFACT : HEAD_ARTIFACT,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-canonical-only",
+          READY_HEAD_SHA,
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({ ...ANALYZE_DEPS, ...capabilities });
+    store.setState(headSelectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph(options);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prPreparedGraphId).toBeNull();
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      progressive: progressiveRequested,
+    });
+    expect(fetchMock.mock.calls).toHaveLength(1);
+
+    finishCanonical();
+    await review;
+
+    if (benchmarkAccepted) {
+      expect(store.getState()).toMatchObject({
+        viewMode: "modules",
+        prReviewed: 7,
+        prPreparedGraphId: "pr-canonical-only",
+        prPreparedComparisonGraphId: "base-canonical-only",
+      });
+    } else {
+      expect(store.getState()).toMatchObject({
+        viewMode: "prs",
+        prReviewed: null,
+        prPreparedGraphId: null,
+        prReviewStatus: "error",
+      });
+      expect(store.getState().prPrepareError).toContain(
+        "partial PR preparation ended with a legacy complete terminal",
+      );
+      expect(fetchMock.mock.calls.some(([input]) => (
+        new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+      ))).toBe(false);
+    }
+  });
+
+  it("fails closed when a partial terminal arrives without projection and symbol capabilities", async () => {
+    const pairId = "0123456789abcdefabcd";
+    const headGraphId = `pr-partial-${pairId}-${READY_HEAD_SHA}`;
+    const comparisonGraphId = `pr-partial-base-${pairId}-${READY_MERGE_BASE_SHA}`;
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          pairId,
+          completeness: "provisional",
+          graphId: headGraphId,
+          comparisonGraphId,
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+          cache: "miss",
+        }]));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.reject(new Error("a partial artifact must never use the complete graph route"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: true });
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      progressive: true,
+    });
+    expect(store.getState()).toMatchObject({
+      viewMode: "prs",
+      prReviewed: null,
+      prPreparedGraphId: null,
+      prReviewStatus: "error",
+    });
+    expect(store.getState().prPrepareError).toContain(
+      "partial PR graph delivery requires projection and symbol capabilities",
+    );
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toBe(false);
+  });
+
+  it("enters on the bounded pair and ignores a legacy complete terminal without changing review state", async () => {
+    const pairId = "0123456789abcdefabcd";
+    const provisionalComparisonId = "base-provisional";
+    const canonicalComparisonId = "base-canonical";
+    const encoder = new TextEncoder();
+    let finishCanonical!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          stage: "ready",
+          pairId,
+          completeness: "provisional",
+          graphId: "pr-provisional",
+          comparisonGraphId: provisionalComparisonId,
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+          cache: "miss",
+        })}\n`));
+        finishCanonical = () => {
+          controller.enqueue(encoder.encode(`${JSON.stringify({
+            stage: "done",
+            graphId: "pr-canonical",
+            comparisonGraphId: canonicalComparisonId,
+            headSha: READY_HEAD_SHA,
+            mergeBaseSha: READY_MERGE_BASE_SHA,
+            cache: "miss",
+          })}\n`));
+          controller.close();
+        };
+      },
+    });
+    const canonicalArtifact: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      generatedAt: "2026-07-31T12:00:00.000Z",
+    };
+    const projectedGraphIds: string[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        projectedGraphIds.push(request.graphId);
+        const artifact = request.graphId === "pr-canonical" ? canonicalArtifact : request.graphId === "pr-provisional"
+          ? HEAD_ARTIFACT
+          : ARTIFACT;
+        return Promise.resolve(Response.json(readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          artifact,
+          request.requestedDepth,
+          request.prefetchDepth,
+        )));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          url.searchParams.get("id") ?? "",
+          READY_HEAD_SHA,
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    let actionResolved = false;
+    const review = store.getState().reviewPrInGraph()
+      .then(() => { actionResolved = true; });
+    await vi.waitFor(() => expect(store.getState().prPreparedGraphId).toBe("pr-provisional"));
+    await review;
+
+    expect(actionResolved).toBe(true);
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().prReviewed).toBe(7);
+    expect(store.getState().prReviewProgress.status).toBe("running");
+
+    const retainedPosition = { x: 41, y: 73, width: 100, height: 80 };
+    const retainedCodeView = {
+      node: store.getState().index.nodesById.get(METHOD_ID)!,
+      code: "return canonicalInput;",
+      loading: false,
+      error: null,
+      mode: "modal" as const,
+      baseLine: 10,
+    };
+    store.setState({
+      reviewPanelHidden: true,
+      reviewDiffOnly: true,
+      reviewSelectedId: METHOD_ID,
+      reviewLitNodeIds: new Set([METHOD_ID]),
+      moduleSelected: new Set([METHOD_ID]),
+      minimalBasePositions: { [FILE_ID]: retainedPosition },
+      codeView: retainedCodeView,
+    });
+    finishCanonical();
+    await vi.waitFor(() => expect(store.getState().prReviewProgress.status).toBe("success"));
+
+    expect(store.getState()).toMatchObject({
+      prPreparedGraphId: "pr-provisional",
+      prPreparedComparisonGraphId: provisionalComparisonId,
+      prReviewStatus: "idle",
+      prPrepareStage: null,
+      reviewPanelHidden: true,
+      reviewDiffOnly: true,
+      reviewSelectedId: METHOD_ID,
+      minimalBasePositions: { [FILE_ID]: retainedPosition },
+    });
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().reviewLitNodeIds).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().moduleSelected).toEqual(new Set([METHOD_ID]));
+    expect(store.getState().codeView).toMatchObject({
+      code: retainedCodeView.code,
+      mode: "modal",
+      node: { id: METHOD_ID },
+    });
+    expect(store.getState().prReviewProgress.status).toBe("success");
+    expect(projectedGraphIds).not.toContain("pr-canonical");
+    expect(projectedGraphIds).not.toContain(canonicalComparisonId);
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toBe(false);
+  });
+
+  it("does not inspect or install a legacy complete terminal even when it names another revision", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const encoder = new TextEncoder();
+    let finishMismatchedCanonical!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          stage: "ready",
+          pairId: "11223344556677889900",
+          completeness: "provisional",
+          graphId: "pr-provisional-bound",
+          comparisonGraphId: "base-provisional-bound",
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+        })}\n`));
+        finishMismatchedCanonical = () => {
+          controller.enqueue(encoder.encode(`${JSON.stringify({
+            stage: "done",
+            graphId: "pr-canonical-mismatch",
+            comparisonGraphId: "base-canonical-mismatch",
+            headSha: OTHER_READY_HEAD_SHA,
+            mergeBaseSha: READY_MERGE_BASE_SHA,
+          })}\n`));
+          controller.close();
+        };
+      },
+    });
+    const projectedGraphIds: string[] = [];
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        projectedGraphIds.push(request.graphId);
+        return Promise.resolve(Response.json(readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          request.graphId === "pr-provisional-bound" ? HEAD_ARTIFACT : ARTIFACT,
+          request.requestedDepth,
+          request.prefetchDepth,
+        )));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-provisional-bound",
+          READY_HEAD_SHA,
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: true });
+    expect(store.getState().prPreparedGraphId).toBe("pr-provisional-bound");
+
+    finishMismatchedCanonical();
+    await vi.waitFor(() => expect(store.getState().prReviewProgress.status).toBe("success"));
+
+    expect(store.getState()).toMatchObject({
+      viewMode: "modules",
+      prReviewed: 7,
+      prPreparedGraphId: "pr-provisional-bound",
+      prPreparedComparisonGraphId: "base-provisional-bound",
+      prReviewStatus: "idle",
+      prPrepareError: null,
+    });
+    expect(projectedGraphIds).not.toContain("pr-canonical-mismatch");
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("finishes an in-flight provisional handoff before handling a terminal stream failure", async () => {
+    const pairId = "fedcba9876543210abcd";
+    const provisionalComparisonId = "base-provisional-failure";
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const encoder = new TextEncoder();
+    let failCanonical!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          stage: "ready",
+          pairId,
+          completeness: "provisional",
+          graphId: "pr-provisional",
+          comparisonGraphId: provisionalComparisonId,
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+          cache: "miss",
+        })}\n`));
+        failCanonical = () => controller.error(new Error("canonical extraction failed"));
+      },
+    });
+    let releaseMeta!: (response: Response) => void;
+    const metaResponse = new Promise<Response>((resolve) => { releaseMeta = resolve; });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        return Promise.resolve(Response.json(readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          request.graphId === "pr-provisional" ? HEAD_ARTIFACT : ARTIFACT,
+          request.requestedDepth,
+          request.prefetchDepth,
+        )));
+      }
+      if (url.pathname === "/api/meta") return metaResponse;
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore({
+      ...ANALYZE_DEPS,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.setState(headSelectedPrState(7));
+
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: true });
+    await vi.waitFor(() => expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/meta"
+    ))).toBe(true));
+    failCanonical();
+
+    await expect(Promise.race([
+      review.then(() => "resolved"),
+      new Promise<string>((resolve) => setTimeout(() => resolve("pending"), 20)),
+    ])).resolves.toBe("pending");
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().prReviewStatus).toBe("preparing");
+
+    releaseMeta(Response.json(preparedSyntheticMeta(
+      "pr-provisional",
+      READY_HEAD_SHA,
+    )));
+    await review;
+
+    expect(store.getState()).toMatchObject({
+      viewMode: "modules",
+      prReviewed: 7,
+      prPreparedGraphId: "pr-provisional",
+      prReviewStatus: "idle",
+      prPrepareError: null,
+    });
+    await vi.waitFor(() => {
+      expect(warning).toHaveBeenCalledWith(
+        "Partial PR graph terminal failed; keeping the ready review.",
+        expect.objectContaining({ message: "canonical extraction failed" }),
+      );
+    });
+  });
+
+  it("reuses a direct partial boot projection and never follows its legacy complete terminal", async () => {
+    const pairId = "00112233445566778899";
+    const provisionalId = "pr-partial-direct";
+    const provisionalComparisonId = "pr-partial-base-direct";
+    const canonicalId = "pr-canonical-direct";
+    const canonicalComparisonId = "pr-canonical-base-direct";
+    const initialProjection = readyProjection(provisionalId, provisionalId, HEAD_ARTIFACT);
+    const canonicalArtifact: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      generatedAt: "2026-07-31T13:00:00.000Z",
+    };
+    let provisionalComparisonSignal: AbortSignal | undefined;
+    const encoder = new TextEncoder();
+    let finishCanonical!: () => void;
+    const analyzeStream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(`${JSON.stringify({
+          stage: "ready",
+          pairId,
+          completeness: "provisional",
+          graphId: provisionalId,
+          comparisonGraphId: provisionalComparisonId,
+          headSha: READY_HEAD_SHA,
+          mergeBaseSha: READY_MERGE_BASE_SHA,
+          cache: "miss",
+        })}\n`));
+        finishCanonical = () => {
+          controller.enqueue(encoder.encode(`${JSON.stringify({
+            stage: "done",
+            graphId: canonicalId,
+            comparisonGraphId: canonicalComparisonId,
+            headSha: READY_HEAD_SHA,
+            mergeBaseSha: READY_MERGE_BASE_SHA,
+            cache: "miss",
+          })}\n`));
+          controller.close();
+        };
+      },
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(new Response(analyzeStream, { status: 200 }));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        if (request.graphId === provisionalComparisonId) {
+          provisionalComparisonSignal = init?.signal ?? undefined;
+        }
+        const artifact = request.graphId === canonicalId ? canonicalArtifact : request.graphId === provisionalId
+          ? HEAD_ARTIFACT
+          : ARTIFACT;
+        return Promise.resolve(Response.json(readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          artifact,
+          request.requestedDepth,
+          request.prefetchDepth,
+        )));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          url.searchParams.get("id") ?? "",
+          READY_HEAD_SHA,
+        )));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(canonicalArtifact));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStoreForArtifact(HEAD_ARTIFACT, {
+      ...ANALYZE_DEPS,
+      graphId: provisionalId,
+      graphUrl: `/api/graph?id=${provisionalId}`,
+      metaUrl: `/api/meta?id=${provisionalId}`,
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+      initialGraphProjection: initialProjection,
+      initialGraphProvisional: true,
+      loadCanonicalBootArtifact: vi.fn(async () => {
+        throw new Error("the provisional boot artifact is not a canonical baseline");
+      }),
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: true });
+
+    expect(store.getState().prPreparedGraphId).toBe(provisionalId);
+    expect(store.getState().viewMode).toBe("modules");
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toHaveLength(0);
+    expect(provisionalComparisonSignal?.aborted).toBe(false);
+
+    finishCanonical();
+    await vi.waitFor(() => expect(store.getState().prReviewProgress.status).toBe("success"));
+    expect(store.getState().prPreparedGraphId).toBe(provisionalId);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    const projectedIds = fetchMock.mock.calls
+      .filter(([input]) => new URL(input.toString(), "http://meridian.local").pathname === "/api/graph/project")
+      .map(([, init]) => (JSON.parse(String(init?.body)) as { graphId: string }).graphId);
+    expect(projectedIds).not.toContain(canonicalId);
+    expect(projectedIds).not.toContain(canonicalComparisonId);
+    expect(fetchMock.mock.calls.filter(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toHaveLength(0);
+  });
+
+  it("keeps the bounded boot baseline when a legacy terminal returns a complete graph", async () => {
+    const provisionalId = "pr-partial-direct-cache-hit";
+    const canonicalId = "pr-canonical-direct-cache-hit";
+    const initialProjection: GraphProjectionV1 = {
+      version: GRAPH_PROJECTION_VERSION,
+      graphId: provisionalId,
+      seedGraphId: provisionalId,
+      generation: "generation-provisional-cache-hit",
+      requestedDepth: 1,
+      prefetchDepth: 3,
+      loadedDepth: 1,
+      schemaVersion: HEAD_ARTIFACT.schemaVersion,
+      generatedAt: HEAD_ARTIFACT.generatedAt,
+      generator: HEAD_ARTIFACT.generator,
+      target: HEAD_ARTIFACT.target,
+      ...(HEAD_ARTIFACT.extensions === undefined ? {} : { extensions: HEAD_ARTIFACT.extensions }),
+      nodes: HEAD_ARTIFACT.nodes,
+      edges: HEAD_ARTIFACT.edges,
+      rootFileIds: [FILE_ID],
+      readyFileIds: [FILE_ID],
+      loadedFileIds: [FILE_ID],
+      frontier: [{ fileId: FILE_ID, hasMore: false, completeThroughDepth: 1 }],
+      counts: {
+        full: { nodes: HEAD_ARTIFACT.nodes.length, edges: HEAD_ARTIFACT.edges.length, files: 1 },
+        slice: { nodes: HEAD_ARTIFACT.nodes.length, edges: HEAD_ARTIFACT.edges.length, files: 1 },
+      },
+    };
+    const canonicalArtifact: GraphArtifact = {
+      ...HEAD_ARTIFACT,
+      generatedAt: "2026-07-31T14:00:00.000Z",
+    };
+    const bootFallback = vi.fn(async () => {
+      throw new Error("bounded boot artifact must not be loaded as the canonical baseline");
+    });
+    const fetchedGraphIds: Array<string | null> = [];
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/pr/analyze") {
+        return Promise.resolve(ndjsonResponse([{
+          stage: "done",
+          graphId: canonicalId,
+          comparisonGraphId: null,
+          headSha: "abc1234def5678900000",
+          mergeBaseSha: "base1234def567890000",
+          cache: "hit",
+        }]));
+      }
+      if (url.pathname === "/api/graph") {
+        fetchedGraphIds.push(url.searchParams.get("id"));
+        return Promise.resolve(Response.json(canonicalArtifact));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          canonicalId,
+          "abc1234def5678900000",
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }));
+    const store = freshStoreForArtifact(HEAD_ARTIFACT, {
+      ...ANALYZE_DEPS,
+      graphId: provisionalId,
+      graphUrl: `/api/graph?id=${provisionalId}`,
+      metaUrl: `/api/meta?id=${provisionalId}`,
+      initialGraphProjection: initialProjection,
+      initialGraphProvisional: true,
+      loadCanonicalBootArtifact: bootFallback,
+    });
+    store.setState(headSelectedPrState(7));
+
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
+    expect(store.getState().prPreparedGraphId).toBe(canonicalId);
+    expect(store.getState().prReviewBaseline?.artifact).toBe(HEAD_ARTIFACT);
+
+    expect(store.getState().closeMinimalGraph()).toBe(true);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+
+    expect(bootFallback).not.toHaveBeenCalled();
+    expect(fetchedGraphIds).toEqual([canonicalId]);
+    expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+  });
+
   it("does not expose the prepared graph before its sandbox capability arrives", async () => {
     let releaseMeta!: (response: Response) => void;
     const metaResponse = new Promise<Response>((resolve) => { releaseMeta = resolve; });
@@ -5942,7 +6821,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
 
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     await vi.waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/meta?id=pr-atomic"))).toBe(true);
     });
@@ -5987,7 +6866,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().artifact).toBe(ARTIFACT);
     expect(store.getState().prReviewBaseline).toBeNull();
@@ -6010,7 +6889,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
         stages.push(state.prPrepareStage);
       }
     });
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     expect(stages).toEqual([
       "resolve",
       "clone",
@@ -6028,7 +6907,13 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     // The analyze POST carries the contract body before any review state is applied.
     expect(fetchMock.mock.calls[0][0].toString()).toBe("http://meridian.local/api/pr/analyze");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ id: "artifact-1", prNumber: 7, baseRef: "main", headRef: "feature" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      id: "artifact-1",
+      prNumber: 7,
+      baseRef: "main",
+      headRef: "feature",
+      progressive: false,
+    });
     // After the stream, the first review application runs against the swapped prepared artifact.
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
@@ -6109,7 +6994,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       revisions: { head: "done", mergeBase: "done" },
     });
 
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     await vi.waitFor(() => {
       expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("id=pr-base-1"))).toBe(true);
     });
@@ -6191,7 +7076,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const store = freshStore(ANALYZE_DEPS);
     store.setState(headSelectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
     expect(store.getState().index.changedStatus.get(METHOD_ID)).toBe("added");
@@ -6284,7 +7169,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
       prFilesTotal: 2,
     });
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     const state = store.getState();
     const deletedFile = state.reviewFiles.find((file) => file.path === "src/removed.ts");
@@ -6330,7 +7215,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const bootIndex = store.getState().index;
     store.setState(selectedPrState(7));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().viewMode).toBe("prs");
     expect(store.getState().prReviewed).toBe(null);
@@ -6368,8 +7253,8 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(selectedPrState(7));
-    const firstReview = store.getState().reviewPrInGraph();
-    const secondReview = store.getState().reviewPrInGraph();
+    const firstReview = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
+    const secondReview = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     let secondSettled = false;
     void secondReview.then(() => {
       secondSettled = true;
@@ -6517,7 +7402,7 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = freshStore(ANALYZE_DEPS);
     store.setState(headSelectedPrState(7));
-    const review = store.getState().reviewPrInGraph();
+    const review = store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     // The stream has finished (done landed) and the artifact GET is in flight...
     await vi.waitFor(() => {
       expect(fetchMock.mock.calls.some((call) => call[0].toString().includes("/api/graph"))).toBe(true);
@@ -6806,7 +7691,7 @@ describe("PR review artifact swap and restore", () => {
     });
     vi.stubGlobal("fetch", preparedRefreshFetch());
 
-    await reloaded.getState().reviewPrInGraph();
+    await reloaded.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(reloaded.getState().prReviewRevision?.headSha).toBe(REFRESHED_HEAD_SHA);
     expect(reloaded.getState().reviewComments).toEqual([{ ...oldDraft, lineStale: true }]);
@@ -6841,10 +7726,85 @@ describe("PR review artifact swap and restore", () => {
   });
 
   it("rolls back a zero-match prepared refresh payload so the prior review can resume", async () => {
-    const { store } = await swappedReviewStore();
+    const symbolLoader = vi.fn(async () => ({
+      version: GRAPH_SYMBOL_SEARCH_VERSION,
+      graphId: "pr-head-1",
+      generation: "immutable-pr-head-1",
+      complete: true,
+      indexedSymbolCount: 1,
+      totalSymbolCount: 1,
+      symbols: [{
+        id: METHOD_ID,
+        fileId: FILE_ID,
+        displayName: METHOD_ID,
+        qualifiedName: METHOD_ID,
+        kind: "method" as const,
+        file: "src/a.ts",
+        isPrivateMethod: false,
+        stepCount: null,
+      }],
+    }));
+    const { store } = await swappedReviewStore({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+      loadGraphSymbolsInlineForTest: symbolLoader,
+    });
+    const prepared = store.getState();
+    const preparedGraphId = prepared.prPreparedGraphId!;
+    const preparedProjection: GraphProjectionV1 = {
+      version: GRAPH_PROJECTION_VERSION,
+      graphId: preparedGraphId,
+      seedGraphId: preparedGraphId,
+      generation: "immutable-pr-head-1",
+      requestedDepth: 1,
+      prefetchDepth: 3,
+      loadedDepth: 1,
+      schemaVersion: prepared.artifact.schemaVersion,
+      generatedAt: prepared.artifact.generatedAt,
+      generator: prepared.artifact.generator,
+      target: prepared.artifact.target,
+      ...(prepared.artifact.telemetry === undefined ? {} : { telemetry: prepared.artifact.telemetry }),
+      ...(prepared.artifact.extensions === undefined ? {} : { extensions: prepared.artifact.extensions }),
+      nodes: prepared.artifact.nodes,
+      edges: prepared.artifact.edges,
+      rootFileIds: [FILE_ID],
+      readyFileIds: [FILE_ID],
+      loadedFileIds: [FILE_ID],
+      frontier: [{ fileId: FILE_ID, hasMore: false, completeThroughDepth: 1 }],
+      counts: {
+        full: { nodes: prepared.artifact.nodes.length, edges: prepared.artifact.edges.length, files: 1 },
+        slice: { nodes: prepared.artifact.nodes.length, edges: prepared.artifact.edges.length, files: 1 },
+      },
+    };
+    store.setState({
+      // Keep this legacy rollback fixture on the explicit complete-artifact control path. The
+      // production partial-refresh path is covered by the bounded-pair preparation tests above.
+      progressiveGraph: null,
+      progressiveSymbols: {
+        status: "ready",
+        graphId: preparedGraphId,
+        generation: preparedProjection.generation,
+        workerBacked: true,
+        symbols: [],
+        indexed: 500_000,
+        total: 500_000,
+        error: null,
+      },
+    });
     const before = store.getState();
     const priorSummary = selectedPrSummary(before);
-    const noMatchGraphId = "pr-head-no-match";
+    const refreshPairId = "fedcba9876543210fedc";
+    const refreshHeadSha = OTHER_READY_HEAD_SHA;
+    const noMatchGraphId = `pr-partial-${refreshPairId}-${refreshHeadSha}`;
+    const noMatchComparisonGraphId = `pr-partial-base-${refreshPairId}-${READY_MERGE_BASE_SHA}`;
+    const noMatchHeadArtifact: GraphArtifact = {
+      ...REFRESHED_HEAD_ARTIFACT,
+      nodes: [
+        node("ts:other", "package", "other"),
+        node("ts:other/b.ts", "module", "other/b.ts", "ts:other"),
+      ],
+      edges: [],
+    };
     const noMatchFiles = {
       files: [{ path: "src/no-longer-in-graph.ts", status: "modified" as const, additions: 3, deletions: 1 }],
       truncated: true,
@@ -6853,37 +7813,74 @@ describe("PR review artifact swap and restore", () => {
       suggestedSubdir: "src",
     };
     store.setState({ prReviewStale: true });
-    const fetchMock = vi.fn((input: RequestInfo | URL) => {
-      const url = input.toString();
-      if (url.includes("/api/prs/one")) return Promise.resolve(Response.json({ pr: REFRESHED_SUMMARY }));
-      if (url.includes("/api/prs/files")) return Promise.resolve(Response.json(noMatchFiles));
-      if (url.includes("/api/prs/comments")) {
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const rawUrl = input.toString();
+      const url = new URL(rawUrl, "http://meridian.local");
+      if (url.pathname === "/api/prs/one") return Promise.resolve(Response.json({ pr: REFRESHED_SUMMARY }));
+      if (url.pathname === "/api/prs/files") return Promise.resolve(Response.json(noMatchFiles));
+      if (url.pathname === "/api/prs/comments") {
         return Promise.resolve(Response.json({ comments: [], reviews: { approved: [], changesRequested: [], commented: 0 }, hasMore: false }));
       }
-      if (url.includes("/api/prs/checks")) {
+      if (url.pathname === "/api/prs/checks") {
         return Promise.resolve(Response.json({ total: 1, passed: 1, failed: 0, pending: 0, url: null }));
       }
-      if (url.includes("/api/pr/analyze")) {
+      if (url.pathname === "/api/pr/analyze") {
         return Promise.resolve(ndjsonResponse([
           { stage: "clone" },
           { stage: "checkout" },
           { stage: "extract" },
-          { stage: "done", graphId: noMatchGraphId, headSha: REFRESHED_HEAD_SHA },
+          {
+            stage: "done",
+            pairId: refreshPairId,
+            completeness: "provisional",
+            graphId: noMatchGraphId,
+            comparisonGraphId: noMatchComparisonGraphId,
+            headSha: refreshHeadSha,
+            mergeBaseSha: READY_MERGE_BASE_SHA,
+          },
         ]));
       }
-      if (url.includes(`/api/graph?id=${noMatchGraphId}`)) {
-        return Promise.resolve(Response.json(REFRESHED_HEAD_ARTIFACT));
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        const projection = readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          request.graphId === noMatchGraphId ? noMatchHeadArtifact : ARTIFACT,
+          request.requestedDepth,
+          request.prefetchDepth,
+        );
+        return Promise.resolve(Response.json(request.graphId === noMatchGraphId
+          ? {
+              ...projection,
+              rootFileIds: ["ts:other/b.ts"],
+              readyFileIds: ["ts:other/b.ts"],
+              loadedFileIds: ["ts:other/b.ts"],
+              frontier: [{
+                fileId: "ts:other/b.ts",
+                hasMore: false,
+                completeThroughDepth: request.requestedDepth,
+              }],
+            }
+          : projection));
       }
-      if (url.includes(`/api/graph?id=${before.prPreparedGraphId}`)) {
-        return Promise.resolve(Response.json(HEAD_ARTIFACT));
+      if (url.pathname === "/api/graph") {
+        const graphId = url.searchParams.get("id");
+        if (graphId === noMatchGraphId) return Promise.resolve(Response.json(noMatchHeadArtifact));
+        if (graphId === noMatchComparisonGraphId) return Promise.resolve(Response.json(ARTIFACT));
+        if (graphId === before.prPreparedGraphId) return Promise.resolve(Response.json(HEAD_ARTIFACT));
       }
-      if (url.includes(`/api/meta?id=${noMatchGraphId}`)) {
-        return Promise.resolve(Response.json(preparedSyntheticMeta(noMatchGraphId, REFRESHED_HEAD_SHA)));
+      if (url.pathname === "/api/meta" && url.searchParams.get("id") === noMatchGraphId) {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(noMatchGraphId, refreshHeadSha)));
       }
-      if (url.includes(`/api/meta?id=${before.prPreparedGraphId}`)) {
+      if (url.pathname === "/api/meta" && url.searchParams.get("id") === before.prPreparedGraphId) {
         return Promise.resolve(Response.json(preparedSyntheticMeta(before.prPreparedGraphId!, before.prPreparedHeadSha!)));
       }
-      return Promise.reject(new Error(`Unexpected request: ${url}`));
+      return Promise.reject(new Error(`Unexpected request: ${rawUrl}`));
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -6899,9 +7896,35 @@ describe("PR review artifact swap and restore", () => {
     expect(selectedPrSummary(store.getState())).not.toBe(priorSummary);
     expect(selectedPrSummary(store.getState())?.headSha).toBe(REFRESHED_HEAD_SHA);
     expect(store.getState().prPrepareError).toBe("The refreshed pull request no longer matches this graph.");
+    // The rollback disposed the closure-owned Worker. Its value snapshot must therefore restart
+    // from idle instead of restoring a ready/workerBacked state with no client behind it.
+    expect(store.getState().progressiveSymbols).toMatchObject({
+      status: "idle",
+      graphId: null,
+      symbols: [],
+    });
+    expect(store.getState().progressiveSymbols.workerBacked).toBeUndefined();
+    store.setState({
+      progressiveGraph: {
+        head: preparedProjection,
+        comparison: null,
+        explicitFileIds: [],
+        affectedDepth: 1,
+        requestedDepth: 1,
+        status: "ready",
+        error: null,
+      },
+    });
+    await store.getState().startProgressiveSymbolIndex();
+    expect(symbolLoader).toHaveBeenCalledOnce();
+    expect(store.getState().progressiveSymbols).toMatchObject({
+      status: "ready",
+      graphId: preparedGraphId,
+      symbols: [{ id: METHOD_ID }],
+    });
 
     store.getState().closeMinimalGraph();
-    await store.getState().resumePrReview();
+    await store.getState().resumePrReview({ progressiveGraphDelivery: false });
 
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
@@ -7125,7 +8148,7 @@ describe("PR review artifact swap and restore", () => {
     store.getState().setViewMode("prs");
     store.setState(headSelectedPrState(9));
 
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
 
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(9);
@@ -7162,7 +8185,7 @@ describe("PR review artifact swap and restore", () => {
       syntheticScenarios: [BOOT_SYNTHETIC_SCENARIO],
     });
     store.setState(headSelectedPrState(7));
-    await store.getState().reviewPrInGraph();
+    await store.getState().reviewPrInGraph({ progressiveGraphDelivery: false });
     await vi.waitFor(() => {
       expect(store.getState().prPreparedGraphId).toBe("pr-head-1");
     });
@@ -7182,7 +8205,7 @@ describe("PR review artifact swap and restore", () => {
     const bootSourceCall = fetchMock.mock.calls.filter((call) => call[0].toString().includes("/api/source")).at(-1)!;
     expect(new URL(bootSourceCall[0].toString()).searchParams.get("id")).toBe("artifact-1");
 
-    await store.getState().resumePrReview();
+    await store.getState().resumePrReview({ progressiveGraphDelivery: false });
     expect(store.getState().artifact.generatedAt).toBe(HEAD_ARTIFACT.generatedAt);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
     expect(store.getState()).toMatchObject(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000"));
@@ -7261,7 +8284,7 @@ describe("PR review artifact swap and restore", () => {
     vi.stubGlobal("window", { location: { origin: "http://meridian.local" } });
     vi.stubGlobal("fetch", vi.fn(() => Promise.resolve(new Response("expired", { status: 404 }))));
 
-    await store.getState().resumePrReview();
+    await store.getState().resumePrReview({ progressiveGraphDelivery: false });
 
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual([]);
@@ -7280,6 +8303,159 @@ describe("PR review artifact swap and restore", () => {
     expect(store.getState().prPrepareError).toBeNull();
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
     expect(store.getState().prPreparedArtifactCurrent).toBe(true);
+  });
+
+  it("aborts a surviving comparison projection and fails a partial resume without artifact fallback", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store } = await swappedReviewStore({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.getState().closeMinimalGraph();
+    store.setState({ prPreparedComparisonGraphId: "pr-base-resume" });
+    warning.mockClear();
+    let comparisonSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as { graphId: string };
+        if (request.graphId === "pr-head-1") {
+          return Promise.resolve(new Response("head projector unavailable", { status: 503 }));
+        }
+        comparisonSignal = init?.signal ?? undefined;
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+          comparisonSignal?.addEventListener("abort", abort, { once: true });
+          if (comparisonSignal?.aborted) abort();
+        });
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.resolve(Response.json(
+          url.searchParams.get("id") === "pr-base-resume" ? ARTIFACT : HEAD_ARTIFACT,
+        ));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-1",
+          "abc1234def5678900000",
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().resumePrReview({ progressiveGraphDelivery: true });
+
+    expect(store.getState().prReviewStatus).toBe("error");
+    expect(store.getState().progressiveGraph).toBeNull();
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(comparisonSignal?.aborted).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph/project"))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => input.toString().includes("/api/graph?"))).toBe(false);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("does not abort a successfully consumed retained progressive projection", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store } = await swappedReviewStore({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.getState().closeMinimalGraph();
+    warning.mockClear();
+    let projectionSignal: AbortSignal | undefined;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-1",
+          "abc1234def5678900000",
+        )));
+      }
+      if (url.pathname === "/api/graph/project") {
+        const request = JSON.parse(String(init?.body)) as {
+          graphId: string;
+          requestedDepth: number;
+          prefetchDepth: number;
+          roots: { kind: string; seedGraphId?: string };
+        };
+        projectionSignal = init?.signal ?? undefined;
+        return Promise.resolve(Response.json(readyProjection(
+          request.graphId,
+          request.roots.kind === "changed-files" ? request.roots.seedGraphId! : request.graphId,
+          HEAD_ARTIFACT,
+          request.requestedDepth,
+          request.prefetchDepth,
+        )));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().resumePrReview({ progressiveGraphDelivery: true });
+
+    expect(store.getState()).toMatchObject({
+      prReviewStatus: "idle",
+      prPreparedArtifactCurrent: true,
+      progressiveGraph: {
+        head: { graphId: "pr-head-1" },
+        requestedDepth: 1,
+        status: "ready",
+      },
+    });
+    const projectionCall = fetchMock.mock.calls.find(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph/project"
+    ));
+    expect(JSON.parse(String(projectionCall?.[1]?.body))).toMatchObject({
+      requestedDepth: 1,
+      prefetchDepth: 3,
+    });
+    expect(projectionSignal?.aborted).toBe(false);
+    expect(warning).not.toHaveBeenCalled();
+  });
+
+  it("keeps a retained partial-only review retryable without loading its backing artifact", async () => {
+    const { store } = await swappedReviewStore({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.getState().closeMinimalGraph();
+    const pairId = "0123456789abcdefabcd";
+    const headGraphId = `pr-partial-${pairId}-${READY_HEAD_SHA}`;
+    const comparisonGraphId = `pr-partial-base-${pairId}-${READY_MERGE_BASE_SHA}`;
+    store.setState({
+      prPreparedGraphId: headGraphId,
+      prPreparedComparisonGraphId: comparisonGraphId,
+    });
+    const fetchMock = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/graph/project") {
+        return Promise.resolve(new Response("projection unavailable", { status: 503 }));
+      }
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          headGraphId,
+          "abc1234def5678900000",
+        )));
+      }
+      if (url.pathname === "/api/graph") {
+        return Promise.reject(new Error("a retained partial artifact must not be loaded as complete"));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await store.getState().resumePrReview();
+
+    expect(store.getState()).toMatchObject({
+      prReviewStatus: "error",
+      prPreparedArtifactCurrent: false,
+    });
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(fetchMock.mock.calls.some(([input]) => (
+      new URL(input.toString(), "http://meridian.local").pathname === "/api/graph"
+    ))).toBe(false);
   });
 
   it("shares concurrent resume clicks instead of swapping the prepared graph twice", async () => {
@@ -7311,6 +8487,85 @@ describe("PR review artifact swap and restore", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(store.getState().minimalSeedIds).toEqual([FILE_ID]);
     expect(store.getState().prReviewStatus).toBe("idle");
+  });
+
+  it("keeps a lens switch authoritative while a parked review resume is in flight", async () => {
+    const { store, bootIndex } = await swappedReviewStore();
+    store.getState().closeMinimalGraph();
+    let releaseGraph!: (response: Response) => void;
+    let releaseMeta!: (response: Response) => void;
+    const graph = new Promise<Response>((resolve) => {
+      releaseGraph = resolve;
+    });
+    const meta = new Promise<Response>((resolve) => {
+      releaseMeta = resolve;
+    });
+    vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL) => (
+      input.toString().includes("/api/meta") ? meta : graph
+    )));
+
+    const resume = store.getState().resumePrReview({ progressiveGraphDelivery: false });
+    await vi.waitFor(() => expect(store.getState().prReviewStatus).toBe("preparing"));
+    store.getState().setViewMode("call");
+
+    releaseGraph(Response.json(HEAD_ARTIFACT));
+    releaseMeta(Response.json(preparedSyntheticMeta("pr-head-1", "abc1234def5678900000")));
+    await resume;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(store.getState().viewMode).toBe("call");
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
+    expect(store.getState().prReviewStatus).toBe("idle");
+    expect(store.getState().prPrepareError).toBeNull();
+  });
+
+  it("aborts retained progressive projection on a superseding lens switch without artifact fallback", async () => {
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { store, bootIndex } = await swappedReviewStore({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+    store.getState().closeMinimalGraph();
+    warning.mockClear();
+    let projectionSignal: AbortSignal | null = null;
+    const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      if (url.pathname === "/api/meta") {
+        return Promise.resolve(Response.json(preparedSyntheticMeta(
+          "pr-head-1",
+          "abc1234def5678900000",
+        )));
+      }
+      if (url.pathname === "/api/graph/project") {
+        projectionSignal = init?.signal as AbortSignal;
+        return new Promise<Response>((_resolve, reject) => {
+          const abort = () => reject(new DOMException("aborted", "AbortError"));
+          projectionSignal!.addEventListener("abort", abort, { once: true });
+          if (projectionSignal!.aborted) abort();
+        });
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const resume = store.getState().resumePrReview({ progressiveGraphDelivery: true });
+    await vi.waitFor(() => expect(projectionSignal).not.toBeNull());
+    store.getState().setViewMode("call");
+    expect((projectionSignal as unknown as AbortSignal).aborted).toBe(true);
+    await resume;
+
+    expect(fetchMock.mock.calls.some(([input]) => {
+      const url = new URL(input.toString(), "http://meridian.local");
+      return url.pathname === "/api/graph";
+    })).toBe(false);
+    expect(warning).not.toHaveBeenCalled();
+    expect(store.getState().viewMode).toBe("call");
+    expect(store.getState().artifact).toBe(ARTIFACT);
+    expect(store.getState().index).toBe(bootIndex);
+    expect(store.getState().prPreparedArtifactCurrent).toBe(false);
   });
 
   it("rejects stale sandbox provenance on resume without replacing the restored boot artifact", async () => {

@@ -3,6 +3,7 @@ import type { FlowStep, GraphArtifact, GraphNode } from "@meridian/core";
 import { STATIC_LOGIC_VIEW_MODES } from "../derive/flowViewModel";
 import { buildGraphIndex } from "../graph/graphIndex";
 import { createBlueprintStore } from "./store";
+import { nearestModuleIds } from "./flowExplorer";
 
 function node(id: string, kind: string, parentId: string | null, displayName = id): GraphNode {
   return { id, kind, qualifiedName: id, displayName, parentId, location: { file: id, startLine: 1 } } as GraphNode;
@@ -53,6 +54,24 @@ function freshStore() {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("flow explorer store slice", () => {
+  it("owns Python initializer symbols by the file-backed package, not a namespace package", () => {
+    const namespace = {
+      ...node("py:src", "package", null, "src"),
+      location: { file: "src", startLine: 1 },
+    };
+    const initializer = {
+      ...node("py:src/acme", "package", namespace.id, "acme"),
+      location: { file: "src/acme/__init__.py", startLine: 1 },
+    };
+    const bootstrap = {
+      ...node("py:src/acme#bootstrap", "function", initializer.id, "bootstrap"),
+      location: { file: "src/acme/__init__.py", startLine: 3 },
+    };
+    const index = buildGraphIndex({ ...ARTIFACT, nodes: [namespace, initializer, bootstrap] });
+
+    expect(nearestModuleIds([bootstrap.id, initializer.id, namespace.id], index)).toEqual([initializer.id]);
+  });
+
   it("keeps automatic code-preview availability as session-only view state", () => {
     const persisted = new Map<string, string>();
     vi.stubGlobal("window", {

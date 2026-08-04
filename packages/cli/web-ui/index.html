@@ -942,6 +942,97 @@
         font-weight: 500;
         text-transform: uppercase;
       }
+      .prepare-manifest-shell {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 9px;
+        padding: 11px;
+        border: 1px solid rgba(56, 139, 253, 0.32);
+        border-radius: 8px;
+        background: rgba(31, 111, 235, 0.08);
+      }
+      .prepare-manifest-shell[hidden] {
+        display: none;
+      }
+      .prepare-manifest-heading {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        color: #f0f6fc;
+        font-size: 12.5px;
+        font-weight: 650;
+      }
+      .prepare-manifest-count {
+        flex-shrink: 0;
+        font-family: var(--font-mono);
+        color: #79c0ff;
+        font-size: 11px;
+        font-weight: 500;
+      }
+      .prepare-manifest-note {
+        margin: 0;
+        color: var(--muted-2);
+        font-size: 11.5px;
+        line-height: 1.45;
+      }
+      .prepare-manifest-files {
+        display: flex;
+        max-height: 230px;
+        flex-direction: column;
+        gap: 2px;
+        padding: 0;
+        margin: 0;
+        overflow: auto;
+        list-style: none;
+        scrollbar-gutter: stable;
+      }
+      .prepare-manifest-file {
+        display: grid;
+        grid-template-columns: auto minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 8px;
+        min-height: 30px;
+        padding: 4px 6px;
+        border-radius: 5px;
+      }
+      .prepare-manifest-file:hover {
+        background: rgba(255, 255, 255, 0.055);
+      }
+      .prepare-manifest-status {
+        width: 17px;
+        font-family: var(--font-mono);
+        color: #7ee787;
+        font-size: 10px;
+        font-weight: 700;
+        text-align: center;
+      }
+      .prepare-manifest-file[data-status="deleted"] .prepare-manifest-status {
+        color: #ff7b72;
+      }
+      .prepare-manifest-file[data-status="modified"] .prepare-manifest-status,
+      .prepare-manifest-file[data-status="renamed"] .prepare-manifest-status {
+        color: #d2a8ff;
+      }
+      .prepare-manifest-path {
+        min-width: 0;
+        overflow: hidden;
+        font-family: var(--font-mono);
+        color: #c9d1d9;
+        font-size: 10.5px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .prepare-manifest-source {
+        color: #79c0ff;
+        font-size: 10.5px;
+        text-decoration: none;
+      }
+      .prepare-manifest-source:hover,
+      .prepare-manifest-source:focus-visible {
+        text-decoration: underline;
+      }
       .sr-only {
         position: absolute;
         width: 1px;
@@ -1346,6 +1437,19 @@
                 <span class="prepare-dot" aria-hidden="true"></span>
                 <span id="prepare-detail-text"></span>
               </div>
+              <section
+                class="prepare-manifest-shell"
+                id="prepare-manifest-shell"
+                aria-labelledby="prepare-manifest-title"
+                hidden
+              >
+                <div class="prepare-manifest-heading">
+                  <span id="prepare-manifest-title">Changed files are ready</span>
+                  <span class="prepare-manifest-count" id="prepare-manifest-count"></span>
+                </div>
+                <p class="prepare-manifest-note">You can inspect exact-revision source while the affected-file view is prepared.</p>
+                <ul class="prepare-manifest-files" id="prepare-manifest-files" aria-label="Changed-file checklist"></ul>
+              </section>
               <ol class="prepare-steps" id="prepare-steps">
                 <li class="prepare-step prepare-blueprint-step" id="prepare-cache-step" data-stage="cache" data-state="pending" hidden>
                   <span class="prepare-dot" aria-hidden="true"></span>
@@ -3339,7 +3443,12 @@
       const MAX_PR_PREPARE_LINE_CHARS = 4 * 1024 * 1024;
       const MAX_REVIEW_PROGRESS_BYTES = 16 * 1024;
       const MAX_REVIEW_MESSAGE_BYTES = 4 * 1024;
+      const MAX_PR_MANIFEST_FILES = 512;
+      const MAX_PR_MANIFEST_PATH_BYTES = 256 * 1024;
       let reviewPrepareProgress = null;
+      let reviewManifestReady = null;
+      let activeReviewPrepareRequest = null;
+      let reviewPrepareStartedAtMs = null;
 
       function requirePrReviewProgressModel() {
         if (!prReviewProgressModel
@@ -3368,6 +3477,7 @@
         if (review) {
           resetReviewPrepareProgress(reviewPrNumber);
         } else {
+          resetReviewManifestShell();
           $("prepare-cache-step").hidden = sourceKind !== "github" || cacheAlreadyChecked;
           $("prepare-source-step").hidden = false;
           document.querySelector(".prepare-blueprint-extract").hidden = false;
@@ -3405,6 +3515,7 @@
       function resetReviewPrepareProgress(prNumber) {
         const model = requirePrReviewProgressModel();
         ensureReviewPrepareRows(model);
+        resetReviewManifestShell();
         reviewPrepareProgress = createReviewPrepareProgress(model, prNumber);
         reviewPrepareProgress = reduceReviewPrepareProgress(reviewPrepareProgress, {
           type: "stage",
@@ -3844,6 +3955,14 @@
       }
 
       async function preparePrReview(request) {
+        activeReviewPrepareRequest = { ...request };
+        reviewPrepareStartedAtMs = performance.now();
+        window.__MERIDIAN_PR_PREPARE_REQUEST_STARTED__ = { atMs: reviewPrepareStartedAtMs };
+        try {
+          performance.mark("meridian:pr-prepare-request-start");
+        } catch {
+          // Instrumentation cannot change PR preparation.
+        }
         const response = await apiPost("/api/pr/prepare", request, "application/x-ndjson");
         if (!response.ok || !response.body) {
           throw expectedGenerationError(await generationResponseError(response));
@@ -3861,7 +3980,14 @@
             buffer = lines.pop() || "";
             for (const line of lines) {
               assertBoundedPrPrepareLine(line);
-              result = applyPrPrepareLine(line) || result;
+              const applied = applyPrPrepareLine(line);
+              result = applied || result;
+              if (applied && applied.stage === "ready") {
+                // The exact bounded pair is actionable. Navigation intentionally closes this HTTP
+                // waiter; the server acquired a service completion owner before emitting it.
+                await reader.cancel();
+                return applied;
+              }
             }
             assertBoundedPrPrepareLine(buffer);
           }
@@ -3892,6 +4018,17 @@
           return null;
         }
         if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+        if (data.stage === "manifest-ready") {
+          if (reviewManifestReady !== null) {
+            throw expectedGenerationError("PR preparation returned more than one changed-file manifest.");
+          }
+          const manifest = validPrManifestReadyLine(data, activeReviewPrepareRequest);
+          if (!manifest) {
+            throw expectedGenerationError("PR preparation returned an invalid changed-file manifest.");
+          }
+          renderReviewManifestShell(manifest, activeReviewPrepareRequest.repository);
+          return null;
+        }
         if (data.stage === "lane-complete" && ["head", "mergeBase"].includes(data.lane)) {
           completeReviewPrepareLane(data.lane);
           return null;
@@ -3904,30 +4041,288 @@
           const message = data.message || "PR preparation failed.";
           throw expectedGenerationError(message);
         }
-        if (data.stage !== "done") return null;
-        const pair = data.preparedPair;
-        if (!pair || pair.version !== 1
-          || !Number.isSafeInteger(pair.prNumber)
-          || pair.prNumber < 1
-          || typeof pair.headGraphId !== "string"
-          || typeof pair.mergeBaseGraphId !== "string"
-          || typeof pair.headSha !== "string"
-          || typeof pair.baseSha !== "string"
-          || typeof pair.mergeBaseSha !== "string"
-          || typeof data.viewUrl !== "string") {
+        if (data.stage !== "done" && data.stage !== "ready") return null;
+        const validated = validatedPrPrepareTerminal(
+          data,
+          activeReviewPrepareRequest,
+          window.location.origin,
+        );
+        if (!validated) {
+          // A malformed bounded checkpoint is never actionable. A compatible server may still send
+          // a validated terminal line, while a progressive-only failure ends with an error.
+          if (data.stage === "ready") return null;
           throw expectedGenerationError("PR preparation returned an invalid immutable graph pair.");
         }
-        const target = new URL(data.viewUrl, window.location.origin);
-        if (target.origin !== window.location.origin
-          || target.pathname !== "/view"
-          || target.searchParams.get("id") !== pair.headGraphId
-          || target.searchParams.get("prn") !== String(pair.prNumber)
-          || target.searchParams.get("rev") !== "1") {
-          throw expectedGenerationError("PR preparation returned an invalid review destination.");
+        const pair = validated.pair;
+        if (reviewManifestReady && (
+          reviewManifestReady.headSha !== pair.headSha
+          || reviewManifestReady.baseSha !== pair.baseSha
+          || reviewManifestReady.mergeBaseSha !== pair.mergeBaseSha
+          || !samePrChangedFileManifest(reviewManifestReady.changedFiles, data.changedFiles)
+        )) {
+          throw expectedGenerationError("PR preparation changed after its early file manifest was shown.");
         }
-        const destination = target.pathname + target.search;
+        const destination = validated.destination;
         completeReviewPrepareProgress(data.cache, destination);
         return { ...data, viewUrl: destination };
+      }
+
+      /** Validate the complete server-owned navigation handoff before assigning window.location.
+       * A partial terminal requires exact ready evidence and its partial URL; only an explicit
+       * complete compatibility terminal may retain the ordinary graph URL. */
+      function validatedPrPrepareTerminal(data, request, origin) {
+        if (!data || typeof data !== "object" || Array.isArray(data)
+          || !request || !Number.isSafeInteger(request.prNumber) || request.prNumber < 1
+          || typeof origin !== "string") return null;
+        const pair = data.preparedPair;
+        const provisional = data.completeness === "provisional";
+        const sha = (value) => typeof value === "string"
+          && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(value);
+        if (!pair || typeof pair !== "object" || Array.isArray(pair)
+          || pair.version !== 1
+          || !Number.isSafeInteger(pair.prNumber)
+          || pair.prNumber !== request.prNumber
+          || typeof pair.headGraphId !== "string" || pair.headGraphId.length === 0
+          || typeof pair.mergeBaseGraphId !== "string" || pair.mergeBaseGraphId.length === 0
+          || pair.mergeBaseGraphId === pair.headGraphId
+          || !sha(pair.headSha) || !sha(pair.baseSha) || !sha(pair.mergeBaseSha)
+          || data.graphId !== pair.headGraphId
+          || data.comparisonGraphId !== pair.mergeBaseGraphId
+          || data.headSha !== pair.headSha
+          || data.baseSha !== pair.baseSha
+          || data.mergeBaseSha !== pair.mergeBaseSha
+          || (data.stage === "ready" && !provisional)
+          || (provisional && (
+            data.completeness !== "provisional"
+            || typeof data.pairId !== "string"
+            || !/^[a-f0-9]{20}$/.test(data.pairId)
+            || pair.completeness !== "provisional"
+            || pair.pairId !== data.pairId
+          ))
+          || (request.headSha !== undefined && (
+            typeof request.headSha !== "string"
+            || request.headSha.toLowerCase() !== pair.headSha
+          ))
+          || typeof data.viewUrl !== "string") return null;
+
+        const evidence = data.initialProjectionCache;
+        let ready = false;
+        if (evidence !== undefined) {
+          const evidenceKeys = [
+            "comparisonKey",
+            "depth",
+            "headKey",
+            "prefetchDepth",
+            "ready",
+            "version",
+          ];
+          const cacheKey = (value) => value === null
+            || (typeof value === "string" && /^[0-9a-f]{64}$/.test(value));
+          if (!evidence || typeof evidence !== "object" || Array.isArray(evidence)
+            || Object.keys(evidence).sort().join("\n") !== evidenceKeys.join("\n")
+            || evidence.version !== 1
+            || evidence.depth !== 1
+            || evidence.prefetchDepth !== 3
+            || typeof evidence.ready !== "boolean"
+            || !cacheKey(evidence.headKey)
+            || !cacheKey(evidence.comparisonKey)
+            || (evidence.ready && (
+              evidence.headKey === null
+              || evidence.comparisonKey === null
+              || evidence.headKey === evidence.comparisonKey
+            ))) return null;
+          ready = evidence.ready;
+        }
+
+        let target;
+        try {
+          target = new URL(data.viewUrl, origin);
+        } catch {
+          return null;
+        }
+        const exactParam = (name, value) => {
+          const values = target.searchParams.getAll(name);
+          return values.length === 1 && values[0] === value;
+        };
+        const progressive = target.searchParams.getAll("progressive");
+        const partial = target.searchParams.getAll("partial");
+        const pairIds = target.searchParams.getAll("pair");
+        if (target.origin !== origin
+          || target.pathname !== "/view"
+          || !exactParam("id", pair.headGraphId)
+          || !exactParam("view", "modules")
+          || !exactParam("prn", String(pair.prNumber))
+          || !exactParam("rev", "1")
+          || (ready
+            ? progressive.length !== 1 || progressive[0] !== "1"
+            : progressive.length !== 0)
+          || (provisional
+            ? partial.length !== 1 || partial[0] !== "1"
+              || pairIds.length !== 1 || pairIds[0] !== data.pairId
+            : partial.length !== 0 || pairIds.length !== 0)) return null;
+        return { pair, evidence, destination: target.pathname + target.search };
+      }
+
+      function resetReviewManifestShell() {
+        reviewManifestReady = null;
+        activeReviewPrepareRequest = null;
+        reviewPrepareStartedAtMs = null;
+        const shell = $("prepare-manifest-shell");
+        shell.hidden = true;
+        shell.removeAttribute("data-state");
+        $("prepare-manifest-count").textContent = "";
+        $("prepare-manifest-files").replaceChildren();
+        window.__MERIDIAN_PR_MANIFEST_SHELL_ACTIONABLE__ = null;
+        window.__MERIDIAN_PR_PREPARE_REQUEST_STARTED__ = null;
+      }
+
+      function validPrManifestReadyLine(value, request) {
+        const exactKeys = ["baseSha", "changedFiles", "headSha", "mergeBaseSha", "stage"];
+        if (!request || githubRepoSlug(request.repository) !== request.repository
+          || Object.keys(value).sort().join("\n") !== exactKeys.join("\n")
+          || ![value.headSha, value.baseSha, value.mergeBaseSha].every(
+            (sha) => typeof sha === "string" && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(sha),
+          )
+          || (request.headSha && request.headSha.toLowerCase() !== value.headSha)
+          || !Array.isArray(value.changedFiles)
+          || value.changedFiles.length > MAX_PR_MANIFEST_FILES) return null;
+        let bytes = 0;
+        const seen = new Set();
+        for (const entry of value.changedFiles) {
+          if (!entry || typeof entry !== "object" || Array.isArray(entry)
+            || !validPrManifestPath(entry.path)
+            || seen.has(entry.path)) return null;
+          const optionalNonTextual = entry.nonTextualChanges === true ? ["nonTextualChanges"] : [];
+          if (entry.nonTextualChanges !== undefined && entry.nonTextualChanges !== true) return null;
+          const keys = Object.keys(entry).sort();
+          if (entry.status === "renamed") {
+            const expected = ["path", "previousPath", "status", ...optionalNonTextual].sort();
+            if (!validPrManifestPath(entry.previousPath)
+              || entry.previousPath === entry.path
+              || keys.join("\n") !== expected.join("\n")) return null;
+            bytes += new TextEncoder().encode(entry.previousPath).byteLength;
+          } else {
+            const expected = ["path", "status", ...optionalNonTextual].sort();
+            if (!["added", "modified", "deleted"].includes(entry.status)
+              || keys.join("\n") !== expected.join("\n")) return null;
+          }
+          bytes += new TextEncoder().encode(entry.path).byteLength;
+          if (bytes > MAX_PR_MANIFEST_PATH_BYTES) return null;
+          seen.add(entry.path);
+        }
+        return {
+          headSha: value.headSha,
+          baseSha: value.baseSha,
+          mergeBaseSha: value.mergeBaseSha,
+          changedFiles: value.changedFiles.map((entry) => ({ ...entry })),
+        };
+      }
+
+      function validPrManifestPath(value) {
+        return typeof value === "string"
+          && value.length > 0
+          && new TextEncoder().encode(value).byteLength <= 4096
+          && !value.startsWith("/")
+          && !value.includes("\\")
+          && !value.includes("\0")
+          && !/^[A-Za-z]:/.test(value)
+          && value.split("/").every((part) => part && part !== "." && part !== "..");
+      }
+
+      function samePrChangedFileManifest(left, right) {
+        return Array.isArray(left)
+          && Array.isArray(right)
+          && left.length === right.length
+          && left.every((entry, index) => {
+            const candidate = right[index];
+            return candidate
+              && typeof candidate === "object"
+              && !Array.isArray(candidate)
+              && entry.path === candidate.path
+              && entry.status === candidate.status
+              && entry.previousPath === candidate.previousPath
+              && entry.nonTextualChanges === candidate.nonTextualChanges;
+          });
+      }
+
+      function renderReviewManifestShell(manifest, repository) {
+        reviewManifestReady = manifest;
+        const files = $("prepare-manifest-files");
+        const fragment = document.createDocumentFragment();
+        const statusLabels = { added: "A", modified: "M", deleted: "D", renamed: "R" };
+        for (const entry of manifest.changedFiles) {
+          const row = document.createElement("li");
+          row.className = "prepare-manifest-file";
+          row.dataset.status = entry.status;
+          const status = document.createElement("span");
+          status.className = "prepare-manifest-status";
+          status.textContent = statusLabels[entry.status];
+          status.title = entry.status + (entry.nonTextualChanges ? " · non-textual changes" : "");
+          const path = document.createElement("span");
+          path.className = "prepare-manifest-path";
+          path.textContent = entry.status === "renamed"
+            ? entry.previousPath + " → " + entry.path
+            : entry.path;
+          path.title = path.textContent;
+          const sourcePath = entry.path;
+          const sourceSha = entry.status === "deleted" ? manifest.mergeBaseSha : manifest.headSha;
+          const href = safeGithubUrl(
+            "https://github.com/" + repository + "/blob/" + sourceSha + "/"
+              + sourcePath.split("/").map(encodeURIComponent).join("/"),
+          );
+          const source = document.createElement("a");
+          source.className = "prepare-manifest-source";
+          source.textContent = "Source";
+          source.setAttribute("aria-label", "Open exact-revision source for " + entry.path);
+          if (href) {
+            source.href = href;
+            source.target = "_blank";
+            source.rel = "noopener noreferrer";
+          }
+          row.append(status, path, source);
+          fragment.appendChild(row);
+        }
+        files.replaceChildren(fragment);
+        $("prepare-manifest-count").textContent = manifest.changedFiles.length
+          + (manifest.changedFiles.length === 1 ? " file" : " files");
+        const shell = $("prepare-manifest-shell");
+        shell.hidden = false;
+        shell.dataset.state = "actionable";
+        $("prepare-announcement").textContent = manifest.changedFiles.length
+          + (manifest.changedFiles.length === 1 ? " changed file is" : " changed files are")
+          + " ready for exact-revision source inspection. Graph context is still loading.";
+        const actionableAtMs = performance.now();
+        const mark = {
+          atMs: actionableAtMs,
+          requestStartedAtMs: reviewPrepareStartedAtMs,
+          ttaMs: reviewPrepareStartedAtMs === null ? null : actionableAtMs - reviewPrepareStartedAtMs,
+          headSha: manifest.headSha,
+          baseSha: manifest.baseSha,
+          mergeBaseSha: manifest.mergeBaseSha,
+          changedFileCount: manifest.changedFiles.length,
+        };
+        let performanceEntry = null;
+        try {
+          performanceEntry = performance.mark("meridian:pr-manifest-shell-actionable", {
+            detail: mark,
+            startTime: actionableAtMs,
+          });
+        } catch {
+          try {
+            performanceEntry = performance.mark("meridian:pr-manifest-shell-actionable");
+          } catch {
+            // Instrumentation must never block the exact file checklist.
+          }
+        }
+        if (performanceEntry && Number.isFinite(performanceEntry.startTime)) {
+          mark.atMs = performanceEntry.startTime;
+          mark.ttaMs = reviewPrepareStartedAtMs === null
+            ? null
+            : performanceEntry.startTime - reviewPrepareStartedAtMs;
+        }
+        // Publish only after the PerformanceMark exists so benchmark observers cannot see a global
+        // timestamp that has no corresponding authoritative entry.
+        window.__MERIDIAN_PR_MANIFEST_SHELL_ACTIONABLE__ = mark;
       }
 
       function applyGenerateLine(line) {

@@ -80,6 +80,8 @@ export function injectViewBoot(
   );
   const boot = {
     graphUrl: `/api/graph?id=${id}`,
+    graphProjectUrl: "/api/graph/project",
+    graphSymbolsUrl: "/api/graph/symbols",
     metaUrl: `/api/meta?id=${id}`,
     overlayUrl: `/api/overlay?id=${id}`,
     traceUrl: `/api/traces?id=${id}`,

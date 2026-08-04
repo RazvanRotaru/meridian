@@ -45,6 +45,9 @@ function bootJson(
 ): string {
   return JSON.stringify({
     graphUrl: "/api/graph",
+    // Static artifact servers expose one complete graph and have no progressive projection worker.
+    graphProjectUrl: null,
+    graphSymbolsUrl: null,
     // Static artifact servers own one immutable graph for their full lifetime, so they do not use
     // the web launcher's renewable process-local registration leases. Keep that distinction
     // explicit in the boot contract; omission is never treated as a compatibility fallback.

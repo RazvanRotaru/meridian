@@ -1708,6 +1708,7 @@ function publishSource(graphStore: WebGraphStore, id: string, source: ArtifactSo
   graphStore.publish({
     id,
     material: materializeValidatedArtifact(TEST_ARTIFACT),
+    rawGraphPayload: "complete",
     metadata: {
       sourceRoot: "/workspace/test",
       source,

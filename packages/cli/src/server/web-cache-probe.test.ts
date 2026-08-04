@@ -159,6 +159,7 @@ function seedArtifactCache(): { analysisKey: string; pointerPath: string } {
         vcs: { repository: REMOTE_URL, commit: COMMIT },
       },
       changedFiles: [],
+      initialGraphSeedFiles: [],
       emptySideHints: [],
       sourceFiles: [],
       changedSinceBaseRef: null,

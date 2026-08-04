@@ -21,10 +21,12 @@ import type {
   SerializableRepositoryAnalysisRequest,
 } from "./repository-analysis-child";
 import {
+  boundedRepositoryAnalysisEarlyManifest,
   boundedRepositoryWorkerWarnings,
   changedMetadataForWorker,
   createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
+  initialGraphSeedFilesForWorker,
   syntheticSourceFilesForWorker,
 } from "./repository-analysis-worker-job";
 import { verifiedArtifactFile } from "./web-graph-store";
@@ -36,10 +38,25 @@ export async function runRepositoryAnalysisChildInProcess(
   options: RepositoryAnalysisChildOptions,
 ): Promise<RepositoryAnalysisChildResult> {
   throwIfTestAborted(options.signal);
+  let earlyManifestReported = false;
+  const emitEarlyManifest = options.onChangedManifest === undefined
+    ? undefined
+    : (manifest: Parameters<NonNullable<RepositoryAnalysisRequest["onChangedManifest"]>>[0]) => {
+        if (earlyManifestReported) return;
+        const bounded = boundedRepositoryAnalysisEarlyManifest(manifest);
+        if (bounded === null) return;
+        earlyManifestReported = true;
+        try {
+          sinkPromiseLike(options.onChangedManifest?.(bounded));
+        } catch {
+          // Test transport mirrors production: observers cannot affect extraction.
+        }
+      };
   const request = analysisRequest(
     input,
     options.token,
     options.progress,
+    emitEarlyManifest,
     options.typeScriptRevisionShards,
   );
   const analyzed = await analyzeRepository(request);
@@ -49,11 +66,13 @@ export async function runRepositoryAnalysisChildInProcess(
   const { extractors, warnings } = analyzed;
   throwIfTestAborted(options.signal);
   const changed = changedMetadataForWorker(artifact, request.changedSince);
+  emitEarlyManifest?.(changed.changedFiles);
   // Older focused tests mocked the pre-worker return shape and omitted `extractors`. Production
   // can never take this branch; infer extension-only selectors so those tests still exercise the
   // populated-side hint handoff instead of weakening the child contract.
   const selectedExtractors = extractors ?? testExtractorSelectors(artifact, changed.changedFiles);
   const emptySideHints = emptySideHintsForWorker(artifact, changed.changedFiles, selectedExtractors);
+  const initialGraphSeedFiles = initialGraphSeedFilesForWorker(artifact);
   const sourceFiles = syntheticSourceFilesForWorker(artifact);
   const written = writeValidatedRepositoryArtifact(options.artifactOutputPath, artifact);
   const branchVariant = options.branchVariant === undefined
@@ -66,6 +85,7 @@ export async function runRepositoryAnalysisChildInProcess(
     summary: written.summary,
     target: artifact.target,
     changedFiles: changed.changedFiles,
+    initialGraphSeedFiles,
     emptySideHints,
     sourceFiles,
     changedSinceBaseRef: changed.changedSinceBaseRef,
@@ -112,6 +132,7 @@ export async function runRepositoryArtifactRestampChildInProcess(
   }
   const artifact = withBranch(validation.artifact, request.branch);
   const changed = changedMetadataForWorker(artifact);
+  const initialGraphSeedFiles = initialGraphSeedFilesForWorker(artifact);
   const sourceFiles = syntheticSourceFilesForWorker(artifact);
   const written = writeValidatedRepositoryArtifact(options.artifactOutputPath, artifact);
   throwIfTestAborted(options.signal);
@@ -122,6 +143,7 @@ export async function runRepositoryArtifactRestampChildInProcess(
     summary: written.summary,
     target: artifact.target,
     changedFiles: changed.changedFiles,
+    initialGraphSeedFiles,
     emptySideHints: [],
     sourceFiles,
     changedSinceBaseRef: changed.changedSinceBaseRef,
@@ -133,6 +155,7 @@ function analysisRequest(
   input: SerializableRepositoryAnalysisRequest,
   token: string | undefined,
   progress: RepositoryAnalysisChildOptions["progress"],
+  onChangedManifest: RepositoryAnalysisRequest["onChangedManifest"],
   typeScriptRevisionShards: RepositoryAnalysisChildOptions["typeScriptRevisionShards"],
 ): RepositoryAnalysisRequest {
   const request: RepositoryAnalysisRequest = {
@@ -140,6 +163,7 @@ function analysisRequest(
     cwd: input.cwd,
     hintedFiles: input.hintedFiles ?? [],
     allowEmpty: input.allowEmpty ?? false,
+    ...(input.initialGraph === undefined ? {} : { initialGraph: input.initialGraph }),
     ...(input.targetName === undefined ? {} : { targetName: input.targetName }),
     ...(input.vcs === undefined ? {} : { vcs: input.vcs }),
     ...(input.changedSince === undefined ? {} : { changedSince: input.changedSince }),
@@ -151,6 +175,9 @@ function analysisRequest(
         progress.context,
         progress.onProgress,
       ),
+    }),
+    ...(onChangedManifest === undefined ? {} : {
+      onChangedManifest,
     }),
     ...(typeScriptRevisionShards === undefined ? {} : { typeScriptRevisionShards }),
   };
@@ -165,6 +192,17 @@ function analysisRequest(
     };
   }
   return request;
+}
+
+function sinkPromiseLike(value: unknown): void {
+  if ((typeof value !== "object" || value === null) && typeof value !== "function") return;
+  try {
+    if (typeof (value as { then?: unknown }).then === "function") {
+      void Promise.resolve(value).catch(() => {});
+    }
+  } catch {
+    // Observational callbacks are isolated from analysis in the real child too.
+  }
 }
 
 function writeBranchVariant(

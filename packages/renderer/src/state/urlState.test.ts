@@ -27,6 +27,7 @@ function emptyNav(): NavState {
     prSelected: null,
     reviewPr: null,
     reviewActive: false,
+    progressiveReview: false,
     telemetrySourceId: null,
     environment: null,
   };
@@ -287,7 +288,34 @@ describe("urlState", () => {
     const nav: NavState = { ...emptyNav(), reviewPr: 76, reviewActive: true };
     const encoded = encodeNav(nav);
     expect(Object.fromEntries(encoded)).toMatchObject({ view: "modules", prn: "76", rev: "1" });
+    expect(encoded.get("progressive")).toBe("0");
     expect(roundTrip(nav)).toEqual({ viewMode: "modules", reviewPr: 76, reviewActive: true });
+  });
+
+  it("defaults copied reviews to partial-only and preserves an explicit benchmark opt-out", () => {
+    const entered = navFrom({
+      ...storeShape(),
+      prReviewed: 76,
+      // The URL contract needs only active-session presence; the projection payload itself remains
+      // renderer state and is reconstructed from the immutable graph on reload.
+      progressiveGraph: {},
+    });
+    const search = mergeNavIntoSearch("id=head", entered);
+    const params = new URLSearchParams(search);
+
+    expect(params.get("progressive")).toBe("1");
+    expect(decodeNavState(params)).toMatchObject({
+      reviewPr: 76,
+      reviewActive: true,
+      progressiveReview: true,
+    });
+
+    const copiedBaseline = decodeNavState(new URLSearchParams("id=head&view=modules&prn=76&rev=1"));
+    expect(copiedBaseline.progressiveReview).toBe(true);
+    expect(mergeNavIntoSearch(
+      "id=head&progressive=1",
+      { ...emptyNav(), reviewPr: 76, reviewActive: true, progressiveReview: false },
+    )).toContain("progressive=0");
   });
 
   it("rejects invalid PR URL params", () => {
@@ -301,6 +329,32 @@ describe("urlState", () => {
     const params = new URLSearchParams(search);
     expect(params.get("id")).toBe("abc123");
     expect(params.get("mfocus")).toBe("ts:pkg/src");
+  });
+
+  it("retains a valid partial-pair handoff only while its partial review remains active", () => {
+    const source = "id=partial-head&view=modules&prn=76&rev=1&progressive=1&partial=1&pair=0123456789abcdefabcd";
+    const active = mergeNavIntoSearch(source, {
+      ...emptyNav(),
+      reviewPr: 76,
+      reviewActive: true,
+      progressiveReview: true,
+    });
+    const activeParams = new URLSearchParams(active);
+    expect(activeParams.get("partial")).toBe("1");
+    expect(activeParams.get("pair")).toBe("0123456789abcdefabcd");
+
+    const search = mergeNavIntoSearch(
+      active,
+      { ...emptyNav(), viewMode: "prs" },
+    );
+    const params = new URLSearchParams(search);
+
+    expect(params.get("id")).toBe("partial-head");
+    expect(params.get("view")).toBe("prs");
+    expect(params.has("partial")).toBe(false);
+    expect(params.has("pair")).toBe(false);
+    expect(params.has("rev")).toBe(false);
+    expect(params.has("progressive")).toBe(false);
   });
 
   it("survives a node id with every special character intact (scalar + list)", () => {
@@ -481,6 +535,7 @@ function storeShape() {
     prsTab: "open" as const,
     prSelected: null,
     prReviewed: null,
+    progressiveGraph: null,
     telemetrySourceId: null,
     environment: null,
   };

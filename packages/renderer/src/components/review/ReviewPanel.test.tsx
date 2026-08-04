@@ -1,7 +1,12 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import type { GraphNode } from "@meridian/core";
 import { reviewViewedGestureBlockReason } from "../../state/store";
-import { reviewEmptyFilterNotice, ReviewPanelResizableLayout } from "./ReviewPanel";
+import {
+  progressiveReviewFileCounts,
+  reviewEmptyFilterNotice,
+  ReviewPanelResizableLayout,
+} from "./ReviewPanel";
 
 describe("ReviewPanelResizableLayout", () => {
   it("makes each review section boundary an accessible compact splitter", () => {
@@ -90,6 +95,54 @@ describe("reviewEmptyFilterNotice", () => {
       excludeTestChanges: false,
       hideSourceCommentDiffs: false,
     })).toBeNull();
+  });
+});
+
+describe("progressiveReviewFileCounts", () => {
+  it("counts deletion-only comparison files without double-counting shared paths", () => {
+    const moduleNode = (id: string, file: string): GraphNode => ({
+      id,
+      kind: "module",
+      qualifiedName: file,
+      displayName: file,
+      location: { file, startLine: 1 },
+    });
+    const head = {
+      nodes: [moduleNode("head:a", "src/a.ts")],
+      counts: { full: { files: 90 } },
+    };
+    const comparison = {
+      nodes: [moduleNode("base:a", "src/a.ts"), moduleNode("base:deleted", "src/deleted.ts")],
+      counts: { full: { files: 91 } },
+    };
+
+    expect(progressiveReviewFileCounts(head, comparison)).toEqual({
+      loadedFiles: 2,
+      totalFiles: 91,
+    });
+  });
+
+  it("counts resident files per revision so a rename cannot exceed the full revision", () => {
+    const moduleNode = (id: string, file: string): GraphNode => ({
+      id,
+      kind: "module",
+      qualifiedName: file,
+      displayName: file,
+      location: { file, startLine: 1 },
+    });
+    const head = {
+      nodes: [moduleNode("head:new", "src/new-name.ts")],
+      counts: { full: { files: 1 } },
+    };
+    const comparison = {
+      nodes: [moduleNode("base:old", "src/old-name.ts")],
+      counts: { full: { files: 1 } },
+    };
+
+    expect(progressiveReviewFileCounts(head, comparison)).toEqual({
+      loadedFiles: 1,
+      totalFiles: 1,
+    });
   });
 });
 

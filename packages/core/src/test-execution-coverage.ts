@@ -59,12 +59,21 @@ export interface TestExecutionCoverage {
   files: Record<string, TestExecutionCoverageFile>;
 }
 
+export interface ReadTestExecutionCoverageOptions {
+  /** Validate every file for full-artifact parity, but retain only these exact POSIX paths. This is
+   * used by disposable projection workers to avoid materializing a second repository-wide copy. */
+  includeFiles?: ReadonlySet<string>;
+}
+
 /**
  * Defensive extension reader. `extensions` is intentionally open JSON, so any malformed field
  * invalidates the whole payload and returns null. Explicit zero counters remain evidence and are
  * preserved; absent files/functions/branches are never synthesized here.
  */
-export function readTestExecutionCoverage(artifact: GraphArtifact): TestExecutionCoverage | null {
+export function readTestExecutionCoverage(
+  artifact: GraphArtifact,
+  options: ReadTestExecutionCoverageOptions = {},
+): TestExecutionCoverage | null {
   const raw = artifact.extensions?.[TEST_EXECUTION_COVERAGE_EXTENSION];
   if (!isRecord(raw) || raw.version !== TEST_EXECUTION_COVERAGE_VERSION || raw.aggregate !== true) {
     return null;
@@ -85,7 +94,7 @@ export function readTestExecutionCoverage(artifact: GraphArtifact): TestExecutio
     if (file === null) {
       return null;
     }
-    files.push([path, file]);
+    if (options.includeFiles === undefined || options.includeFiles.has(path)) files.push([path, file]);
   }
 
   return {

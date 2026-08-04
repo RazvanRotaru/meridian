@@ -1,0 +1,2068 @@
+{
+  "number": 4712,
+  "title": "fix(delegate): say which setting disabled UI automation",
+  "url": "https://github.com/UiPath/Autopilot/pull/4712",
+  "status": "complete",
+  "revisions": {
+    "initial": {
+      "repository": "UiPath/Autopilot",
+      "number": 4712,
+      "title": "fix(delegate): say which setting disabled UI automation",
+      "url": "https://github.com/UiPath/Autopilot/pull/4712",
+      "headRef": "fix/uia-disabled-context-note",
+      "headOid": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-07-31T13:57:51.000Z",
+      "resolvedAt": "2026-08-04T00:08:46.800Z",
+      "pullBaseOid": "62f16fce428421d4daad3ce196fa1ccebde30287"
+    },
+    "coldInputs": {
+      "progressive": {
+        "repository": "UiPath/Autopilot",
+        "number": 4712,
+        "title": "fix(delegate): say which setting disabled UI automation",
+        "url": "https://github.com/UiPath/Autopilot/pull/4712",
+        "headRef": "fix/uia-disabled-context-note",
+        "headOid": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+        "headRepository": "UiPath/Autopilot",
+        "baseRef": "main",
+        "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+        "baseRepository": "UiPath/Autopilot",
+        "updatedAt": "2026-07-31T13:57:51.000Z",
+        "resolvedAt": "2026-08-04T00:08:48.379Z",
+        "pullBaseOid": "62f16fce428421d4daad3ce196fa1ccebde30287"
+      }
+    },
+    "preparationInput": {
+      "repository": "UiPath/Autopilot",
+      "number": 4712,
+      "title": "fix(delegate): say which setting disabled UI automation",
+      "url": "https://github.com/UiPath/Autopilot/pull/4712",
+      "headRef": "fix/uia-disabled-context-note",
+      "headOid": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-07-31T13:57:51.000Z",
+      "resolvedAt": "2026-08-04T00:09:31.117Z",
+      "pullBaseOid": "62f16fce428421d4daad3ce196fa1ccebde30287"
+    },
+    "prepared": {
+      "graphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "comparisonGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+      "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+      "pairId": "d2a6d0a66ca76a0f52bb",
+      "completeness": "provisional",
+      "initialProjectionCache": {
+        "version": 1,
+        "depth": 1,
+        "prefetchDepth": 3,
+        "headKey": "2ecede8ce51c5eccb66968a5b67e799ba7ff914e64bb2b4654dcf8c8a78b7bcc",
+        "comparisonKey": "0d965a275e9945849949f78238dd58779b841d811f1a9a94d180a96094d182f4",
+        "ready": true
+      },
+      "counts": {
+        "nodes": 1190,
+        "edges": 2786
+      },
+      "changedFiles": [
+        {
+          "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+          "status": "added"
+        }
+      ],
+      "cache": "hit",
+      "viewUrl": "/view?id=pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=d2a6d0a66ca76a0f52bb"
+    },
+    "final": {
+      "repository": "UiPath/Autopilot",
+      "number": 4712,
+      "title": "fix(delegate): say which setting disabled UI automation",
+      "url": "https://github.com/UiPath/Autopilot/pull/4712",
+      "headRef": "fix/uia-disabled-context-note",
+      "headOid": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-07-31T13:57:51.000Z",
+      "resolvedAt": "2026-08-04T00:14:00.813Z",
+      "pullBaseOid": "62f16fce428421d4daad3ce196fa1ccebde30287"
+    }
+  },
+  "preparation": {
+    "totalMs": 1331.5,
+    "httpStatus": 200,
+    "events": [
+      {
+        "atMs": 1331.2,
+        "payload": {
+          "stage": "ready",
+          "pairId": "d2a6d0a66ca76a0f52bb",
+          "completeness": "provisional",
+          "graphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "comparisonGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "counts": {
+            "nodes": 1190,
+            "edges": 2786
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+              "status": "added"
+            }
+          ],
+          "warnings": [
+            "TypeScript: 4485 unresolved edge(s)",
+            "TypeScript: 4330 unresolved edge(s)"
+          ],
+          "cache": "hit",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "2ecede8ce51c5eccb66968a5b67e799ba7ff914e64bb2b4654dcf8c8a78b7bcc",
+            "comparisonKey": "0d965a275e9945849949f78238dd58779b841d811f1a9a94d180a96094d182f4",
+            "ready": true
+          },
+          "preparedPair": {
+            "version": 1,
+            "prNumber": 4712,
+            "headGraphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "mergeBaseGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+            "completeness": "provisional",
+            "pairId": "d2a6d0a66ca76a0f52bb"
+          },
+          "viewUrl": "/view?id=pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=d2a6d0a66ca76a0f52bb"
+        }
+      },
+      {
+        "atMs": 1331.4,
+        "payload": {
+          "stage": "done",
+          "pairId": "d2a6d0a66ca76a0f52bb",
+          "completeness": "provisional",
+          "graphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "comparisonGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "counts": {
+            "nodes": 1190,
+            "edges": 2786
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+              "status": "added"
+            }
+          ],
+          "warnings": [
+            "TypeScript: 4485 unresolved edge(s)",
+            "TypeScript: 4330 unresolved edge(s)"
+          ],
+          "cache": "hit",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "2ecede8ce51c5eccb66968a5b67e799ba7ff914e64bb2b4654dcf8c8a78b7bcc",
+            "comparisonKey": "0d965a275e9945849949f78238dd58779b841d811f1a9a94d180a96094d182f4",
+            "ready": true
+          },
+          "preparedPair": {
+            "version": 1,
+            "prNumber": 4712,
+            "headGraphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "mergeBaseGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+            "completeness": "provisional",
+            "pairId": "d2a6d0a66ca76a0f52bb"
+          },
+          "viewUrl": "/view?id=pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=d2a6d0a66ca76a0f52bb"
+        }
+      }
+    ],
+    "cache": "hit",
+    "terminalProof": {
+      "version": 1,
+      "delivery": "partial-only-v1",
+      "streamEnded": true,
+      "readyIndex": 0,
+      "doneIndex": 1,
+      "eventCount": 2,
+      "postReadyStages": [
+        "done"
+      ],
+      "sameBoundedPair": true,
+      "canonicalContinuationObserved": false,
+      "pairId": "d2a6d0a66ca76a0f52bb",
+      "graphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+      "comparisonGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+      "prepared": {
+        "graphId": "pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+        "comparisonGraphId": "pr-partial-base-d2a6d0a66ca76a0f52bb-62f16fce428421d4daad3ce196fa1ccebde30287",
+        "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+        "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+        "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+        "pairId": "d2a6d0a66ca76a0f52bb",
+        "completeness": "provisional",
+        "initialProjectionCache": {
+          "version": 1,
+          "depth": 1,
+          "prefetchDepth": 3,
+          "headKey": "2ecede8ce51c5eccb66968a5b67e799ba7ff914e64bb2b4654dcf8c8a78b7bcc",
+          "comparisonKey": "0d965a275e9945849949f78238dd58779b841d811f1a9a94d180a96094d182f4",
+          "ready": true
+        },
+        "counts": {
+          "nodes": 1190,
+          "edges": 2786
+        },
+        "changedFiles": [
+          {
+            "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+            "status": "added"
+          }
+        ],
+        "cache": "hit",
+        "viewUrl": "/view?id=pr-partial-d2a6d0a66ca76a0f52bb-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=d2a6d0a66ca76a0f52bb"
+      },
+      "repositoryAnalysisWorkerPidsAfterTerminal": []
+    }
+  },
+  "coldEndToEnd": {
+    "repetitions": 1,
+    "isolation": "fresh-production-service-and-cache-per-progressive-lane",
+    "order": [
+      "progressive"
+    ],
+    "variants": {
+      "progressive": {
+        "variant": "progressive",
+        "repetition": 1,
+        "measurementOrder": {
+          "sequencePosition": 1,
+          "variants": [
+            "progressive"
+          ]
+        },
+        "measuredAt": "2026-08-04T00:09:27.416Z",
+        "isolation": {
+          "freshCache": true,
+          "loopbackOnly": true,
+          "servicePid": 20922,
+          "serviceInstanceId": "70337211c79b098bee6978d4798f4e8bcf3c5bb2aba9b0bd98a1b9bce2a4d000",
+          "cacheInstanceId": "c1a965c58bb6c2c6405e3d37a9038b17c25d5d37bf3b076713d0c4c909984146",
+          "fullBaselineCapability": {
+            "inspected": true,
+            "present": false,
+            "source": "isolated-service-spawn-arguments",
+            "argument": "--benchmark-pr-full-baseline",
+            "commandSha256": "6c0d56511cb248b5f8e4aa60ec5c92d4784ba6eff943bab7ebd7c44d1f641ffe"
+          },
+          "cleanup": {
+            "strategy": "tracked-owned-process-tree-and-groups",
+            "rootPid": 20922,
+            "verifiedEmpty": true,
+            "tempDirectoryRemoved": true,
+            "rootProcessGroupId": 20922,
+            "scanIntervalMs": 100,
+            "leaderExitedBeforeStop": false,
+            "registeredProcessCount": 35,
+            "registeredGroupCount": 41,
+            "detachedGroupCount": 40,
+            "registeredGroupIds": [
+              20922,
+              21060,
+              21133,
+              21148,
+              21155,
+              21162,
+              21169,
+              21176,
+              21184,
+              21191,
+              21207,
+              21222,
+              21229,
+              21238,
+              21457,
+              21464,
+              21471,
+              21478,
+              21485,
+              21500,
+              21507,
+              21514,
+              21521,
+              21536,
+              22405,
+              22412,
+              22607,
+              22614,
+              22615,
+              22654,
+              22661,
+              22702,
+              22719,
+              22727,
+              23389,
+              24076,
+              24091,
+              24092,
+              24093,
+              24524,
+              24679
+            ],
+            "sigstopGroupCount": 2,
+            "sigtermGroupCount": 2,
+            "sigkillGroupCount": 0,
+            "registryProofHealthy": true,
+            "verifiedRecordedPidsAbsent": true,
+            "verifiedRecordedGroupsAbsent": true,
+            "residualPids": [],
+            "residualGroupIds": []
+          }
+        },
+        "prepared": {
+          "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "pairId": "77ac8d9e96f12696ff13",
+          "completeness": "provisional",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+            "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+            "ready": true
+          },
+          "counts": {
+            "nodes": 1190,
+            "edges": 2786
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+              "status": "added"
+            }
+          ],
+          "cache": "miss",
+          "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+        },
+        "provisionalPrepared": {
+          "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "pairId": "77ac8d9e96f12696ff13",
+          "completeness": "provisional",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+            "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+            "ready": true
+          },
+          "counts": {
+            "nodes": 1190,
+            "edges": 2786
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+              "status": "added"
+            }
+          ],
+          "cache": "miss",
+          "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+        },
+        "preparation": {
+          "totalMs": 33313.9,
+          "httpStatus": 200,
+          "cache": "miss",
+          "milestones": {
+            "cloneStartedMs": 968.3,
+            "checkoutStartedMs": 3757.5,
+            "analysisStartedMs": 16351.3,
+            "manifestReadyMs": 17173.3,
+            "headExtractionStartedMs": 16351.3,
+            "headExtractionCompletedMs": 24981,
+            "comparisonExtractionStartedMs": 24981,
+            "comparisonExtractionCompletedMs": 32780.5,
+            "provisionalReadyMs": 33313.6,
+            "finalPairReadyMs": 33313.8,
+            "initialProjectionPairReadyMs": 33313.6,
+            "canonicalCompletionLagMs": null,
+            "partialTerminalLagMs": 0.2,
+            "provisionalPairId": "77ac8d9e96f12696ff13",
+            "provisionalGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "provisionalComparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "canonicalGraphId": null,
+            "canonicalComparisonGraphId": null,
+            "delivery": "partial-only-v1",
+            "streamEnded": true,
+            "canonicalContinuationObserved": false,
+            "exactRevisionBound": true,
+            "manifestFileCount": 2,
+            "manifestSha256": "f266d027e2d8fa78f0de2649132f15d160512208dac97d0bc914f311fa555d4e",
+            "source": "client-observed-ndjson-arrival"
+          },
+          "eventCount": 42,
+          "events": [
+            {
+              "atMs": 968.3,
+              "payload": {
+                "stage": "clone"
+              }
+            },
+            {
+              "atMs": 3757.5,
+              "payload": {
+                "stage": "checkout"
+              }
+            },
+            {
+              "atMs": 16351.3,
+              "payload": {
+                "stage": "extract"
+              }
+            },
+            {
+              "atMs": 16351.3,
+              "payload": {
+                "stage": "extract-head"
+              }
+            },
+            {
+              "atMs": 17173.3,
+              "payload": {
+                "stage": "manifest-ready",
+                "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                    "status": "added"
+                  }
+                ]
+              }
+            },
+            {
+              "atMs": 24981,
+              "payload": {
+                "stage": "lane-complete",
+                "lane": "head"
+              }
+            },
+            {
+              "atMs": 24981,
+              "payload": {
+                "stage": "extract-merge-base"
+              }
+            },
+            {
+              "atMs": 32780.5,
+              "payload": {
+                "stage": "lane-complete",
+                "lane": "mergeBase"
+              }
+            },
+            {
+              "atMs": 33313.6,
+              "payload": {
+                "stage": "ready",
+                "pairId": "77ac8d9e96f12696ff13",
+                "completeness": "provisional",
+                "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+                "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+                "counts": {
+                  "nodes": 1190,
+                  "edges": 2786
+                },
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                    "status": "added"
+                  }
+                ],
+                "warnings": [
+                  "TypeScript: 4485 unresolved edge(s)",
+                  "TypeScript: 4330 unresolved edge(s)"
+                ],
+                "cache": "miss",
+                "initialProjectionCache": {
+                  "version": 1,
+                  "depth": 1,
+                  "prefetchDepth": 3,
+                  "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+                  "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+                  "ready": true
+                },
+                "preparedPair": {
+                  "version": 1,
+                  "prNumber": 4712,
+                  "headGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                  "mergeBaseGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+                  "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                  "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                  "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+                  "completeness": "provisional",
+                  "pairId": "77ac8d9e96f12696ff13"
+                },
+                "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+              }
+            },
+            {
+              "atMs": 33313.8,
+              "payload": {
+                "stage": "done",
+                "pairId": "77ac8d9e96f12696ff13",
+                "completeness": "provisional",
+                "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+                "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+                "counts": {
+                  "nodes": 1190,
+                  "edges": 2786
+                },
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                    "status": "added"
+                  }
+                ],
+                "warnings": [
+                  "TypeScript: 4485 unresolved edge(s)",
+                  "TypeScript: 4330 unresolved edge(s)"
+                ],
+                "cache": "miss",
+                "initialProjectionCache": {
+                  "version": 1,
+                  "depth": 1,
+                  "prefetchDepth": 3,
+                  "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+                  "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+                  "ready": true
+                },
+                "preparedPair": {
+                  "version": 1,
+                  "prNumber": 4712,
+                  "headGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                  "mergeBaseGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+                  "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+                  "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                  "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+                  "completeness": "provisional",
+                  "pairId": "77ac8d9e96f12696ff13"
+                },
+                "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+              }
+            }
+          ],
+          "handoff": {
+            "version": 2,
+            "delivery": "partial-only-v1",
+            "pairId": "77ac8d9e96f12696ff13",
+            "exactRevisionBound": true,
+            "manifestSha256": "f266d027e2d8fa78f0de2649132f15d160512208dac97d0bc914f311fa555d4e",
+            "sameBoundedPair": true,
+            "canonicalContinuationObserved": false,
+            "partial": {
+              "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+              "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+              "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287"
+            }
+          },
+          "terminalProof": {
+            "version": 1,
+            "delivery": "partial-only-v1",
+            "streamEnded": true,
+            "readyIndex": 40,
+            "doneIndex": 41,
+            "eventCount": 42,
+            "postReadyStages": [
+              "done"
+            ],
+            "sameBoundedPair": true,
+            "canonicalContinuationObserved": false,
+            "pairId": "77ac8d9e96f12696ff13",
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "prepared": {
+              "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+              "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+              "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+              "pairId": "77ac8d9e96f12696ff13",
+              "completeness": "provisional",
+              "initialProjectionCache": {
+                "version": 1,
+                "depth": 1,
+                "prefetchDepth": 3,
+                "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+                "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+                "ready": true
+              },
+              "counts": {
+                "nodes": 1190,
+                "edges": 2786
+              },
+              "changedFiles": [
+                {
+                  "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                  "status": "added"
+                }
+              ],
+              "cache": "miss",
+              "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+            },
+            "repositoryAnalysisWorkerPidsAfterTerminal": []
+          },
+          "completionSubscriber": "complete-ndjson-drain-to-partial-eof"
+        },
+        "chromiumVersion": "149.0.7827.55",
+        "timings": {
+          "landingShellActionableMs": 17173.7,
+          "landingShellTtaMs": 17171.3,
+          "provisionalReadyMs": 33313.6,
+          "provisionalReadyTtaMs": 33311.7,
+          "navigationStartedMs": 33860.7,
+          "browserFirstActionableMs": 2422,
+          "browserSettledMs": 3005.1,
+          "prepareToFirstActionableMs": 36282.7,
+          "prepareToSettledMs": 36865.8,
+          "endToEndFirstActionableMs": 36282.7,
+          "endToEndSettledMs": 36865.8
+        },
+        "landingShell": {
+          "source": "application-performance-mark-and-visible-dom",
+          "markName": "meridian:pr-manifest-shell-actionable",
+          "requestStartedMs": 2.4,
+          "actionableMs": 17173.7,
+          "ttaMs": 17171.3,
+          "readyAtBrowserMs": 33597.1,
+          "readyTtaMs": 33311.7,
+          "clockAlignment": {
+            "version": 2,
+            "method": "two-phase-minimum-rtt-monotonic-interval-intersection",
+            "sampleCountPerPhase": 9,
+            "maximumSelectedRoundTripMs": 100,
+            "nodeColdStartedMs": 5277.773542,
+            "before": {
+              "sampleCount": 9,
+              "samples": [
+                {
+                  "nodeBeforeMs": 5273.964917,
+                  "nodeAfterMs": 5274.703333,
+                  "browserAtMs": 279.5,
+                  "roundTripMs": 0.738416000000143,
+                  "offsetLowerBoundMs": 4994.464917,
+                  "offsetUpperBoundMs": 4995.203333,
+                  "offsetEstimateMs": 4994.834125
+                },
+                {
+                  "nodeBeforeMs": 5274.709375,
+                  "nodeAfterMs": 5275.048167,
+                  "browserAtMs": 280.10000002384186,
+                  "roundTripMs": 0.33879199999955745,
+                  "offsetLowerBoundMs": 4994.6093749761585,
+                  "offsetUpperBoundMs": 4994.948166976158,
+                  "offsetEstimateMs": 4994.778770976158
+                },
+                {
+                  "nodeBeforeMs": 5275.049458,
+                  "nodeAfterMs": 5275.286875,
+                  "browserAtMs": 280.40000009536743,
+                  "roundTripMs": 0.23741699999936827,
+                  "offsetLowerBoundMs": 4994.649457904633,
+                  "offsetUpperBoundMs": 4994.886874904632,
+                  "offsetEstimateMs": 4994.768166404632
+                },
+                {
+                  "nodeBeforeMs": 5275.288042,
+                  "nodeAfterMs": 5275.526708,
+                  "browserAtMs": 280.60000002384186,
+                  "roundTripMs": 0.2386660000001939,
+                  "offsetLowerBoundMs": 4994.688041976158,
+                  "offsetUpperBoundMs": 4994.9267079761585,
+                  "offsetEstimateMs": 4994.807374976159
+                },
+                {
+                  "nodeBeforeMs": 5275.527708,
+                  "nodeAfterMs": 5275.787292,
+                  "browserAtMs": 280.90000009536743,
+                  "roundTripMs": 0.2595840000003591,
+                  "offsetLowerBoundMs": 4994.627707904632,
+                  "offsetUpperBoundMs": 4994.887291904633,
+                  "offsetEstimateMs": 4994.757499904632
+                },
+                {
+                  "nodeBeforeMs": 5275.789,
+                  "nodeAfterMs": 5276.091208,
+                  "browserAtMs": 281.2000000476837,
+                  "roundTripMs": 0.3022080000000642,
+                  "offsetLowerBoundMs": 4994.588999952316,
+                  "offsetUpperBoundMs": 4994.891207952316,
+                  "offsetEstimateMs": 4994.740103952316
+                },
+                {
+                  "nodeBeforeMs": 5276.093875,
+                  "nodeAfterMs": 5276.329417,
+                  "browserAtMs": 281.40000009536743,
+                  "roundTripMs": 0.23554200000035053,
+                  "offsetLowerBoundMs": 4994.693874904632,
+                  "offsetUpperBoundMs": 4994.9294169046325,
+                  "offsetEstimateMs": 4994.811645904632
+                },
+                {
+                  "nodeBeforeMs": 5276.331042,
+                  "nodeAfterMs": 5276.5305,
+                  "browserAtMs": 281.60000002384186,
+                  "roundTripMs": 0.19945800000004965,
+                  "offsetLowerBoundMs": 4994.731041976158,
+                  "offsetUpperBoundMs": 4994.930499976158,
+                  "offsetEstimateMs": 4994.8307709761575
+                },
+                {
+                  "nodeBeforeMs": 5276.531583,
+                  "nodeAfterMs": 5276.802833,
+                  "browserAtMs": 281.90000009536743,
+                  "roundTripMs": 0.2712499999997817,
+                  "offsetLowerBoundMs": 4994.6315829046325,
+                  "offsetUpperBoundMs": 4994.902832904632,
+                  "offsetEstimateMs": 4994.767207904632
+                }
+              ],
+              "selectedSampleIndex": 7,
+              "selectedRoundTripMs": 0.19945800000004965,
+              "selectedOffsetLowerBoundMs": 4994.731041976158,
+              "selectedOffsetUpperBoundMs": 4994.930499976158,
+              "selectedOffsetEstimateMs": 4994.8307709761575,
+              "uncertaintyMs": 0.09972900000002483
+            },
+            "after": {
+              "sampleCount": 9,
+              "samples": [
+                {
+                  "nodeBeforeMs": 22452.790333,
+                  "nodeAfterMs": 22454.605,
+                  "browserAtMs": 17459.600000023842,
+                  "roundTripMs": 1.8146669999987353,
+                  "offsetLowerBoundMs": 4993.190332976159,
+                  "offsetUpperBoundMs": 4995.004999976158,
+                  "offsetEstimateMs": 4994.097666476158
+                },
+                {
+                  "nodeBeforeMs": 22454.6085,
+                  "nodeAfterMs": 22455.093083,
+                  "browserAtMs": 17460.100000023842,
+                  "roundTripMs": 0.48458300000129384,
+                  "offsetLowerBoundMs": 4994.508499976157,
+                  "offsetUpperBoundMs": 4994.993082976158,
+                  "offsetEstimateMs": 4994.750791476159
+                },
+                {
+                  "nodeBeforeMs": 22455.096625,
+                  "nodeAfterMs": 22455.567083,
+                  "browserAtMs": 17460.5,
+                  "roundTripMs": 0.4704580000034184,
+                  "offsetLowerBoundMs": 4994.596624999998,
+                  "offsetUpperBoundMs": 4995.067083000002,
+                  "offsetEstimateMs": 4994.831854
+                },
+                {
+                  "nodeBeforeMs": 22455.570542,
+                  "nodeAfterMs": 22455.972917,
+                  "browserAtMs": 17461,
+                  "roundTripMs": 0.4023749999978463,
+                  "offsetLowerBoundMs": 4994.570542000001,
+                  "offsetUpperBoundMs": 4994.972916999999,
+                  "offsetEstimateMs": 4994.7717295
+                },
+                {
+                  "nodeBeforeMs": 22455.975625,
+                  "nodeAfterMs": 22456.404292,
+                  "browserAtMs": 17461.400000095367,
+                  "roundTripMs": 0.42866700000013225,
+                  "offsetLowerBoundMs": 4994.575624904632,
+                  "offsetUpperBoundMs": 4995.004291904632,
+                  "offsetEstimateMs": 4994.789958404632
+                },
+                {
+                  "nodeBeforeMs": 22456.406625,
+                  "nodeAfterMs": 22457.118667,
+                  "browserAtMs": 17461.800000071526,
+                  "roundTripMs": 0.7120419999992009,
+                  "offsetLowerBoundMs": 4994.606624928474,
+                  "offsetUpperBoundMs": 4995.318666928473,
+                  "offsetEstimateMs": 4994.962645928474
+                },
+                {
+                  "nodeBeforeMs": 22457.122958,
+                  "nodeAfterMs": 22457.458625,
+                  "browserAtMs": 17462.5,
+                  "roundTripMs": 0.33566699999937555,
+                  "offsetLowerBoundMs": 4994.622958,
+                  "offsetUpperBoundMs": 4994.958624999999,
+                  "offsetEstimateMs": 4994.7907915
+                },
+                {
+                  "nodeBeforeMs": 22457.46175,
+                  "nodeAfterMs": 22457.754542,
+                  "browserAtMs": 17462.800000071526,
+                  "roundTripMs": 0.29279200000019046,
+                  "offsetLowerBoundMs": 4994.661749928473,
+                  "offsetUpperBoundMs": 4994.954541928473,
+                  "offsetEstimateMs": 4994.808145928473
+                },
+                {
+                  "nodeBeforeMs": 22457.756375,
+                  "nodeAfterMs": 22457.9925,
+                  "browserAtMs": 17463.100000023842,
+                  "roundTripMs": 0.23612499999944703,
+                  "offsetLowerBoundMs": 4994.656374976159,
+                  "offsetUpperBoundMs": 4994.892499976158,
+                  "offsetEstimateMs": 4994.7744374761605
+                }
+              ],
+              "selectedSampleIndex": 8,
+              "selectedRoundTripMs": 0.23612499999944703,
+              "selectedOffsetLowerBoundMs": 4994.656374976159,
+              "selectedOffsetUpperBoundMs": 4994.892499976158,
+              "selectedOffsetEstimateMs": 4994.7744374761605,
+              "uncertaintyMs": 0.11806249999972351
+            },
+            "requestBracket": {
+              "nodeBeforeMs": 5278.781292,
+              "nodeAfterMs": 5281.731,
+              "browserRequestStartedAtMs": 285.40000009536743,
+              "browserSampleAtMs": 285.8000000715256
+            },
+            "browserMark": {
+              "requestStartedAtMs": 285.40000009536743,
+              "atMs": 17456.700000047684,
+              "ttaMs": 17171.299999952316
+            },
+            "rawRequest": {
+              "lowerBoundMs": 2.3575000715254646,
+              "upperBoundMs": 2.5569580715255142,
+              "estimateMs": 2.4572290715250347,
+              "uncertaintyMs": 0.09972900000002483
+            },
+            "rawAction": {
+              "lowerBoundMs": 17173.582833023844,
+              "upperBoundMs": 17173.818958023843,
+              "estimateMs": 17173.700895523845,
+              "uncertaintyMs": 0.11806249999972351
+            },
+            "triggerBounds": {
+              "lowerBoundMs": 1.00774999999976,
+              "upperBoundMs": 3.9574579999998605
+            },
+            "causalRequest": {
+              "lowerBoundMs": 2.3575000715254646,
+              "upperBoundMs": 2.5189580715268676
+            },
+            "causalAction": {
+              "lowerBoundMs": 17173.65750002384,
+              "upperBoundMs": 17173.818958023843
+            },
+            "resolvedUncertaintyMs": 0.08072900000070149,
+            "causalResolutionShiftMs": -0.01899999999886859,
+            "normalizedWithinMeasuredUncertainty": true,
+            "resolvedRequestStartedMs": 2.438229071526166,
+            "resolvedActionableMs": 17173.738229023842
+          },
+          "performanceEntry": {
+            "name": "meridian:pr-manifest-shell-actionable",
+            "startTimeMs": 17456.700000047684,
+            "detail": {
+              "atMs": 17456.700000047684,
+              "requestStartedAtMs": 285.40000009536743,
+              "ttaMs": 17171.299999952316,
+              "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+              "changedFileCount": 2
+            }
+          },
+          "visible": true,
+          "changedFileCount": 2,
+          "visibleChangedFileRows": 2,
+          "rows": [
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/framework/PlatformContextProvider.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/b513f2206de4fd4f1f1acfc84da5a020c4c45a5a/src/aria/app/src/framework/PlatformContextProvider.ts"
+            },
+            {
+              "status": "added",
+              "label": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/b513f2206de4fd4f1f1acfc84da5a020c4c45a5a/src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts"
+            }
+          ],
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "provisional": {
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+            "pairId": "77ac8d9e96f12696ff13",
+            "completeness": "provisional",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+              "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+              "ready": true
+            },
+            "counts": {
+              "nodes": 1190,
+              "edges": 2786
+            },
+            "changedFiles": [
+              {
+                "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                "status": "added"
+              }
+            ],
+            "cache": "miss",
+            "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13"
+          },
+          "terminal": {
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+            "pairId": "77ac8d9e96f12696ff13",
+            "completeness": "provisional",
+            "cache": "miss",
+            "viewUrl": "/view?id=pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a&view=modules&prn=4712&rev=1&progressive=1&partial=1&pair=77ac8d9e96f12696ff13",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+              "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+              "ready": true
+            }
+          },
+          "renderedManifestSha256": "f266d027e2d8fa78f0de2649132f15d160512208dac97d0bc914f311fa555d4e"
+        },
+        "firstActionableMark": {
+          "name": "meridian:first-actionable-canvas",
+          "startTimeMs": 2422,
+          "detail": {
+            "nodes": 123,
+            "edges": 126
+          },
+          "source": "performance-mark"
+        },
+        "networkAtAction": {
+          "encodedBytes": 9872071,
+          "graphEncodedBytes": 6614801,
+          "observedEncodedBytes": 9872781,
+          "graphObservedEncodedBytes": 6614801,
+          "requestCount": 18,
+          "failedRequestCount": 0,
+          "finishedRequestCount": 14,
+          "inFlightRequestCount": 4,
+          "inFlightGraphRequestCount": 0,
+          "canceledRequestCount": 0,
+          "blockedRequestCount": 0,
+          "cachedRequestCount": 0,
+          "redirectRequestCount": 0,
+          "requestIdReuseCount": 0,
+          "resourceTimingReconciliationAttemptCount": 0,
+          "resourceTimingReconciledRequestCount": 0,
+          "resourceTimingReconciliationRejections": {},
+          "byteAuthoritySources": {
+            "cdp-terminal-total": 14
+          },
+          "accountingAnomalyCount": 0,
+          "accountingAnomalies": [],
+          "accountingDiagnosticCount": 2,
+          "accountingDiagnostics": [
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/view"
+            },
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/api/pr/analyze"
+            }
+          ],
+          "bytesAuthoritative": false,
+          "graphBytesAuthoritative": true,
+          "accountingComplete": false,
+          "graphAccountingComplete": true,
+          "byPath": {
+            "/view": {
+              "requests": 1,
+              "encodedBytes": 3961,
+              "observedEncodedBytes": 3961,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-BwTBcOZ5.js": {
+              "requests": 1,
+              "encodedBytes": 3157010,
+              "observedEncodedBytes": 3157010,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-DtxX27Jz.css": {
+              "requests": 1,
+              "encodedBytes": 15596,
+              "observedEncodedBytes": 15596,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project": {
+              "requests": 2,
+              "encodedBytes": 6614801,
+              "observedEncodedBytes": 6614801,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph-views/rGkuC5Ddc2Ucs5iKjwV9cwSipxfWqi3P": {
+              "requests": 2,
+              "encodedBytes": 510,
+              "observedEncodedBytes": 510,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/one": {
+              "requests": 2,
+              "encodedBytes": 4503,
+              "observedEncodedBytes": 4503,
+              "finishedRequests": 1,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/api/prs/files": {
+              "requests": 1,
+              "encodedBytes": 37190,
+              "observedEncodedBytes": 37190,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/comments": {
+              "requests": 1,
+              "encodedBytes": 2196,
+              "observedEncodedBytes": 2196,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/checks": {
+              "requests": 1,
+              "encodedBytes": 322,
+              "observedEncodedBytes": 322,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/pr/analyze": {
+              "requests": 1,
+              "encodedBytes": 2261,
+              "observedEncodedBytes": 2261,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/viewed-files": {
+              "requests": 1,
+              "encodedBytes": 536,
+              "observedEncodedBytes": 536,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project/warm": {
+              "requests": 2,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 710,
+              "finishedRequests": 0,
+              "inFlightRequests": 2,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/graphSymbolWorker-4RBrZcmw.js": {
+              "requests": 1,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 0,
+              "finishedRequests": 0,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/code-preview-braces-osDMZYcN.png": {
+              "requests": 1,
+              "encodedBytes": 33185,
+              "observedEncodedBytes": 33185,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            }
+          }
+        },
+        "networkSettled": {
+          "encodedBytes": 9872071,
+          "graphEncodedBytes": 6614801,
+          "observedEncodedBytes": 9872781,
+          "graphObservedEncodedBytes": 6614801,
+          "requestCount": 18,
+          "failedRequestCount": 0,
+          "finishedRequestCount": 14,
+          "inFlightRequestCount": 4,
+          "inFlightGraphRequestCount": 0,
+          "canceledRequestCount": 0,
+          "blockedRequestCount": 0,
+          "cachedRequestCount": 0,
+          "redirectRequestCount": 0,
+          "requestIdReuseCount": 0,
+          "resourceTimingReconciliationAttemptCount": 0,
+          "resourceTimingReconciledRequestCount": 0,
+          "resourceTimingReconciliationRejections": {},
+          "byteAuthoritySources": {
+            "cdp-terminal-total": 14
+          },
+          "accountingAnomalyCount": 0,
+          "accountingAnomalies": [],
+          "accountingDiagnosticCount": 2,
+          "accountingDiagnostics": [
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/view"
+            },
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/api/pr/analyze"
+            }
+          ],
+          "bytesAuthoritative": false,
+          "graphBytesAuthoritative": true,
+          "accountingComplete": false,
+          "graphAccountingComplete": true,
+          "byPath": {
+            "/view": {
+              "requests": 1,
+              "encodedBytes": 3961,
+              "observedEncodedBytes": 3961,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-BwTBcOZ5.js": {
+              "requests": 1,
+              "encodedBytes": 3157010,
+              "observedEncodedBytes": 3157010,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-DtxX27Jz.css": {
+              "requests": 1,
+              "encodedBytes": 15596,
+              "observedEncodedBytes": 15596,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project": {
+              "requests": 2,
+              "encodedBytes": 6614801,
+              "observedEncodedBytes": 6614801,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph-views/rGkuC5Ddc2Ucs5iKjwV9cwSipxfWqi3P": {
+              "requests": 2,
+              "encodedBytes": 510,
+              "observedEncodedBytes": 510,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/one": {
+              "requests": 2,
+              "encodedBytes": 4503,
+              "observedEncodedBytes": 4503,
+              "finishedRequests": 1,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/api/prs/files": {
+              "requests": 1,
+              "encodedBytes": 37190,
+              "observedEncodedBytes": 37190,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/comments": {
+              "requests": 1,
+              "encodedBytes": 2196,
+              "observedEncodedBytes": 2196,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/checks": {
+              "requests": 1,
+              "encodedBytes": 322,
+              "observedEncodedBytes": 322,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/pr/analyze": {
+              "requests": 1,
+              "encodedBytes": 2261,
+              "observedEncodedBytes": 2261,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/viewed-files": {
+              "requests": 1,
+              "encodedBytes": 536,
+              "observedEncodedBytes": 536,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project/warm": {
+              "requests": 2,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 710,
+              "finishedRequests": 0,
+              "inFlightRequests": 2,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/graphSymbolWorker-4RBrZcmw.js": {
+              "requests": 1,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 0,
+              "finishedRequests": 0,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/code-preview-braces-osDMZYcN.png": {
+              "requests": 1,
+              "encodedBytes": 33185,
+              "observedEncodedBytes": 33185,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            }
+          }
+        },
+        "memoryAtAction": {
+          "browserJsHeapUsedBytes": 46983335,
+          "browserProcessRssBytes": 533102592,
+          "jsHeapUsedBytes": 46983335,
+          "jsHeapTotalBytes": 65196795,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 3370216,
+          "backingStorageBytes": 9736955,
+          "processRssBytes": 533102592,
+          "processRssByType": {
+            "browser": 90816512,
+            "renderer": 311541760,
+            "GPU": 82362368,
+            "network.mojom.NetworkService": 48381952
+          },
+          "serviceRssBytes": 196935680,
+          "workerRssBytes": 245612544,
+          "serviceWorkerPids": [
+            24679
+          ]
+        },
+        "memorySettled": {
+          "browserJsHeapUsedBytes": 47516064,
+          "browserProcessRssBytes": 539099136,
+          "jsHeapUsedBytes": 47516064,
+          "jsHeapTotalBytes": 65721592,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 3432928,
+          "backingStorageBytes": 9737464,
+          "processRssBytes": 539099136,
+          "processRssByType": {
+            "browser": 90816512,
+            "renderer": 315375616,
+            "GPU": 84525056,
+            "network.mojom.NetworkService": 48381952
+          },
+          "serviceRssBytes": 196935680,
+          "workerRssBytes": 245727232,
+          "serviceWorkerPids": [
+            24679
+          ]
+        },
+        "memoryPeak": {
+          "browserJsHeapUsedBytes": 47959434,
+          "browserProcessRssBytes": 541720576,
+          "jsHeapUsedBytes": 47959434,
+          "jsHeapTotalBytes": 65984450,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 3685632,
+          "backingStorageBytes": 9738178,
+          "processRssBytes": 541720576,
+          "serviceRssBytes": 204554240,
+          "workerRssBytes": 246071296
+        },
+        "coldServiceMemory": {
+          "peakRssBytes": 224083968,
+          "retainedRssBytes": 196935680,
+          "workerPeakRssBytes": 679116800,
+          "workerRetainedRssBytes": 246153216,
+          "sampleCount": 98,
+          "intervalMs": 500,
+          "workerScope": "all-owned-analysis-and-projection-descendants",
+          "diagnostic": false,
+          "diagnosticMessage": null,
+          "lifecyclePeakRssBytes": 224083968,
+          "lifecycleWorkerPeakRssBytes": 679116800,
+          "browserPhasePeakRssBytes": 204554240,
+          "browserPhaseWorkerPeakRssBytes": 246071296,
+          "preparationAndEndToEndSampleCount": 71,
+          "browserPhaseSampleCount": 27,
+          "browserPhaseIntervalMs": 100,
+          "peakAggregation": "max-of-500ms-lifecycle-and-100ms-review-browser-phase",
+          "retainedSource": "500ms-lifecycle-final-snapshot-after-review-settled",
+          "browserPhaseWorkerScope": "owned-projection-workers"
+        },
+        "domAtAction": {
+          "documentNodes": 421,
+          "canvasNodes": 3,
+          "canvasEdges": 1,
+          "reviewFileRows": 2
+        },
+        "domSettled": {
+          "documentNodes": 421,
+          "canvasNodes": 3,
+          "canvasEdges": 1,
+          "reviewFileRows": 2
+        },
+        "sceneAtAction": {
+          "nodeIds": [
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts",
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts#PlatformContextProvider",
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts#resolveEffectiveScreenContextMode"
+          ],
+          "edgeIds": [
+            "dep:calls:ts:src/aria/app/src/framework/PlatformContextProvider.ts#PlatformContextProvider->ts:src/aria/app/src/framework/PlatformContextProvider.ts#resolveEffectiveScreenContextMode"
+          ],
+          "reviewFiles": [
+            "getPlatformContext · method",
+            "src/aria/app/src/framework/PlatformContextProvider.ts"
+          ]
+        },
+        "sceneSettled": {
+          "nodeIds": [
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts",
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts#PlatformContextProvider",
+            "ts:src/aria/app/src/framework/PlatformContextProvider.ts#resolveEffectiveScreenContextMode"
+          ],
+          "edgeIds": [
+            "dep:calls:ts:src/aria/app/src/framework/PlatformContextProvider.ts#PlatformContextProvider->ts:src/aria/app/src/framework/PlatformContextProvider.ts#resolveEffectiveScreenContextMode"
+          ],
+          "reviewFiles": [
+            "getPlatformContext · method",
+            "src/aria/app/src/framework/PlatformContextProvider.ts"
+          ]
+        },
+        "exactRevision": {
+          "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+          "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+          "preparedBaseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "baseTipDrift": false
+        },
+        "partialOnlyContinuation": {
+          "version": 2,
+          "delivery": "partial-runtime-only-v1",
+          "pairId": "77ac8d9e96f12696ff13",
+          "streamEnded": true,
+          "readyDoneSamePair": true,
+          "postTerminalDwellMs": 300,
+          "canonicalGraphRequests": 0,
+          "canonicalGraphResponses": 0,
+          "canonicalReconciliationMarks": 0,
+          "repositoryAnalysisWorkerPidsAfterTerminal": [],
+          "boundedPartialWorkerPidsAtDwellStart": [],
+          "graphProjectWorkerPidsAtDwellStart": [
+            24679
+          ],
+          "boundedPartialWorkerPidsDuringDwell": [],
+          "graphProjectWorkerPidsDuringDwell": [
+            24679
+          ],
+          "newBoundedPartialWorkerPidsDuringDwell": [],
+          "newGraphProjectWorkerPidsDuringDwell": [],
+          "processObservation": {
+            "scope": "same-dwell-start-and-sampled-union",
+            "sampleIntervalMs": 50,
+            "sampleCount": 5
+          },
+          "preDwellGraphWork": {
+            "partialProjectionRequests": 2,
+            "partialProjectionWarmRequests": 2,
+            "sourceIndexRequests": 0,
+            "fullGenerationRequests": 0
+          },
+          "postReadyGraphWork": {
+            "partialProjectionRequests": 0,
+            "partialProjectionWarmRequests": 0,
+            "sourceIndexRequests": 0,
+            "fullGenerationRequests": 0
+          },
+          "routeCounterScope": "same-dwell-request-delta",
+          "allowedBackgroundWork": "syntax-symbol-topology-index-and-explicit-bounded-partial-expansion-only"
+        },
+        "analyzeTerminals": [
+          {
+            "stage": "done",
+            "pairId": "77ac8d9e96f12696ff13",
+            "completeness": "provisional",
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "comparisonGraphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "headSha": "b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "62f16fce428421d4daad3ce196fa1ccebde30287",
+            "counts": {
+              "nodes": 1190,
+              "edges": 2786
+            },
+            "changedFiles": [
+              {
+                "path": "src/aria/app/src/framework/PlatformContextProvider.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/framework/PlatformContextProvider.uiAutomationDisabled.test.ts",
+                "status": "added"
+              }
+            ],
+            "warnings": [
+              "TypeScript: 4485 unresolved edge(s)",
+              "TypeScript: 4330 unresolved edge(s)"
+            ],
+            "cache": "hit",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+              "comparisonKey": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+              "ready": true
+            }
+          }
+        ],
+        "analyzeRequests": [
+          {
+            "method": "POST",
+            "progressiveFalse": false,
+            "fullBaselineCapabilityHeaderPresent": false
+          }
+        ],
+        "initialProjectionCacheHits": [
+          {
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "seedGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "method": "POST",
+            "path": "/api/graph/project",
+            "status": 200,
+            "cache": "hit",
+            "key": "225325be71b7a0840f527996415ff10f65e10733f985f35288cc41aa06675d81",
+            "ready": true,
+            "responseBodyRead": false,
+            "source": "request-and-response-headers"
+          },
+          {
+            "graphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "seedGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "method": "POST",
+            "path": "/api/graph/project",
+            "status": 200,
+            "cache": "hit",
+            "key": "abd7299f931037152a1357438b65f5539500f4de5d20c5bbc4a158b9c5cec086",
+            "ready": true,
+            "responseBodyRead": false,
+            "source": "request-and-response-headers"
+          }
+        ],
+        "performanceMarks": [
+          {
+            "name": "meridian:progressive-graph-request-start",
+            "startTimeMs": 214,
+            "detail": null
+          },
+          {
+            "name": "meridian:progressive-graph-ready",
+            "startTimeMs": 254,
+            "detail": null
+          },
+          {
+            "name": "meridian:first-actionable-canvas",
+            "startTimeMs": 2422,
+            "detail": {
+              "nodes": 123,
+              "edges": 126
+            }
+          },
+          {
+            "name": "meridian:navigation-restored",
+            "startTimeMs": 2874.7000000476837,
+            "detail": null
+          }
+        ],
+        "graphs": [],
+        "projections": [
+          {
+            "version": 1,
+            "graphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "rootsKind": "changed-files",
+            "seedGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "generation": null,
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "rootCount": null,
+            "readyRootCount": null,
+            "loadedFileCount": null,
+            "counts": null,
+            "responseBodyRead": false,
+            "transportStatus": 200,
+            "source": "request-and-response-headers"
+          },
+          {
+            "version": 1,
+            "graphId": "pr-partial-base-77ac8d9e96f12696ff13-62f16fce428421d4daad3ce196fa1ccebde30287",
+            "rootsKind": "changed-files",
+            "seedGraphId": "pr-partial-77ac8d9e96f12696ff13-b513f2206de4fd4f1f1acfc84da5a020c4c45a5a",
+            "generation": null,
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "rootCount": null,
+            "readyRootCount": null,
+            "loadedFileCount": null,
+            "counts": null,
+            "responseBodyRead": false,
+            "transportStatus": 200,
+            "source": "request-and-response-headers"
+          }
+        ],
+        "pageErrors": [],
+        "consoleErrors": []
+      }
+    }
+  }
+}

@@ -12,6 +12,14 @@
 import { isAllowedCloneRef } from "./git-ref";
 import { WebError } from "./web-error";
 
+/**
+ * A complete PR graph is not a product delivery mode. The benchmark harness must opt in at both
+ * boundaries: launch a loopback server in benchmark mode and mark each complete-control request.
+ * The marker is intentionally versioned so an old harness cannot silently widen a newer server.
+ */
+export const PR_FULL_BASELINE_BENCHMARK_HEADER = "x-meridian-pr-full-baseline";
+export const PR_FULL_BASELINE_BENCHMARK_CAPABILITY = "benchmark-v1";
+
 export interface PrAnalyzeRequest {
   id: string;
   prNumber: number;
@@ -19,6 +27,8 @@ export interface PrAnalyzeRequest {
   headRef: string;
   /** Internal-only picker snapshot used by direct preparation; never trusted as the resolved SHA. */
   expectedHeadSha?: string;
+  /** Bounded, incrementally expandable graph contract. Only the controlled benchmark opts out. */
+  progressive?: boolean;
 }
 
 /**
@@ -45,6 +55,7 @@ export function parsePrAnalyzeRequest(body: unknown): PrAnalyzeRequest {
     prNumber: requirePositiveInt(raw.prNumber, "prNumber"),
     baseRef: requireRef(raw.baseRef, "baseRef"),
     headRef: requireRef(raw.headRef, "headRef"),
+    progressive: raw.progressive === undefined ? true : requireBoolean(raw.progressive, "progressive"),
   };
 }
 
@@ -86,6 +97,11 @@ function requirePositiveInt(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) {
     throw new WebError(400, `${name} must be a positive integer`);
   }
+  return value;
+}
+
+function requireBoolean(value: unknown, name: string): boolean {
+  if (typeof value !== "boolean") throw new WebError(400, `${name} must be a boolean`);
   return value;
 }
 

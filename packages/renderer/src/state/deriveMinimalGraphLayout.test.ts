@@ -12,6 +12,7 @@ import {
 const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
 const OTHER_FILE_ID = "ts:src/b.ts";
+const OTHER_METHOD_ID = `${OTHER_FILE_ID}#searchTarget`;
 const CLASS_ID = `${FILE_ID}#Service`;
 const CHANGED_ID = `${CLASS_ID}.changed`;
 const UNCHANGED_ID = `${CLASS_ID}.unchanged`;
@@ -26,6 +27,7 @@ const ARTIFACT = {
     graphNode(PACKAGE_ID, "package", "src"),
     graphNode(FILE_ID, "module", "src/a.ts", PACKAGE_ID),
     graphNode(OTHER_FILE_ID, "module", "src/b.ts", PACKAGE_ID),
+    graphNode(OTHER_METHOD_ID, "function", "src/b.ts", OTHER_FILE_ID),
     graphNode(CLASS_ID, "class", "src/a.ts", FILE_ID),
     graphNode(CHANGED_ID, "method", "src/a.ts", CLASS_ID),
     graphNode(UNCHANGED_ID, "method", "src/a.ts", CLASS_ID),
@@ -44,6 +46,26 @@ describe("PR diff-only minimal graph projection", () => {
       CLASS_ID,
       CHANGED_ID,
     ]));
+  });
+
+  it("adds only an explicit user root's containment subtree to Diff-only visibility", () => {
+    const index = buildGraphIndex(ARTIFACT);
+    const ordinary = reviewDiffVisibleIds(index, new Set([CHANGED_ID]));
+    const withExplicitRoot = reviewDiffVisibleIds(index, new Set([CHANGED_ID]), [OTHER_FILE_ID]);
+
+    expect(ordinary.has(OTHER_FILE_ID)).toBe(false);
+    expect(ordinary.has(OTHER_METHOD_ID)).toBe(false);
+    expect(ordinary.has(UNCHANGED_ID)).toBe(false);
+    expect(withExplicitRoot).toEqual(new Set([
+      PACKAGE_ID,
+      FILE_ID,
+      CLASS_ID,
+      CHANGED_ID,
+      OTHER_FILE_ID,
+      OTHER_METHOD_ID,
+    ]));
+    expect(withExplicitRoot.has(UNCHANGED_ID)).toBe(false);
+    expect(withExplicitRoot.has(GHOST_ID)).toBe(false);
   });
 
   it("drops unchanged siblings, ghosts, and every edge incident to them before layout", () => {

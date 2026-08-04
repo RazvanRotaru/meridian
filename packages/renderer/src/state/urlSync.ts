@@ -48,6 +48,30 @@ export async function restoreFromUrl(
     store.getState().keepEditingReviewLineComposer();
     store.getState().discardReviewLineComposer();
   }
+  // Delivery mode is a per-history-entry contract, not just decoration. Partial-only is the default;
+  // an explicit `progressive=0` exists only for the controlled complete-artifact benchmark lane.
+  // End only when the same session cannot be resumed into the requested delivery mode.
+  const currentReview = store.getState();
+  if (
+    rebuildingReview
+    && currentReview.prReviewed === nav.reviewPr
+    && (
+      (currentReview.progressiveGraph !== null && !nav.progressiveReview)
+      || (
+        currentReview.progressiveGraph === null
+        && nav.progressiveReview
+        && (
+          currentReview.minimalSeedIds.length > 0
+          || currentReview.prPreparedGraphId === null
+        )
+      )
+    )
+  ) {
+    await currentReview.selectPr(null, { endReviewSession: true });
+    if (!restoreIsCurrent(progress)) {
+      return;
+    }
+  }
   if (store.getState().viewMode === "prs" && restoredViewMode !== "prs") {
     store.getState().cancelPrReviewPreparation();
   }
@@ -87,7 +111,12 @@ export async function restoreFromUrl(
   }
   if (nav.reviewActive && nav.reviewPr !== null) {
     progress.onReviewDetails?.();
-    await restorePrReview(store, nav.reviewPr, () => restoreIsCurrent(progress));
+    await restorePrReview(
+      store,
+      nav.reviewPr,
+      nav.progressiveReview,
+      () => restoreIsCurrent(progress),
+    );
     if (!restoreIsCurrent(progress)) {
       return;
     }
@@ -150,7 +179,9 @@ export function startUrlSync(store: BlueprintStore): () => void {
         suppress = false;
       }
     };
-    void restore.then(finish, finish);
+    // Browsers ignore an event listener's return value. Returning the settled promise still makes
+    // this serialized boundary deterministic for the history-contract tests.
+    return restore.then(finish, finish);
   };
   window.addEventListener("popstate", onPopState);
   return () => {
@@ -162,6 +193,7 @@ export function startUrlSync(store: BlueprintStore): () => void {
 async function restorePrReview(
   store: BlueprintStore,
   number: number,
+  progressiveGraphDelivery: boolean,
   isCurrent: () => boolean,
 ): Promise<void> {
   await store.getState().ensurePrSummary(number);
@@ -178,7 +210,7 @@ async function restorePrReview(
   }
   // Prepare-first is blocking: a restored review stays on the PRs waiting surface until the cached
   // or freshly prepared HEAD graph has swapped and reviewPrInGraph enters the Map.
-  await store.getState().reviewPrInGraph();
+  await store.getState().reviewPrInGraph({ progressiveGraphDelivery });
 }
 
 // Reflect the current store into the URL. A no-op when the URL wouldn't change (this also absorbs

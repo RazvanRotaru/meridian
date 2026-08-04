@@ -18,6 +18,7 @@ import {
   MAX_REPOSITORY_WORKER_STDERR_BYTES,
   normalizeRepositoryAnalysisRequest,
   type RepositoryAnalysisFacts,
+  type RepositoryAnalysisEarlyManifest,
   type RepositoryAnalysisProgress,
   type RepositoryAnalysisProgressContext,
   type RepositoryAnalysisWorkerBranchVariantResult,
@@ -33,10 +34,16 @@ import {
   type WebGraphArtifactSummary,
 } from "./web-graph-store";
 import { repositoryAnalysisWorkerHeapArg } from "./repository-analysis-memory";
+import {
+  benchmarkWorkerOwnerArgs,
+  registerBenchmarkOwnedChild,
+  terminateUnregisteredBenchmarkChild,
+} from "./benchmark-owned-process-registry";
 
 export type { SerializableRepositoryAnalysisRequest } from "./repository-analysis-worker-job";
 export { isRepositoryAnalysisFacts } from "./repository-analysis-worker-job";
 export type {
+  RepositoryAnalysisEarlyManifest,
   RepositoryAnalysisFacts,
   RepositoryAnalysisProgress,
   RepositoryAnalysisProgressContext,
@@ -82,6 +89,8 @@ export interface RepositoryAnalysisChildOptions {
     context: RepositoryAnalysisProgressContext;
     onProgress(progress: RepositoryAnalysisProgress): void;
   };
+  /** One complete bounded copy of the verified changed-file manifest, before extraction. */
+  onChangedManifest?(manifest: RepositoryAnalysisEarlyManifest): void | Promise<void>;
   /** Server-owned immutable TypeScript shard execution policy transferred over private IPC. */
   typeScriptRevisionShards?: TypeScriptRevisionShardPolicy;
   signal?: AbortSignal;
@@ -106,6 +115,7 @@ export async function runRepositoryAnalysisChild(
     id: workerId(options.id),
     request: normalizeRepositoryAnalysisRequest(request),
     artifactOutputPath: options.artifactOutputPath,
+    earlyManifest: options.onChangedManifest !== undefined,
     branchVariant: options.branchVariant ?? null,
     reviewFingerprints: options.reviewFingerprints ?? null,
     progressContext: options.progress?.context ?? null,
@@ -175,9 +185,9 @@ function runRepositoryWorkerProcess(
   execArgv.push(repositoryAnalysisWorkerHeapArg(options.workerHeapMb));
 
   return new Promise<RepositoryAnalysisWorkerFileResult>((resolve, reject) => {
-    let child: ReturnType<typeof fork>;
+    let spawned: ReturnType<typeof fork> | null = null;
     try {
-      child = fork(workerEntry, {
+      spawned = fork(workerEntry, benchmarkWorkerOwnerArgs(), {
         detached: process.platform !== "win32",
         ...(sourceMode ? { cwd: sourceWorkerCwd() } : {}),
         env: repositoryWorkerEnvironment(sourceMode),
@@ -185,12 +195,24 @@ function runRepositoryWorkerProcess(
         serialization: "advanced",
         stdio: ["ignore", "ignore", "pipe", "ipc"],
       });
+      spawned.once("error", () => {});
+      registerBenchmarkOwnedChild(spawned.pid ?? 0);
     } catch {
-      reject(transportError("could not start repository analysis worker"));
+      const error = transportError("could not start repository analysis worker");
+      if (spawned === null) reject(error);
+      else void terminateUnregisteredBenchmarkChild(spawned).then(
+        () => reject(error),
+        (cleanupError) => {
+          (error as Error & { cause?: unknown }).cause = cleanupError;
+          reject(error);
+        },
+      );
       return;
     }
+    const child = spawned;
 
-    let response: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }> | undefined;
+    let response: Extract<RepositoryAnalysisWorkerResponse, { type: "result" | "error" }> | undefined;
+    let manifestMessages = 0;
     let progressMessages = 0;
     let terminalReason: unknown;
     let transportFailure: CliError | undefined;
@@ -276,6 +298,25 @@ function runRepositoryWorkerProcess(
         }
         return;
       }
+      if (value.type === "manifest") {
+        manifestMessages += 1;
+        if (manifestMessages > 1
+          || response !== undefined
+          || message.type !== "analyze"
+          || !message.earlyManifest
+          || message.request.changedSince === null
+          || value.id !== message.id) {
+          failTransport("repository analysis worker sent an invalid early manifest");
+          return;
+        }
+        try {
+          const result = options.onChangedManifest?.(value.manifest);
+          sinkPromiseLike(result);
+        } catch {
+          // The early manifest is observational; a consumer cannot change graph extraction.
+        }
+        return;
+      }
       if (response !== undefined) {
         failTransport("repository analysis worker sent more than one terminal response");
         return;
@@ -308,7 +349,12 @@ function runRepositoryWorkerProcess(
         }
         const cleanResponseExit = code === 0 && closeSignal === null;
         if ((!cleanResponseExit && !windowsResponseCleanup) || response === undefined) {
-          rejectAfterCleanup(transportError("repository analysis worker exited without a valid response"));
+          const exitSummary = closeSignal === null
+            ? `exit ${code ?? "unknown"}`
+            : `signal ${closeSignal}`;
+          rejectAfterCleanup(transportError(
+            `repository analysis worker exited without a valid response (${exitSummary})`,
+          ));
           return;
         }
         if (response.type === "error") {
@@ -476,6 +522,7 @@ function publicResult(
     summary: result.graphSummary,
     target: result.target,
     changedFiles: result.changedFiles,
+    initialGraphSeedFiles: result.initialGraphSeedFiles,
     emptySideHints: result.emptySideHints,
     sourceFiles: result.sourceFiles,
     changedSinceBaseRef: result.changedSinceBaseRef,

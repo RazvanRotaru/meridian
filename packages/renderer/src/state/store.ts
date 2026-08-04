@@ -32,6 +32,8 @@ import type {
   FlowPath,
   FlowStep,
   GraphArtifact,
+  GraphProjectionV1,
+  CompactGraphSymbolEntry,
   GraphNode,
   JsonValue,
   LineRange,
@@ -49,6 +51,32 @@ import type {
   TraceGraphRef,
 } from "@meridian/core";
 import { applyChangedIds, applyChangedStatus, buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
+import {
+  changedFileProjectionRequest,
+  fetchGraphProjection,
+  fetchGraphSymbols,
+  fileProjectionRequests,
+  hydrateHeadProjectionForComparisonContext,
+  isProjectionReadyForCanvas,
+  mergeGraphProjections,
+  projectionToArtifact,
+  warmGraphProjection,
+  MAX_GRAPH_SYMBOL_RESPONSE_BYTES,
+} from "./progressiveGraph";
+import {
+  createGraphSymbolSearchClient,
+  GraphSymbolSearchSupersededError,
+  graphSymbolIndexSummary,
+  graphSymbolSearchWorkerAvailable,
+  type GraphSymbolIndexSummary,
+  type GraphSymbolSearchClient,
+} from "./graphSymbolSearchClient";
+import type {
+  GraphSymbolSearchEntry,
+  GraphSymbolSearchQuery,
+  GraphSymbolSearchQueryResult,
+  GraphSymbolSearchScopeCounts,
+} from "./graphSymbolSearch";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
@@ -82,7 +110,11 @@ import type {
   GraphViewLeaseHandoff,
 } from "../boot/graphViewLease";
 import { layoutModuleTree } from "../layout/moduleLevelLayout";
-import { deriveMinimalGraphLayout, reviewDiffVisibleIds } from "./deriveMinimalGraphLayout";
+import {
+  deriveMinimalGraphLayout,
+  explicitRootVisibleIds,
+  reviewDiffVisibleIds,
+} from "./deriveMinimalGraphLayout";
 import { minimalRollupExpansions } from "../derive/minimalRollupExpansion";
 import { captureMapPositions, promotedMemberRect } from "./mapPositions";
 import type { PlacedRect } from "../layout/minimalPlacement";
@@ -126,7 +158,7 @@ import {
   type ReviewCodePreviewTrigger,
   type ReviewFlowSplitView,
 } from "./reviewPreferences";
-import { moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
+import { isCanonicalFileNode, moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
 import {
   anchorNodeIds,
   mapRevealStateForMany,
@@ -174,7 +206,12 @@ import {
   reviewNodeStatusSourcesFromKinds,
   reviewSourceChangeStatus,
 } from "./reviewNodeStatus";
-import { streamPrAnalysis, type PrPrepareStage } from "./prAnalysis";
+import {
+  streamPrAnalysis,
+  type PrAnalysisReadyResult,
+  type PrAnalysisResult,
+  type PrPrepareStage,
+} from "./prAnalysis";
 import { isPrReviewStale, prReviewRevisionKey, reviewRevision, type PrReviewRevision } from "./prReviewFreshness";
 import {
   discardReviewLineComposer as discardReviewLineComposerState,
@@ -188,6 +225,7 @@ import {
 import {
   fetchPreparedArtifact,
   fetchPreparedGraphSession,
+  fetchPreparedSyntheticCapabilityForGraph,
   hasPrReviewLineDiff,
   resetChangedIdsToArtifact,
   restorePrReviewBaseline,
@@ -195,6 +233,7 @@ import {
   withPrLineDiff,
   type PrReviewBaseline,
   type PrReviewComparison,
+  type PreparedGraphSession,
 } from "./prReviewSession";
 import { deriveReviewData, applyTick, type ReviewData } from "../derive/reviewData";
 import {
@@ -354,6 +393,208 @@ export interface ReviewFocusedSubgraph {
   label: string;
   filePaths: string[];
   moduleIds: string[];
+}
+
+export const DEFAULT_PROGRESSIVE_GRAPH_DEPTH = 1;
+export const MAX_PROGRESSIVE_GRAPH_DEPTH = 6;
+const INITIAL_PROGRESSIVE_GRAPH_PREFETCH_DEPTH = 3;
+const MAX_PROGRESSIVE_AUTOWARM_DEPTH = 2;
+
+export interface ProgressiveGraphSessionState {
+  /** Authoritative bounded HEAD slice; the displayed review may also contain base tombstones. */
+  head: GraphProjectionV1;
+  /** Authoritative bounded exact merge-base slice used for deleted-node derivation. */
+  comparison: GraphProjectionV1 | null;
+  /** Disconnected HEAD files explicitly admitted through search/ghost interaction. They participate
+   * in every later depth change just like the affected-file roots. */
+  explicitFileIds: string[];
+  /** Deepest affected-file-rooted slice merged into HEAD; explicit search roots track their own
+   * per-file frontier and must not inflate this cursor. */
+  affectedDepth: number;
+  requestedDepth: number;
+  status: "ready" | "expanding" | "error";
+  error: string | null;
+}
+
+export interface ProgressiveSymbolIndexState {
+  status: "idle" | "indexing" | "ready" | "error";
+  graphId: string | null;
+  generation: string | null;
+  /** Production repository rows live in the persistent search Worker. Omitted/false is the bounded
+   * fetch-only fallback used by tests, legacy WebViews, and manually constructed store fixtures. */
+  workerBacked?: boolean;
+  symbols: CompactGraphSymbolEntry[];
+  indexed: number;
+  total: number;
+  error: string | null;
+}
+
+/** A one-sided empty projection is valid for added-only/deleted-only PRs; admission requires at
+ * least one ready root across the exact HEAD/merge-base pair. */
+export function isProgressiveProjectionPairReady(
+  head: GraphProjectionV1,
+  comparison: GraphProjectionV1 | null,
+): boolean {
+  const sideReady = (projection: GraphProjectionV1): boolean => projection.rootFileIds.length === 0
+    ? projection.loadedDepth >= projection.requestedDepth
+    : isProjectionReadyForCanvas(projection);
+  return sideReady(head)
+    && (comparison === null || sideReady(comparison))
+    && (
+      head.rootFileIds.length + (comparison?.rootFileIds.length ?? 0) > 0
+      || isProgressiveManifestOnlyPairReady(head, comparison)
+    );
+}
+
+/** True only for independently extractable slices stamped by the server with their immutable
+ * logical graph lineage. Such a slice must never fall back to loading its backing artifact as if
+ * that artifact claimed repository completeness. */
+function isPartialOnlyProjection(projection: GraphProjectionV1 | null): boolean {
+  const value = projection?.extensions?.prPartialGraph;
+  if (typeof value !== "object" || value === null || Array.isArray(value) || projection === null) {
+    return false;
+  }
+  const lineage = value as Record<string, unknown>;
+  return lineage.version === 1
+    && lineage.graphId === projection.graphId
+    && lineage.generation === projection.generation;
+}
+
+function isPartialPrGraphId(graphId: string | null): boolean {
+  return graphId !== null
+    && /^pr-partial-(?:base-)?[a-f0-9]{20}-[a-f0-9]{40}(?:[a-f0-9]{24})?$/.test(graphId);
+}
+
+/** Narrow a progressive terminal to the same exact-revision bounded-pair contract as `ready`.
+ * Legacy complete terminals deliberately return null: production must not treat their ids as a
+ * second graph source or route them through `/api/graph`. */
+function authoritativePartialAnalysisResult(
+  result: PrAnalysisResult,
+): PrAnalysisReadyResult | null {
+  const comparisonGraphId = result.comparisonGraphId;
+  const headSha = result.headSha;
+  const mergeBaseSha = result.mergeBaseSha;
+  const pairId = result.pairId;
+  if (
+    result.completeness !== "provisional"
+    || typeof pairId !== "string"
+    || !/^[a-f0-9]{20}$/.test(pairId)
+    || comparisonGraphId === null
+    || comparisonGraphId === result.graphId
+    || headSha === null
+    || mergeBaseSha === null
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(headSha)
+    || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(mergeBaseSha)
+  ) {
+    return null;
+  }
+  return {
+    ...result,
+    comparisonGraphId,
+    headSha,
+    mergeBaseSha,
+    pairId,
+    completeness: "provisional",
+  };
+}
+
+function samePartialAnalysisPair(
+  ready: PrAnalysisReadyResult,
+  terminal: PrAnalysisReadyResult,
+): boolean {
+  return ready.pairId === terminal.pairId
+    && ready.graphId === terminal.graphId
+    && ready.comparisonGraphId === terminal.comparisonGraphId
+    && ready.headSha === terminal.headSha
+    && ready.mergeBaseSha === terminal.mergeBaseSha;
+}
+
+/** Admit an intentionally empty graph only when the HEAD projection carries a complete non-empty
+ * changed-file manifest and the exact merge-base projection independently resolved that same seed
+ * to no files. This is the docs/binary-only fast path; it must not turn a malformed, one-sided, or
+ * legacy zero-match response into a review. */
+export function isProgressiveManifestOnlyPairReady(
+  head: GraphProjectionV1,
+  comparison: GraphProjectionV1 | null,
+): boolean {
+  if (
+    comparison === null
+    || head.seedGraphId !== head.graphId
+    || comparison.seedGraphId !== head.graphId
+    || head.rootFileIds.length > 0
+    || comparison.rootFileIds.length > 0
+    || head.loadedFileIds.length > 0
+    || comparison.loadedFileIds.length > 0
+    || head.counts.slice.files > 0
+    || comparison.counts.slice.files > 0
+    || head.loadedDepth < head.requestedDepth
+    || comparison.loadedDepth < comparison.requestedDepth
+  ) {
+    return false;
+  }
+  const manifest = changedFileManifestFromExtensions(head.extensions);
+  return manifest !== null && manifest.length > 0;
+}
+
+function projectionRootsCompleteThrough(
+  projection: GraphProjectionV1,
+  depth: number,
+): boolean {
+  if (projection.rootFileIds.length === 0) return projection.loadedDepth >= depth;
+  const ready = new Set(projection.readyFileIds);
+  const frontier = new Map(projection.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]));
+  return projection.rootFileIds.every((fileId) =>
+    ready.has(fileId) && (frontier.get(fileId) ?? -1) >= depth,
+  );
+}
+
+/** Aggregate loadedDepth is insufficient after disconnected roots are merged. Every root carries
+ * its own completeness proof and the depth control is ready only when both immutable sides do. */
+export function isProgressiveSessionDepthReady(
+  session: Pick<ProgressiveGraphSessionState, "head" | "comparison">,
+  depth: number,
+): boolean {
+  return projectionRootsCompleteThrough(session.head, depth)
+    && (session.comparison === null || projectionRootsCompleteThrough(session.comparison, depth));
+}
+
+function settledProgressiveSession(
+  session: ProgressiveGraphSessionState | null,
+): ProgressiveGraphSessionState | null {
+  if (session === null) return null;
+  const completeDepth = (projection: GraphProjectionV1): number => {
+    if (projection.rootFileIds.length === 0) return projection.loadedDepth;
+    const frontier = new Map(projection.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]));
+    return Math.min(...projection.rootFileIds.map((fileId) => frontier.get(fileId) ?? 0));
+  };
+  const proven = Math.min(
+    completeDepth(session.head),
+    session.comparison === null ? MAX_PROGRESSIVE_GRAPH_DEPTH : completeDepth(session.comparison),
+  );
+  return {
+    ...session,
+    requestedDepth: Math.max(1, Math.min(session.requestedDepth, proven)),
+    status: "ready",
+    error: null,
+  };
+}
+
+function settledProgressiveSymbols(
+  symbols: ProgressiveSymbolIndexState,
+): ProgressiveSymbolIndexState {
+  // A worker-backed snapshot cannot carry its closure-owned live Worker through transactional graph
+  // rollback. Restore it as idle so the next actionable/palette trigger creates a fresh generation-
+  // bound client. Inline test/legacy inventories are value-owned and remain safe to restore ready.
+  if (symbols.status === "ready" && symbols.workerBacked !== true) return symbols;
+  return {
+    status: "idle",
+    graphId: null,
+    generation: null,
+    symbols: [],
+    indexed: 0,
+    total: 0,
+    error: null,
+  };
 }
 
 export interface BlueprintState {
@@ -796,8 +1037,8 @@ export interface BlueprintState {
   reviewRemovedByFile: Record<string, { afterNewLine: number; lines: string[] }[]>;
   /** Files whose removed patch text exceeded the server-side cap, keyed like reviewRemovedByFile. */
   reviewRemovedTruncatedByFile: Record<string, boolean>;
-  /** The review-PREPARATION lane: "preparing" while the server streams the clone→checkout→extract
-   * analysis of the PR head; "error" when that stream failed (Retry or base fallback); else "idle". */
+  /** The review-preparation lane: "preparing" while the exact bounded pair is produced/installed,
+   * "error" when that fail-closed transaction failed, otherwise "idle". */
   prReviewStatus: "idle" | "preparing" | "error";
   /** The current server analysis or renderer artifact/projection stage. Projection briefly remains
    * set while successful entry disarms cancellation before its synchronous PRs → Map transition. */
@@ -806,8 +1047,8 @@ export interface BlueprintState {
   prReviewProgress: PrReviewProgressSnapshot;
   /** Why preparation failed; null outside "error". */
   prPrepareError: string | null;
-  /** The server-side graph id of the prepared PR-head artifact (the analyze stream's "done"
-   * payload). Kept across a soft close so the review can resume without another extraction. */
+  /** The server-side graph id of the prepared PR-head source (the bounded ready/terminal payload).
+   * Kept across a soft close so the review can resume without another extraction. */
   prPreparedGraphId: string | null;
   /** Exact merge-base graph paired with prPreparedGraphId. Its source root serves deleted nodes. */
   prPreparedComparisonGraphId: string | null;
@@ -826,9 +1067,16 @@ export interface BlueprintState {
   /** Exact merge-base artifact/index for the current prepared review. Kept distinct from
    * prReviewBaseline: the latter restores the user's boot graph, which may be a newer base tip. */
   prReviewComparison: PrReviewComparison | null;
-  /** The artifact endpoint this session loaded from; the wave-2 swap fetches the prepared PR
-   * graph from it by exchanging the `id` query param. Empty when booted without a server. */
+  /** Complete-artifact endpoint for ordinary graph documents and the explicit benchmark control.
+   * Production partial review swaps never fetch their bounded source through this URL. */
   graphUrl: string;
+  /** Active bounded graph delivery for the prepared review. Null means no partial session is active
+   * (ordinary non-review documents and the explicit complete benchmark control). */
+  progressiveGraph: ProgressiveGraphSessionState | null;
+  /** Background, graph-generation-bound command-palette index. */
+  progressiveSymbols: ProgressiveSymbolIndexState;
+  /** IDs whose disconnected depth-1 neighbourhood is currently being admitted from search. */
+  progressivePendingNodeIds: Set<string>;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
   /** Reveal one more containment level within the current selection (or the whole view / root
@@ -908,6 +1156,21 @@ export interface BlueprintState {
    * graph owns its member list; otherwise the current map lens pins the owning unit/file as an
    * extra card. Inert outside those module surfaces. */
   addToView(rawId: string): void;
+  /** Ensure a palette result's owning file and depth-1 neighbours are loaded before an existing
+   * reveal/add action runs. Full-artifact sessions resolve immediately. */
+  ensureNodeReady(rawId: string, fileIdHint?: string): Promise<boolean>;
+  /** Adjust the affected-file BFS horizon. The worker precomputes the next requested depth without
+   * transferring it until a later gesture needs it. */
+  setProgressiveGraphDepth(depth: number): Promise<boolean>;
+  /** Start compact symbol indexing after the first actionable canvas. Safe and idempotent. */
+  startProgressiveSymbolIndex(): Promise<void>;
+  /** Merge only the currently loaded bounded graph into the repository index retained by its Worker. */
+  synchronizeProgressiveSymbolSearch(
+    loaded: readonly GraphSymbolSearchEntry[],
+    isMap: boolean,
+  ): Promise<GraphSymbolSearchScopeCounts | null>;
+  /** Query the Worker-retained repository index. Its response is always capped to palette rows. */
+  queryProgressiveSymbols(request: GraphSymbolSearchQuery): Promise<GraphSymbolSearchQueryResult | null>;
   /** The shared ghost "+" action. On the Map/Service/UI canvas it pins the ghost's home FILE(s)
    * into `mapExtra`; while the minimal overlay is open it adds the home member to that overlay and
    * preserves the clicked card's position. Both destinations open the target's containment path. */
@@ -952,7 +1215,9 @@ export interface BlueprintState {
   setMinimalCodebaseExpansionOverride(nodeId: string, expanded: boolean): void;
   /** Restore one exact parent extracted graph without closing the overall overlay/review. */
   backMinimalGraph(): void;
-  closeMinimalGraph(): void;
+  /** Returns false only for a legacy projection over an ordinary complete boot graph while that
+   * non-review baseline is restored. A partial document closes directly to its bounded baseline. */
+  closeMinimalGraph(afterDeferredRestore?: () => void): boolean;
   resetMinimalGraph(): void;
   rearrangeMinimalGraph(): void;
   minimalRelayout(activity?: LayoutActivity): Promise<void>;
@@ -1063,18 +1328,19 @@ export interface BlueprintState {
   checkPrReviewFreshness(): Promise<void>;
   /** Replace a stale review's files, discussion, checks, and graph without a page reload. */
   refreshPrReview(): Promise<void>;
-  reviewPrInGraph(): Promise<void>;
+  /** Enter the selected PR's bounded graph. `progressiveGraphDelivery: false` is reserved for the
+   * explicit complete-artifact benchmark control. */
+  reviewPrInGraph(options?: { progressiveGraphDelivery?: boolean }): Promise<void>;
   /** Explicit fallback after prepare-first entry fails: review against the loaded base graph. */
   reviewPrOnBaseGraph(): Promise<void>;
-  /** Head extract: stream the server's clone→checkout→extract of the PR head, swap the
-   * loaded artifact for the head-accurate one, and run the review in head coordinates. On an
-   * entry failure the PRs page stays put; a fallback review remains intact on manual failure. */
-  prepareHeadGraph(): Promise<void>;
-  /** Re-open a review whose overlay was soft-closed (explicit Close/lens switch) WITHOUT re-running
-   * the expensive head prepare: re-swap the already-prepared artifact (a plain GET) if there was
-   * one, repaint the kept amber, and reseed the minimal overlay from `reviewAllSeedIds`. Guarded on
-   * a live-but-collapsed review (`prReviewed !== null && minimalSeedIds.length === 0`). */
-  resumePrReview(): Promise<void>;
+  /** Head preparation: stream the server's exact-revision bounded pair, install its verified
+   * projection, and run the review in HEAD coordinates. Production never follows a later complete
+   * terminal or `/api/graph`; on failure the PRs page (or prior ready review) remains intact. */
+  prepareHeadGraph(options?: { progressiveGraphDelivery?: boolean }): Promise<void>;
+  /** Re-open a review whose overlay was soft-closed without re-running preparation: re-project the
+   * retained exact pair, repaint the kept amber, and reseed from `reviewAllSeedIds`. The explicit
+   * complete benchmark lane may still reload its artifact. */
+  resumePrReview(options?: { progressiveGraphDelivery?: boolean }): Promise<void>;
   /** Abandon an in-flight prepare-first entry; server work may continue behind the stale-seq guard. */
   cancelPrReviewPreparation(): void;
   /** Dismiss the head-extraction failure warning: clears the prepare-error lane. */
@@ -1129,8 +1395,23 @@ export interface StoreDependencies {
   analyzeUrl?: string | null;
   /** The current GitHub artifact id — the analyze POST body's `id`. */
   graphId?: string | null;
-  /** The graph-fetch URL; wave 2 loads the prepared PR artifact from it by swapping the id. */
+  /** Complete-artifact URL retained for ordinary graph loads and the explicit benchmark control. */
   graphUrl?: string;
+  /** Bounded projection and compact-symbol capabilities. Both are required for production PR prep;
+   * optionality supports ordinary non-review documents and the explicit benchmark control. */
+  graphProjectUrl?: string | null;
+  graphSymbolsUrl?: string | null;
+  /** Explicit non-production seam for environments which cannot construct a browser Worker. The
+   * real UI degrades to loaded-graph search instead of parsing a repository index on its UI thread. */
+  loadGraphSymbolsInlineForTest?: typeof fetchGraphSymbols;
+  /** Validated depth-1 projection used for a direct PR-review boot. */
+  initialGraphProjection?: GraphProjectionV1 | null;
+  /** True only for the `partial=1` boot contract. Its bounded artifact and projection are the
+   * durable, incrementally expandable baseline for this document. */
+  initialGraphProvisional?: boolean;
+  /** Lazy complete boot graph loader for a projection over a legacy complete artifact. A true
+   * `partial=1` document never needs or invokes it. */
+  loadCanonicalBootArtifact?: ((signal: AbortSignal) => Promise<GraphArtifact>) | null;
   /** Meta endpoint paired with graphUrl; prepared PR swaps exchange its id in the same transaction. */
   metaUrl?: string;
   /** Compact server-registration protection for the boot graph and transactional PR graph swaps. */
@@ -1836,10 +2117,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // The composition unit index (member → owning unit), built lazily on the first ⌘P reveal/add so a
   // picked symbol resolves to the unit/module card that draws it. Cached like moduleGraph/blockDeps.
   let unitIndex: UnitIndex | null = null;
+  let unitIndexSource: GraphIndex | null = null;
   // Resolve any symbol to the card the map lenses actually draw: its nearest owning unit
   // (class/interface/object), or its module for a top-level callable (module is itself a UNIT_KIND).
-  const resolveCard = (id: string): string => {
-    unitIndex ??= buildUnitIndex([...dependencies.index.nodesById.values()]);
+  const resolveCard = (id: string, index: GraphIndex): string => {
+    if (unitIndex === null || unitIndexSource !== index) {
+      unitIndex = buildUnitIndex([...index.nodesById.values()]);
+      unitIndexSource = index;
+    }
     return unitIndex.unitIdOf(id) ?? id;
   };
   // Same guard for the Code flows explorer's embedded flow preview pane.
@@ -1937,6 +2222,48 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prFreshnessRequest: { number: number; revision: PrReviewRevision; promise: Promise<void> } | null = null;
   let prReviewRefreshSeq = 0;
   let prAnalyzeSeq = 0;
+  // PR preparation itself may be shared and intentionally drains after UI cancellation. Projection
+  // delivery is per-view work: abort it eagerly so stale disposable parses cannot block the next PR.
+  let prPrepareProjectionAbort: AbortController | null = null;
+  let progressiveDepthSeq = 0;
+  let progressiveSymbolSeq = 0;
+  let progressiveSymbolScheduleSeq = 0;
+  let progressiveNodeSeq = 0;
+  let progressiveDepthAbort: AbortController | null = null;
+  let progressiveSymbolAbort: AbortController | null = null;
+  let progressiveSymbolSearchClient: GraphSymbolSearchClient | null = null;
+  let progressiveNodeAbort: AbortController | null = null;
+  let canonicalBaselineRestoreSeq = 0;
+  let canonicalBaselineLoadSeq = 0;
+  let canonicalBaselineLoadAbort: AbortController | null = null;
+  let canonicalBaselineLoadPromise: Promise<PrReviewBaseline> | null = null;
+  const progressiveNodeRequests = new Map<string, Promise<boolean>>();
+  const progressiveWarmKeys = new Set<string>();
+  const invalidateProgressiveRequests = () => {
+    progressiveDepthAbort?.abort();
+    progressiveSymbolAbort?.abort();
+    progressiveSymbolSearchClient?.dispose(new DOMException("aborted", "AbortError"));
+    progressiveNodeAbort?.abort();
+    progressiveDepthAbort = null;
+    progressiveSymbolAbort = null;
+    progressiveSymbolSearchClient = null;
+    progressiveNodeAbort = null;
+    canonicalBaselineRestoreSeq += 1;
+    canonicalBaselineLoadSeq += 1;
+    canonicalBaselineLoadAbort?.abort();
+    canonicalBaselineLoadAbort = null;
+    canonicalBaselineLoadPromise = null;
+    progressiveDepthSeq += 1;
+    progressiveSymbolSeq += 1;
+    progressiveSymbolScheduleSeq += 1;
+    progressiveNodeSeq += 1;
+    progressiveNodeRequests.clear();
+    progressiveWarmKeys.clear();
+  };
+  const progressiveNodeSignal = (): AbortSignal => {
+    progressiveNodeAbort ??= new AbortController();
+    return progressiveNodeAbort.signal;
+  };
   // Aggregate metrics and request traces share one invalidation sequence. Each settles independently,
   // while a newer load/environment prevents either stale channel from repainting the store.
   let telemetryFetchSeq = 0;
@@ -1947,6 +2274,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   let prGraphHandoff: GraphViewLeaseHandoff | null = null;
   let prReviewEntryRequest: { number: number; promise: Promise<void> } | null = null;
   let prReviewResumeRequest: { number: number; promise: Promise<void> } | null = null;
+  let prReviewResumeSeq = 0;
+  let prResumeProjectionAbort: AbortController | null = null;
   // Edge-evidence context switches are asynchronous source reads; only the latest click may win.
   let edgeEvidenceSeq = 0;
   // Every global source host shares this lane. Node id alone is insufficient because a node slice,
@@ -2002,6 +2331,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewProjectionFrameBaseline = null;
     moduleGraph = null;
     blockDeps = null;
+    unitIndex = null;
+    unitIndexSource = null;
     codePayloadCache.clear();
     invalidateModuleLayout();
     invalidateMinimalLayout();
@@ -2015,8 +2346,37 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setState: (partial: Partial<BlueprintState>) => void,
     options: { endSession?: boolean } = {},
   ) => {
+    const restoringCanonicalFullBaseline = !initialGraphProvisional
+      && initialGraphProjection !== null
+      && canonicalBootBaseline !== null
+      && getState().prReviewBaseline === canonicalBootBaseline;
     invalidateSyntheticArtifactBoundary();
-    return restorePrReviewBaseline(getState, setState, invalidateArtifactCaches, options);
+    const restored = restorePrReviewBaseline(getState, setState, invalidateArtifactCaches, options);
+    if (restored) {
+      invalidateProgressiveRequests();
+      setState({
+        progressiveGraph: initialGraphProjection === null || restoringCanonicalFullBaseline ? null : {
+          head: initialGraphProjection,
+          comparison: null,
+          explicitFileIds: [],
+          affectedDepth: initialGraphProjection.loadedDepth,
+          requestedDepth: initialGraphProjection.requestedDepth,
+          status: "ready",
+          error: null,
+        },
+        progressiveSymbols: {
+          status: "idle",
+          graphId: null,
+          generation: null,
+          symbols: [],
+          indexed: 0,
+          total: 0,
+          error: null,
+        },
+        progressivePendingNodeIds: new Set<string>(),
+      });
+    }
+    return restored;
   };
   // Preferences must be available before the boot artifact's review projection is derived: the
   // default-on formatting proof changes graph ownership, not merely a later paint preference.
@@ -2064,6 +2424,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     ? initialSyntheticExecutionUrl ? { mode: "local" as const } : null
     : dependencies.syntheticExecutionTrust;
   const initialSyntheticScenarios = [...(dependencies.syntheticScenarios ?? [])];
+  const initialGraphProjection = dependencies.initialGraphProjection ?? null;
+  const initialGraphProvisional = dependencies.initialGraphProvisional === true
+    && initialGraphProjection !== null;
   const bootReviewBaseline: PrReviewBaseline = {
     artifact: dependencies.artifact,
     index: dependencies.index,
@@ -2071,6 +2434,41 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     syntheticExecutionUrl: initialSyntheticExecutionUrl,
     syntheticScenarios: initialSyntheticScenarios,
     syntheticExecutionTrust: initialSyntheticExecutionTrust,
+  };
+  let canonicalBootBaseline = initialGraphProjection === null || initialGraphProvisional
+    ? bootReviewBaseline
+    : null;
+  const loadCanonicalBootBaseline = (): Promise<PrReviewBaseline> => {
+    if (canonicalBootBaseline !== null) return Promise.resolve(canonicalBootBaseline);
+    const loader = dependencies.loadCanonicalBootArtifact ?? null;
+    if (loader === null) {
+      return Promise.reject(new Error("the complete boot graph is unavailable"));
+    }
+    if (canonicalBaselineLoadPromise !== null) return canonicalBaselineLoadPromise;
+    const controller = new AbortController();
+    const loadSequence = canonicalBaselineLoadSeq;
+    canonicalBaselineLoadAbort = controller;
+    const promise = loader(controller.signal).then((artifact) => {
+      if (controller.signal.aborted || loadSequence !== canonicalBaselineLoadSeq) {
+        throw new DOMException("stale canonical baseline load", "AbortError");
+      }
+      const index = buildGraphIndex(artifact);
+      const baseline: PrReviewBaseline = {
+        artifact,
+        index,
+        review: deriveReviewData(artifact, index),
+        syntheticExecutionUrl: initialSyntheticExecutionUrl,
+        syntheticScenarios: [...initialSyntheticScenarios],
+        syntheticExecutionTrust: initialSyntheticExecutionTrust,
+      };
+      canonicalBootBaseline = baseline;
+      return baseline;
+    }).finally(() => {
+      if (canonicalBaselineLoadAbort === controller) canonicalBaselineLoadAbort = null;
+      if (canonicalBaselineLoadPromise === promise) canonicalBaselineLoadPromise = null;
+    });
+    canonicalBaselineLoadPromise = promise;
+    return promise;
   };
   // The files checklist + persisted progress for an artifact-sourced review; a GitHub PR opened via
   // reviewPrInGraph re-derives both at runtime under its own reviewKey.
@@ -2110,6 +2508,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const prChecksUrl = dependencies.prChecksUrl;
   const prFileUrl = dependencies.prFileUrl ?? null;
   const analyzeGraphId = dependencies.graphId ?? null;
+  const graphProjectUrl = dependencies.graphProjectUrl ?? null;
+  const graphSymbolsUrl = dependencies.graphSymbolsUrl ?? null;
+  const loadGraphSymbolsInlineForTest = dependencies.loadGraphSymbolsInlineForTest ?? null;
   const metaUrl = dependencies.metaUrl ?? "";
   const graphViewLease = dependencies.graphViewLease ?? null;
   // The route alone is not a usable prepare capability: plain `view` still knows the route name,
@@ -2127,6 +2528,160 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   return createStore<BlueprintState>((set, get) => {
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
+    const scheduleProgressiveSymbolIndex = (): void => {
+      const state = get();
+      if (
+        state.progressiveGraph === null
+        || state.progressiveSymbols.status !== "idle"
+      ) {
+        return;
+      }
+      const sequence = ++progressiveSymbolScheduleSeq;
+      const run = (): void => {
+        if (sequence !== progressiveSymbolScheduleSeq) return;
+        void get().startProgressiveSymbolIndex();
+      };
+      // Exact-revision search scans source syntax in a disposable, bounded worker. Give the browser
+      // its first actionable review paint first, then use idle time (with a bounded fallback so
+      // search becomes useful even while the main thread remains intermittently busy).
+      if (typeof window !== "undefined" && typeof window.requestIdleCallback === "function") {
+        window.requestIdleCallback(run, { timeout: 1_500 });
+      } else {
+        setTimeout(run, 0);
+      }
+    };
+    const scheduleProgressiveLookahead = (): void => {
+      const session = get().progressiveGraph;
+      if (session === null || graphProjectUrl === null) return;
+      const requests = [] as ReturnType<typeof changedFileProjectionRequest>[];
+      if (session.affectedDepth < MAX_PROGRESSIVE_AUTOWARM_DEPTH) {
+        const depth = session.affectedDepth + 1;
+        requests.push(changedFileProjectionRequest(
+          session.head.graphId,
+          session.head.seedGraphId,
+          depth,
+          depth,
+        ));
+        if (session.comparison !== null) {
+          requests.push(changedFileProjectionRequest(
+            session.comparison.graphId,
+            session.head.graphId,
+            depth,
+            depth,
+          ));
+        }
+      }
+      const frontier = new Map(
+        session.head.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]),
+      );
+      const explicitByNextDepth = new Map<number, string[]>();
+      for (const fileId of session.explicitFileIds) {
+        const completeThroughDepth = frontier.get(fileId) ?? 0;
+        if (completeThroughDepth >= MAX_PROGRESSIVE_AUTOWARM_DEPTH) continue;
+        const depth = completeThroughDepth + 1;
+        const bucket = explicitByNextDepth.get(depth) ?? [];
+        bucket.push(fileId);
+        explicitByNextDepth.set(depth, bucket);
+      }
+      for (const [depth, fileIds] of explicitByNextDepth) {
+        requests.push(...fileProjectionRequests(
+          session.head.graphId,
+          fileIds.sort(),
+          depth,
+          depth,
+        ));
+      }
+      for (const request of requests) {
+        const key = `${session.head.generation}\u0000${JSON.stringify(request)}`;
+        if (progressiveWarmKeys.has(key)) continue;
+        progressiveWarmKeys.add(key);
+        void warmGraphProjection(graphProjectUrl, request).catch(() => {
+          // Speculation is advisory and never paints an error state.
+        }).finally(() => {
+          // This set is an in-flight bound, not a durable success cache: the server's immutable
+          // entry can fail or be evicted, so a later user/state transition must be allowed to retry.
+          progressiveWarmKeys.delete(key);
+        });
+      }
+    };
+    // Compatibility only for a projection layered over an ordinary complete graph document. A
+    // partial PR document has `initialGraphProvisional` and never enters this loader.
+    const deferCompleteBootDocumentRestore = (replay: () => void): void => {
+      const expected = get();
+      const expectedReview = expected.prReviewed;
+      const expectedPreparedGraph = expected.prPreparedGraphId;
+      const sequence = ++canonicalBaselineRestoreSeq;
+      set({
+        minimalLayoutStatus: "laying-out",
+        minimalLayoutActivity: { label: "Restoring original graph…" },
+      });
+      void loadCanonicalBootBaseline().then((baseline) => {
+        const current = get();
+        if (
+          sequence !== canonicalBaselineRestoreSeq
+          || current.prReviewed !== expectedReview
+          || current.prPreparedGraphId !== expectedPreparedGraph
+          || !current.prPreparedArtifactCurrent
+          || current.prReviewBaseline !== null
+          || current.minimalSeedIds.length === 0
+        ) {
+          return;
+        }
+        // Install only the original non-review document. The replay immediately runs the existing
+        // close/lens path, which restores this baseline before changing what the reader can see.
+        set({ prReviewBaseline: baseline });
+        replay();
+      }).catch((error) => {
+        if (sequence !== canonicalBaselineRestoreSeq) return;
+        const message = error instanceof Error
+          ? `Could not restore the original graph: ${error.message}`
+          : "Could not restore the original graph.";
+        set((current) => current.prReviewed !== expectedReview
+          || current.prPreparedGraphId !== expectedPreparedGraph
+          || !current.prPreparedArtifactCurrent
+          ? {}
+          : {
+              minimalLayoutStatus: "ready",
+              minimalLayoutActivity: null,
+              progressiveGraph: current.progressiveGraph === null
+                ? null
+                : { ...current.progressiveGraph, status: "error", error: message },
+            });
+      });
+    };
+    const ensureCompleteBootDocumentRestoreForTransition = async (
+      expectedReview: number,
+      expectedPreparedGraph: string | null,
+      isCurrent: () => boolean,
+    ): Promise<boolean> => {
+      const current = get();
+      if (current.prReviewBaseline !== null || initialGraphProjection === null) return true;
+      const sequence = ++canonicalBaselineRestoreSeq;
+      try {
+        const baseline = await loadCanonicalBootBaseline();
+        const latest = get();
+        if (
+          sequence !== canonicalBaselineRestoreSeq
+          || !isCurrent()
+          || latest.prReviewed !== expectedReview
+          || latest.prPreparedGraphId !== expectedPreparedGraph
+          || !latest.prPreparedArtifactCurrent
+        ) {
+          return false;
+        }
+        set({ prReviewBaseline: baseline });
+        return true;
+      } catch (error) {
+        if (sequence !== canonicalBaselineRestoreSeq || !isCurrent()) return false;
+        const message = error instanceof Error
+          ? `Could not restore the original graph: ${error.message}`
+          : "Could not restore the original graph.";
+        set((latest) => latest.progressiveGraph === null
+          ? {}
+          : { progressiveGraph: { ...latest.progressiveGraph, status: "error", error: message } });
+        return false;
+      }
+    };
     const guardReviewLineComposerTransition = (transition: () => void): boolean => {
       const current = get().reviewLineComposer;
       const result = requestReviewLineComposerDismissState(current);
@@ -2618,9 +3173,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     };
 
     /** Recompute live-PR metadata/artifact paint without letting its root seeding destroy the
-     * current recursively extracted frame. The queued root layout becomes stale as soon as this
-     * restored child requests its own pass. */
-    const reprojectLivePrReview = (label: string, rebuildFlowPane = false): boolean => {
+     * current recursively extracted frame. Layout is deferred until that frame is restored. */
+    const reprojectLivePrReview = (
+      label: string,
+      rebuildFlowPane = false,
+      scheduleLayout = true,
+    ): boolean => {
       const before = get();
       if (before.prReviewed === null) {
         return false;
@@ -2664,15 +3222,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         invalidateMinimalLayout,
         invalidateModuleLayout,
         invalidateArtifactCaches,
-        { reprojecting: true, preserveReviewSelection: true },
+        { reprojecting: true, preserveReviewSelection: true, scheduleLayout: false },
       );
       if (!applied) {
         return false;
       }
 
       const projected = get();
-      // applyPrReviewToMap queued a root-review layout. This frame restoration owns the next scene,
-      // even when filtering leaves it intentionally empty, so invalidate that root pass now.
+      // Frame restoration owns the next scene, even when filtering leaves it intentionally empty.
+      // Invalidate the outgoing pass before restoring; applyPrReviewToMap was asked not to queue a
+      // transient root-review layout of its own.
       invalidateMinimalLayout();
       const projectedFilePaths = new Set(projected.reviewFiles.map((file) => file.path));
       const excludedChangedPaths = new Set(
@@ -2994,11 +3553,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             unfiltered: frame,
             projected: captureMinimalGraphHistory(committed),
           };
-      if (effectiveMinimalMemberIds.length > 0) {
+      if (scheduleLayout && effectiveMinimalMemberIds.length > 0) {
         void requestMinimalRelayout({ label });
       }
       if (
-        rebuildFlowPane
+        scheduleLayout
+        && rebuildFlowPane
         && flowSelection !== null
         && (
           frame.flowPaneOrigin === "synthetic"
@@ -4304,6 +4864,273 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     };
 
+    const installProgressiveProjection = (
+      head: GraphProjectionV1,
+      comparison: GraphProjectionV1 | null,
+      requestedDepth: number,
+      explicitFileIds: readonly string[] = get().progressiveGraph?.explicitFileIds ?? [],
+      affectedDepth: number = get().progressiveGraph?.affectedDepth ?? head.loadedDepth,
+    ): boolean => {
+      const current = get();
+      const session = current.progressiveGraph;
+      if (
+        session === null
+        || session.head.graphId !== head.graphId
+        || session.head.generation !== head.generation
+      ) {
+        return false;
+      }
+      const artifact = mergeProjectionIntoDisplayedArtifact(current.artifact, session.head, head);
+      const index = buildGraphIndex(artifact);
+      const retainedChangedIds = [...current.index.changedIds].filter((id) => index.nodesById.has(id));
+      const retainedStatuses = [...current.index.changedStatus.entries()]
+        .filter(([id]) => index.nodesById.has(id));
+      applyChangedIds(index, retainedChangedIds);
+      applyChangedStatus(index, retainedStatuses);
+      invalidateArtifactCaches();
+      const comparisonArtifact = comparison === null ? null : projectionToArtifact(comparison);
+      const nextSession: ProgressiveGraphSessionState = {
+        head,
+        comparison,
+        explicitFileIds: [...new Set(explicitFileIds)].sort(),
+        affectedDepth,
+        requestedDepth,
+        status: "ready",
+        error: null,
+      };
+      if (!isProgressiveSessionDepthReady(nextSession, requestedDepth)) {
+        nextSession.status = "expanding";
+      }
+      set({
+        artifact,
+        index,
+        progressiveGraph: nextSession,
+        ...(comparisonArtifact === null
+          ? {}
+          : { prReviewComparison: { artifact: comparisonArtifact, index: buildGraphIndex(comparisonArtifact) } }),
+        coverage: current.coverageMode ? computeCoverage(artifact.nodes, artifact.edges) : null,
+      });
+      return true;
+    };
+
+    const expandProgressiveFileRoots = async (
+      requestedFileIds: readonly string[],
+      depth: number,
+      nodeSequence: number,
+    ): Promise<boolean> => {
+      const initial = get().progressiveGraph;
+      if (initial === null || graphProjectUrl === null || nodeSequence !== progressiveNodeSeq) return false;
+      const signal = progressiveNodeSignal();
+      const completeThrough = new Map(
+        initial.head.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]),
+      );
+      const fileIds = [...new Set(requestedFileIds)]
+        .filter((id) => (completeThrough.get(id) ?? -1) < depth)
+        .sort();
+      if (fileIds.length === 0) return true;
+      const requestKey = [
+        "expand",
+        nodeSequence,
+        initial.head.graphId,
+        initial.head.generation,
+        depth,
+        ...fileIds,
+      ].join("\u0000");
+      let request = progressiveNodeRequests.get(requestKey);
+      if (request === undefined) {
+        request = (async () => {
+          // Search can remain open for many adds. Split on both the worker's root count and the
+          // HTTP transport's encoded byte ceiling so valid long canonical IDs never become a 413.
+          const projectionRequests = fileProjectionRequests(
+            initial.head.graphId,
+            fileIds,
+            depth,
+            depth,
+          );
+          const fragments = await Promise.all(projectionRequests.map((projectionRequest) =>
+            fetchGraphProjection(graphProjectUrl, projectionRequest, { signal })));
+          if (
+            nodeSequence !== progressiveNodeSeq
+            || fragments.some((fragment) =>
+              !isProjectionReadyForCanvas(fragment)
+              || !projectionRootsCompleteThrough(fragment, depth),
+            )
+          ) {
+            return false;
+          }
+          const active = get().progressiveGraph;
+          if (
+            active === null
+            || active.head.graphId !== initial.head.graphId
+            || active.head.generation !== initial.head.generation
+          ) {
+            return false;
+          }
+          const mergedHead = fragments.reduce(mergeGraphProjections, active.head);
+          return installProgressiveProjection(
+            mergedHead,
+            active.comparison,
+            active.requestedDepth,
+            [...active.explicitFileIds, ...fileIds],
+          );
+        })().finally(() => {
+          if (progressiveNodeRequests.get(requestKey) === request) {
+            progressiveNodeRequests.delete(requestKey);
+          }
+        });
+        progressiveNodeRequests.set(requestKey, request);
+      }
+      return request;
+    };
+
+    const hydrateProgressiveFiles = async (
+      requestedFileIds: readonly string[],
+      options: { consumeAffectedWarm?: boolean } = {},
+    ): Promise<boolean> => {
+      const initial = get();
+      const session = initial.progressiveGraph;
+      if (session === null || graphProjectUrl === null) return false;
+      const nodeSequence = progressiveNodeSeq;
+      const signal = progressiveNodeSignal();
+      const ready = new Set(session.head.readyFileIds);
+      const fileIds = [...new Set(requestedFileIds)]
+        .filter((id) => !ready.has(id))
+        .sort();
+      if (fileIds.length === 0) return true;
+      const requestKey = [
+        "hydrate",
+        options.consumeAffectedWarm === false ? "exact-file" : "affected-frontier",
+        nodeSequence,
+        session.head.graphId,
+        session.head.generation,
+        ...fileIds,
+      ].join("\u0000");
+      let request = progressiveNodeRequests.get(requestKey);
+      if (request === undefined) {
+        request = (async () => {
+          let active = get().progressiveGraph;
+          if (
+            nodeSequence !== progressiveNodeSeq
+            || active === null
+            || active.head.graphId !== session.head.graphId
+            || active.head.generation !== session.head.generation
+          ) {
+            return false;
+          }
+
+          // A represented-but-not-ready boundary is the next affected-file BFS ring. Consume the
+          // post-paint changed-root warm entry first; this is the cache key we precomputed for ghost
+          // promotion and avoids reclassifying connected context as a disconnected search root.
+          if (
+            options.consumeAffectedWarm !== false
+            &&
+            active.affectedDepth < MAX_PROGRESSIVE_GRAPH_DEPTH
+            // `loadedFileIds` also includes presentation-only coupling/Promise endpoint ghosts.
+            // Only frontier membership proves that a file belongs to the changed-root import/IPC
+            // traversal and can be satisfied by consuming its next warmed ring.
+            && fileIds.some((fileId) => active!.head.frontier.some((entry) => entry.fileId === fileId))
+          ) {
+            const depth = active.affectedDepth + 1;
+            const affectedFragment = await fetchGraphProjection(
+              graphProjectUrl,
+              changedFileProjectionRequest(
+                active.head.graphId,
+                active.head.seedGraphId,
+                depth,
+                depth,
+              ),
+              { signal },
+            );
+            if (
+              !isProjectionReadyForCanvas(affectedFragment)
+              || !projectionRootsCompleteThrough(affectedFragment, depth)
+            ) {
+              throw new Error(`the affected-file graph is not ready through depth ${depth}`);
+            }
+            active = get().progressiveGraph;
+            if (
+              nodeSequence !== progressiveNodeSeq
+              || active === null
+              || active.head.graphId !== affectedFragment.graphId
+              || active.head.generation !== affectedFragment.generation
+            ) {
+              return false;
+            }
+            if (!installProgressiveProjection(
+              mergeGraphProjections(active.head, affectedFragment),
+              active.comparison,
+              active.requestedDepth,
+              active.explicitFileIds,
+              Math.max(active.affectedDepth, depth),
+            )) {
+              return false;
+            }
+            active = get().progressiveGraph;
+            if (active === null) return false;
+          }
+
+          const nowReady = new Set(active.head.readyFileIds);
+          const explicitRoots = fileIds.filter((fileId) => !nowReady.has(fileId));
+          if (explicitRoots.length === 0) return true;
+          const explicitRequests = fileProjectionRequests(active.head.graphId, explicitRoots, 1, 1);
+          const fragments = await Promise.all(explicitRequests.map((projectionRequest) =>
+            fetchGraphProjection(graphProjectUrl, projectionRequest, { signal })));
+          if (fragments.some((fragment) => !isProjectionReadyForCanvas(fragment))) {
+            throw new Error("the selected depth-1 neighbourhood is not ready");
+          }
+          active = get().progressiveGraph;
+          if (
+            nodeSequence !== progressiveNodeSeq
+            || active === null
+            || fragments.some((fragment) =>
+              active!.head.graphId !== fragment.graphId
+              || active!.head.generation !== fragment.generation)
+          ) {
+            return false;
+          }
+          const explicitFileIds = [...new Set([...active.explicitFileIds, ...explicitRoots])].sort();
+          const mergedHead = fragments.reduce(mergeGraphProjections, active.head);
+          if (!installProgressiveProjection(
+            mergedHead,
+            active.comparison,
+            active.requestedDepth,
+            explicitFileIds,
+          )) {
+            return false;
+          }
+          // Admission is intentionally depth 1 for time-to-action. If the reader already chose a
+          // wider horizon, finish that same explicit-root BFS in the background and then refresh the
+          // visible ghost ring once; the selected node itself need not wait.
+          if (active.requestedDepth > 1 && active.status !== "expanding") {
+            void expandProgressiveFileRoots(explicitRoots, active.requestedDepth, nodeSequence)
+              .then(async (expanded) => {
+                if (!expanded || nodeSequence !== progressiveNodeSeq) return;
+                const hydrated = get();
+                if (hydrated.minimalSeedIds.length > 0) {
+                  await hydrated.minimalRelayout({ label: `Loading context depth ${active.requestedDepth}…` });
+                } else if (moduleSurfaceSpec(hydrated.viewMode) !== null) {
+                  await hydrated.moduleRelayout({ label: `Loading context depth ${active.requestedDepth}…` });
+                }
+              })
+              .catch((error) => {
+                if (nodeSequence !== progressiveNodeSeq) return;
+                const message = error instanceof Error ? error.message : "could not expand selected graph context";
+                set((currentState) => currentState.progressiveGraph === null
+                  ? {}
+                  : { progressiveGraph: { ...currentState.progressiveGraph, status: "error", error: message } });
+              });
+          }
+          return true;
+        })().finally(() => {
+          if (progressiveNodeRequests.get(requestKey) === request) {
+            progressiveNodeRequests.delete(requestKey);
+          }
+        });
+        progressiveNodeRequests.set(requestKey, request);
+      }
+      return request;
+    };
+
     return {
     artifact: dependencies.artifact,
     index: dependencies.index,
@@ -4517,6 +5344,25 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     prReviewBaseline: null,
     prReviewComparison: null,
     graphUrl: dependencies.graphUrl ?? "",
+    progressiveGraph: initialGraphProjection === null ? null : {
+      head: initialGraphProjection,
+      comparison: null,
+      explicitFileIds: [],
+      affectedDepth: initialGraphProjection.loadedDepth,
+      requestedDepth: initialGraphProjection.requestedDepth,
+      status: "ready",
+      error: null,
+    },
+    progressiveSymbols: {
+      status: "idle",
+      graphId: null,
+      generation: null,
+      symbols: [],
+      indexed: 0,
+      total: 0,
+      error: null,
+    },
+    progressivePendingNodeIds: new Set<string>(),
     codeView: null,
 
     // Reveal one more containment level, scoped to the current selection (or the whole view when
@@ -5382,8 +6228,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const state = get();
+      if (!beginLensTransition(get, set, () => get().openLogicFlow(nodeId))) return;
       moduleLayoutSeq += 1;
-      beginLensTransition(get, set);
       const resetSynthetic = shouldResetLogicHostedSynthetic(state, nodeId);
       if (resetSynthetic) {
         syntheticExecutionSeq += 1;
@@ -5410,7 +6256,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       const state = get();
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().openComposition(unitId))) return;
       const reveal = serviceRevealStateForMany(
         [unitId],
         get().index,
@@ -5773,7 +6619,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // hide at paint time, exactly as its old branch did. The Commons toggle rides in as part of
         // `state`: the Map's spec threads `showCommons` into its hub demotion; Service/UI ignore it.
         // Focused semantic composites disable the off-frame dock below so all detail stays enclosed.)
-        const hidden = state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds;
+        const hidden = new Set(state.showTests ? EMPTY_HIDDEN_IDS : state.index.testIds);
+        // Cmd+P/ghost "+" pins are explicit exceptions to the Tests-off projection. Retain only the
+        // selected card's containment closure; unrelated test files remain absent and showTests stays
+        // untouched, so removing the pin restores the ordinary filter on the next relayout.
+        for (const id of explicitRootVisibleIds(state.index, state.mapExtra)) hidden.delete(id);
         const spec = activeModuleSurfaceSpec(state.viewMode);
         // A focused surface mounts detail plus every real parent graph as independent ELK layers.
         // Commons demotion stays disabled for focused composites: independent Map layouts would
@@ -5890,6 +6740,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           moduleLayoutStatus: "ready",
           moduleLayoutActivity: null,
         });
+        if (get().progressiveGraph !== null) scheduleProgressiveLookahead();
       } catch {
         if (moduleLayoutSeq === sequence) {
           set({ moduleLayoutStatus: "error", moduleLayoutActivity: null });
@@ -5991,9 +6842,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     revealModule(nodeId) {
       const state = get();
       const ancestors = state.index.ancestorsOf(nodeId);
-      const file = ancestors.find((node) => node.kind === "module");
+      const file = ancestors.find(isCanonicalFileNode);
       const unit = ancestors.find((node) => UNIT_CARD_KINDS.has(node.kind));
-      const directory = [...ancestors].reverse().find((node) => node.kind === "package");
+      const directory = [...ancestors].reverse().find((node) => node.kind === "package" && node.id !== file?.id);
       const expanded = new Set<string>();
       if (file) {
         expanded.add(file.id);
@@ -6076,7 +6927,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       if (viewMode === "call") {
         const state = get();
-        const card = resolveCard(rawId);
+        const card = resolveCard(rawId, state.index);
         set({
           mapExtra: new Set(state.mapExtra).add(card),
           moduleSelected: new Set([card]),
@@ -6107,7 +6958,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
 
-      const card = resolveCard(rawId);
+      const card = resolveCard(rawId, state.index);
       if (!state.mapExtra.has(card)) {
         set({
           mapExtra: new Set(state.mapExtra).add(card),
@@ -6117,6 +6968,467 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       } else if (revealPrivate) {
         // The card is already laid out; exposing its explicitly requested private member is paint-only.
         set({ showPrivate: true });
+      }
+    },
+
+    async ensureNodeReady(rawId, fileIdHint) {
+      const initial = get();
+      const session = initial.progressiveGraph;
+      if (session === null || graphProjectUrl === null) {
+        return initial.index.nodesById.has(rawId);
+      }
+      const symbol = initial.progressiveSymbols.symbols.find((entry) => entry.id === rawId);
+      const resident = initial.index.nodesById.has(rawId);
+      // A worker hint exists to admit a truly disconnected row. Once the node is resident, its
+      // actual containment is authoritative. A Python package backed by `__init__.py` is its honest
+      // HEAD file root; a structural namespace package has none and takes the local fast path below.
+      const fileId = resident
+        ? nearestModuleIds([rawId], initial.index)[0] ?? null
+        : fileIdHint ?? symbol?.fileId ?? null;
+      // Proven tombstones are already complete comparison-side declarations in the presentation
+      // composite. Their module IDs do not exist in HEAD and must never be POSTed as HEAD roots.
+      if (
+        initial.index.nodesById.has(rawId)
+        && (initial.reviewBaseNodeIds.has(rawId) || (fileId !== null && initial.reviewBaseNodeIds.has(fileId)))
+      ) {
+        return true;
+      }
+      if (fileId !== null && session.head.readyFileIds.includes(fileId)) {
+        return initial.index.nodesById.has(rawId);
+      }
+      // A namespace package is a structural ancestor rather than one canonical file root. Background
+      // search indexes only file-ownable symbols; an already-present container keeps the legacy
+      // local-palette behavior instead of hydrating one arbitrary descendant.
+      if (fileId === null && initial.index.nodesById.has(rawId)) {
+        return true;
+      }
+      if (fileId === null) {
+        return false;
+      }
+      const nodeSequence = progressiveNodeSeq;
+
+      set((current) => ({
+        progressivePendingNodeIds: new Set(current.progressivePendingNodeIds).add(rawId),
+      }));
+      try {
+        // Cmd/Ctrl+P admission is always the selected file's exact depth-1 neighbourhood. A symbol
+        // can already be represented as an unready affected-frontier ghost; treating that as a ghost
+        // promotion here would turn one search click into the entire next changed-root BFS ring.
+        const hydrated = await hydrateProgressiveFiles([fileId], { consumeAffectedWarm: false });
+        const ready = hydrated && get().index.nodesById.has(rawId);
+        // Readiness is an exact-node contract, not merely a root-file admission contract. Keep the
+        // evidence mark and the palette action disabled if a malformed/stale projection omitted the
+        // selected declaration even though it claimed the owning file was ready.
+        if (ready) performanceMark("meridian:progressive-node-ready", { nodeId: rawId });
+        return ready;
+      } catch (error) {
+        if (nodeSequence !== progressiveNodeSeq) return false;
+        const message = error instanceof Error ? error.message : "could not load the selected symbol";
+        set((current) => current.progressiveGraph === null
+          || current.progressiveGraph.head.graphId !== session.head.graphId
+          || current.progressiveGraph.head.generation !== session.head.generation
+          ? {}
+          : { progressiveGraph: { ...current.progressiveGraph, status: "error", error: message } });
+        return false;
+      } finally {
+        set((current) => {
+          if (
+            nodeSequence !== progressiveNodeSeq
+            ||
+            current.progressiveGraph === null
+            || current.progressiveGraph.head.graphId !== session.head.graphId
+            || current.progressiveGraph.head.generation !== session.head.generation
+          ) {
+            return {};
+          }
+          const pending = new Set(current.progressivePendingNodeIds);
+          pending.delete(rawId);
+          return { progressivePendingNodeIds: pending };
+        });
+      }
+    },
+
+    async setProgressiveGraphDepth(depth) {
+      const requestedDepth = Math.trunc(depth);
+      if (requestedDepth < 1 || requestedDepth > MAX_PROGRESSIVE_GRAPH_DEPTH) {
+        return false;
+      }
+      const initial = get();
+      const session = initial.progressiveGraph;
+      if (session === null || graphProjectUrl === null) {
+        return false;
+      }
+      // Every explicit depth choice supersedes the previous one, including lowering to an already-
+      // resident slice. Abort transport work as well as fencing its landing so a slow depth-3 response
+      // cannot repaint the control after the reader has returned to depth 1.
+      progressiveDepthAbort?.abort();
+      const sequence = ++progressiveDepthSeq;
+      const controller = new AbortController();
+      let projectionTransportInFlight = false;
+      const requestIsCurrent = (): boolean => {
+        if (controller.signal.aborted || sequence !== progressiveDepthSeq) return false;
+        const active = get().progressiveGraph;
+        return active !== null
+          && active.head.graphId === session.head.graphId
+          && active.head.generation === session.head.generation
+          && active.requestedDepth === requestedDepth
+          && active.status === "ready"
+          && isProgressiveSessionDepthReady(active, requestedDepth);
+      };
+      const settleDepthLayout = async (): Promise<boolean> => {
+        if (!requestIsCurrent()) return false;
+        let hydrated = get();
+        if (hydrated.minimalSeedIds.length > 0) {
+          await hydrated.minimalRelayout({ label: `Loading context depth ${requestedDepth}…` });
+        } else if (moduleSurfaceSpec(hydrated.viewMode) !== null) {
+          await hydrated.moduleRelayout({ label: `Loading context depth ${requestedDepth}…` });
+        }
+        if (!requestIsCurrent()) return false;
+        // The primary canvas relayout may replace the active flow pane. Re-read the settled state
+        // before deciding whether a second visible graph also owes a layout pass.
+        hydrated = get();
+        if (
+          hydrated.flowSelection !== null
+          && (
+            hydrated.flowPaneOrigin === "synthetic"
+            || (hydrated.reviewOpenFlowSplitOnSelect && hydrated.reviewFlowSplitView === "graph")
+          )
+        ) {
+          await hydrated.flowPaneRelayout();
+        }
+        if (!requestIsCurrent()) return false;
+        // This mark is the benchmark/UI contract for a usable depth, not merely transferred graph
+        // data. It may only land after every visible graph has finished its current layout pass.
+        performanceMark("meridian:progressive-depth-ready", { depth: requestedDepth });
+        return true;
+      };
+      try {
+        if (isProgressiveSessionDepthReady(session, requestedDepth)) {
+          // Cumulative slices stay resident for instant back-and-forth experimentation. A fresh page
+          // load is the memory-reclamation boundary used by the benchmark harness.
+          set({ progressiveGraph: { ...session, requestedDepth, status: "ready", error: null } });
+          return await settleDepthLayout();
+        }
+
+        set({ progressiveGraph: { ...session, requestedDepth, status: "expanding", error: null } });
+        const prefetchDepth = requestedDepth;
+        const explicitRequests = session.explicitFileIds.length === 0
+          ? []
+          : fileProjectionRequests(
+              session.head.graphId,
+              session.explicitFileIds,
+              requestedDepth,
+              prefetchDepth,
+            );
+        progressiveDepthAbort = controller;
+        projectionTransportInFlight = true;
+        const [headFragment, comparisonFragment, ...explicitFragments] = await Promise.all([
+          fetchGraphProjection(
+            graphProjectUrl,
+            changedFileProjectionRequest(
+              session.head.graphId,
+              session.head.seedGraphId,
+              requestedDepth,
+              prefetchDepth,
+            ),
+            { signal: controller.signal },
+          ),
+          session.comparison === null
+            ? Promise.resolve(null)
+            : fetchGraphProjection(
+                graphProjectUrl,
+                changedFileProjectionRequest(
+                  session.comparison.graphId,
+                  session.head.graphId,
+                  requestedDepth,
+                  prefetchDepth,
+                  ),
+                { signal: controller.signal },
+              ),
+          ...explicitRequests.map((projectionRequest) =>
+            fetchGraphProjection(graphProjectUrl, projectionRequest, { signal: controller.signal })),
+        ]);
+        projectionTransportInFlight = false;
+        if (sequence !== progressiveDepthSeq) {
+          return false;
+        }
+        if (!isProgressiveProjectionPairReady(headFragment, comparisonFragment)) {
+          throw new Error(`the affected-file graph is not ready through depth ${requestedDepth}`);
+        }
+        if (explicitFragments.some((fragment) =>
+          !isProjectionReadyForCanvas(fragment)
+          || !projectionRootsCompleteThrough(fragment, requestedDepth),
+        )) {
+          throw new Error(`a selected graph root is not ready through depth ${requestedDepth}`);
+        }
+        const current = get().progressiveGraph;
+        if (current === null || current.head.graphId !== headFragment.graphId) {
+          return false;
+        }
+        const affectedHead = explicitFragments.reduce(
+          mergeGraphProjections,
+          mergeGraphProjections(current.head, headFragment),
+        );
+        const comparison = comparisonFragment === null
+          ? current.comparison
+          : current.comparison === null
+            ? comparisonFragment
+            : mergeGraphProjections(current.comparison, comparisonFragment);
+        projectionTransportInFlight = true;
+        const hydratedAffectedHead = await hydrateHeadProjectionForComparisonContext(
+          graphProjectUrl,
+          affectedHead,
+          comparison,
+          { signal: controller.signal },
+        );
+        projectionTransportInFlight = false;
+        if (progressiveDepthAbort === controller) progressiveDepthAbort = null;
+        if (sequence !== progressiveDepthSeq) return false;
+        // Pair support hydration yields. A command-palette/ghost action may have admitted another
+        // explicit HEAD root meanwhile without touching the depth lane. Rebase this result onto the
+        // latest immutable session so the older depth request can never erase that concurrent root.
+        let active = get().progressiveGraph;
+        const nodeSequence = progressiveNodeSeq;
+        for (let attempt = 0; attempt < 8; attempt += 1) {
+          if (
+            active === null
+            || active.head.graphId !== hydratedAffectedHead.graphId
+            || active.head.generation !== hydratedAffectedHead.generation
+          ) {
+            return false;
+          }
+          const completeThrough = new Map(
+            active.head.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]),
+          );
+          const incompleteExplicit = active.explicitFileIds.filter(
+            (fileId) => (completeThrough.get(fileId) ?? -1) < requestedDepth,
+          );
+          if (incompleteExplicit.length === 0) break;
+          if (!await expandProgressiveFileRoots(incompleteExplicit, requestedDepth, nodeSequence)) {
+            throw new Error(`a concurrently selected graph root is not ready through depth ${requestedDepth}`);
+          }
+          if (sequence !== progressiveDepthSeq || nodeSequence !== progressiveNodeSeq) return false;
+          active = get().progressiveGraph;
+        }
+        if (active === null) return false;
+        const completeThrough = new Map(
+          active.head.frontier.map((entry) => [entry.fileId, entry.completeThroughDepth]),
+        );
+        if (active.explicitFileIds.some((fileId) => (completeThrough.get(fileId) ?? -1) < requestedDepth)) {
+          throw new Error("selected graph roots changed too quickly to finish this depth; try again");
+        }
+        const head = mergeGraphProjections(active.head, hydratedAffectedHead);
+        const activeComparison = comparison === null
+          ? active.comparison
+          : active.comparison === null
+            ? comparison
+            : mergeGraphProjections(active.comparison, comparison);
+        if (!installProgressiveProjection(
+          head,
+          activeComparison,
+          requestedDepth,
+          active.explicitFileIds,
+          Math.max(active.affectedDepth, requestedDepth),
+        )) {
+          return false;
+        }
+        const installed = get().progressiveGraph;
+        if (installed === null || !isProgressiveSessionDepthReady(installed, requestedDepth)) {
+          throw new Error(`the graph is not ready through depth ${requestedDepth}`);
+        }
+        if (
+          installed.comparison !== null
+          && get().prPreparedArtifactCurrent
+          && get().prReviewed !== null
+          && !reprojectLivePrReview(
+            `Loading context depth ${requestedDepth}…`,
+            true,
+            false,
+          )
+        ) {
+          throw new Error("the expanded comparison graph no longer matches this review");
+        }
+        return await settleDepthLayout();
+      } catch (error) {
+        if (sequence === progressiveDepthSeq) {
+          const message = error instanceof Error ? error.message : "could not expand the review graph";
+          set((current) => current.progressiveGraph === null
+            || current.progressiveGraph.head.graphId !== session.head.graphId
+            || current.progressiveGraph.head.generation !== session.head.generation
+            ? {}
+            : {
+                progressiveGraph: {
+                  ...current.progressiveGraph,
+                  requestedDepth: session.requestedDepth,
+                  status: "error",
+                  error: message,
+                },
+              });
+        }
+        return false;
+      } finally {
+        // Promise.all rejects on the first failed lane. Cancel only while this operation may still
+        // own a live sibling: aborting a response after its body was consumed can make Chromium
+        // report that valid transfer as ERR_ABORTED instead of loadingFinished.
+        if (projectionTransportInFlight) controller.abort();
+        if (progressiveDepthAbort === controller) progressiveDepthAbort = null;
+      }
+    },
+
+    async startProgressiveSymbolIndex() {
+      const initial = get();
+      const session = initial.progressiveGraph;
+      if (session === null || graphSymbolsUrl === null) {
+        return;
+      }
+      if (
+        initial.progressiveSymbols.status === "indexing"
+        || (
+          initial.progressiveSymbols.status === "ready"
+          && initial.progressiveSymbols.graphId === session.head.graphId
+          && initial.progressiveSymbols.generation === session.head.generation
+        )
+      ) {
+        return;
+      }
+      const sequence = ++progressiveSymbolSeq;
+      progressiveSymbolAbort?.abort();
+      const controller = new AbortController();
+      progressiveSymbolAbort = controller;
+      const url = new URL(graphSymbolsUrl, requestOrigin());
+      url.searchParams.set("id", session.head.graphId);
+      progressiveSymbolSearchClient?.dispose(new DOMException("superseded", "AbortError"));
+      progressiveSymbolSearchClient = null;
+      set({
+        progressiveSymbols: {
+          status: "indexing",
+          graphId: session.head.graphId,
+          generation: session.head.generation,
+          workerBacked: false,
+          symbols: [],
+          indexed: 0,
+          total: 0,
+          error: null,
+        },
+      });
+      let workerClient: GraphSymbolSearchClient | null = null;
+      const requestStartedAtMs = performanceTimestamp();
+      try {
+        const workerBacked = graphSymbolSearchWorkerAvailable();
+        let summary: GraphSymbolIndexSummary;
+        let retainedSymbols: CompactGraphSymbolEntry[] = [];
+        if (workerBacked) {
+          workerClient = createGraphSymbolSearchClient();
+          progressiveSymbolSearchClient = workerClient;
+          summary = await workerClient.load(
+            url.toString(),
+            MAX_GRAPH_SYMBOL_RESPONSE_BYTES,
+            controller.signal,
+          );
+        } else if (loadGraphSymbolsInlineForTest !== null) {
+          const result = await loadGraphSymbolsInlineForTest(url.toString(), { signal: controller.signal });
+          summary = graphSymbolIndexSummary(result);
+          retainedSymbols = result.symbols;
+        } else {
+          throw new Error("Repository symbol search requires Web Worker support; showing the loaded graph only.");
+        }
+        const current = get().progressiveGraph;
+        if (
+          sequence !== progressiveSymbolSeq
+          || current === null
+          || summary.graphId !== current.head.graphId
+          || summary.generation !== current.head.generation
+        ) {
+          if (workerClient !== null && progressiveSymbolSearchClient === workerClient) {
+            workerClient.dispose(new DOMException("stale graph symbol generation", "AbortError"));
+            progressiveSymbolSearchClient = null;
+          }
+          return;
+        }
+        set({
+          progressiveSymbols: {
+            status: summary.complete ? "ready" : "indexing",
+            graphId: summary.graphId,
+            generation: summary.generation,
+            workerBacked,
+            // Production never receives the repository inventory. The fetch-only fallback retains
+            // its bounded result for tests and WebViews without module-Worker support.
+            symbols: retainedSymbols,
+            indexed: summary.indexedSymbolCount,
+            total: summary.totalSymbolCount,
+            error: null,
+          },
+        });
+        performanceMark("meridian:progressive-symbol-index-ready", {
+          symbols: summary.indexedSymbolCount,
+          graphId: summary.graphId,
+          generation: summary.generation,
+          requestStartedAtMs,
+          workerBacked: workerBacked ? 1 : 0,
+          source: workerBacked ? "renderer-symbol-worker-accepted" : "renderer-inline-index-accepted",
+        });
+      } catch (error) {
+        if (workerClient !== null && progressiveSymbolSearchClient === workerClient) {
+          workerClient.dispose(error);
+          progressiveSymbolSearchClient = null;
+        }
+        if (sequence === progressiveSymbolSeq) {
+          set((current) => ({
+            progressiveSymbols: {
+              ...current.progressiveSymbols,
+              status: "error",
+              workerBacked: false,
+              error: error instanceof Error ? error.message : "could not index graph symbols",
+            },
+          }));
+        }
+      } finally {
+        if (progressiveSymbolAbort === controller) progressiveSymbolAbort = null;
+      }
+    },
+
+    async synchronizeProgressiveSymbolSearch(loaded, isMap) {
+      const client = progressiveSymbolSearchClient;
+      const state = get().progressiveSymbols;
+      if (client === null || state.status !== "ready" || state.workerBacked !== true) return null;
+      try {
+        return await client.synchronize(loaded, isMap);
+      } catch (error) {
+        if (progressiveSymbolSearchClient !== client) return null;
+        client.dispose(error);
+        progressiveSymbolSearchClient = null;
+        set((current) => ({
+          progressiveSymbols: {
+            ...current.progressiveSymbols,
+            status: "error",
+            workerBacked: false,
+            error: error instanceof Error ? error.message : "could not synchronize graph symbols",
+          },
+        }));
+        return null;
+      }
+    },
+
+    async queryProgressiveSymbols(request) {
+      const client = progressiveSymbolSearchClient;
+      const state = get().progressiveSymbols;
+      if (client === null || state.status !== "ready" || state.workerBacked !== true) return null;
+      try {
+        return await client.query(request);
+      } catch (error) {
+        if (error instanceof GraphSymbolSearchSupersededError) return null;
+        if (progressiveSymbolSearchClient !== client) return null;
+        client.dispose(error);
+        progressiveSymbolSearchClient = null;
+        set((current) => ({
+          progressiveSymbols: {
+            ...current.progressiveSymbols,
+            status: "error",
+            workerBacked: false,
+            error: error instanceof Error ? error.message : "could not search graph symbols",
+          },
+        }));
+        return null;
       }
     },
 
@@ -6132,6 +7444,54 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
 
+      const progressive = state.progressiveGraph;
+      if (progressive !== null && graphProjectUrl !== null) {
+        const readyFiles = new Set(progressive.head.readyFileIds);
+        const candidatePins = ghostPinIds(
+          state.index,
+          ghostId,
+          drawnGhostMembers(state.moduleRfNodes, ghostId),
+        ).filter((id) => isCanonicalFileNode(state.index.nodesById.get(id)));
+        const incompletePins = candidatePins.filter((id) => !readyFiles.has(id));
+        if (incompletePins.length > 0) {
+          if (state.progressivePendingNodeIds.has(ghostId)) return;
+          const nodeSequence = progressiveNodeSeq;
+          set({
+            progressivePendingNodeIds: new Set(state.progressivePendingNodeIds).add(ghostId),
+          });
+          void hydrateProgressiveFiles(incompletePins)
+            .then((ready) => {
+              if (ready && nodeSequence === progressiveNodeSeq) get().promoteGhost(ghostId, at);
+            })
+            .catch((error) => {
+              if (nodeSequence !== progressiveNodeSeq) return;
+              const message = error instanceof Error ? error.message : "could not load ghost context";
+              set((current) => current.progressiveGraph === null
+                || current.progressiveGraph.head.graphId !== progressive.head.graphId
+                || current.progressiveGraph.head.generation !== progressive.head.generation
+                ? {}
+                : { progressiveGraph: { ...current.progressiveGraph, status: "error", error: message } });
+            })
+            .finally(() => {
+              set((current) => {
+                if (
+                  nodeSequence !== progressiveNodeSeq
+                  ||
+                  current.progressiveGraph === null
+                  || current.progressiveGraph.head.graphId !== progressive.head.graphId
+                  || current.progressiveGraph.head.generation !== progressive.head.generation
+                ) {
+                  return {};
+                }
+                const pending = new Set(current.progressivePendingNodeIds);
+                pending.delete(ghostId);
+                return { progressivePendingNodeIds: pending };
+              });
+            });
+          return;
+        }
+      }
+
       const member = ghostMemberId(state.index, ghostId);
       if (member === null) {
         return;
@@ -6145,7 +7505,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const minimalBasePositions =
           at === undefined
             ? state.minimalBasePositions
-            : { ...state.minimalBasePositions, [member]: promotedMemberRect(at, state.index.nodesById.get(member)?.kind !== "module") };
+            : { ...state.minimalBasePositions, [member]: promotedMemberRect(at, !isCanonicalFileNode(state.index.nodesById.get(member))) };
         set({ minimalMemberIds: [...state.minimalMemberIds, member], minimalBasePositions, moduleExpanded });
         void requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
         return;
@@ -6647,11 +8007,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Close the overlay back to the Module-map level canvas. The selection is kept, so the reader
     // can adjust it and rebuild without re-picking every card. Bumping the seq discards any ELK
     // pass still in flight, so a slow layout can't repopulate the arrays after the close.
-    closeMinimalGraph() {
-      if (!guardReviewLineComposerTransition(() => get().closeMinimalGraph())) {
-        return;
+    closeMinimalGraph(afterDeferredRestore) {
+      if (!guardReviewLineComposerTransition(() => { get().closeMinimalGraph(afterDeferredRestore); })) {
+        return false;
       }
-      reviewProjectionFrameBaseline = null;
       const stateBeforeClose = get();
       const closingPrReview = stateBeforeClose.prReviewed;
       // A user close/lens transition wins over a refresh. Invalidate both its data-fetch lane and
@@ -6661,6 +8020,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().cancelPrReviewPreparation();
         set({ prReviewRefreshing: false });
       }
+      if (
+        initialGraphProjection !== null
+        && dependencies.loadCanonicalBootArtifact != null
+        && stateBeforeClose.prPreparedArtifactCurrent
+        && stateBeforeClose.prReviewBaseline === null
+      ) {
+        deferCompleteBootDocumentRestore(() => {
+          const closed = get().closeMinimalGraph();
+          if (closed) afterDeferredRestore?.();
+        });
+        return false;
+      }
+      reviewProjectionFrameBaseline = null;
       const flowBaseline = stateBeforeClose.reviewFlowBaseline;
       const reviewFlowOpen = stateBeforeClose.review !== null
         && stateBeforeClose.flowSelection !== null
@@ -6745,6 +8117,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           await current.moduleRelayout({ label: "Restoring review map…" });
         })();
       }
+      return true;
     },
 
     // Reset the overlay to its base: restore the working set to the origin selection, collapse any
@@ -6815,6 +8188,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     async minimalRelayout(activity) {
       if (get().minimalMemberIds.length === 0) {
         set({ minimalLayoutStatus: "idle", minimalLayoutActivity: null });
+        if (get().review !== null) {
+          performanceMark("meridian:first-actionable-canvas", { nodes: 0, edges: 0 });
+          scheduleProgressiveSymbolIndex();
+          scheduleProgressiveLookahead();
+        }
         return;
       }
       const sequence = ++minimalLayoutSeq;
@@ -6829,10 +8207,17 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         const state = get();
         const { index, minimalSeedIds, minimalBasePositions, minimalArrange, moduleExpanded, artifact } = state;
+        const seedIds = new Set(minimalSeedIds);
+        // Members beyond the immutable seed tier are the overlay's existing explicit-promotion
+        // provenance (ghost "+" and Cmd+P add). Only those curated roots escape Diff-only filtering.
+        const explicitRootIds = state.minimalMemberIds.filter((id) => !seedIds.has(id));
         moduleGraph ??= buildModuleGraph(index);
         const deps = (blockDeps ??= buildBlockDeps(index));
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
-        const hidden = reviewProjectionHiddenIds(state);
+        const hidden = new Set(reviewProjectionHiddenIds(state));
+        // The review overlay stores explicit additions as members beyond its immutable seed tier.
+        // Apply the same picked-root exception to test filtering without exposing sibling tests.
+        for (const id of explicitRootVisibleIds(index, explicitRootIds)) hidden.delete(id);
         const members = minimalMembersForFlowInspection(state);
         const surface = activeModuleSurfaceSpec(state.viewMode);
         // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
@@ -6882,7 +8267,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           // structural scene lets selection unspool its strands at paint time, just like the Map.
           directDependencies: true,
           visibleIds: state.review !== null && state.reviewDiffOnly
-            ? reviewDiffVisibleIds(index, state.reviewAffectedIds)
+            ? reviewDiffVisibleIds(index, state.reviewAffectedIds, explicitRootIds)
             : undefined,
         }, minimalArrange, hidden, surface.relations);
         if (minimalLayoutSeq !== sequence) {
@@ -6894,6 +8279,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           minimalLayoutStatus: "ready",
           minimalLayoutActivity: null,
         });
+        if (get().review !== null) {
+          performanceMark("meridian:first-actionable-canvas", {
+            nodes: layout.nodes.length,
+            edges: layout.edges.length,
+          });
+          scheduleProgressiveSymbolIndex();
+          scheduleProgressiveLookahead();
+        }
       } catch (error) {
         if (minimalLayoutSeq === sequence) {
           console.error("[meridian] Minimal graph layout failed.", error);
@@ -6945,7 +8338,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       if (!guardReviewLineComposerTransition(() => get().openServiceScope())) {
         return;
       }
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().openServiceScope())) return;
       // Scoping from WITHIN the call lens narrows the canvas the reader is already on, so their
       // open frames must survive: UNION the reveal's expansion into the current one. From any
       // other lens this is a lens switch, where the reveal REPLACES the expansion (the outgoing
@@ -8098,7 +9491,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         outgoing.serviceGroupingMode,
         outgoing.serviceGroupingTargetSize,
       );
-      beginLensTransition(get, set);
+      if (!beginLensTransition(get, set, () => get().setViewMode(mode))) return;
       if (mode === "logic") {
         moduleLayoutSeq += 1;
         set({ viewMode: mode });
@@ -8892,9 +10285,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       get().cancelPrReviewPreparation();
       // Browsing another card must not discard a parked review. Only an explicit navigation restore
       // away from review state requests teardown; starting another review owns replacement below.
+      const reviewToEnd = get().prReviewed;
       if (
         options.endReviewSession
-        && restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set))
+        && reviewToEnd !== null
+        && get().prPreparedArtifactCurrent
+        && get().prReviewBaseline === null
+        && !await ensureCompleteBootDocumentRestoreForTransition(
+          reviewToEnd,
+          get().prPreparedGraphId,
+          () => sequence === prFilesSeq,
+        )
+      ) {
+        return;
+      }
+      if (
+        options.endReviewSession
+        && restoreSelectedPrReview(
+          get,
+          set,
+          canonicalBootBaseline ?? bootReviewBaseline,
+          () => restorePreparedReviewBaseline(get, set),
+        )
       ) {
         void get().relayout();
       }
@@ -9160,7 +10572,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         });
 
         if (analyzeUrl !== null && analyzeGraphId !== null) {
-          await get().prepareHeadGraph();
+          const partialRefresh = before.progressiveGraph !== null
+            || isPartialPrGraphId(before.prPreparedGraphId);
+          await get().prepareHeadGraph({ progressiveGraphDelivery: partialRefresh });
           // Successful projection replaces the revision object. If it did not, preparation either
           // failed, found no matching HEAD nodes, or was canceled by a soft close; all three keep
           // the prior review and therefore must keep its matching GitHub payload as well.
@@ -9227,7 +10641,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Once the selected PR's files are ready, a capable web session PREPARES first while the PRs
     // page remains visible. Only the swapped PR-head graph is allowed to enter the Map. A plain
     // view (no analyze capability) retains the synchronous loaded-artifact entry path.
-    async reviewPrInGraph() {
+    async reviewPrInGraph(options = {}) {
       const selected = get().prSelected;
       if (selected === null) {
         return;
@@ -9242,13 +10656,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
       }
       if (get().prReviewed === selected) {
-        await get().resumePrReview();
+        await get().resumePrReview(options);
         return;
       }
       // Selection is only browsing; pressing Review in graph is the commit point that replaces an
       // older parked session. Restore the immutable boot pair before preparing the new PR.
-      if (get().prReviewed !== null) {
-        restoreSelectedPrReview(get, set, bootReviewBaseline, () => restorePreparedReviewBaseline(get, set));
+      const reviewed = get().prReviewed;
+      if (reviewed !== null) {
+        if (
+          get().prPreparedArtifactCurrent
+          && get().prReviewBaseline === null
+          && !await ensureCompleteBootDocumentRestoreForTransition(
+            reviewed,
+            get().prPreparedGraphId,
+            () => get().prSelected === selected && get().prReviewed === reviewed,
+          )
+        ) {
+          return;
+        }
+        restoreSelectedPrReview(
+          get,
+          set,
+          canonicalBootBaseline ?? bootReviewBaseline,
+          () => restorePreparedReviewBaseline(get, set),
+        );
       }
       if (analyzeUrl === null || analyzeGraphId === null) {
         await get().reviewPrOnBaseGraph();
@@ -9262,7 +10693,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         return;
       }
-      const promise = get().prepareHeadGraph();
+      const promise = get().prepareHeadGraph(options);
       const request = { number: selected, promise };
       prReviewEntryRequest = request;
       try {
@@ -9304,12 +10735,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) — cheaply. The
-    // expensive clone→checkout→extract NEVER re-runs here: a swapped review re-fetches its already-
-    // prepared head artifact with one GET and re-swaps (against the SAME saved baseline); a sync
-    // review keeps the boot artifact it never left. Then re-project the complete PR through the
-    // current Tests setting so a toggle changed while the workspace was parked is honored.
-    async resumePrReview() {
+    // Re-open a review whose overlay was soft-closed (explicit Close/lens switch) cheaply. Partial
+    // reviews re-project their retained exact pair; only the explicit complete benchmark control
+    // uses artifact GETs. Then re-project the PR through the current Tests setting so a toggle
+    // changed while the workspace was parked is honored.
+    async resumePrReview(options = {}) {
       const {
         prReviewed,
         prReviewSource,
@@ -9317,16 +10747,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prPreparedGraphId,
         prPreparedComparisonGraphId,
         prPreparedHeadSha,
+        progressiveGraph: retainedProgressiveGraph,
         reviewActiveGroupId: resumeGroupId,
         reviewPathScope: resumePathScope,
       } = get();
       if (prReviewed === null || minimalSeedIds.length > 0) {
         return;
       }
+      const retainedPartialOnly = isPartialOnlyProjection(retainedProgressiveGraph?.head ?? null)
+        || isPartialPrGraphId(prPreparedGraphId);
       if (prReviewResumeRequest?.number === prReviewed) {
         await prReviewResumeRequest.promise;
         return;
       }
+      prResumeProjectionAbort?.abort();
+      prResumeProjectionAbort = null;
+      const resumeSequence = ++prReviewResumeSeq;
+      const resumeViewMode = get().viewMode;
+      const resumeActive = () => (
+        resumeSequence === prReviewResumeSeq
+        && get().viewMode === resumeViewMode
+        && get().prReviewed === prReviewed
+        && get().minimalSeedIds.length === 0
+        && get().prPreparedGraphId === prPreparedGraphId
+        && get().prPreparedComparisonGraphId === prPreparedComparisonGraphId
+        && get().prPreparedHeadSha === prPreparedHeadSha
+      );
       // A normal Code Flow may have been opened on the base Map after the review overlay soft-
       // closed. It belongs to that Map, not the resumed review/head artifact; clear it before any
       // possible artifact swap so only a flow selected inside the review enters review mode.
@@ -9379,22 +10825,93 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         });
         try {
           if (prPreparedGraphId !== null) {
-            const [prepared, comparison] = await Promise.all([
-              fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
-                repository: dependencies.prSessionSource?.repository ?? null,
-                headSha: prPreparedHeadSha,
-              }),
-              prPreparedComparisonGraphId === null
-                ? Promise.resolve(null)
-                : fetchPreparedArtifact(get().graphUrl, prPreparedComparisonGraphId),
-            ]);
-            if (
-              get().prReviewed !== prReviewed
-              || get().minimalSeedIds.length > 0
-              || get().prPreparedGraphId !== prPreparedGraphId
-              || get().prPreparedComparisonGraphId !== prPreparedComparisonGraphId
-              || get().prPreparedHeadSha !== prPreparedHeadSha
-            ) {
+            let headProjection: GraphProjectionV1 | null = null;
+            let comparisonProjection: GraphProjectionV1 | null = null;
+            let prepared: PreparedGraphSession | null = null;
+            let comparison: GraphArtifact | null = null;
+            const partialResumeRequested = retainedPartialOnly
+              || options.progressiveGraphDelivery === true
+              || (
+                options.progressiveGraphDelivery === undefined
+                && retainedProgressiveGraph !== null
+              );
+            if (partialResumeRequested && graphProjectUrl !== null && graphSymbolsUrl !== null) {
+              const projectionController = new AbortController();
+              prResumeProjectionAbort = projectionController;
+              let projectionTransportInFlight = false;
+              try {
+                const depth = DEFAULT_PROGRESSIVE_GRAPH_DEPTH;
+                const prefetchDepth = INITIAL_PROGRESSIVE_GRAPH_PREFETCH_DEPTH;
+                projectionTransportInFlight = true;
+                const [capability, projectedHead, projectedComparison] = await Promise.all([
+                  fetchPreparedSyntheticCapabilityForGraph(metaUrl, prPreparedGraphId, {
+                    repository: dependencies.prSessionSource?.repository ?? null,
+                    headSha: prPreparedHeadSha,
+                  }),
+                  fetchGraphProjection(
+                    graphProjectUrl,
+                    changedFileProjectionRequest(prPreparedGraphId, prPreparedGraphId, depth, prefetchDepth),
+                    { signal: projectionController.signal },
+                  ),
+                  prPreparedComparisonGraphId === null
+                    ? Promise.resolve(null)
+                    : fetchGraphProjection(
+                        graphProjectUrl,
+                        changedFileProjectionRequest(
+                          prPreparedComparisonGraphId,
+                          prPreparedGraphId,
+                          depth,
+                          prefetchDepth,
+                        ),
+                        { signal: projectionController.signal },
+                      ),
+                ]);
+                projectionTransportInFlight = false;
+                if (!isProgressiveProjectionPairReady(projectedHead, projectedComparison)) {
+                  throw new Error("the retained graph projection is not ready through depth 1");
+                }
+                projectionTransportInFlight = true;
+                const hydratedHead = await hydrateHeadProjectionForComparisonContext(
+                  graphProjectUrl,
+                  projectedHead,
+                  projectedComparison,
+                  { signal: projectionController.signal },
+                );
+                projectionTransportInFlight = false;
+                headProjection = hydratedHead;
+                comparisonProjection = projectedComparison;
+                prepared = { artifact: projectionToArtifact(hydratedHead), ...capability };
+                comparison = projectedComparison === null ? null : projectionToArtifact(projectedComparison);
+              } catch (error) {
+                if (projectionController.signal.aborted || !resumeActive()) throw error;
+                // The registered artifacts are bounded sources. Loading either through `/api/graph`
+                // would erase their readiness/frontier contract and manufacture completeness.
+                throw new Error("the retained partial graph projection is unavailable", { cause: error });
+              } finally {
+                // A failed capability/head/comparison lane must not leave live siblings consuming
+                // projector CPU. After every response body was consumed, leave the signal settled
+                // so Chromium can publish loadingFinished authoritatively.
+                if (projectionTransportInFlight) projectionController.abort();
+                if (prResumeProjectionAbort === projectionController) prResumeProjectionAbort = null;
+              }
+            }
+            if (prepared === null && partialResumeRequested) {
+              // Missing capabilities are a protocol failure, never permission to load the bounded
+              // source through the complete-artifact endpoint.
+              throw new Error("the retained partial graph projection is unavailable");
+            }
+            if (prepared === null) {
+              [prepared, comparison] = await Promise.all([
+                fetchPreparedGraphSession(get().graphUrl, metaUrl, prPreparedGraphId, {
+                  repository: dependencies.prSessionSource?.repository ?? null,
+                  headSha: prPreparedHeadSha,
+                }),
+                prPreparedComparisonGraphId === null
+                  ? Promise.resolve(null)
+                  : fetchPreparedArtifact(get().graphUrl, prPreparedComparisonGraphId),
+              ]);
+            }
+            if (!resumeActive()) {
               return; // the review moved on (or resumed elsewhere) while the artifact was in flight.
             }
             // The base Map stayed interactive during the fetch. Clear once more so a Code Flow opened
@@ -9402,12 +10919,31 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             clearResumeFlow();
             invalidateSyntheticArtifactBoundary();
             swapToPreparedArtifact(get, set, prepared.artifact, invalidateArtifactCaches, prepared, comparison);
+            invalidateProgressiveRequests();
             set((current) => ({
               prPrepareStage: "projection",
               prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
                 type: "stage",
                 stage: "projection",
               }),
+              progressiveGraph: headProjection === null ? null : {
+                head: headProjection,
+                comparison: comparisonProjection,
+                explicitFileIds: [],
+                affectedDepth: headProjection.loadedDepth,
+                requestedDepth: headProjection.requestedDepth,
+                status: "ready",
+                error: null,
+              },
+              progressiveSymbols: {
+                status: "idle",
+                graphId: null,
+                generation: null,
+                symbols: [],
+                indexed: 0,
+                total: 0,
+                error: null,
+              },
             }));
           }
           const resumed = applyPrReviewToMap(
@@ -9442,13 +10978,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             });
             return;
           }
+          if (get().minimalMemberIds.length === 0) {
+            performanceMark("meridian:first-actionable-canvas", { nodes: 0, edges: 0 });
+            scheduleProgressiveSymbolIndex();
+            scheduleProgressiveLookahead();
+          }
           await loadViewedFiles(prReviewed);
+          if (!resumeActive() && get().minimalSeedIds.length === 0) {
+            return;
+          }
           // Rebuild the reader's lightweight review context, not the entire PR. Each selector
           // invalidates the full pass that applyPrReviewToMap just queued before that pass derives,
           // so a scoped Resume remains cheap even for a repository-wide change.
           get().selectReviewGroup(resumeGroupId);
           get().selectReviewPathScope(resumePathScope);
-          if (get().prReviewed === prReviewed) {
+          if (resumeSequence === prReviewResumeSeq && get().prReviewed === prReviewed) {
             set((current) => ({
               prReviewStatus: "idle",
               prPrepareStage: null,
@@ -9457,7 +11001,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             }));
           }
         } catch (error) {
-          if (get().prReviewed === prReviewed && get().minimalSeedIds.length === 0) {
+          if (resumeActive()) {
             const message = resumeErrorMessage(error);
             set((current) => ({
               prReviewStatus: "error",
@@ -9486,7 +11030,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // clone→checkout→extract analysis, SWAP the loaded artifact for the prepared head-accurate one,
     // then run the review so marking, seeds, and line diff all compute in HEAD coordinates. The
     // stale-seq + identity guards drop a canceled entry, PR switch, or PRs-lens exit.
-    async prepareHeadGraph() {
+    async prepareHeadGraph(options = {}) {
       const state = get();
       const prNumber = state.prReviewed ?? state.prSelected;
       const enteringFromPrs = state.prReviewed === null;
@@ -9511,6 +11055,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             baseNodeIds: state.reviewBaseNodeIds,
             deletedNodeIds: state.reviewDeletedNodeIds,
             baseSpanByHeadId: state.reviewBaseSpanByHeadId,
+            progressiveGraph: settledProgressiveSession(state.progressiveGraph),
+            progressiveSymbols: settledProgressiveSymbols(state.progressiveSymbols),
+            progressivePendingNodeIds: new Set<string>(),
           }
         : null;
       if (
@@ -9522,12 +11069,21 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       ) {
         return;
       }
-      if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(); })) {
+      // Request partial-only preparation independently from this render document's advertised
+      // consumption capabilities. Missing projection/symbol endpoints must fail closed; sending
+      // `progressive: false` would make the server do the full extraction we are avoiding.
+      const progressivePreparationRequested = options.progressiveGraphDelivery !== false;
+      const progressivePreparationEnabled = progressivePreparationRequested
+        && graphProjectUrl !== null
+        && graphSymbolsUrl !== null;
+      if (!guardReviewLineComposerTransition(() => { void get().prepareHeadGraph(options); })) {
         return;
       }
       // A direct manual re-run supersedes the prior action just like Retry does through
       // reviewPrInGraph; resolve its public waiter while its guarded stream drains.
       prAnalyzeCancellation?.resolve();
+      prPrepareProjectionAbort?.abort();
+      prPrepareProjectionAbort = null;
       const supersededHandoff = prGraphHandoff;
       prGraphHandoff = null;
       void supersededHandoff?.release().catch(() => undefined);
@@ -9538,15 +11094,30 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
       const cancellation = { sequence, resolve: resolveCanceled };
       prAnalyzeCancellation = cancellation;
+      let readyPairEntered = false;
       const active = () => {
         const current = get();
         return prAnalyzeSeq === sequence
           && current.prSelected === prNumber
           && (enteringFromPrs
-            ? current.viewMode === "prs" && current.prReviewed === null
+            ? readyPairEntered
+              ? current.viewMode === "modules"
+                && current.prReviewed === prNumber
+                && current.prPreparedArtifactCurrent
+              : current.viewMode === "prs" && current.prReviewed === null
             : current.prReviewed === prNumber)
           && (!refreshingExistingReview
             || (current.prReviewRefreshing && current.viewMode === "modules" && current.minimalSeedIds.length > 0));
+      };
+      let resolveActionable!: () => void;
+      let actionableSettled = false;
+      const actionable = new Promise<void>((resolve) => {
+        resolveActionable = resolve;
+      });
+      const settleActionable = () => {
+        if (actionableSettled) return;
+        actionableSettled = true;
+        resolveActionable();
       };
       const progressBase = state.prReviewProgress.status === "running"
         && state.prReviewProgress.prNumber === prNumber
@@ -9580,7 +11151,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : {}),
         prReviewBlocked: null,
       });
-      let swappedNewArtifact = false;
       let graphHandoff: GraphViewLeaseHandoff | null = null;
       const settleGraphHandoff = async (action: "commit" | "release") => {
         const handoff = graphHandoff;
@@ -9589,82 +11159,84 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         if (graphHandoff === handoff) graphHandoff = null;
         if (prGraphHandoff === handoff) prGraphHandoff = null;
       };
-      const restorePreviousPrepared = () => {
-        if (previousPrepared === null) {
+      type PreparedSnapshot = NonNullable<typeof previousPrepared>;
+      const captureCurrentPrepared = (): PreparedSnapshot | null => {
+        const current = get();
+        return current.prPreparedArtifactCurrent
+          ? {
+              artifact: current.artifact,
+              index: current.index,
+              comparison: current.prReviewComparison,
+              coverage: current.coverage,
+              graphId: current.prPreparedGraphId,
+              comparisonGraphId: current.prPreparedComparisonGraphId,
+              mergeBaseSha: current.prPreparedMergeBaseSha,
+              headSha: current.prPreparedHeadSha,
+              syntheticExecutionUrl: current.syntheticExecutionUrl,
+              syntheticScenarios: [...current.syntheticScenarios],
+              syntheticExecutionTrust: current.syntheticExecutionTrust,
+              baseNodeIds: current.reviewBaseNodeIds,
+              deletedNodeIds: current.reviewDeletedNodeIds,
+              baseSpanByHeadId: current.reviewBaseSpanByHeadId,
+              progressiveGraph: settledProgressiveSession(current.progressiveGraph),
+              progressiveSymbols: settledProgressiveSymbols(current.progressiveSymbols),
+              progressivePendingNodeIds: new Set(current.progressivePendingNodeIds),
+            }
+          : null;
+      };
+      const restorePrepared = (snapshot: PreparedSnapshot | null) => {
+        if (snapshot === null) {
           return false;
         }
         invalidateSyntheticArtifactBoundary();
         invalidateArtifactCaches();
+        invalidateProgressiveRequests();
         set({
-          artifact: previousPrepared.artifact,
-          index: previousPrepared.index,
-          prReviewComparison: previousPrepared.comparison,
-          coverage: previousPrepared.coverage,
+          artifact: snapshot.artifact,
+          index: snapshot.index,
+          prReviewComparison: snapshot.comparison,
+          coverage: snapshot.coverage,
           codeView: null,
           prPreparedArtifactCurrent: true,
-          prPreparedGraphId: previousPrepared.graphId,
-          prPreparedComparisonGraphId: previousPrepared.comparisonGraphId,
-          prPreparedMergeBaseSha: previousPrepared.mergeBaseSha,
-          prPreparedHeadSha: previousPrepared.headSha,
-          syntheticExecutionUrl: previousPrepared.syntheticExecutionUrl,
-          syntheticScenarios: [...previousPrepared.syntheticScenarios],
-          syntheticExecutionTrust: previousPrepared.syntheticExecutionTrust,
-          reviewBaseNodeIds: previousPrepared.baseNodeIds,
-          reviewDeletedNodeIds: previousPrepared.deletedNodeIds,
-          reviewBaseSpanByHeadId: previousPrepared.baseSpanByHeadId,
+          prPreparedGraphId: snapshot.graphId,
+          prPreparedComparisonGraphId: snapshot.comparisonGraphId,
+          prPreparedMergeBaseSha: snapshot.mergeBaseSha,
+          prPreparedHeadSha: snapshot.headSha,
+          syntheticExecutionUrl: snapshot.syntheticExecutionUrl,
+          syntheticScenarios: [...snapshot.syntheticScenarios],
+          syntheticExecutionTrust: snapshot.syntheticExecutionTrust,
+          reviewBaseNodeIds: snapshot.baseNodeIds,
+          reviewDeletedNodeIds: snapshot.deletedNodeIds,
+          reviewBaseSpanByHeadId: snapshot.baseSpanByHeadId,
+          progressiveGraph: snapshot.progressiveGraph,
+          progressiveSymbols: snapshot.progressiveSymbols,
+          progressivePendingNodeIds: snapshot.progressivePendingNodeIds,
           prReviewBlocked: null,
         });
         return true;
       };
-      const work = (async () => {
+      const installPreparedPair = async (
+        analysis: PrAnalysisResult,
+        delivery: "partial" | "benchmark",
+      ): Promise<boolean> => {
+        if (!active()) return false;
+        const rollback = captureCurrentPrepared() ?? previousPrepared;
+        set((current) => ({
+          prPrepareStage: "handoff",
+          prReviewProgress: reducePrReviewProgress(
+            delivery === "benchmark"
+              ? reducePrReviewProgress(current.prReviewProgress, {
+                  type: "analysis-done",
+                  cache: analysis.cache,
+                })
+              : current.prReviewProgress,
+            { type: "stage", stage: "handoff" },
+          ),
+        }));
         try {
-          const request = { id: analyzeGraphId, prNumber, baseRef: summary.baseRef, headRef: summary.headRef };
-          const analysis = await streamPrAnalysis(
-            analyzeUrl,
-            request,
-            (stage, progress) => {
-              if (active()) {
-                set((current) => ({
-                  prPrepareStage: stage,
-                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
-                    type: "stage",
-                    stage,
-                    progress,
-                  }),
-                }));
-              }
-            },
-            (lane) => {
-              if (active()) {
-                set((current) => ({
-                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
-                    type: "lane-complete",
-                    lane,
-                  }),
-                }));
-              }
-            },
-          );
-          if (!active()) {
-            return;
-          }
-          set((current) => ({
-            prPrepareStage: "handoff",
-            prReviewProgress: reducePrReviewProgress(reducePrReviewProgress(
-              current.prReviewProgress,
-              {
-                type: "analysis-done",
-                cache: analysis.cache,
-              },
-            ), {
-              // Lease admission is part of the cross-page artifact handoff. Keep a truthful active
-              // step (and error target) while the lease controller protects the immutable pair.
-              type: "stage",
-              stage: "handoff",
-            }),
-          }));
           // Protect the new pair before either artifact fetch begins. The controller unions it with
-          // the currently mounted pair, so a refresh can still roll back until the new graph commits.
+          // the currently mounted pair, so a refresh keeps its visible source alive until the new
+          // bounded pair is installed transactionally.
           graphHandoff = await graphViewLease?.beginPreparedGraphHandoff([
             analysis.graphId,
             ...(analysis.comparisonGraphId === null ? [] : [analysis.comparisonGraphId]),
@@ -9672,7 +11244,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           if (graphHandoff !== null) prGraphHandoff = graphHandoff;
           if (!active()) {
             await settleGraphHandoff("release");
-            return;
+            return false;
           }
           set((current) => ({
             prPrepareStage: "load-artifacts",
@@ -9681,29 +11253,164 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               stage: "load-artifacts",
             }),
           }));
-          // SWAP: load the prepared PR-head artifact and make it the CURRENT graph BEFORE the review
-          // body runs, so amber marking, seeds, and the line diff compute in HEAD coordinates.
+          // SWAP: load the pair and make HEAD current before deriving the review.
           const reusesBootHead = analysis.graphId === analyzeGraphId;
-          const [prepared, comparison] = await Promise.all([
-            reusesBootHead
-              ? Promise.resolve({
-                  artifact: dependencies.artifact,
-                  syntheticExecutionUrl: initialSyntheticExecutionUrl,
-                  syntheticExecutionTrust: initialSyntheticExecutionTrust,
-                  syntheticScenarios: [...initialSyntheticScenarios],
-                })
-              : fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
-                  repository: dependencies.prSessionSource?.repository ?? null,
-                  headSha: analysis.headSha,
-                }),
-            analysis.comparisonGraphId === null
-              ? Promise.resolve(null)
-              : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
-          ]);
+          const progressiveBefore = get().progressiveGraph;
+          const progressiveDepth = Math.max(
+            DEFAULT_PROGRESSIVE_GRAPH_DEPTH,
+            progressiveBefore?.requestedDepth ?? DEFAULT_PROGRESSIVE_GRAPH_DEPTH,
+          );
+          // The boot projection retains its depth-1/depth-3 cache key. Once the reader explicitly
+          // expands context, every later projection is exact-depth so no hidden N+1 work is retained.
+          const progressivePrefetchDepth = progressiveDepth === DEFAULT_PROGRESSIVE_GRAPH_DEPTH
+            ? INITIAL_PROGRESSIVE_GRAPH_PREFETCH_DEPTH
+            : progressiveDepth;
+          let headProjection: GraphProjectionV1 | null = null;
+          let comparisonProjection: GraphProjectionV1 | null = null;
+          let prepared: PreparedGraphSession | null = null;
+          let comparison: GraphArtifact | null = null;
+          if (delivery === "partial" && progressivePreparationEnabled && graphProjectUrl !== null) {
+            const projectionController = new AbortController();
+            prPrepareProjectionAbort = projectionController;
+            let projectionTransportInFlight = false;
+            try {
+              projectionTransportInFlight = true;
+              const capabilityPromise = reusesBootHead
+                ? Promise.resolve({
+                    syntheticExecutionUrl: initialSyntheticExecutionUrl,
+                    syntheticExecutionTrust: initialSyntheticExecutionTrust,
+                    syntheticScenarios: [...initialSyntheticScenarios],
+                  })
+                : fetchPreparedSyntheticCapabilityForGraph(metaUrl, analysis.graphId, {
+                    repository: dependencies.prSessionSource?.repository ?? null,
+                    headSha: analysis.headSha,
+                  });
+              const headProjectionPromise = reusesBootHead
+                && initialGraphProjection?.graphId === analysis.graphId
+                && initialGraphProjection.loadedDepth >= progressiveDepth
+                ? Promise.resolve(initialGraphProjection)
+                : fetchGraphProjection(
+                    graphProjectUrl,
+                    changedFileProjectionRequest(
+                      analysis.graphId,
+                      analysis.graphId,
+                      progressiveDepth,
+                      progressivePrefetchDepth,
+                    ),
+                    { signal: projectionController.signal },
+                  );
+              const comparisonProjectionPromise = analysis.comparisonGraphId === null
+                ? Promise.resolve(null)
+                : fetchGraphProjection(
+                    graphProjectUrl,
+                    changedFileProjectionRequest(
+                      analysis.comparisonGraphId,
+                      analysis.graphId,
+                      progressiveDepth,
+                      progressivePrefetchDepth,
+                    ),
+                    { signal: projectionController.signal },
+                  );
+              const explicitRequests = progressiveBefore !== null
+                && progressiveBefore.explicitFileIds.length > 0
+                ? fileProjectionRequests(
+                    analysis.graphId,
+                    progressiveBefore.explicitFileIds,
+                    progressiveDepth,
+                    progressivePrefetchDepth,
+                  )
+                : [];
+              const explicitFragmentsPromise = Promise.all(explicitRequests.map((request) =>
+                fetchGraphProjection(graphProjectUrl, request, { signal: projectionController.signal })));
+              const [capability, projectedHead, projectedComparison, explicitFragments] = await Promise.all([
+                capabilityPromise,
+                headProjectionPromise,
+                comparisonProjectionPromise,
+                explicitFragmentsPromise,
+              ]);
+              projectionTransportInFlight = false;
+              if (!isProgressiveProjectionPairReady(projectedHead, projectedComparison)) {
+                throw new Error(`prepared graph projection is not ready through depth ${progressiveDepth}`);
+              }
+              if (explicitFragments.some((fragment) =>
+                !isProjectionReadyForCanvas(fragment)
+                || !projectionRootsCompleteThrough(fragment, progressiveDepth),
+              )) {
+                throw new Error(`a selected graph root is not ready through depth ${progressiveDepth}`);
+              }
+              const projectedWithExplicit = explicitFragments.reduce(
+                mergeGraphProjections,
+                projectedHead,
+              );
+              projectionTransportInFlight = true;
+              const hydratedHead = await hydrateHeadProjectionForComparisonContext(
+                graphProjectUrl,
+                projectedWithExplicit,
+                projectedComparison,
+                { signal: projectionController.signal },
+              );
+              projectionTransportInFlight = false;
+              headProjection = hydratedHead;
+              comparisonProjection = projectedComparison;
+              prepared = { artifact: projectionToArtifact(hydratedHead), ...capability };
+              comparison = projectedComparison === null ? null : projectionToArtifact(projectedComparison);
+            } catch (error) {
+              if (projectionController.signal.aborted || !active()) throw error;
+              // A partial pair is a bounded extraction source, not a complete artifact. It may retry
+              // the projector, but it may never bypass readiness through the ordinary graph route.
+              throw new Error("the partial PR graph projection is unavailable", { cause: error });
+            } finally {
+              // Promise.all is fail-fast, so abort live siblings when one lane fails. Do not abort
+              // after every response body was consumed: Chromium may otherwise publish ERR_ABORTED
+              // for a valid projection transfer, making exact network accounting non-authoritative.
+              if (projectionTransportInFlight) projectionController.abort();
+              if (prPrepareProjectionAbort === projectionController) prPrepareProjectionAbort = null;
+            }
+          }
+          if (prepared === null) {
+            if (delivery === "partial") {
+              throw new Error("partial PR graph delivery requires projection and symbol capabilities");
+            }
+            // The only complete-artifact installation left in this action is the explicit
+            // `progressiveGraphDelivery: false` benchmark control. Production never reaches it.
+            const bootCapability = {
+              syntheticExecutionUrl: initialSyntheticExecutionUrl,
+              syntheticExecutionTrust: initialSyntheticExecutionTrust,
+              syntheticScenarios: [...initialSyntheticScenarios],
+            };
+            [prepared, comparison] = await Promise.all([
+              reusesBootHead
+                ? initialGraphProjection === null
+                  ? Promise.resolve({ artifact: dependencies.artifact, ...bootCapability })
+                  : fetchPreparedArtifact(get().graphUrl, analysis.graphId)
+                      .then((artifact) => ({ artifact, ...bootCapability }))
+                : fetchPreparedGraphSession(get().graphUrl, metaUrl, analysis.graphId, {
+                    repository: dependencies.prSessionSource?.repository ?? null,
+                    headSha: analysis.headSha,
+                  }),
+              analysis.comparisonGraphId === null
+                ? Promise.resolve(null)
+                : fetchPreparedArtifact(get().graphUrl, analysis.comparisonGraphId),
+            ]);
+          }
           if (!active()) {
             await settleGraphHandoff("release");
-            return;
+            return false;
           }
+          // Capture interaction state only after all pair network work has settled. A reader
+          // can open or close the source surface while that pair is loading; an earlier snapshot
+          // would resurrect UI they deliberately dismissed.
+          const interactionBefore = get();
+          const preservedCodeView = delivery === "partial"
+            && !enteringFromPrs
+            && analysis.headSha !== null
+            && interactionBefore.prPreparedHeadSha === analysis.headSha
+            && interactionBefore.prPreparedMergeBaseSha === analysis.mergeBaseSha
+            ? interactionBefore.codeView
+            : null;
+          const directProgressiveBaseline = enteringFromPrs && initialGraphProjection !== null
+            ? canonicalBootBaseline
+            : undefined;
           invalidateSyntheticArtifactBoundary();
           swapToPreparedArtifact(
             get,
@@ -9712,9 +11419,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             invalidateArtifactCaches,
             prepared,
             comparison,
-            reusesBootHead ? dependencies.index : undefined,
+            reusesBootHead && headProjection === initialGraphProjection ? dependencies.index : undefined,
+            directProgressiveBaseline,
           );
-          swappedNewArtifact = true;
+          invalidateProgressiveRequests();
           set({
             // applyPrReviewToMap transitions from PRs to Map. It must not observe a cancelable
             // server-preparation lane and release the already-installed graph handoff.
@@ -9729,15 +11437,42 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             prPreparedComparisonGraphId: analysis.comparisonGraphId,
             prPreparedMergeBaseSha: analysis.mergeBaseSha,
             prPreparedHeadSha: analysis.headSha,
+            progressiveGraph: headProjection === null ? null : {
+              head: headProjection,
+              comparison: comparisonProjection,
+              explicitFileIds: [...(progressiveBefore?.explicitFileIds ?? [])],
+              affectedDepth: Math.max(progressiveBefore?.affectedDepth ?? 0, headProjection.loadedDepth),
+              requestedDepth: progressiveDepth,
+              status: "ready",
+              error: null,
+            },
+            progressiveSymbols: {
+              status: "idle",
+              graphId: null,
+              generation: null,
+              symbols: [],
+              indexed: 0,
+              total: 0,
+              error: null,
+            },
+            progressivePendingNodeIds: new Set<string>(),
           });
-          const entered = applyPrReviewToMap(get, set, prFilesUrl, invalidateMinimalLayout, invalidateModuleLayout, invalidateArtifactCaches, {
-            preserveReviewDiffOnly: !enteringFromPrs,
-            viewedFilesLoading: prViewedFilesUrl !== null,
-          });
+          const entered = applyPrReviewToMap(
+            get,
+            set,
+            prFilesUrl,
+            invalidateMinimalLayout,
+            invalidateModuleLayout,
+            invalidateArtifactCaches,
+            {
+              preserveReviewDiffOnly: !enteringFromPrs,
+              viewedFilesLoading: prViewedFilesUrl !== null,
+            },
+          );
           if (!entered) {
-            // The zero-match decision was made against HEAD. Do not leak that unreviewed prepared
-            // graph behind the PRs page (or replace an explicit base fallback that still matches).
-            if (!restorePreviousPrepared()) {
+            // The zero-match decision was made against this exact HEAD. Roll back to the prior
+            // prepared review when refreshing; first entry restores its prior graph.
+            if (!restorePrepared(rollback)) {
               restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
             }
             if (!enteringFromPrs && previousPrepared === null) {
@@ -9772,60 +11507,209 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               }));
             }
             await settleGraphHandoff("release");
+            return false;
           } else {
-            set((current) => ({
-              prReviewStatus: "idle",
-              prPrepareStage: null,
-              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, { type: "success" }),
-              prPrepareError: null,
-            }));
-            await settleGraphHandoff("commit");
-            await loadViewedFiles(prNumber);
-          }
-        } catch (error) {
-          await settleGraphHandoff("release").catch(() => undefined);
-          if (active()) {
-            // Derivation after a successful fetch is still part of preparation. If it throws after
-            // the swap, put the prior graph back before exposing the retry/fallback state.
-            if (swappedNewArtifact && !restorePreviousPrepared()) {
-              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
-              if (!enteringFromPrs && previousPrepared === null) {
+            if (delivery === "partial") readyPairEntered = true;
+            if (preservedCodeView !== null) {
+              const current = get();
+              const currentNode = current.index.nodesById.get(preservedCodeView.node.id);
+              // Keep a source surface open when its node survived the refreshed bounded pair (or it
+              // is a file-row source target whose reviewed path still exists).
+              if (
+                currentNode !== undefined
+                || current.reviewFiles.some((file) => file.path === preservedCodeView.node.location.file)
+              ) {
                 set({
-                  prPreparedGraphId: null,
-                  prPreparedComparisonGraphId: null,
-                  prPreparedMergeBaseSha: null,
-                  prPreparedHeadSha: null,
-                  prReviewComparison: null,
+                  codeView: currentNode === undefined
+                    ? preservedCodeView
+                    : { ...preservedCodeView, node: currentNode },
                 });
               }
             }
-            const message = prepareErrorMessage(error);
+            if (get().minimalMemberIds.length === 0) {
+              performanceMark("meridian:first-actionable-canvas", { nodes: 0, edges: 0 });
+              scheduleProgressiveSymbolIndex();
+              scheduleProgressiveLookahead();
+            }
             set((current) => ({
-              prReviewStatus: "error",
+              prReviewStatus: "idle",
               prPrepareStage: null,
-              prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
-                type: "error",
-                message,
-              }),
-              prPrepareError: message,
+              prReviewProgress: delivery === "benchmark"
+                ? reducePrReviewProgress(current.prReviewProgress, { type: "success" })
+                : current.prReviewProgress,
+              prPrepareError: null,
             }));
+            await settleGraphHandoff("commit");
+            if (delivery === "partial" || !readyPairEntered) await loadViewedFiles(prNumber);
+            return true;
+          }
+        } catch (error) {
+          await settleGraphHandoff("release").catch(() => undefined);
+          if (prAnalyzeSeq === sequence && get().prPreparedGraphId === analysis.graphId) {
+            if (!restorePrepared(rollback)) {
+              restorePreparedReviewBaseline(get, set, { endSession: enteringFromPrs });
+            }
+          }
+          throw error;
+        }
+      };
+
+      let readyInstall: Promise<boolean> = Promise.resolve(false);
+      let readyLine: PrAnalysisReadyResult | null = null;
+      const completePartialPreparation = (analysis: PrAnalysisResult) => {
+        set((current) => ({
+          prReviewStatus: "idle",
+          prPrepareStage: null,
+          prReviewProgress: reducePrReviewProgress(
+            reducePrReviewProgress(current.prReviewProgress, {
+              type: "analysis-done",
+              cache: analysis.cache,
+            }),
+            { type: "success" },
+          ),
+          prPrepareError: null,
+        }));
+      };
+      const work = (async () => {
+        try {
+          const request = {
+            id: analyzeGraphId,
+            prNumber,
+            baseRef: summary.baseRef,
+            headRef: summary.headRef,
+            progressive: progressivePreparationRequested,
+          };
+          const analysis = await streamPrAnalysis(
+            analyzeUrl,
+            request,
+            (stage, progress) => {
+              if (active()) {
+                set((current) => ({
+                  // Once the canvas is actionable, later terminal bookkeeping must not put the
+                  // visible review back into a blocking preparation state.
+                  prPrepareStage: readyPairEntered ? null : stage,
+                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                    type: "stage",
+                    stage,
+                    progress,
+                  }),
+                }));
+              }
+            },
+            (lane) => {
+              if (active()) {
+                set((current) => ({
+                  prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                    type: "lane-complete",
+                    lane,
+                  }),
+                }));
+              }
+            },
+            (ready) => {
+              // A stream carries at most one pair for a preparation generation. Ignore duplicate
+              // replay lines instead of attempting two graph handoffs concurrently.
+              if (!progressivePreparationEnabled || readyLine !== null || !active()) return;
+              readyLine = ready;
+              readyInstall = installPreparedPair(ready, "partial").then((entered) => {
+                if (entered) settleActionable();
+                return entered;
+              }).catch((error) => {
+                // The terminal may replay the same bounded pair and retry its transactional load.
+                console.warn("Partial PR graph unavailable; waiting for the bounded terminal retry.", error);
+                return false;
+              });
+            },
+          );
+          // TypeScript cannot observe the assignment performed by the streamed callback above;
+          // snapshot it after the await so the terminal pair can be bound to that exact emission.
+          const completedReady = readyLine as PrAnalysisReadyResult | null;
+          const readyEntered = await readyInstall;
+          if (!active()) return;
+          if (!progressivePreparationRequested) {
+            await installPreparedPair(analysis, "benchmark");
+            settleActionable();
+            return;
+          }
+
+          const boundedTerminal = authoritativePartialAnalysisResult(analysis);
+          if (boundedTerminal === null) {
+            if (!readyEntered || !readyPairEntered) {
+              throw new Error("partial PR preparation ended with a legacy complete terminal");
+            }
+            // Rolling servers may still append their old complete terminal after the bounded pair is
+            // already authoritative. Ignore it: production neither projects nor fetches those ids.
+            performanceMark("meridian:legacy-pr-terminal-ignored", { graphId: analysis.graphId });
+            completePartialPreparation(analysis);
+            return;
+          }
+          if (completedReady !== null && !samePartialAnalysisPair(completedReady, boundedTerminal)) {
+            throw new Error("bounded PR graph terminal does not match the ready pair");
+          }
+          if (
+            readyEntered
+            && get().prPreparedGraphId === boundedTerminal.graphId
+            && get().prPreparedComparisonGraphId === boundedTerminal.comparisonGraphId
+          ) {
+            completePartialPreparation(boundedTerminal);
+            return;
+          }
+          await installPreparedPair(boundedTerminal, "partial");
+          completePartialPreparation(boundedTerminal);
+          settleActionable();
+        } catch (error) {
+          // `ready` starts an asynchronous graph transaction while the same reader keeps draining.
+          // A terminal stream failure can therefore race the provisional fetch/handoff. Let that
+          // transaction finish before touching its shared lease or deciding whether there is a
+          // usable review to keep; otherwise the error path can release the handoff underneath a
+          // pair that is about to become visible (and can return the entry action before it lands).
+          await readyInstall;
+          await settleGraphHandoff("release").catch(() => undefined);
+          if (active()) {
+            const message = prepareErrorMessage(error);
+            if (readyPairEntered && get().prPreparedArtifactCurrent) {
+              console.warn("Partial PR graph terminal failed; keeping the ready review.", error);
+              set((current) => ({
+                prReviewStatus: "idle",
+                prPrepareStage: null,
+                prPrepareError: null,
+                progressiveGraph: current.progressiveGraph === null
+                  ? null
+                  : { ...current.progressiveGraph, status: "error", error: message },
+              }));
+            } else {
+              set((current) => ({
+                prReviewStatus: "error",
+                prPrepareStage: null,
+                prReviewProgress: reducePrReviewProgress(current.prReviewProgress, {
+                  type: "error",
+                  message,
+                }),
+                prPrepareError: message,
+              }));
+            }
+          }
+        } finally {
+          settleActionable();
+          if (prAnalyzeCancellation === cancellation) {
+            prAnalyzeCancellation = null;
           }
         }
       })();
-      try {
-        // Cancel resolves the public/blocking action immediately. `work` deliberately keeps
-        // draining server output, but every landing point is fenced by `active()`.
-        await Promise.race([work, canceled]);
-      } finally {
-        if (prAnalyzeCancellation === cancellation) {
-          prAnalyzeCancellation = null;
-        }
-      }
+      // The entry action returns as soon as the depth-1 pair is installed. `work` drains only the
+      // bounded terminal bookkeeping; complete extraction is not part of a progressive session.
+      await Promise.race([work, canceled, actionable]);
     },
 
     cancelPrReviewPreparation() {
       const wasPreparing = get().prReviewStatus === "preparing";
       prAnalyzeSeq += 1;
+      prReviewResumeSeq += 1;
+      prPrepareProjectionAbort?.abort();
+      prPrepareProjectionAbort = null;
+      prResumeProjectionAbort?.abort();
+      prResumeProjectionAbort = null;
+      prReviewResumeRequest = null;
       const cancellation = prAnalyzeCancellation;
       prAnalyzeCancellation = null;
       cancellation?.resolve();
@@ -9886,6 +11770,8 @@ function applyPrReviewToMap(
     preserveReviewDiffOnly?: boolean;
     /** Set for a true entry/resume/head refresh that immediately hydrates GitHub viewer state. */
     viewedFilesLoading?: boolean;
+    /** A caller that awaits the replacement layout can suppress this fire-and-forget pass. */
+    scheduleLayout?: boolean;
   } = {},
 ): boolean {
   const {
@@ -10039,7 +11925,11 @@ function applyPrReviewToMap(
   // seed check. An all-test PR still opens an intentionally empty workspace with Tests off.
   const allMatchedFiles = matchAffectedFiles(index, rawContext.changedFiles.map((file) => file.path)).matched;
   const allRollup = rollupSeeds(allMatchedFiles, index);
-  if (allRollup.seeds.length === 0) {
+  const progressivePair = get().progressiveGraph;
+  const manifestOnlyProgressivePair = exactManifest !== null
+    && progressivePair !== null
+    && isProgressiveManifestOnlyPairReady(progressivePair.head, progressivePair.comparison);
+  if (allRollup.seeds.length === 0 && !manifestOnlyProgressivePair) {
     const allOutside = reviewPrFiles.length === 0 && prFilesOutside > 0;
     const changedFileCount = reviewFilesTotal > 0 ? reviewFilesTotal : reviewPrFiles.length + prFilesOutside;
     set({
@@ -10055,7 +11945,7 @@ function applyPrReviewToMap(
   // A first entry/manual re-extract owes every shared lens-transition side effect. An in-place
   // refresh is already on this review surface; its final atomic state replaces the old overlay.
   if (!get().prReviewRefreshing && !options.reprojecting) {
-    beginLensTransition(get, set);
+    if (!beginLensTransition(get, set)) return false;
   }
   // Test files are excluded before every graph/checklist derivation. Keep the complete PR's seeds
   // only as an invisible workspace sentinel when ALL matched changes are tests: minimalMemberIds
@@ -10393,10 +12283,52 @@ function applyPrReviewToMap(
   }
   // Only the visible review graph is laid out. The underlying Map is intentionally absent until
   // closeMinimalGraph restores the base artifact and schedules one current-state source layout.
-  if (visibleSeeds.length > 0) {
+  if (visibleSeeds.length > 0 && options.scheduleLayout !== false) {
     void get().minimalRelayout({ label: "Preparing review graph…" });
   }
   return true;
+}
+
+/**
+ * Add a cumulative canonical HEAD projection to the artifact currently painted by the review.
+ * The painted artifact may also contain exact merge-base tombstones, so replacing it with
+ * `projectionToArtifact(next)` would silently drop deletion review. Canonical HEAD payload wins on
+ * ID collision; base-only nodes/edges and review-local extension data remain present.
+ */
+export function mergeProjectionIntoDisplayedArtifact(
+  displayed: GraphArtifact,
+  previous: GraphProjectionV1,
+  next: GraphProjectionV1,
+): GraphArtifact {
+  if (previous.graphId !== next.graphId || previous.generation !== next.generation) {
+    throw new Error("cannot hydrate a displayed graph from a different immutable generation");
+  }
+  const nodes = new Map(displayed.nodes.map((node) => [node.id, node]));
+  for (const node of next.nodes) nodes.set(node.id, node);
+  const edges = new Map(displayed.edges.map((edge) => [edge.id, edge]));
+  for (const edge of next.edges) edges.set(edge.id, edge);
+
+  const displayedExtensions = (displayed.extensions ?? {}) as Record<string, JsonValue>;
+  const nextExtensions = (next.extensions ?? {}) as Record<string, JsonValue>;
+  const extensions: Record<string, JsonValue> = { ...displayedExtensions, ...nextExtensions };
+  const oldFlows = displayedExtensions.logicFlow;
+  const newFlows = nextExtensions.logicFlow;
+  if (
+    typeof oldFlows === "object" && oldFlows !== null && !Array.isArray(oldFlows)
+    && typeof newFlows === "object" && newFlows !== null && !Array.isArray(newFlows)
+  ) {
+    extensions.logicFlow = {
+      ...(oldFlows as Record<string, JsonValue>),
+      ...(newFlows as Record<string, JsonValue>),
+    };
+  }
+
+  return {
+    ...displayed,
+    nodes: [...nodes.values()],
+    edges: [...edges.values()],
+    ...(Object.keys(extensions).length === 0 ? {} : { extensions }),
+  };
 }
 
 /** Empty two-sided projection for synchronous reviews and older prepared-review servers. */
@@ -10651,16 +12583,20 @@ function relayoutActiveModuleSurface(get: () => BlueprintState, activity?: Layou
  * openComposition set viewMode directly) — one helper means the next lens-entry side effect cannot
  * be forgotten four times over. openServiceScope runs it too, then SETS its own fresh scope.
  */
-function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Partial<BlueprintState>) => void): void {
+function beginLensTransition(
+  get: BlueprintStore["getState"],
+  set: (partial: Partial<BlueprintState>) => void,
+  replayAfterDeferredRestore?: () => void,
+): boolean {
   // Most lens entries route through setViewMode, but direct pivots (openLogicFlow,
   // openComposition, openServiceScope) call this helper themselves. They must abandon the same
   // prepare-first waiting lane before changing view. Successful prepared entry sets the lane idle
   // before it calls this helper, so its own PRs → Map transition is deliberately not canceled.
-  if (get().viewMode === "prs" && get().prReviewStatus === "preparing") {
+  if (get().prReviewStatus === "preparing") {
     get().cancelPrReviewPreparation();
   }
   if (get().minimalSeedIds.length > 0) {
-    get().closeMinimalGraph();
+    if (!get().closeMinimalGraph(replayAfterDeferredRestore)) return false;
   }
   const state = get();
   // Ghost-path inspection belongs to the exact current projection. A real lens transition leaves
@@ -10691,6 +12627,7 @@ function beginLensTransition(get: BlueprintStore["getState"], set: (partial: Par
       moduleLayoutActivity: null,
     });
   }
+  return true;
 }
 
 type CanonicalRequestMapKey =
@@ -11244,7 +13181,7 @@ function expandedCodePaths(
   const expanded = new Set(current);
   for (const nodeId of nodeIds) {
     for (const ancestor of index.ancestorsOf(nodeId)) {
-      if (ancestor.kind === "module" || UNIT_CARD_KINDS.has(ancestor.kind)) {
+      if (isCanonicalFileNode(ancestor) || UNIT_CARD_KINDS.has(ancestor.kind)) {
         expanded.add(ancestor.id);
       }
     }
@@ -11352,7 +13289,7 @@ function ghostMemberId(index: GraphIndex, ghostId: string): string | null {
   }
   const ancestors = index.ancestorsOf(ghostId);
   for (let i = ancestors.length - 1; i >= 0; i -= 1) {
-    if (ancestors[i].kind === "module") {
+    if (isCanonicalFileNode(ancestors[i])) {
       return ancestors[i].id;
     }
   }
@@ -11382,12 +13319,12 @@ function ghostPinIds(index: GraphIndex, ghostId: string, members?: readonly stri
   if (member === null) {
     return [];
   }
-  if (index.nodesById.get(member)?.kind === "module") {
+  if (isCanonicalFileNode(index.nodesById.get(member))) {
     return [member];
   }
   return index
     .childrenOf(member)
-    .filter((child) => child.kind === "module")
+    .filter(isCanonicalFileNode)
     .map((child) => child.id)
     .sort()
     .slice(0, FOLDER_PIN_CAP);
@@ -11562,6 +13499,22 @@ function withToggledCategory(hidden: Set<ModuleCategory>, category: ModuleCatego
 
 function requestOrigin(): string {
   return typeof window === "undefined" ? "http://meridian.local" : window.location.origin;
+}
+
+function performanceMark(name: string, detail?: Record<string, string | number>): void {
+  if (typeof performance === "undefined" || typeof performance.mark !== "function") return;
+  try {
+    performance.mark(name, detail === undefined ? undefined : { detail });
+  } catch {
+    // Older WebViews accept only the mark name; instrumentation must never affect review behavior.
+    performance.mark(name);
+  }
+}
+
+function performanceTimestamp(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : -1;
 }
 
 async function fetchPrSummary(baseUrl: string, number: number): Promise<PrSummary> {

@@ -20,6 +20,10 @@ import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript
 import { parseGitHubSource, resolveExtractionSubdir, sanitizeSubdir } from "./clone";
 import { runGit } from "./git-exec";
 import {
+  boundedRepositoryAnalysisEarlyManifest,
+  type RepositoryAnalysisEarlyManifest,
+} from "./repository-analysis-worker-job";
+import {
   isRepositoryAnalysisFacts,
   runRepositoryAnalysisChild,
   verifyRepositoryArtifactFile,
@@ -81,6 +85,16 @@ type PrStage =
 interface PrExtractionProgress {
   execution: { current: number; total: number };
   onProgress?: (progress: RepositoryAnalysisProgress) => void;
+  onChangedManifest?: RepositoryAnalysisChildOptions["onChangedManifest"];
+}
+
+/** Exact revision coordinates plus one complete, bounded changed-file manifest. */
+export interface PrManifestReady {
+  version: 1;
+  headSha: string;
+  baseSha: string;
+  mergeBaseSha: string;
+  changedFiles: ChangedFileManifestEntry[];
 }
 
 const FORMAT_VERSION = 12;
@@ -161,6 +175,44 @@ export interface CachedPrGraph {
   warnings: string[];
 }
 
+/**
+ * One immutable, exact-revision bounded graph pair. It is the lasting progressive-review seed and
+ * grows only through explicit projection requests; it never enters the complete PR cache or reuses
+ * complete graph ids. Its source leases transfer atomically to GraphStore.
+ */
+export interface ProvisionalPrGraphPair {
+  headSha: string;
+  baseSha: string;
+  mergeBaseSha: string;
+  head: {
+    facts: RepositoryAnalysisFacts;
+    material: VerifiedFileArtifactMaterial;
+    sourceDir: string;
+    sourceLease: RepositoryWorkspaceLease;
+  };
+  comparison: {
+    facts: RepositoryAnalysisFacts;
+    material: VerifiedFileArtifactMaterial;
+    sourceDir: string;
+    sourceLease: RepositoryWorkspaceLease;
+  };
+}
+
+/**
+ * Successful control-flow boundary for progressive preparation. The bounded pair callback returns
+ * `"accepted"` only after both exact revisions are published and their depth-one projections are
+ * proven ready. Propagating this marker lets the outer cache owner release the staging workspace
+ * through its existing failure-safe cleanup without starting either canonical extractor.
+ */
+export class ProvisionalPrGraphAccepted extends Error {
+  constructor() {
+    super("bounded PR graph pair accepted");
+    this.name = "ProvisionalPrGraphAccepted";
+  }
+}
+
+export type ProvisionalPrGraphDisposition = "accepted" | "continue";
+
 export async function cachedPrGraph(inputs: {
   cacheRoot: string;
   repositories: RepositoryMirror;
@@ -172,6 +224,20 @@ export async function cachedPrGraph(inputs: {
   onStage(stage: PrStage): void | Promise<void>;
   onRevisionComplete(lane: PrReviewProgressRevisionId): void | Promise<void>;
   onExtractionProgress?(progress: RepositoryAnalysisProgress): void;
+  /**
+   * Early exact-manifest milestone before bounded graph extraction. Existing exceptional pair
+   * ordering may finish comparison work first; absence means the exact manifest exceeded its bound.
+   */
+  onManifestReady?(manifest: PrManifestReady): void;
+  /**
+   * Authoritative two-sided checkpoint; invocation transfers both supplied source leases. Returning
+   * `accepted` makes this bounded pair the terminal progressive result. Returning `continue`, or a
+   * failure before acceptance, fails progressive preparation safely; the complete compatibility
+   * path exists only when this callback is absent (`progressive:false`).
+   */
+  onProvisionalPair?(
+    pair: ProvisionalPrGraphPair,
+  ): ProvisionalPrGraphDisposition | Promise<ProvisionalPrGraphDisposition>;
   signal?: AbortSignal;
   runPreparation: PhaseAdmission;
   runCoordination: CoordinationAdmission;
@@ -196,7 +262,10 @@ export async function cachedPrGraph(inputs: {
     "pr-artifacts",
     prCacheSlotKey(repositoryKey, revisions, analysisKey),
   );
-  const cached = inputs.refresh ? null : await readCached(
+  // Progressive review owns a different completeness contract. A previously persisted complete
+  // artifact is useful only to an explicit legacy client; it must not silently turn a bounded
+  // session back into full-graph publication.
+  const cached = inputs.refresh || inputs.onProvisionalPair !== undefined ? null : await readCached(
     entry,
     inputs.cacheRoot,
     repositoryKey,
@@ -210,6 +279,11 @@ export async function cachedPrGraph(inputs: {
     inputs.signal,
   );
   if (cached) {
+    reportManifestReady(inputs.onManifestReady, {
+      headSha: cached.headSha,
+      baseSha: cached.baseSha,
+      mergeBaseSha: cached.mergeBaseSha,
+    }, boundedRepositoryAnalysisEarlyManifest(cached.artifactFacts.changedFiles));
     return { ...cached, cache: "hit" };
   }
   return createCachedGraph(entry, repositoryKey, resolved, analysisKey, remoteUrl, inputs);
@@ -260,6 +334,15 @@ async function createCachedGraph(
     });
     const { comparisonRepoDir, mergeBaseSha, repoDir, stage: preparedStage, workspace } = prepared;
     const revisionCoords = revisionCoordinates(revisions);
+    let manifestReadyReported = false;
+    const reportHeadManifest = (manifest: RepositoryAnalysisEarlyManifest | null): void => {
+      if (manifestReadyReported || manifest === null) return;
+      manifestReadyReported = true;
+      reportManifestReady(inputs.onManifestReady, {
+        ...revisionCoords,
+        mergeBaseSha,
+      }, manifest);
+    };
     const roots = extractionRoots(repoDir, comparisonRepoDir, inputs.source.subdir);
     const comparisonRoot = roots.headMaterialized
       ? { root: roots.comparison, materialized: false }
@@ -285,6 +368,7 @@ async function createCachedGraph(
           subdir: inputs.source.subdir,
         });
     const cachedHead = inputs.refresh
+      || inputs.onProvisionalPair !== undefined
       || inputs.experimentalPrRevisionCache !== true
       || headIdentity === null
       ? null
@@ -294,6 +378,7 @@ async function createCachedGraph(
           signal: inputs.signal,
         });
     const cachedComparison = inputs.refresh
+      || inputs.onProvisionalPair !== undefined
       || inputs.experimentalPrRevisionCache !== true
       || comparisonIdentity === null
       ? null
@@ -304,11 +389,66 @@ async function createCachedGraph(
         });
     let headResult = cachedHead === null ? null : sharedRevisionArtifact(cachedHead);
     let comparisonResult = cachedComparison === null ? null : sharedRevisionArtifact(cachedComparison);
-    if (headResult !== null) await inputs.onStage("reuse-head");
+    if (headResult !== null) {
+      reportHeadManifest(boundedRepositoryAnalysisEarlyManifest(headResult.facts.changedFiles));
+      await inputs.onStage("reuse-head");
+    }
     if (comparisonResult !== null) await inputs.onStage("reuse-merge-base");
     throwIfAborted(inputs.signal);
     if (headResult === null || comparisonResult === null) {
       await inputs.onStage("extract");
+      if (inputs.onProvisionalPair !== undefined) {
+        let provisional: ProvisionalPrGraphPair | null = null;
+        let transferred = false;
+        try {
+          provisional = await inputs.runAnalysis(
+            (analysisSignal) => extractAndPublishProvisionalPair({
+              preparedStage,
+              repositoryKey,
+              remoteUrl,
+              roots,
+              comparisonRoot,
+              revisionCoords,
+              mergeBaseSha,
+              workspace,
+              inputs,
+              repositoryAnalysis: inputs.repositoryAnalysis ?? runRepositoryAnalysisChild,
+              reportHeadManifest,
+              signal: analysisSignal,
+            }),
+            { slots: 1 },
+          );
+          // Projection workers use the same bounded analysis pool. Commit the verified pair only
+          // after the extraction admission above has released its slot, or a capacity-one server
+          // would deadlock at the very milestone intended to improve time-to-action.
+          // The callback is the ownership boundary: GraphStore either retains or releases every
+          // supplied lease, including an atomic publication failure.
+          transferred = true;
+          const disposition = await inputs.onProvisionalPair(provisional);
+          if (disposition === "accepted") throw new ProvisionalPrGraphAccepted();
+          throw new WebError(503, "the bounded PR graph is not ready; try again");
+        } catch (error) {
+          if (isOperationCancelled(error)) throw error;
+          if (error instanceof ProvisionalPrGraphAccepted) throw error;
+          console.error(
+            "[meridian] bounded PR graph preparation failed:",
+            error instanceof Error ? `${error.name}: ${error.message}` : "unknown error",
+          );
+          // A progressive session has one completeness contract: exact bounded graphs which can
+          // grow incrementally. Unsupported selection, worker failure, or failed readiness must be
+          // retryable; none may silently start the complete extractors.
+          throw new WebError(503, "the bounded PR graph could not be prepared; try again");
+        } finally {
+          if (provisional !== null) {
+            if (!transferred) {
+              provisional.head.sourceLease.release();
+              provisional.comparison.sourceLease.release();
+            }
+            removeEntry(provisional.head.material.path);
+            removeEntry(provisional.comparison.material.path);
+          }
+        }
+      }
       const pairCacheDir = headResult === null
         && comparisonResult === null
         && !roots.headMaterialized
@@ -329,6 +469,7 @@ async function createCachedGraph(
           });
           if (lateCachedHead !== null) {
             headResult = sharedRevisionArtifact(lateCachedHead);
+            reportHeadManifest(boundedRepositoryAnalysisEarlyManifest(headResult.facts.changedFiles));
             await inputs.onStage("reuse-head");
           }
         }
@@ -394,8 +535,10 @@ async function createCachedGraph(
             {
               execution: { current: 2, total: 2 },
               onProgress: inputs.onExtractionProgress,
+              onChangedManifest: reportHeadManifest,
             },
           ));
+          reportHeadManifest(boundedRepositoryAnalysisEarlyManifest(headResult.facts.changedFiles));
           await inputs.onRevisionComplete("head");
         } else {
           // The admitted pair cache is intentionally seeded by the canonical merge base before
@@ -420,6 +563,7 @@ async function createCachedGraph(
             onRevisionComplete: inputs.onRevisionComplete,
             execution: { current: extractMergeBaseFirst ? 2 : 1, total: 2 },
             onExtractionProgress: inputs.onExtractionProgress,
+            onChangedManifest: reportHeadManifest,
           });
           const extractComparison = (signal: AbortSignal) => extractCanonicalComparisonArtifact({
             cacheRoot: inputs.cacheRoot,
@@ -444,6 +588,7 @@ async function createCachedGraph(
             throwIfAborted(analysisSignal);
           }
           headResult ??= await extractHead(analysisSignal);
+          reportHeadManifest(boundedRepositoryAnalysisEarlyManifest(headResult.facts.changedFiles));
           throwIfAborted(analysisSignal);
           // A materialized empty comparison (a whole-subtree addition) inherits language
           // hints from the populated HEAD and is therefore intentionally sequential.
@@ -685,6 +830,148 @@ async function createCachedGraph(
     // or replace the request's primary failure with a memoized discard rejection.
     await Promise.allSettled(cleanup);
     throw error;
+  }
+}
+
+// Navigation is gated on exactly the user-actionable slice: every affected file plus one hop. The
+// outer ring is the initial ghost frontier. Deeper semantic rings are independent partial slices
+// produced only by post-navigation lookahead or an explicit expansion/search action.
+const INITIAL_GRAPH_EXTRACTION_DEPTH = 1;
+// Bounded extraction must not inherit the canonical worker heap reservation. Two GiB handles
+// large monorepo depth-one slices while remaining one quarter of the ordinary 8 GiB reservation;
+// exhaustion still fails the progressive request safely and retryably.
+const INITIAL_GRAPH_WORKER_HEAP_MB = 2_048;
+
+/**
+ * Build the bounded HEAD side first so its exact manifest can seed the merge-base side, then
+ * commit both through one callback. The two disposable workers are deliberately sequential: the
+ * cold fast path is latency-sensitive, but it must not double the repository-sized RSS peak.
+ */
+async function extractAndPublishProvisionalPair(inputs: {
+  preparedStage: string;
+  repositoryKey: string;
+  remoteUrl: string;
+  roots: ExtractionRoots;
+  comparisonRoot: { root: string; materialized: boolean };
+  revisionCoords: { headSha: string; baseSha: string };
+  mergeBaseSha: string;
+  workspace: Awaited<ReturnType<RepositoryMirror["preparePullRequest"]>>;
+  inputs: Parameters<typeof cachedPrGraph>[0];
+  repositoryAnalysis: typeof runRepositoryAnalysisChild;
+  reportHeadManifest(manifest: RepositoryAnalysisEarlyManifest | null): void;
+  signal: AbortSignal;
+}): Promise<ProvisionalPrGraphPair> {
+  const headPath = join(inputs.preparedStage, "initial-artifact.json");
+  const comparisonPath = join(inputs.preparedStage, "initial-comparison-artifact.json");
+  let provisionalWorkspace: Awaited<ReturnType<RepositoryMirror["acquirePreparedPullRequest"]>> | null = null;
+  let leasesTransferred = false;
+  try {
+    throwIfAborted(inputs.signal);
+    await inputs.inputs.onStage("extract-head");
+    const head = await inputs.repositoryAnalysis(
+      {
+        absoluteRoot: inputs.roots.head,
+        cwd: inputs.roots.head,
+        targetName: `${inputs.inputs.source.owner}/${inputs.inputs.source.repo}`,
+        changedSince: inputs.mergeBaseSha,
+        changedSinceTimeoutMs: GIT_TIMEOUT_MS,
+        vcs: {
+          repository: inputs.remoteUrl,
+          commit: inputs.revisionCoords.headSha,
+          branch: inputs.inputs.body.headRef,
+        },
+        allowEmpty: inputs.roots.headMaterialized,
+        initialGraph: { depth: INITIAL_GRAPH_EXTRACTION_DEPTH },
+      },
+      {
+        artifactOutputPath: headPath,
+        workerHeapMb: INITIAL_GRAPH_WORKER_HEAP_MB,
+        token: inputs.inputs.token,
+        signal: inputs.signal,
+        reviewFingerprints: { mode: "changed" },
+        ...revisionProgressOptions("head", inputs.revisionCoords.headSha, {
+          execution: { current: 1, total: 2 },
+          onProgress: inputs.inputs.onExtractionProgress,
+          onChangedManifest: inputs.reportHeadManifest,
+        }),
+      },
+    );
+    await inputs.inputs.onRevisionComplete("head");
+    inputs.reportHeadManifest(boundedRepositoryAnalysisEarlyManifest(head.changedFiles));
+    throwIfAborted(inputs.signal);
+    const comparisonFiles = comparisonFingerprintFiles(head.changedFiles);
+    await inputs.inputs.onStage("extract-merge-base");
+    const comparison = await inputs.repositoryAnalysis(
+      {
+        absoluteRoot: inputs.comparisonRoot.root,
+        cwd: inputs.comparisonRoot.root,
+        targetName: `${inputs.inputs.source.owner}/${inputs.inputs.source.repo}`,
+        vcs: { repository: inputs.remoteUrl, commit: inputs.mergeBaseSha },
+        hintedFiles: head.emptySideHints,
+        allowEmpty: inputs.comparisonRoot.materialized,
+        initialGraph: { depth: INITIAL_GRAPH_EXTRACTION_DEPTH, seedFiles: comparisonFiles },
+      },
+      {
+        artifactOutputPath: comparisonPath,
+        workerHeapMb: INITIAL_GRAPH_WORKER_HEAP_MB,
+        token: inputs.inputs.token,
+        signal: inputs.signal,
+        reviewFingerprints: { mode: "files", files: comparisonFiles },
+        ...revisionProgressOptions("merge-base", inputs.mergeBaseSha, {
+          execution: { current: 2, total: 2 },
+          onProgress: inputs.inputs.onExtractionProgress,
+        }),
+      },
+    );
+    await inputs.inputs.onRevisionComplete("mergeBase");
+    const headFacts = analysisFacts(head);
+    const comparisonFacts = analysisFacts(comparison);
+    requireExactArtifactCoordinates(
+      headFacts,
+      comparisonFacts,
+      inputs.revisionCoords,
+      inputs.mergeBaseSha,
+      inputs.inputs.body.headRef,
+      inputs.remoteUrl,
+      `${inputs.inputs.source.owner}/${inputs.inputs.source.repo}`,
+    );
+    throwIfAborted(inputs.signal);
+    provisionalWorkspace = await inputs.inputs.repositories.acquirePreparedPullRequest({
+      repositoryKey: inputs.repositoryKey,
+      remoteUrl: inputs.remoteUrl,
+      workspaceId: inputs.workspace.workspaceId,
+      baseSha: inputs.revisionCoords.baseSha,
+      headSha: inputs.revisionCoords.headSha,
+      mergeBaseSha: inputs.mergeBaseSha,
+      signal: inputs.signal,
+    });
+    if (provisionalWorkspace === null) {
+      throw new WebError(422, "provisional PR graph lost its exact source workspace");
+    }
+    const pair: ProvisionalPrGraphPair = {
+      ...inputs.revisionCoords,
+      mergeBaseSha: inputs.mergeBaseSha,
+      head: {
+        facts: headFacts,
+        material: head.material,
+        sourceDir: resolveExtractionSubdir(provisionalWorkspace.head.repoDir, inputs.inputs.source.subdir),
+        sourceLease: provisionalWorkspace.head,
+      },
+      comparison: {
+        facts: comparisonFacts,
+        material: comparison.material,
+        sourceDir: resolveExtractionSubdir(provisionalWorkspace.comparison.repoDir, inputs.inputs.source.subdir),
+        sourceLease: provisionalWorkspace.comparison,
+      },
+    };
+    leasesTransferred = true;
+    return pair;
+  } finally {
+    if (!leasesTransferred) provisionalWorkspace?.release();
+    if (!leasesTransferred) {
+      removeEntry(headPath);
+      removeEntry(comparisonPath);
+    }
   }
 }
 
@@ -956,6 +1243,7 @@ function analysisFacts(result: RepositoryAnalysisChildResult): RepositoryAnalysi
     summary: result.summary,
     target: result.target,
     changedFiles: result.changedFiles,
+    initialGraphSeedFiles: result.initialGraphSeedFiles,
     emptySideHints: result.emptySideHints,
     sourceFiles: result.sourceFiles,
     changedSinceBaseRef: result.changedSinceBaseRef,
@@ -1073,6 +1361,25 @@ function writeCurrentPointer(entry: string, pointer: PrSnapshotPointer): void {
     removeEntry(temporary);
     throw error;
   }
+}
+
+/** Lightweight exact-ref revalidation for a process-local bounded-pair handoff. */
+export async function resolvePrRevisionCoordinates(inputs: {
+  source: GitHubSource;
+  body: PrAnalyzeRequest;
+  cwd: string;
+  token?: string;
+  signal?: AbortSignal;
+}): Promise<{ headSha: string; baseSha: string }> {
+  const remoteUrl = parseGitHubSource(`${inputs.source.owner}/${inputs.source.repo}`);
+  const resolved = await remoteRevisions(
+    remoteUrl,
+    inputs.body,
+    inputs.cwd,
+    inputs.token,
+    inputs.signal,
+  );
+  return revisionCoordinates(resolved);
 }
 
 async function remoteRevisions(
@@ -1204,6 +1511,7 @@ async function extractPopulatedHeadArtifact(inputs: {
   onRevisionComplete(lane: PrReviewProgressRevisionId): void | Promise<void>;
   execution: { current: number; total: number };
   onExtractionProgress?: (progress: RepositoryAnalysisProgress) => void;
+  onChangedManifest?: RepositoryAnalysisChildOptions["onChangedManifest"];
 }): Promise<CompletedRevisionArtifact> {
   await inputs.onStage("extract-head");
   let completed: CompletedRevisionArtifact;
@@ -1223,6 +1531,7 @@ async function extractPopulatedHeadArtifact(inputs: {
       {
         execution: inputs.execution,
         onProgress: inputs.onExtractionProgress,
+        onChangedManifest: inputs.onChangedManifest,
       },
     ));
   } else {
@@ -1243,6 +1552,7 @@ async function extractPopulatedHeadArtifact(inputs: {
         {
           execution: inputs.execution,
           onProgress: inputs.onExtractionProgress,
+          onChangedManifest: inputs.onChangedManifest,
         },
       );
       const published = await publishPrRevisionArtifact({
@@ -1338,10 +1648,10 @@ function revisionProgressOptions(
   kind: RepositoryAnalysisProgress["revision"]["kind"],
   commit: string,
   progress: PrExtractionProgress | undefined,
-): Pick<RepositoryAnalysisChildOptions, "progress"> | Record<string, never> {
-  if (progress?.onProgress === undefined) return {};
+): Pick<RepositoryAnalysisChildOptions, "progress" | "onChangedManifest"> | Record<string, never> {
+  if (progress?.onProgress === undefined && progress?.onChangedManifest === undefined) return {};
   return {
-    progress: {
+    ...(progress.onProgress === undefined ? {} : { progress: {
       context: {
         version: 1,
         revision: {
@@ -1351,8 +1661,24 @@ function revisionProgressOptions(
         },
       },
       onProgress: progress.onProgress,
-    },
+    } }),
+    ...(progress.onChangedManifest === undefined
+      ? {}
+      : { onChangedManifest: progress.onChangedManifest }),
   };
+}
+
+function reportManifestReady(
+  report: ((manifest: PrManifestReady) => void) | undefined,
+  revisions: Pick<PrManifestReady, "headSha" | "baseSha" | "mergeBaseSha">,
+  manifest: RepositoryAnalysisEarlyManifest | null,
+): void {
+  if (report === undefined || manifest === null) return;
+  try {
+    report({ ...revisions, version: 1, changedFiles: manifest.changedFiles.map((file) => ({ ...file })) });
+  } catch {
+    // This milestone is observational. UI or telemetry consumers cannot fail graph preparation.
+  }
 }
 
 function sharedRevisionArtifact(

@@ -161,7 +161,7 @@ export function MinimalGraphView({
           return true;
         }
       : undefined,
-    onBeforeDoubleClick: reviewActive ? undefined : closeMinimalGraph,
+    onBeforeDoubleClick: reviewActive ? undefined : () => { closeMinimalGraph(); },
   });
 
   // Recenter may fall back to an ordinary URL-restored graph's immutable origin, but paint never
@@ -300,7 +300,7 @@ export function MinimalGraphView({
             <button type="button" style={LAYOUT_ERROR_BUTTON} onClick={() => void minimalRelayout({ label: "Retrying review graph…" })}>
               Retry
             </button>
-            <button type="button" style={LAYOUT_ERROR_BUTTON} onClick={closeMinimalGraph}>
+            <button type="button" style={LAYOUT_ERROR_BUTTON} onClick={() => { closeMinimalGraph(); }}>
               Return to map
             </button>
           </div>

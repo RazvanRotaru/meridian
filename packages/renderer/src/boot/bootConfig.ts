@@ -15,6 +15,10 @@ import type { GraphViewLeaseGrant } from "./graphViewLease";
 
 export interface BootConfig {
   graphUrl: string;
+  /** Optional progressive graph projection capability. Missing/invalid keeps full-artifact loading. */
+  graphProjectUrl?: string | null;
+  /** Compact background symbol-index capability paired with graphProjectUrl. */
+  graphSymbolsUrl?: string | null;
   /** Renewable process-local protection for the boot graph and any prepared PR pair. */
   graphViewLease: GraphViewLeaseGrant | null;
   metaUrl: string;
@@ -66,8 +70,11 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "graphViewLease" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "graphViewLease" | "graphProjectUrl" | "graphSymbolsUrl" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
   graphViewLease: unknown;
+  /** Optional for compatibility with servers predating progressive graph projection. */
+  graphProjectUrl?: unknown;
+  graphSymbolsUrl?: unknown;
   /** Optional so a renderer cached before the trace endpoint shipped still boots safely. */
   traceUrl?: unknown;
   /** Optional for HTML produced before in-app source selection shipped. */
@@ -90,6 +97,8 @@ declare global {
 
 const DEV_FALLBACK: BootConfig = {
   graphUrl: "/sample-graph.json",
+  graphProjectUrl: null,
+  graphSymbolsUrl: null,
   graphViewLease: null,
   metaUrl: "/api/meta",
   overlayUrl: "/api/overlay",
@@ -183,9 +192,24 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     ? injected.overlayKind
     : null;
   const preselectedTelemetrySourceId = explicitTelemetrySourceId ?? legacyTelemetrySourceId;
+  const candidateGraphProjectUrl = normalizeSameOriginCapabilityUrl(
+    injected.graphProjectUrl,
+    "/api/graph/project",
+  );
+  const candidateGraphSymbolsUrl = candidateGraphProjectUrl === null
+    ? null
+    : normalizeSameOriginCapabilityUrl(injected.graphSymbolsUrl, "/api/graph/symbols");
+  // Projection and repository-wide symbol hydration are one progressive-review capability. Never
+  // advertise a half-upgraded server contract that would make disconnected Cmd+P rows inert.
+  const graphProjectUrl = candidateGraphProjectUrl !== null && candidateGraphSymbolsUrl !== null
+    ? candidateGraphProjectUrl
+    : null;
+  const graphSymbolsUrl = graphProjectUrl === null ? null : candidateGraphSymbolsUrl;
   return {
     ...injected,
     graphViewLease,
+    graphProjectUrl,
+    graphSymbolsUrl,
     traceUrl,
     traceAvailable,
     telemetrySources,
@@ -196,6 +220,25 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     githubSource,
     defaultEnv: null,
   };
+}
+
+/** Capability URLs are server authority, not arbitrary navigation. Accept only exact same-origin
+ * paths and discard query/hash state so background work cannot become a credentialed foreign call. */
+function normalizeSameOriginCapabilityUrl(value: unknown, pathname: string): string | null {
+  if (typeof value !== "string" || value.length === 0 || value.length > 256) {
+    return null;
+  }
+  try {
+    const url = new URL(value, "http://meridian.local");
+    return url.origin === "http://meridian.local"
+      && url.pathname === pathname
+      && url.search === ""
+      && url.hash === ""
+      ? pathname
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 function normalizeGraphViewLease(value: unknown): GraphViewLeaseGrant | null {

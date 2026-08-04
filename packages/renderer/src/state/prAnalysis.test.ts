@@ -2,6 +2,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { streamPrAnalysis, type PrAnalyzeRequest, type PrAnalyzeStage } from "./prAnalysis";
 
 const REQUEST: PrAnalyzeRequest = { id: "artifact-1", prNumber: 7, baseRef: "main", headRef: "feature" };
+const READY_PAIR_ID = "0123456789abcdefabcd";
+const READY_HEAD_SHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const READY_MERGE_BASE_SHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /** A streamed NDJSON Response whose body arrives in exactly the given chunks. */
 function ndjsonResponse(chunks: readonly string[]): Response {
@@ -70,6 +73,114 @@ describe("streamPrAnalysis", () => {
     );
     expect(stages).toEqual(["extract", "reuse-head", "extract-merge-base", "reuse-merge-base"]);
     expect(completedLanes).toEqual(["mergeBase"]);
+  });
+
+  it("reports an early immutable review pair and keeps draining to the canonical terminal pair", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        `${JSON.stringify({ stage: "ready", pairId: READY_PAIR_ID, completeness: "provisional", graphId: "pr-bounded", comparisonGraphId: "base-bounded", headSha: READY_HEAD_SHA, mergeBaseSha: READY_MERGE_BASE_SHA })}\n`,
+        '{"stage":"extract-head"}\n',
+        `${JSON.stringify({ stage: "done", graphId: "pr-canonical", comparisonGraphId: "base-canonical", headSha: READY_HEAD_SHA, mergeBaseSha: READY_MERGE_BASE_SHA })}\n`,
+      ])),
+    );
+    const ready: unknown[] = [];
+
+    const result = await streamPrAnalysis(
+      "/api/pr/analyze",
+      REQUEST,
+      () => undefined,
+      () => undefined,
+      (pair) => ready.push(pair),
+    );
+
+    expect(ready).toEqual([{
+      graphId: "pr-bounded",
+      pairId: READY_PAIR_ID,
+      completeness: "provisional",
+      comparisonGraphId: "base-bounded",
+      headSha: READY_HEAD_SHA,
+      mergeBaseSha: READY_MERGE_BASE_SHA,
+      cache: null,
+    }]);
+    expect(result).toEqual({
+      graphId: "pr-canonical",
+      comparisonGraphId: "base-canonical",
+      headSha: READY_HEAD_SHA,
+      mergeBaseSha: READY_MERGE_BASE_SHA,
+      cache: null,
+    });
+  });
+
+  it("accepts the same bounded pair as the authoritative progressive terminal", async () => {
+    const bounded = {
+      pairId: READY_PAIR_ID,
+      completeness: "provisional",
+      graphId: "pr-bounded",
+      comparisonGraphId: "base-bounded",
+      headSha: READY_HEAD_SHA,
+      mergeBaseSha: READY_MERGE_BASE_SHA,
+      cache: "hit",
+    } as const;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        `${JSON.stringify({ stage: "ready", ...bounded })}\n`,
+        `${JSON.stringify({ stage: "done", ...bounded })}\n`,
+      ])),
+    );
+    const ready: unknown[] = [];
+
+    const result = await streamPrAnalysis(
+      "/api/pr/analyze",
+      REQUEST,
+      () => undefined,
+      () => undefined,
+      (pair) => ready.push(pair),
+    );
+
+    expect(ready).toHaveLength(1);
+    expect(result).toEqual(bounded);
+  });
+
+  it.each([
+    ["empty graph id", { graphId: "" }],
+    ["non-canonical pair id", { pairId: "pair-1" }],
+    ["uppercase pair id", { pairId: "0123456789ABCDEFABCD" }],
+    ["missing comparison graph", { comparisonGraphId: undefined }],
+    ["comparison graph equal to head graph", { comparisonGraphId: "pr-bounded" }],
+    ["missing head revision", { headSha: undefined }],
+    ["abbreviated head revision", { headSha: "abc123" }],
+    ["missing merge-base revision", { mergeBaseSha: undefined }],
+    ["abbreviated merge-base revision", { mergeBaseSha: "def456" }],
+  ])("ignores a malformed early-ready line with %s", async (_case, override) => {
+    const ready = {
+      stage: "ready",
+      pairId: READY_PAIR_ID,
+      completeness: "provisional",
+      graphId: "pr-bounded",
+      comparisonGraphId: "base-bounded",
+      headSha: READY_HEAD_SHA,
+      mergeBaseSha: READY_MERGE_BASE_SHA,
+      ...override,
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(ndjsonResponse([
+        `${JSON.stringify(ready)}\n`,
+        '{"stage":"done","graphId":"pr-canonical"}\n',
+      ])),
+    );
+    const onReady = vi.fn();
+
+    await expect(streamPrAnalysis(
+      "/api/pr/analyze",
+      REQUEST,
+      () => undefined,
+      () => undefined,
+      onReady,
+    )).resolves.toMatchObject({ graphId: "pr-canonical" });
+    expect(onReady).not.toHaveBeenCalled();
   });
 
   it("preserves optional extraction observations and ignores unknown future stages", async () => {
@@ -156,6 +267,21 @@ describe("streamPrAnalysis", () => {
       mergeBaseSha: "def5678abc12345",
       cache: null,
     });
+  });
+
+  it("rejects a canonical pair that aliases HEAD and comparison to one graph id", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(ndjsonResponse([
+      `${JSON.stringify({
+        stage: "done",
+        graphId: "pr-aliased",
+        comparisonGraphId: "pr-aliased",
+        headSha: READY_HEAD_SHA,
+        mergeBaseSha: READY_MERGE_BASE_SHA,
+      })}\n`,
+    ])));
+
+    await expect(streamPrAnalysis("/api/pr/analyze", REQUEST, () => undefined))
+      .rejects.toThrow("PR analysis ended without a graph");
   });
 
   it("reassembles lines split across arbitrary chunk boundaries (final line unterminated)", async () => {

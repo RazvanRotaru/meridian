@@ -1,14 +1,31 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import type { GraphArtifact, GraphNode } from "@meridian/core";
+import { describe, expect, it, vi } from "vitest";
+import type { CompactGraphSymbolEntry, GraphArtifact, GraphNode } from "@meridian/core";
 import {
+  awaitLatestPaletteReadiness,
   collectSymbols,
   countSearchScopes,
+  createPaletteActionGate,
+  derivePaletteSymbols,
+  mergeSearchSymbols,
+  paletteKeyboardActivation,
+  paletteVisibleResults,
+  ResultRow,
+  runPaletteAction,
   SearchScopeControl,
   selectResults,
+  symbolRowReadiness,
+  shouldClosePaletteFromWindow,
   type SearchScope,
+  type SymbolEntry,
 } from "./CommandPalette";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 function node(id: string, kind: GraphNode["kind"], displayName: string): GraphNode {
   return {
@@ -98,6 +115,123 @@ describe("collectSymbols", () => {
 
     expect(countSearchScopes(symbols)).toEqual({ public: 5, all: 7, private: 2 });
   });
+
+  it("adds repository-indexed symbols while loaded artifact rows remain authoritative", () => {
+    const loaded = collectSymbols(ARTIFACT, new Map(NODES.map((candidate) => [candidate.id, candidate])), true);
+    const merged = mergeSearchSymbols(loaded, [{
+      id: "ts:other.ts#searchTarget",
+      fileId: "ts:other.ts",
+      displayName: "searchTarget",
+      qualifiedName: "Other.searchTarget",
+      kind: "function",
+      file: "other.ts",
+      isPrivateMethod: false,
+      stepCount: 3,
+    }, {
+      id: NODES.at(-1)!.id,
+      fileId: "ts:wrong.ts",
+      displayName: "wrong",
+      qualifiedName: "wrong",
+      kind: "method",
+      file: "wrong.ts",
+      isPrivateMethod: false,
+      stepCount: 99,
+    }], new Map(NODES.map((candidate) => [candidate.id, candidate])), true);
+
+    expect(merged.find((entry) => entry.id === "ts:other.ts#searchTarget")).toMatchObject({
+      fileId: "ts:other.ts",
+      isLoaded: false,
+    });
+    expect(merged.find((entry) => entry.id === NODES.at(-1)!.id)).toMatchObject({
+      displayName: "run",
+      isLoaded: true,
+    });
+  });
+
+  it("uses a Python package initializer as the hydratable file root for its loaded symbols", () => {
+    const packageNode: GraphNode = {
+      id: "py:pkg",
+      kind: "package",
+      qualifiedName: "pkg",
+      displayName: "pkg",
+      location: { file: "pkg/__init__.py", startLine: 1 },
+    };
+    const functionNode: GraphNode = {
+      id: "py:pkg#load",
+      parentId: packageNode.id,
+      kind: "function",
+      qualifiedName: "load",
+      displayName: "load",
+      location: { file: "pkg/__init__.py", startLine: 2 },
+    };
+    const artifact = { ...ARTIFACT, nodes: [packageNode, functionNode] } as GraphArtifact;
+    const nodesById = new Map([packageNode, functionNode].map((candidate) => [candidate.id, candidate]));
+
+    expect(collectSymbols(artifact, nodesById, true)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: functionNode.id, fileId: packageNode.id }),
+    ]));
+  });
+
+  it("does not scan or clone a completed repository index while the palette is closed", () => {
+    const unreadableNodes = {
+      values() {
+        throw new Error("closed palette scanned loaded graph nodes");
+      },
+    } as unknown as ReadonlyMap<string, GraphNode>;
+    const unreadableIndex = new Proxy([] as unknown as CompactGraphSymbolEntry[], {
+      get() {
+        throw new Error("closed palette cloned the repository symbol index");
+      },
+    });
+    const unreadableArtifact = new Proxy(ARTIFACT, {
+      get() {
+        throw new Error("closed palette inspected the loaded artifact");
+      },
+    });
+
+    expect(derivePaletteSymbols(
+      false,
+      unreadableArtifact,
+      unreadableIndex,
+      unreadableNodes,
+      true,
+    )).toEqual([]);
+  });
+
+  it("does not inspect a Worker-backed repository index when the palette opens or queries", () => {
+    const unreadableIndex = new Proxy([] as unknown as CompactGraphSymbolEntry[], {
+      get() {
+        throw new Error("UI thread inspected the repository symbol index");
+      },
+    });
+
+    const loadedOnly = derivePaletteSymbols(
+      true,
+      ARTIFACT,
+      unreadableIndex,
+      new Map(NODES.map((candidate) => [candidate.id, candidate])),
+      true,
+      null,
+      true,
+    );
+
+    expect(selectResults(loadedOnly, "run", true)).toMatchObject([
+      { id: "py:example#Example.run" },
+      { id: "py:example#Example.run__internal" },
+    ]);
+  });
+
+  it("keeps local-only rows non-actionable until the authoritative worker result resolves", () => {
+    const local = collectSymbols(
+      ARTIFACT,
+      new Map(NODES.map((candidate) => [candidate.id, candidate])),
+      true,
+    );
+
+    expect(paletteVisibleResults(true, null, local)).toEqual([]);
+    expect(paletteVisibleResults(true, [local[0]!], local)).toEqual([local[0]]);
+    expect(paletteVisibleResults(false, null, local)).toEqual(local);
+  });
 });
 
 describe("SearchScopeControl", () => {
@@ -157,5 +291,201 @@ describe("SearchScopeControl", () => {
     }));
 
     expect(markup).toBe("");
+  });
+});
+
+describe("async palette action ownership", () => {
+  it("lets a fast B pick act and fences a slower stale A completion", async () => {
+    const gate = createPaletteActionGate();
+    const slowA = deferred<boolean>();
+    const acted: string[] = [];
+    const run = async (id: string, ready: Promise<boolean>) => {
+      const readiness = await awaitLatestPaletteReadiness(gate, () => ready);
+      if (readiness) acted.push(id);
+    };
+
+    const pendingA = run("A", slowA.promise);
+    await run("B", Promise.resolve(true));
+    slowA.resolve(true);
+    await pendingA;
+
+    expect(acted).toEqual(["B"]);
+  });
+
+  it("fences a pick which finishes after Escape or backdrop close invalidates the palette", async () => {
+    const gate = createPaletteActionGate();
+    const loading = deferred<boolean>();
+    const acted: string[] = [];
+    const pending = awaitLatestPaletteReadiness(gate, () => loading.promise).then((ready) => {
+      if (ready) acted.push("late");
+    });
+
+    gate.invalidate();
+    loading.resolve(true);
+    await pending;
+
+    expect(acted).toEqual([]);
+  });
+
+  it("hydrates a nonresident row without revealing or adding until a later ready-row intent", async () => {
+    const gate = createPaletteActionGate();
+    const action = vi.fn();
+
+    await expect(runPaletteAction(gate, false, () => Promise.resolve(true), action))
+      .resolves.toBe("loaded");
+    expect(action).not.toHaveBeenCalled();
+
+    await expect(runPaletteAction(gate, true, () => Promise.resolve(true), action))
+      .resolves.toBe("acted");
+    expect(action).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a failed load non-actionable so an explicit retry must become ready first", async () => {
+    const gate = createPaletteActionGate();
+    const action = vi.fn();
+
+    await expect(runPaletteAction(gate, false, () => Promise.resolve(false), action))
+      .resolves.toBe("failed");
+    await expect(runPaletteAction(gate, false, () => Promise.resolve(true), action))
+      .resolves.toBe("loaded");
+    expect(action).not.toHaveBeenCalled();
+  });
+});
+
+describe("progressive symbol row readiness", () => {
+  const entry: SymbolEntry = {
+    id: "ts:other.ts#searchTarget",
+    fileId: "ts:other.ts",
+    displayName: "searchTarget",
+    qualifiedName: "Other.searchTarget",
+    kind: "function",
+    file: "other.ts",
+    isPrivateMethod: false,
+    stepCount: null,
+    isLoaded: false,
+  };
+  const renderRow = (options: {
+    loaded?: boolean;
+    progressive?: boolean;
+    resident?: boolean;
+    busy?: boolean;
+    failed?: boolean;
+  } = {}) => renderToStaticMarkup(createElement(ResultRow, {
+    entry: { ...entry, isLoaded: options.loaded ?? false },
+    active: false,
+    canAdd: true,
+    progressive: options.progressive ?? true,
+    resident: options.resident ?? false,
+    busy: options.busy ?? false,
+    failed: options.failed ?? false,
+    onHover: () => undefined,
+    onOpen: () => undefined,
+    onLoad: () => undefined,
+    onAdd: () => undefined,
+  }));
+
+  it("offers only a load action for a nonresident progressive row", () => {
+    const markup = renderRow();
+
+    expect(symbolRowReadiness(entry, true, false, false)).toBe("loadable");
+    expect(markup).toContain('data-symbol-readiness="loadable"');
+    expect(markup).toContain('data-symbol-resident="false"');
+    expect(markup).toContain('aria-label="Load nearby graph for searchTarget"');
+    expect(markup).toContain("Load nearby graph");
+    expect(markup.match(/disabled=""/g)).toHaveLength(1);
+    expect(markup).not.toContain(" ready</span>");
+  });
+
+  it("reports graph residency independently from progressive readiness", () => {
+    const markup = renderRow({ resident: true });
+
+    expect(markup).toContain('data-symbol-readiness="loadable"');
+    expect(markup).toContain('data-symbol-resident="true"');
+    expect(markup).toContain('aria-label="Load nearby graph for searchTarget"');
+  });
+
+  it("disables the row while hydration is in flight", () => {
+    const markup = renderRow({ busy: true });
+
+    expect(markup).toContain('data-symbol-readiness="hydrating"');
+    expect(markup).toContain("loading nearby graph…");
+    expect(markup.match(/disabled=""/g)).toHaveLength(2);
+  });
+
+  it("blocks keyboard reveal and add while the row is hydrating, even if it became resident", () => {
+    const loaded = { ...entry, isLoaded: true };
+
+    expect(paletteKeyboardActivation(loaded, {
+      progressive: true,
+      busy: true,
+      failed: false,
+      canAdd: true,
+      addModifier: false,
+    })).toBeNull();
+    expect(paletteKeyboardActivation(loaded, {
+      progressive: true,
+      busy: true,
+      failed: false,
+      canAdd: true,
+      addModifier: true,
+    })).toBeNull();
+  });
+
+  it("keeps canonical keyboard actions available after stale progressive busy or failure state", () => {
+    expect(paletteKeyboardActivation(entry, {
+      progressive: false,
+      busy: true,
+      failed: true,
+      canAdd: true,
+      addModifier: false,
+    })).toBe("open");
+    expect(paletteKeyboardActivation(entry, {
+      progressive: false,
+      busy: true,
+      failed: true,
+      canAdd: true,
+      addModifier: true,
+    })).toBe("add");
+  });
+
+  it("returns a failed row to an explicit retry-load state", () => {
+    const markup = renderRow({ failed: true });
+
+    expect(markup).toContain('data-symbol-readiness="retry"');
+    expect(markup).toContain('aria-label="Retry loading nearby graph for searchTarget"');
+    expect(markup).toContain("Retry load");
+    expect(markup.match(/disabled=""/g)).toHaveLength(1);
+  });
+
+  it("visibly marks a ready row and enables both open and add", () => {
+    const markup = renderRow({ loaded: true, resident: true });
+
+    expect(markup).toContain('data-symbol-readiness="ready"');
+    expect(markup).toContain('data-symbol-resident="true"');
+    expect(markup).toContain(" ready</span>");
+    expect(markup).not.toContain('disabled=""');
+  });
+
+  it("preserves canonical full-graph rows without progressive readiness chrome", () => {
+    const markup = renderRow({ progressive: false, resident: true });
+
+    expect(symbolRowReadiness(entry, false, false, true)).toBe("canonical");
+    expect(markup).toContain('data-symbol-readiness="canonical"');
+    expect(markup).not.toContain("Load nearby graph");
+    expect(markup).not.toContain("Retry load");
+    expect(markup).not.toContain(" ready</span>");
+    expect(markup).not.toContain('disabled=""');
+  });
+});
+
+describe("global palette dismissal", () => {
+  it("owns an unhandled Escape while the palette is open, regardless of focused child", () => {
+    expect(shouldClosePaletteFromWindow({ key: "Escape", defaultPrevented: false }, true)).toBe(true);
+  });
+
+  it("preserves a focused child's narrower Escape behavior and ignores closed palettes", () => {
+    expect(shouldClosePaletteFromWindow({ key: "Escape", defaultPrevented: true }, true)).toBe(false);
+    expect(shouldClosePaletteFromWindow({ key: "Escape", defaultPrevented: false }, false)).toBe(false);
+    expect(shouldClosePaletteFromWindow({ key: "Enter", defaultPrevented: false }, true)).toBe(false);
   });
 });

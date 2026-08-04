@@ -15,6 +15,8 @@ export interface IdContext {
   lang: string;
   modulePath: string;
   relPath: string;
+  /** Internal source-index mode: derive only stable identity fields, without semantic/tag probes. */
+  identityOnly?: boolean;
 }
 
 export interface MemberSpec {
@@ -70,19 +72,23 @@ export function moduleDescriptor(context: IdContext, sourceFile: Node, parent: N
 
 export function memberDescriptor(context: IdContext, spec: MemberSpec): NodeDescriptor {
   const qualifiedName = qualnameFor(spec.enclosingNames, spec.localName);
-  const tags = callableSemanticTagsOf(
-    [spec.declarationNode, ...(spec.modifierSource ? [spec.modifierSource] : [])],
-    spec.signatureSource,
-  );
+  const tags = context.identityOnly
+    ? []
+    : callableSemanticTagsOf(
+        [spec.declarationNode, ...(spec.modifierSource ? [spec.modifierSource] : [])],
+        spec.signatureSource,
+      );
   return {
     kind: spec.kind,
     idParts: { lang: context.lang, modulePath: context.modulePath, qualname: qualifiedName },
     displayName: spec.localName,
     qualifiedName,
-    summary: summaryOf(spec.declarationNode),
-    signature: signatureOf(spec.localName, spec.signatureSource),
+    summary: context.identityOnly ? null : summaryOf(spec.declarationNode),
+    signature: context.identityOnly ? null : signatureOf(spec.localName, spec.signatureSource),
     tags: [...new Set(tags)],
-    telemetry: spec.emitTelemetry ? telemetryFor(spec.localName, qualifiedName, spec.enclosingNames) : null,
+    telemetry: !context.identityOnly && spec.emitTelemetry
+      ? telemetryFor(spec.localName, qualifiedName, spec.enclosingNames)
+      : null,
     location: locationOf(spec.declarationNode, context.relPath),
     startCol: lineColOf(spec.declarationNode).column,
     parent: spec.parent,

@@ -14,6 +14,9 @@
   "scripts": {
     "build": "tsup && chmod +x dist/bin.js",
     "copy-renderer": "node scripts/copy-renderer.mjs",
+    "benchmark:pr-review-poc": "node scripts/benchmark-pr-review-progressive.mjs",
+    "report:pr-review-poc": "node scripts/render-pr-review-poc-report.mjs",
+    "test:pr-review-poc": "vitest run scripts/pr-review-poc-lib.test.mjs scripts/benchmark-pr-review-progressive.test.mjs scripts/owned-process-tree.test.mjs src/server/benchmark-owned-process-registry.test.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "e2e": "vitest run --config vitest.e2e.config.ts",

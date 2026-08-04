@@ -159,9 +159,13 @@ describe("persistent PR graph artifact paths", () => {
       expect(path).not.toContain(HEAD_SHA);
       expect(path).not.toContain(BASE_SHA);
     }
+    // Changing the partial artifact identity must rotate both pair snapshots and shared exact-
+    // revision objects, so a restart cannot restore pre-v12 language-varying slices.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(13);
     const pairMetadata = JSON.parse(readFileSync(currentPrSnapshotMetadataPath(), "utf8"));
     expect(pairMetadata).toMatchObject({
       formatVersion: 12,
+      analysisVersion: REPOSITORY_ANALYSIS_VERSION,
       headSha: HEAD_SHA,
       baseSha: BASE_SHA,
       mergeBaseSha: MERGE_BASE_SHA,
@@ -174,6 +178,7 @@ describe("persistent PR graph artifact paths", () => {
     expect(headMetadata.input).toMatchObject({
       formatVersion: 2,
       role: "head",
+      analysisVersion: REPOSITORY_ANALYSIS_VERSION,
       repositoryUrl: "https://github.com/org/repo.git",
       commit: HEAD_SHA,
       branch: BODY.headRef,

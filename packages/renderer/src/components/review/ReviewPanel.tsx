@@ -12,6 +12,7 @@ import { memo, useEffect, useRef, useState } from "react";
 import {
   formattingOnlyEditsFromExtensions,
   readReviewContext,
+  type GraphNode,
 } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
@@ -53,6 +54,7 @@ function ReviewPanelImpl() {
   const codePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const excludeFormatOnlyChanges = useBlueprint((state) => state.reviewExcludeFormatOnlyChanges);
+  const progressiveGraph = useBlueprint((state) => state.progressiveGraph);
   const hasExcludedTestChanges = useBlueprint((state) => !state.showTests
     && (state.review?.context.changedFiles.some((file) => isReviewTestPath(
       file.path,
@@ -96,6 +98,7 @@ function ReviewPanelImpl() {
     setReviewExcludeFormatOnlyChanges,
     toggleReviewDiffOnly,
     toggleShowTests,
+    setProgressiveGraphDepth,
   } = useBlueprintActions();
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [filesExpanded, setFilesExpanded] = useState(false);
@@ -131,6 +134,9 @@ function ReviewPanelImpl() {
   });
   const scopeVisible = !filesExpanded && (scopePresent || emptyFilterNotice !== null);
   const affectedFlowsVisible = !filesExpanded && flowsPresent;
+  const progressiveFileCounts = progressiveGraph === null
+    ? null
+    : progressiveReviewFileCounts(progressiveGraph.head, progressiveGraph.comparison);
   return (
     <div style={PANEL}>
       <ReviewPanelResizableLayout
@@ -181,6 +187,14 @@ function ReviewPanelImpl() {
               openFlowSplitOnSelect={openFlowSplitOnSelect}
               codePreviewTrigger={codePreviewTrigger}
               hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
+              progressiveContext={progressiveGraph === null ? null : {
+                requestedDepth: progressiveGraph.requestedDepth,
+                loadedDepth: progressiveGraph.head.loadedDepth,
+                loadedFiles: progressiveFileCounts!.loadedFiles,
+                totalFiles: progressiveFileCounts!.totalFiles,
+                status: progressiveGraph.status,
+                error: progressiveGraph.error,
+              }}
               onExcludeTestChangesChange={(exclude) => {
                 if (exclude === showTests) {
                   toggleShowTests();
@@ -196,6 +210,7 @@ function ReviewPanelImpl() {
               onOpenFlowSplitOnSelectChange={setReviewOpenFlowSplitOnSelect}
               onCodePreviewTriggerChange={setReviewCodePreviewTrigger}
               onHideAddedSourceCommentDiffsChange={setReviewHideAddedSourceCommentDiffs}
+              onProgressiveDepthChange={(depth) => { void setProgressiveGraphDepth(depth); }}
               onClose={closePreferences}
             />
           </div>
@@ -203,6 +218,25 @@ function ReviewPanelImpl() {
       />
     </div>
   );
+}
+
+export function progressiveReviewFileCounts(
+  head: { nodes: readonly GraphNode[]; counts: { full: { files: number } } },
+  comparison: { nodes: readonly GraphNode[]; counts: { full: { files: number } } } | null,
+): { loadedFiles: number; totalFiles: number } {
+  const loadedFilesOn = (projection: typeof head): number => new Set(
+    projection.nodes
+      .filter((node) => node.kind === "module")
+      .map((node) => node.location.file),
+  ).size;
+  // HEAD and merge base are independent revisions. A rename (or one add plus one delete) may use
+  // two paths while each complete revision contains only one file, so unioning paths can report an
+  // impossible "2 of 1". Compare like with like: the greatest resident side against the greatest
+  // complete side. This remains deletion-safe because a comparison-only file contributes there.
+  return {
+    loadedFiles: Math.max(loadedFilesOn(head), comparison === null ? 0 : loadedFilesOn(comparison)),
+    totalFiles: Math.max(head.counts.full.files, comparison?.counts.full.files ?? 0),
+  };
 }
 
 export function reviewEmptyFilterNotice(options: {

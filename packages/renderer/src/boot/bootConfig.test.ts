@@ -41,6 +41,8 @@ describe("telemetry boot config", () => {
     vi.stubGlobal("window", { __MERIDIAN__: BASE_CONFIG });
 
     expect(readBootConfig()).toMatchObject({
+      graphProjectUrl: null,
+      graphSymbolsUrl: null,
       traceUrl: "/api/traces",
       traceAvailable: false,
       telemetrySources: [],
@@ -50,6 +52,39 @@ describe("telemetry boot config", () => {
       syntheticScenarios: [],
       graphViewLease: BASE_CONFIG.graphViewLease,
     });
+  });
+
+  it("accepts only paired same-origin progressive graph capabilities", () => {
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...BASE_CONFIG,
+        graphProjectUrl: "/api/graph/project",
+        graphSymbolsUrl: "/api/graph/symbols",
+      },
+    });
+
+    expect(readBootConfig()).toMatchObject({
+      graphProjectUrl: "/api/graph/project",
+      graphSymbolsUrl: "/api/graph/symbols",
+    });
+
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...BASE_CONFIG,
+        graphProjectUrl: "https://example.test/api/graph/project",
+        graphSymbolsUrl: "/api/graph/symbols?token=nope",
+      },
+    });
+    expect(readBootConfig()).toMatchObject({ graphProjectUrl: null, graphSymbolsUrl: null });
+
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...BASE_CONFIG,
+        graphProjectUrl: "/api/graph/project",
+        graphSymbolsUrl: "/api/graph/symbols?token=nope",
+      },
+    });
+    expect(readBootConfig()).toMatchObject({ graphProjectUrl: null, graphSymbolsUrl: null });
   });
 
   it("rejects an injected server boot contract without a graph view lease", () => {

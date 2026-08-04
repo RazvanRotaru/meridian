@@ -6,8 +6,12 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { runView } from "./view";
 import { runWeb, type WebOptions } from "./web";
+import { createWebService } from "../server/web-server";
+import { serve } from "../server/serve";
 
 vi.mock("./view", () => ({ runView: vi.fn() }));
+vi.mock("../server/web-server", () => ({ createWebService: vi.fn(() => ({})) }));
+vi.mock("../server/serve", () => ({ serve: vi.fn() }));
 
 const typeScriptIncrementalModes = [
   "empty",
@@ -22,6 +26,7 @@ describe("web launcher", () => {
   afterEach(() => {
     for (const root of roots) rmSync(root, { recursive: true, force: true });
     roots.length = 0;
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
@@ -56,6 +61,11 @@ describe("web launcher", () => {
       options: { experimentalPrRevisionCache: true },
       flag: "--experimental-pr-revision-cache",
     },
+    {
+      name: "complete PR graph benchmark controls",
+      options: { benchmarkPrFullBaseline: true },
+      flag: "--benchmark-pr-full-baseline",
+    },
   ])("rejects $name on a non-loopback host", async ({ options, flag }) => {
     await expect(runWeb(undefined, {
       cwd: process.cwd(),
@@ -87,4 +97,26 @@ describe("web launcher", () => {
       expect(runView).toHaveBeenCalledWith("graph.json", options);
     },
   );
+
+  it("keeps complete PR baselines disabled unless the loopback benchmark flag is explicit", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "ghp_test");
+    const common: WebOptions = {
+      cwd: process.cwd(),
+      host: "127.0.0.1",
+      port: 4180,
+      open: false,
+      quiet: true,
+    };
+
+    await runWeb(undefined, common);
+    expect(createWebService).toHaveBeenLastCalledWith(expect.objectContaining({
+      benchmarkPrFullBaseline: false,
+    }));
+
+    await runWeb(undefined, { ...common, benchmarkPrFullBaseline: true });
+    expect(createWebService).toHaveBeenLastCalledWith(expect.objectContaining({
+      benchmarkPrFullBaseline: true,
+    }));
+    expect(serve).toHaveBeenCalledTimes(2);
+  });
 });

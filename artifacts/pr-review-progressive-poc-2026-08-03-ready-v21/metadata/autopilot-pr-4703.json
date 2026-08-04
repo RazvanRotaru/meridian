@@ -1,0 +1,3010 @@
+{
+  "number": 4703,
+  "title": "feat(delegate): mini attachment pills on embedded hosts [PILOT-6341]",
+  "url": "https://github.com/UiPath/Autopilot/pull/4703",
+  "status": "complete",
+  "revisions": {
+    "initial": {
+      "repository": "UiPath/Autopilot",
+      "number": 4703,
+      "title": "feat(delegate): mini attachment pills on embedded hosts [PILOT-6341]",
+      "url": "https://github.com/UiPath/Autopilot/pull/4703",
+      "headRef": "feat/mini-attachment-pills-studio",
+      "headOid": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-08-03T08:22:35.000Z",
+      "resolvedAt": "2026-08-04T00:14:02.301Z",
+      "pullBaseOid": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8"
+    },
+    "coldInputs": {
+      "progressive": {
+        "repository": "UiPath/Autopilot",
+        "number": 4703,
+        "title": "feat(delegate): mini attachment pills on embedded hosts [PILOT-6341]",
+        "url": "https://github.com/UiPath/Autopilot/pull/4703",
+        "headRef": "feat/mini-attachment-pills-studio",
+        "headOid": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+        "headRepository": "UiPath/Autopilot",
+        "baseRef": "main",
+        "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+        "baseRepository": "UiPath/Autopilot",
+        "updatedAt": "2026-08-03T08:22:35.000Z",
+        "resolvedAt": "2026-08-04T00:14:03.714Z",
+        "pullBaseOid": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8"
+      }
+    },
+    "preparationInput": {
+      "repository": "UiPath/Autopilot",
+      "number": 4703,
+      "title": "feat(delegate): mini attachment pills on embedded hosts [PILOT-6341]",
+      "url": "https://github.com/UiPath/Autopilot/pull/4703",
+      "headRef": "feat/mini-attachment-pills-studio",
+      "headOid": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-08-03T08:22:35.000Z",
+      "resolvedAt": "2026-08-04T00:14:44.659Z",
+      "pullBaseOid": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8"
+    },
+    "prepared": {
+      "graphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "comparisonGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+      "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+      "pairId": "771b80a0a4f27cf5a04a",
+      "completeness": "provisional",
+      "initialProjectionCache": {
+        "version": 1,
+        "depth": 1,
+        "prefetchDepth": 3,
+        "headKey": "24e8e78166efbdd35f43e4ec3f66b00320f4f18d6f59b1de80076795af412156",
+        "comparisonKey": "b25c98c2a593c111f8eecc8bfacdc76c029d6eee62b69d1d60242fdb72809333",
+        "ready": true
+      },
+      "counts": {
+        "nodes": 1419,
+        "edges": 2902
+      },
+      "changedFiles": [
+        {
+          "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+          "status": "added"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/components/ui/Attachment.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/lib/attachmentCategory.ts",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/sdk/hostPlatform.ts",
+          "status": "modified"
+        },
+        {
+          "path": "src/aria/app/src/sdk/sdk.css",
+          "status": "modified"
+        },
+        {
+          "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+          "status": "modified"
+        },
+        {
+          "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+          "status": "modified"
+        }
+      ],
+      "cache": "hit",
+      "viewUrl": "/view?id=pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=771b80a0a4f27cf5a04a"
+    },
+    "final": {
+      "repository": "UiPath/Autopilot",
+      "number": 4703,
+      "title": "feat(delegate): mini attachment pills on embedded hosts [PILOT-6341]",
+      "url": "https://github.com/UiPath/Autopilot/pull/4703",
+      "headRef": "feat/mini-attachment-pills-studio",
+      "headOid": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "headRepository": "UiPath/Autopilot",
+      "baseRef": "main",
+      "baseOid": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+      "baseRepository": "UiPath/Autopilot",
+      "updatedAt": "2026-08-03T08:22:35.000Z",
+      "resolvedAt": "2026-08-04T00:19:15.342Z",
+      "pullBaseOid": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8"
+    }
+  },
+  "preparation": {
+    "totalMs": 1411.8,
+    "httpStatus": 200,
+    "events": [
+      {
+        "atMs": 1411.5,
+        "payload": {
+          "stage": "ready",
+          "pairId": "771b80a0a4f27cf5a04a",
+          "completeness": "provisional",
+          "graphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "comparisonGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "counts": {
+            "nodes": 1419,
+            "edges": 2902
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+              "status": "added"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/ui/Attachment.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/lib/attachmentCategory.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/sdk.css",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+              "status": "modified"
+            }
+          ],
+          "warnings": [
+            "TypeScript: 2344 unresolved edge(s)",
+            "TypeScript: 2075 unresolved edge(s)"
+          ],
+          "cache": "hit",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "24e8e78166efbdd35f43e4ec3f66b00320f4f18d6f59b1de80076795af412156",
+            "comparisonKey": "b25c98c2a593c111f8eecc8bfacdc76c029d6eee62b69d1d60242fdb72809333",
+            "ready": true
+          },
+          "preparedPair": {
+            "version": 1,
+            "prNumber": 4703,
+            "headGraphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "mergeBaseGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "completeness": "provisional",
+            "pairId": "771b80a0a4f27cf5a04a"
+          },
+          "viewUrl": "/view?id=pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=771b80a0a4f27cf5a04a"
+        }
+      },
+      {
+        "atMs": 1411.7,
+        "payload": {
+          "stage": "done",
+          "pairId": "771b80a0a4f27cf5a04a",
+          "completeness": "provisional",
+          "graphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "comparisonGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "counts": {
+            "nodes": 1419,
+            "edges": 2902
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+              "status": "added"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/ui/Attachment.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/lib/attachmentCategory.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/sdk.css",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+              "status": "modified"
+            }
+          ],
+          "warnings": [
+            "TypeScript: 2344 unresolved edge(s)",
+            "TypeScript: 2075 unresolved edge(s)"
+          ],
+          "cache": "hit",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "24e8e78166efbdd35f43e4ec3f66b00320f4f18d6f59b1de80076795af412156",
+            "comparisonKey": "b25c98c2a593c111f8eecc8bfacdc76c029d6eee62b69d1d60242fdb72809333",
+            "ready": true
+          },
+          "preparedPair": {
+            "version": 1,
+            "prNumber": 4703,
+            "headGraphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "mergeBaseGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "completeness": "provisional",
+            "pairId": "771b80a0a4f27cf5a04a"
+          },
+          "viewUrl": "/view?id=pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=771b80a0a4f27cf5a04a"
+        }
+      }
+    ],
+    "cache": "hit",
+    "terminalProof": {
+      "version": 1,
+      "delivery": "partial-only-v1",
+      "streamEnded": true,
+      "readyIndex": 0,
+      "doneIndex": 1,
+      "eventCount": 2,
+      "postReadyStages": [
+        "done"
+      ],
+      "sameBoundedPair": true,
+      "canonicalContinuationObserved": false,
+      "pairId": "771b80a0a4f27cf5a04a",
+      "graphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+      "comparisonGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+      "prepared": {
+        "graphId": "pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+        "comparisonGraphId": "pr-partial-base-771b80a0a4f27cf5a04a-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+        "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+        "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+        "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+        "pairId": "771b80a0a4f27cf5a04a",
+        "completeness": "provisional",
+        "initialProjectionCache": {
+          "version": 1,
+          "depth": 1,
+          "prefetchDepth": 3,
+          "headKey": "24e8e78166efbdd35f43e4ec3f66b00320f4f18d6f59b1de80076795af412156",
+          "comparisonKey": "b25c98c2a593c111f8eecc8bfacdc76c029d6eee62b69d1d60242fdb72809333",
+          "ready": true
+        },
+        "counts": {
+          "nodes": 1419,
+          "edges": 2902
+        },
+        "changedFiles": [
+          {
+            "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+            "status": "added"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/components/ui/Attachment.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/lib/attachmentCategory.ts",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/sdk/hostPlatform.ts",
+            "status": "modified"
+          },
+          {
+            "path": "src/aria/app/src/sdk/sdk.css",
+            "status": "modified"
+          },
+          {
+            "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+            "status": "modified"
+          },
+          {
+            "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+            "status": "modified"
+          }
+        ],
+        "cache": "hit",
+        "viewUrl": "/view?id=pr-partial-771b80a0a4f27cf5a04a-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=771b80a0a4f27cf5a04a"
+      },
+      "repositoryAnalysisWorkerPidsAfterTerminal": []
+    }
+  },
+  "coldEndToEnd": {
+    "repetitions": 1,
+    "isolation": "fresh-production-service-and-cache-per-progressive-lane",
+    "order": [
+      "progressive"
+    ],
+    "variants": {
+      "progressive": {
+        "variant": "progressive",
+        "repetition": 1,
+        "measurementOrder": {
+          "sequencePosition": 1,
+          "variants": [
+            "progressive"
+          ]
+        },
+        "measuredAt": "2026-08-04T00:14:41.153Z",
+        "isolation": {
+          "freshCache": true,
+          "loopbackOnly": true,
+          "servicePid": 55520,
+          "serviceInstanceId": "d4b70b4b2506491cf90d2302c4e643ef4d0f8d8efcdf8adbf3de0148fa16e81c",
+          "cacheInstanceId": "702622a9d900ff9952669023e1bacd668ac3712dd45534691d7a246568c9f85b",
+          "fullBaselineCapability": {
+            "inspected": true,
+            "present": false,
+            "source": "isolated-service-spawn-arguments",
+            "argument": "--benchmark-pr-full-baseline",
+            "commandSha256": "0244e30c073ff199ece56cf86fbf811defec3842f4ebfe9e8fcd784646c4254d"
+          },
+          "cleanup": {
+            "strategy": "tracked-owned-process-tree-and-groups",
+            "rootPid": 55520,
+            "verifiedEmpty": true,
+            "tempDirectoryRemoved": true,
+            "rootProcessGroupId": 55520,
+            "scanIntervalMs": 100,
+            "leaderExitedBeforeStop": false,
+            "registeredProcessCount": 37,
+            "registeredGroupCount": 41,
+            "detachedGroupCount": 40,
+            "registeredGroupIds": [
+              55520,
+              55674,
+              55753,
+              55760,
+              55767,
+              55774,
+              55789,
+              55796,
+              55803,
+              55810,
+              55817,
+              55824,
+              55831,
+              55846,
+              56011,
+              56026,
+              56033,
+              56040,
+              56047,
+              56054,
+              56061,
+              56068,
+              56083,
+              56090,
+              56912,
+              56919,
+              57115,
+              57122,
+              57123,
+              57154,
+              57179,
+              57229,
+              57244,
+              57267,
+              57891,
+              58515,
+              58522,
+              58531,
+              58532,
+              58955,
+              59142
+            ],
+            "sigstopGroupCount": 2,
+            "sigtermGroupCount": 2,
+            "sigkillGroupCount": 0,
+            "registryProofHealthy": true,
+            "verifiedRecordedPidsAbsent": true,
+            "verifiedRecordedGroupsAbsent": true,
+            "residualPids": [],
+            "residualGroupIds": []
+          }
+        },
+        "prepared": {
+          "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "pairId": "a6c92d5cb20d1c7da358",
+          "completeness": "provisional",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+            "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+            "ready": true
+          },
+          "counts": {
+            "nodes": 1419,
+            "edges": 2902
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+              "status": "added"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/ui/Attachment.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/lib/attachmentCategory.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/sdk.css",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+              "status": "modified"
+            }
+          ],
+          "cache": "miss",
+          "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+        },
+        "provisionalPrepared": {
+          "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "pairId": "a6c92d5cb20d1c7da358",
+          "completeness": "provisional",
+          "initialProjectionCache": {
+            "version": 1,
+            "depth": 1,
+            "prefetchDepth": 3,
+            "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+            "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+            "ready": true
+          },
+          "counts": {
+            "nodes": 1419,
+            "edges": 2902
+          },
+          "changedFiles": [
+            {
+              "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+              "status": "added"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/components/ui/Attachment.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/lib/attachmentCategory.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/hostPlatform.ts",
+              "status": "modified"
+            },
+            {
+              "path": "src/aria/app/src/sdk/sdk.css",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+              "status": "modified"
+            },
+            {
+              "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+              "status": "modified"
+            }
+          ],
+          "cache": "miss",
+          "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+        },
+        "preparation": {
+          "totalMs": 31724.6,
+          "httpStatus": 200,
+          "cache": "miss",
+          "milestones": {
+            "cloneStartedMs": 887.8,
+            "checkoutStartedMs": 3190.8,
+            "analysisStartedMs": 15135.6,
+            "manifestReadyMs": 16346,
+            "headExtractionStartedMs": 15135.6,
+            "headExtractionCompletedMs": 23702.4,
+            "comparisonExtractionStartedMs": 23702.4,
+            "comparisonExtractionCompletedMs": 31138.1,
+            "provisionalReadyMs": 31724.1,
+            "finalPairReadyMs": 31724.3,
+            "initialProjectionPairReadyMs": 31724.1,
+            "canonicalCompletionLagMs": null,
+            "partialTerminalLagMs": 0.2,
+            "provisionalPairId": "a6c92d5cb20d1c7da358",
+            "provisionalGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "provisionalComparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "canonicalGraphId": null,
+            "canonicalComparisonGraphId": null,
+            "delivery": "partial-only-v1",
+            "streamEnded": true,
+            "canonicalContinuationObserved": false,
+            "exactRevisionBound": true,
+            "manifestFileCount": 16,
+            "manifestSha256": "5c31b3709b682c0a2cefb7576dc256ed194531ff7fb84fd6b54f1030a4edd040",
+            "source": "client-observed-ndjson-arrival"
+          },
+          "eventCount": 40,
+          "events": [
+            {
+              "atMs": 887.8,
+              "payload": {
+                "stage": "clone"
+              }
+            },
+            {
+              "atMs": 3190.8,
+              "payload": {
+                "stage": "checkout"
+              }
+            },
+            {
+              "atMs": 15135.6,
+              "payload": {
+                "stage": "extract"
+              }
+            },
+            {
+              "atMs": 15135.6,
+              "payload": {
+                "stage": "extract-head"
+              }
+            },
+            {
+              "atMs": 16346,
+              "payload": {
+                "stage": "manifest-ready",
+                "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                    "status": "added"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/sdk.css",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                    "status": "modified"
+                  }
+                ]
+              }
+            },
+            {
+              "atMs": 23702.4,
+              "payload": {
+                "stage": "lane-complete",
+                "lane": "head"
+              }
+            },
+            {
+              "atMs": 23702.4,
+              "payload": {
+                "stage": "extract-merge-base"
+              }
+            },
+            {
+              "atMs": 31138.1,
+              "payload": {
+                "stage": "lane-complete",
+                "lane": "mergeBase"
+              }
+            },
+            {
+              "atMs": 31724.1,
+              "payload": {
+                "stage": "ready",
+                "pairId": "a6c92d5cb20d1c7da358",
+                "completeness": "provisional",
+                "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                "counts": {
+                  "nodes": 1419,
+                  "edges": 2902
+                },
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                    "status": "added"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/sdk.css",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                    "status": "modified"
+                  }
+                ],
+                "warnings": [
+                  "TypeScript: 2344 unresolved edge(s)",
+                  "TypeScript: 2075 unresolved edge(s)"
+                ],
+                "cache": "miss",
+                "initialProjectionCache": {
+                  "version": 1,
+                  "depth": 1,
+                  "prefetchDepth": 3,
+                  "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+                  "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+                  "ready": true
+                },
+                "preparedPair": {
+                  "version": 1,
+                  "prNumber": 4703,
+                  "headGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                  "mergeBaseGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                  "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                  "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                  "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                  "completeness": "provisional",
+                  "pairId": "a6c92d5cb20d1c7da358"
+                },
+                "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+              }
+            },
+            {
+              "atMs": 31724.3,
+              "payload": {
+                "stage": "done",
+                "pairId": "a6c92d5cb20d1c7da358",
+                "completeness": "provisional",
+                "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                "counts": {
+                  "nodes": 1419,
+                  "edges": 2902
+                },
+                "changedFiles": [
+                  {
+                    "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                    "status": "added"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/aria/app/src/sdk/sdk.css",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                    "status": "modified"
+                  },
+                  {
+                    "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                    "status": "modified"
+                  }
+                ],
+                "warnings": [
+                  "TypeScript: 2344 unresolved edge(s)",
+                  "TypeScript: 2075 unresolved edge(s)"
+                ],
+                "cache": "miss",
+                "initialProjectionCache": {
+                  "version": 1,
+                  "depth": 1,
+                  "prefetchDepth": 3,
+                  "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+                  "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+                  "ready": true
+                },
+                "preparedPair": {
+                  "version": 1,
+                  "prNumber": 4703,
+                  "headGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                  "mergeBaseGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                  "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+                  "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+                  "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+                  "completeness": "provisional",
+                  "pairId": "a6c92d5cb20d1c7da358"
+                },
+                "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+              }
+            }
+          ],
+          "handoff": {
+            "version": 2,
+            "delivery": "partial-only-v1",
+            "pairId": "a6c92d5cb20d1c7da358",
+            "exactRevisionBound": true,
+            "manifestSha256": "5c31b3709b682c0a2cefb7576dc256ed194531ff7fb84fd6b54f1030a4edd040",
+            "sameBoundedPair": true,
+            "canonicalContinuationObserved": false,
+            "partial": {
+              "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+              "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+              "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8"
+            }
+          },
+          "terminalProof": {
+            "version": 1,
+            "delivery": "partial-only-v1",
+            "streamEnded": true,
+            "readyIndex": 38,
+            "doneIndex": 39,
+            "eventCount": 40,
+            "postReadyStages": [
+              "done"
+            ],
+            "sameBoundedPair": true,
+            "canonicalContinuationObserved": false,
+            "pairId": "a6c92d5cb20d1c7da358",
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "prepared": {
+              "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+              "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+              "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+              "pairId": "a6c92d5cb20d1c7da358",
+              "completeness": "provisional",
+              "initialProjectionCache": {
+                "version": 1,
+                "depth": 1,
+                "prefetchDepth": 3,
+                "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+                "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+                "ready": true
+              },
+              "counts": {
+                "nodes": 1419,
+                "edges": 2902
+              },
+              "changedFiles": [
+                {
+                  "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                  "status": "added"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/aria/app/src/sdk/sdk.css",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                  "status": "modified"
+                },
+                {
+                  "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                  "status": "modified"
+                }
+              ],
+              "cache": "miss",
+              "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+            },
+            "repositoryAnalysisWorkerPidsAfterTerminal": []
+          },
+          "completionSubscriber": "complete-ndjson-drain-to-partial-eof"
+        },
+        "chromiumVersion": "149.0.7827.55",
+        "timings": {
+          "landingShellActionableMs": 16346.5,
+          "landingShellTtaMs": 16343.6,
+          "provisionalReadyMs": 31724.1,
+          "provisionalReadyTtaMs": 31721.8,
+          "navigationStartedMs": 32393.5,
+          "browserFirstActionableMs": 2357.7,
+          "browserSettledMs": 2874.5,
+          "prepareToFirstActionableMs": 34751.2,
+          "prepareToSettledMs": 35268,
+          "endToEndFirstActionableMs": 34751.2,
+          "endToEndSettledMs": 35268
+        },
+        "landingShell": {
+          "source": "application-performance-mark-and-visible-dom",
+          "markName": "meridian:pr-manifest-shell-actionable",
+          "requestStartedMs": 2.9,
+          "actionableMs": 16346.5,
+          "ttaMs": 16343.6,
+          "readyAtBrowserMs": 32032.9,
+          "readyTtaMs": 31721.8,
+          "clockAlignment": {
+            "version": 2,
+            "method": "two-phase-minimum-rtt-monotonic-interval-intersection",
+            "sampleCountPerPhase": 9,
+            "maximumSelectedRoundTripMs": 100,
+            "nodeColdStartedMs": 320634.161708,
+            "before": {
+              "sampleCount": 9,
+              "samples": [
+                {
+                  "nodeBeforeMs": 320629.513833,
+                  "nodeAfterMs": 320630.282167,
+                  "browserAtMs": 303.89999997615814,
+                  "roundTripMs": 0.7683340000221506,
+                  "offsetLowerBoundMs": 320325.6138330238,
+                  "offsetUpperBoundMs": 320326.38216702384,
+                  "offsetEstimateMs": 320325.9980000238
+                },
+                {
+                  "nodeBeforeMs": 320630.296708,
+                  "nodeAfterMs": 320630.75725,
+                  "browserAtMs": 304.60000002384186,
+                  "roundTripMs": 0.46054200001526624,
+                  "offsetLowerBoundMs": 320325.69670797617,
+                  "offsetUpperBoundMs": 320326.1572499762,
+                  "offsetEstimateMs": 320325.9269789762
+                },
+                {
+                  "nodeBeforeMs": 320630.759125,
+                  "nodeAfterMs": 320631.161458,
+                  "browserAtMs": 305,
+                  "roundTripMs": 0.4023330000345595,
+                  "offsetLowerBoundMs": 320325.759125,
+                  "offsetUpperBoundMs": 320326.161458,
+                  "offsetEstimateMs": 320325.96029149997
+                },
+                {
+                  "nodeBeforeMs": 320631.169208,
+                  "nodeAfterMs": 320631.555542,
+                  "browserAtMs": 305.39999997615814,
+                  "roundTripMs": 0.3863339999807067,
+                  "offsetLowerBoundMs": 320325.76920802385,
+                  "offsetUpperBoundMs": 320326.15554202383,
+                  "offsetEstimateMs": 320325.96237502387
+                },
+                {
+                  "nodeBeforeMs": 320631.558667,
+                  "nodeAfterMs": 320631.957083,
+                  "browserAtMs": 305.7999999523163,
+                  "roundTripMs": 0.3984160000109114,
+                  "offsetLowerBoundMs": 320325.75866704766,
+                  "offsetUpperBoundMs": 320326.15708304767,
+                  "offsetEstimateMs": 320325.9578750477
+                },
+                {
+                  "nodeBeforeMs": 320631.959833,
+                  "nodeAfterMs": 320632.2485,
+                  "browserAtMs": 306.10000002384186,
+                  "roundTripMs": 0.28866700001526624,
+                  "offsetLowerBoundMs": 320325.85983297613,
+                  "offsetUpperBoundMs": 320326.14849997615,
+                  "offsetEstimateMs": 320326.00416647614
+                },
+                {
+                  "nodeBeforeMs": 320632.251208,
+                  "nodeAfterMs": 320632.546708,
+                  "browserAtMs": 306.39999997615814,
+                  "roundTripMs": 0.2955000000074506,
+                  "offsetLowerBoundMs": 320325.85120802384,
+                  "offsetUpperBoundMs": 320326.14670802385,
+                  "offsetEstimateMs": 320325.99895802385
+                },
+                {
+                  "nodeBeforeMs": 320632.54925,
+                  "nodeAfterMs": 320632.797333,
+                  "browserAtMs": 306.7000000476837,
+                  "roundTripMs": 0.2480830000131391,
+                  "offsetLowerBoundMs": 320325.8492499523,
+                  "offsetUpperBoundMs": 320326.0973329523,
+                  "offsetEstimateMs": 320325.9732914523
+                },
+                {
+                  "nodeBeforeMs": 320632.798958,
+                  "nodeAfterMs": 320633.041,
+                  "browserAtMs": 307,
+                  "roundTripMs": 0.24204199999803677,
+                  "offsetLowerBoundMs": 320325.798958,
+                  "offsetUpperBoundMs": 320326.041,
+                  "offsetEstimateMs": 320325.919979
+                }
+              ],
+              "selectedSampleIndex": 8,
+              "selectedRoundTripMs": 0.24204199999803677,
+              "selectedOffsetLowerBoundMs": 320325.798958,
+              "selectedOffsetUpperBoundMs": 320326.041,
+              "selectedOffsetEstimateMs": 320325.919979,
+              "uncertaintyMs": 0.12102099999901839
+            },
+            "after": {
+              "sampleCount": 9,
+              "samples": [
+                {
+                  "nodeBeforeMs": 336988.161917,
+                  "nodeAfterMs": 336990.535667,
+                  "browserAtMs": 16664.200000047684,
+                  "roundTripMs": 2.373749999969732,
+                  "offsetLowerBoundMs": 320323.96191695234,
+                  "offsetUpperBoundMs": 320326.3356669523,
+                  "offsetEstimateMs": 320325.1487919523
+                },
+                {
+                  "nodeBeforeMs": 336990.550292,
+                  "nodeAfterMs": 336991.036542,
+                  "browserAtMs": 16664.899999976158,
+                  "roundTripMs": 0.48625000001629815,
+                  "offsetLowerBoundMs": 320325.65029202384,
+                  "offsetUpperBoundMs": 320326.13654202386,
+                  "offsetEstimateMs": 320325.8934170238
+                },
+                {
+                  "nodeBeforeMs": 336991.040958,
+                  "nodeAfterMs": 336991.283333,
+                  "browserAtMs": 16665.200000047684,
+                  "roundTripMs": 0.24237500003073364,
+                  "offsetLowerBoundMs": 320325.8409579523,
+                  "offsetUpperBoundMs": 320326.08333295234,
+                  "offsetEstimateMs": 320325.96214545233
+                },
+                {
+                  "nodeBeforeMs": 336991.285,
+                  "nodeAfterMs": 336991.788333,
+                  "browserAtMs": 16665.399999976158,
+                  "roundTripMs": 0.5033330000005662,
+                  "offsetLowerBoundMs": 320325.8850000238,
+                  "offsetUpperBoundMs": 320326.3883330238,
+                  "offsetEstimateMs": 320326.1366665238
+                },
+                {
+                  "nodeBeforeMs": 336991.790125,
+                  "nodeAfterMs": 336992.242833,
+                  "browserAtMs": 16666,
+                  "roundTripMs": 0.4527080000261776,
+                  "offsetLowerBoundMs": 320325.790125,
+                  "offsetUpperBoundMs": 320326.242833,
+                  "offsetEstimateMs": 320326.016479
+                },
+                {
+                  "nodeBeforeMs": 336992.247542,
+                  "nodeAfterMs": 336992.635375,
+                  "browserAtMs": 16666.5,
+                  "roundTripMs": 0.38783299998613074,
+                  "offsetLowerBoundMs": 320325.747542,
+                  "offsetUpperBoundMs": 320326.135375,
+                  "offsetEstimateMs": 320325.9414585
+                },
+                {
+                  "nodeBeforeMs": 336992.63825,
+                  "nodeAfterMs": 336992.969708,
+                  "browserAtMs": 16666.799999952316,
+                  "roundTripMs": 0.33145800000056624,
+                  "offsetLowerBoundMs": 320325.8382500477,
+                  "offsetUpperBoundMs": 320326.1697080477,
+                  "offsetEstimateMs": 320326.0039790477
+                },
+                {
+                  "nodeBeforeMs": 336992.973208,
+                  "nodeAfterMs": 336993.371,
+                  "browserAtMs": 16667.200000047684,
+                  "roundTripMs": 0.39779199997428805,
+                  "offsetLowerBoundMs": 320325.7732079523,
+                  "offsetUpperBoundMs": 320326.1709999523,
+                  "offsetEstimateMs": 320325.9721039523
+                },
+                {
+                  "nodeBeforeMs": 336993.374792,
+                  "nodeAfterMs": 336993.702667,
+                  "browserAtMs": 16667.5,
+                  "roundTripMs": 0.32787500001722947,
+                  "offsetLowerBoundMs": 320325.874792,
+                  "offsetUpperBoundMs": 320326.202667,
+                  "offsetEstimateMs": 320326.0387295
+                }
+              ],
+              "selectedSampleIndex": 2,
+              "selectedRoundTripMs": 0.24237500003073364,
+              "selectedOffsetLowerBoundMs": 320325.8409579523,
+              "selectedOffsetUpperBoundMs": 320326.08333295234,
+              "selectedOffsetEstimateMs": 320325.96214545233,
+              "uncertaintyMs": 0.12118750001536682
+            },
+            "requestBracket": {
+              "nodeBeforeMs": 320635.390875,
+              "nodeAfterMs": 320637.996083,
+              "browserRequestStartedAtMs": 311.10000002384186,
+              "browserSampleAtMs": 311.5
+            },
+            "browserMark": {
+              "requestStartedAtMs": 311.10000002384186,
+              "atMs": 16654.700000047684,
+              "ttaMs": 16343.600000023842
+            },
+            "rawRequest": {
+              "lowerBoundMs": 2.737250023870729,
+              "upperBoundMs": 2.9792920238687657,
+              "estimateMs": 2.8582710238406435,
+              "uncertaintyMs": 0.12102099999901839
+            },
+            "rawAction": {
+              "lowerBoundMs": 16346.379249999998,
+              "upperBoundMs": 16346.621625000029,
+              "estimateMs": 16346.500437500014,
+              "uncertaintyMs": 0.12118750001536682
+            },
+            "triggerBounds": {
+              "lowerBoundMs": 1.2291669999831356,
+              "upperBoundMs": 3.834374999976717
+            },
+            "causalRequest": {
+              "lowerBoundMs": 2.7792499761562794,
+              "upperBoundMs": 2.9792920238687657
+            },
+            "causalAction": {
+              "lowerBoundMs": 16346.379249999998,
+              "upperBoundMs": 16346.57929204771
+            },
+            "resolvedUncertaintyMs": 0.10002102385624312,
+            "causalResolutionShiftMs": 0.020999976171879098,
+            "normalizedWithinMeasuredUncertainty": true,
+            "resolvedRequestStartedMs": 2.8792710000125226,
+            "resolvedActionableMs": 16346.479271023854
+          },
+          "performanceEntry": {
+            "name": "meridian:pr-manifest-shell-actionable",
+            "startTimeMs": 16654.700000047684,
+            "detail": {
+              "atMs": 16654.700000047684,
+              "requestStartedAtMs": 311.10000002384186,
+              "ttaMs": 16343.600000023842,
+              "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+              "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+              "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+              "changedFileCount": 16
+            }
+          },
+          "visible": true,
+          "changedFileCount": 16,
+          "visibleChangedFileRows": 16,
+          "rows": [
+            {
+              "status": "modified",
+              "label": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx"
+            },
+            {
+              "status": "added",
+              "label": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/components/ui/Attachment.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/components/ui/Attachment.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/lib/attachmentCategory.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/lib/attachmentCategory.ts"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/mocks/MockChatInterface.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/mocks/MockChatInterface.ts"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/sdk/hostPlatform.test.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/sdk/hostPlatform.test.ts"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/sdk/hostPlatform.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/sdk/hostPlatform.ts"
+            },
+            {
+              "status": "modified",
+              "label": "src/aria/app/src/sdk/sdk.css",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/aria/app/src/sdk/sdk.css"
+            },
+            {
+              "status": "modified",
+              "label": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/packages/autopilot-delegate-iframe/src/mock-entry.tsx"
+            },
+            {
+              "status": "modified",
+              "label": "src/packages/autopilot-uia/src/setupDelegate.ts",
+              "sourceHref": "https://github.com/UiPath/Autopilot/blob/78a392a22d86edf8c0b5265fc5d8e24a09f531f9/src/packages/autopilot-uia/src/setupDelegate.ts"
+            }
+          ],
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "provisional": {
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "pairId": "a6c92d5cb20d1c7da358",
+            "completeness": "provisional",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+              "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+              "ready": true
+            },
+            "counts": {
+              "nodes": 1419,
+              "edges": 2902
+            },
+            "changedFiles": [
+              {
+                "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                "status": "added"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/sdk.css",
+                "status": "modified"
+              },
+              {
+                "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                "status": "modified"
+              }
+            ],
+            "cache": "miss",
+            "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358"
+          },
+          "terminal": {
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "pairId": "a6c92d5cb20d1c7da358",
+            "completeness": "provisional",
+            "cache": "miss",
+            "viewUrl": "/view?id=pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9&view=modules&prn=4703&rev=1&progressive=1&partial=1&pair=a6c92d5cb20d1c7da358",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+              "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+              "ready": true
+            }
+          },
+          "renderedManifestSha256": "5c31b3709b682c0a2cefb7576dc256ed194531ff7fb84fd6b54f1030a4edd040"
+        },
+        "firstActionableMark": {
+          "name": "meridian:first-actionable-canvas",
+          "startTimeMs": 2357.7,
+          "detail": {
+            "nodes": 201,
+            "edges": 212
+          },
+          "source": "performance-mark"
+        },
+        "networkAtAction": {
+          "encodedBytes": 8426408,
+          "graphEncodedBytes": 5085868,
+          "observedEncodedBytes": 8427118,
+          "graphObservedEncodedBytes": 5085868,
+          "requestCount": 18,
+          "failedRequestCount": 1,
+          "finishedRequestCount": 14,
+          "inFlightRequestCount": 4,
+          "inFlightGraphRequestCount": 0,
+          "canceledRequestCount": 1,
+          "blockedRequestCount": 0,
+          "cachedRequestCount": 0,
+          "redirectRequestCount": 0,
+          "requestIdReuseCount": 0,
+          "resourceTimingReconciliationAttemptCount": 0,
+          "resourceTimingReconciledRequestCount": 0,
+          "resourceTimingReconciliationRejections": {},
+          "byteAuthoritySources": {
+            "cdp-terminal-total": 13,
+            "cdp-exact-consumed-abort": 1
+          },
+          "accountingAnomalyCount": 0,
+          "accountingAnomalies": [],
+          "accountingDiagnosticCount": 1,
+          "accountingDiagnostics": [
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/view"
+            }
+          ],
+          "bytesAuthoritative": false,
+          "graphBytesAuthoritative": true,
+          "accountingComplete": false,
+          "graphAccountingComplete": true,
+          "byPath": {
+            "/view": {
+              "requests": 1,
+              "encodedBytes": 3961,
+              "observedEncodedBytes": 3961,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-BwTBcOZ5.js": {
+              "requests": 1,
+              "encodedBytes": 3157010,
+              "observedEncodedBytes": 3157010,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-DtxX27Jz.css": {
+              "requests": 1,
+              "encodedBytes": 15596,
+              "observedEncodedBytes": 15596,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project": {
+              "requests": 2,
+              "encodedBytes": 5085868,
+              "observedEncodedBytes": 5085868,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 1,
+              "canceledRequests": 1,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1,
+                "cdp-exact-consumed-abort": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph-views/hc9jXHxUXtpx_teWKax5oosa6gPyJygx": {
+              "requests": 2,
+              "encodedBytes": 510,
+              "observedEncodedBytes": 510,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/one": {
+              "requests": 2,
+              "encodedBytes": 2762,
+              "observedEncodedBytes": 2762,
+              "finishedRequests": 1,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/api/prs/files": {
+              "requests": 1,
+              "encodedBytes": 120128,
+              "observedEncodedBytes": 120128,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/comments": {
+              "requests": 1,
+              "encodedBytes": 625,
+              "observedEncodedBytes": 625,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/checks": {
+              "requests": 1,
+              "encodedBytes": 272,
+              "observedEncodedBytes": 272,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/pr/analyze": {
+              "requests": 1,
+              "encodedBytes": 4733,
+              "observedEncodedBytes": 4733,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/viewed-files": {
+              "requests": 1,
+              "encodedBytes": 1758,
+              "observedEncodedBytes": 1758,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project/warm": {
+              "requests": 2,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 710,
+              "finishedRequests": 0,
+              "inFlightRequests": 2,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/graphSymbolWorker-4RBrZcmw.js": {
+              "requests": 1,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 0,
+              "finishedRequests": 0,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/code-preview-braces-osDMZYcN.png": {
+              "requests": 1,
+              "encodedBytes": 33185,
+              "observedEncodedBytes": 33185,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            }
+          }
+        },
+        "networkSettled": {
+          "encodedBytes": 8426408,
+          "graphEncodedBytes": 5085868,
+          "observedEncodedBytes": 8427118,
+          "graphObservedEncodedBytes": 5085868,
+          "requestCount": 18,
+          "failedRequestCount": 1,
+          "finishedRequestCount": 14,
+          "inFlightRequestCount": 4,
+          "inFlightGraphRequestCount": 0,
+          "canceledRequestCount": 1,
+          "blockedRequestCount": 0,
+          "cachedRequestCount": 0,
+          "redirectRequestCount": 0,
+          "requestIdReuseCount": 0,
+          "resourceTimingReconciliationAttemptCount": 0,
+          "resourceTimingReconciledRequestCount": 0,
+          "resourceTimingReconciliationRejections": {},
+          "byteAuthoritySources": {
+            "cdp-terminal-total": 13,
+            "cdp-exact-consumed-abort": 1
+          },
+          "accountingAnomalyCount": 0,
+          "accountingAnomalies": [],
+          "accountingDiagnosticCount": 1,
+          "accountingDiagnostics": [
+            {
+              "code": "finished-incremental-mismatch",
+              "path": "/view"
+            }
+          ],
+          "bytesAuthoritative": false,
+          "graphBytesAuthoritative": true,
+          "accountingComplete": false,
+          "graphAccountingComplete": true,
+          "byPath": {
+            "/view": {
+              "requests": 1,
+              "encodedBytes": 3961,
+              "observedEncodedBytes": 3961,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 1,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-BwTBcOZ5.js": {
+              "requests": 1,
+              "encodedBytes": 3157010,
+              "observedEncodedBytes": 3157010,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/assets/index-DtxX27Jz.css": {
+              "requests": 1,
+              "encodedBytes": 15596,
+              "observedEncodedBytes": 15596,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project": {
+              "requests": 2,
+              "encodedBytes": 5085868,
+              "observedEncodedBytes": 5085868,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 1,
+              "canceledRequests": 1,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1,
+                "cdp-exact-consumed-abort": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph-views/hc9jXHxUXtpx_teWKax5oosa6gPyJygx": {
+              "requests": 2,
+              "encodedBytes": 510,
+              "observedEncodedBytes": 510,
+              "finishedRequests": 2,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 2
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/one": {
+              "requests": 2,
+              "encodedBytes": 2762,
+              "observedEncodedBytes": 2762,
+              "finishedRequests": 1,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/api/prs/files": {
+              "requests": 1,
+              "encodedBytes": 120128,
+              "observedEncodedBytes": 120128,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/comments": {
+              "requests": 1,
+              "encodedBytes": 625,
+              "observedEncodedBytes": 625,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/checks": {
+              "requests": 1,
+              "encodedBytes": 272,
+              "observedEncodedBytes": 272,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/pr/analyze": {
+              "requests": 1,
+              "encodedBytes": 4733,
+              "observedEncodedBytes": 4733,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/prs/viewed-files": {
+              "requests": 1,
+              "encodedBytes": 1758,
+              "observedEncodedBytes": 1758,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            },
+            "/api/graph/project/warm": {
+              "requests": 2,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 710,
+              "finishedRequests": 0,
+              "inFlightRequests": 2,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/graphSymbolWorker-4RBrZcmw.js": {
+              "requests": 1,
+              "encodedBytes": 0,
+              "observedEncodedBytes": 0,
+              "finishedRequests": 0,
+              "inFlightRequests": 1,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {},
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": false,
+              "accountingComplete": false
+            },
+            "/assets/code-preview-braces-osDMZYcN.png": {
+              "requests": 1,
+              "encodedBytes": 33185,
+              "observedEncodedBytes": 33185,
+              "finishedRequests": 1,
+              "inFlightRequests": 0,
+              "failedRequests": 0,
+              "canceledRequests": 0,
+              "blockedRequests": 0,
+              "cachedRequests": 0,
+              "redirects": 0,
+              "requestIdReuses": 0,
+              "resourceTimingReconciliationAttempts": 0,
+              "resourceTimingReconciledRequests": 0,
+              "resourceTimingReconciliationRejections": {},
+              "byteAuthoritySources": {
+                "cdp-terminal-total": 1
+              },
+              "accountingAnomalies": 0,
+              "accountingDiagnostics": 0,
+              "bytesAuthoritative": true,
+              "accountingComplete": true
+            }
+          }
+        },
+        "memoryAtAction": {
+          "browserJsHeapUsedBytes": 30333912,
+          "browserProcessRssBytes": 532955136,
+          "jsHeapUsedBytes": 30333912,
+          "jsHeapTotalBytes": 64264356,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 5937888,
+          "backingStorageBytes": 5626020,
+          "processRssBytes": 532955136,
+          "processRssByType": {
+            "browser": 90767360,
+            "renderer": 310738944,
+            "GPU": 83214336,
+            "network.mojom.NetworkService": 48234496
+          },
+          "serviceRssBytes": 196902912,
+          "workerRssBytes": 227704832,
+          "serviceWorkerPids": [
+            59142
+          ]
+        },
+        "memorySettled": {
+          "browserJsHeapUsedBytes": 31470659,
+          "browserProcessRssBytes": 538378240,
+          "jsHeapUsedBytes": 31470659,
+          "jsHeapTotalBytes": 64266023,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 7053816,
+          "backingStorageBytes": 5627687,
+          "processRssBytes": 538378240,
+          "processRssByType": {
+            "browser": 90767360,
+            "renderer": 313999360,
+            "GPU": 85377024,
+            "network.mojom.NetworkService": 48234496
+          },
+          "serviceRssBytes": 196902912,
+          "workerRssBytes": 243712000,
+          "serviceWorkerPids": [
+            59142
+          ]
+        },
+        "memoryPeak": {
+          "browserJsHeapUsedBytes": 40250233,
+          "browserProcessRssBytes": 540622848,
+          "jsHeapUsedBytes": 40250233,
+          "jsHeapTotalBytes": 68799753,
+          "jsHeapLimitBytes": 4395630592,
+          "embedderHeapUsedBytes": 7760344,
+          "backingStorageBytes": 8453588,
+          "processRssBytes": 540622848,
+          "serviceRssBytes": 205766656,
+          "workerRssBytes": 243777536
+        },
+        "coldServiceMemory": {
+          "peakRssBytes": 224772096,
+          "retainedRssBytes": 196902912,
+          "workerPeakRssBytes": 644399104,
+          "workerRetainedRssBytes": 243859456,
+          "sampleCount": 93,
+          "intervalMs": 500,
+          "workerScope": "all-owned-analysis-and-projection-descendants",
+          "diagnostic": false,
+          "diagnosticMessage": null,
+          "lifecyclePeakRssBytes": 224772096,
+          "lifecycleWorkerPeakRssBytes": 644399104,
+          "browserPhasePeakRssBytes": 205766656,
+          "browserPhaseWorkerPeakRssBytes": 243777536,
+          "preparationAndEndToEndSampleCount": 67,
+          "browserPhaseSampleCount": 26,
+          "browserPhaseIntervalMs": 100,
+          "peakAggregation": "max-of-500ms-lifecycle-and-100ms-review-browser-phase",
+          "retainedSource": "500ms-lifecycle-final-snapshot-after-review-settled",
+          "browserPhaseWorkerScope": "owned-projection-workers"
+        },
+        "domAtAction": {
+          "documentNodes": 1832,
+          "canvasNodes": 56,
+          "canvasEdges": 29,
+          "reviewFileRows": 23
+        },
+        "domSettled": {
+          "documentNodes": 1832,
+          "canvasNodes": 56,
+          "canvasEdges": 29,
+          "reviewFileRows": 23
+        },
+        "sceneAtAction": {
+          "nodeIds": [
+            "ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx#ChatAttachmentsContainer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#getImagePreviewSrc",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx#ChatAttachmentRenderer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#MessageAttachmentCard",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#openAttachment",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#Attachment",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentAction",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentActions",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentContent",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentDescription",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentMedia",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentTitle",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentTrigger",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#CATEGORY_COLOR_CLASSES",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#CATEGORY_EXTENSIONS",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#categoryFromExtension",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#formatAttachmentSize",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentTypeLabel",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#chatMessageToFrameworkMessage",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#delegateMockChatInterface",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#MockChatInterface",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioTheme",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioWebOverlay",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarnessProps",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedIframeToolSettings",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedMockState",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#buildCssOverrides",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectionCommonTools",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectorEditorTools",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#resolveIframeUrl",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#skillsStorage",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#stubBashService",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#stubFileSystemService"
+          ],
+          "edgeIds": [
+            "dep:calls:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#getImagePreviewSrc",
+            "dep:calls:ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#MessageAttachmentCard->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#openAttachment",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory->ts:src/aria/app/src/lib/attachmentCategory.ts#categoryFromExtension",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory->ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentTypeLabel->ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioTheme",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioWebOverlay",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedMockState->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedIframeToolSettings",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#buildCssOverrides",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectionCommonTools",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectorEditorTools",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#resolveIframeUrl",
+            "dep:instantiates:ts:src/aria/app/src/mocks/MockChatInterface.ts#delegateMockChatInterface->ts:src/aria/app/src/mocks/MockChatInterface.ts#MockChatInterface",
+            "dep:references:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "dep:references:ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx#ChatAttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "dep:references:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarnessProps",
+            "min:ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "min:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "min:ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx"
+          ],
+          "reviewFiles": [
+            "AttachmentContent · function",
+            "AttachmentDescription · function",
+            "AttachmentRenderer · function",
+            "ChatAttachmentRenderer · function",
+            "ChatAttachmentsContainer · function",
+            "chatMessageToFrameworkMessage · function",
+            "isEmbeddedHost · function",
+            "isPortalHost · function",
+            "isUiaHost · function",
+            "MessageAttachmentCard · function",
+            "MockHarness · function",
+            "setupUiaAutopilot · function",
+            "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "src/aria/app/src/components/ui/Attachment.tsx",
+            "src/aria/app/src/lib/attachmentCategory.ts",
+            "src/aria/app/src/mocks/MockChatInterface.ts",
+            "src/aria/app/src/sdk/hostPlatform.ts",
+            "src/aria/app/src/sdk/sdk.css",
+            "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+            "src/packages/autopilot-uia/src/setupDelegate.ts"
+          ]
+        },
+        "sceneSettled": {
+          "nodeIds": [
+            "ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx#ChatAttachmentsContainer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#getImagePreviewSrc",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx#ChatAttachmentRenderer",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#MessageAttachmentCard",
+            "ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#openAttachment",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#Attachment",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentAction",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentActions",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentContent",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentDescription",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentMedia",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentTitle",
+            "ts:src/aria/app/src/components/ui/Attachment.tsx#AttachmentTrigger",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#CATEGORY_COLOR_CLASSES",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#CATEGORY_EXTENSIONS",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#categoryFromExtension",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#formatAttachmentSize",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory",
+            "ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentTypeLabel",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#chatMessageToFrameworkMessage",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#delegateMockChatInterface",
+            "ts:src/aria/app/src/mocks/MockChatInterface.ts#MockChatInterface",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost",
+            "ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioTheme",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioWebOverlay",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarnessProps",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedIframeToolSettings",
+            "ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedMockState",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#buildCssOverrides",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectionCommonTools",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectorEditorTools",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#resolveIframeUrl",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#skillsStorage",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#stubBashService",
+            "ts:src/packages/autopilot-uia/src/setupDelegate.ts#stubFileSystemService"
+          ],
+          "edgeIds": [
+            "dep:calls:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#getImagePreviewSrc",
+            "dep:calls:ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#MessageAttachmentCard->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx#openAttachment",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory->ts:src/aria/app/src/lib/attachmentCategory.ts#categoryFromExtension",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentCategory->ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "dep:calls:ts:src/aria/app/src/lib/attachmentCategory.ts#getAttachmentTypeLabel->ts:src/aria/app/src/lib/attachmentCategory.ts#extensionFromName",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isEmbeddedHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isPortalHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioDesktopHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioHost->ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isStudioWebHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/aria/app/src/sdk/hostPlatform.ts#isUiaHost->ts:src/aria/app/src/sdk/hostPlatform.ts#getHostPlatformSlug",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioTheme",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#buildStudioWebOverlay",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#applyTheme",
+            "dep:calls:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedMockState->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#seedIframeToolSettings",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#buildCssOverrides",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectionCommonTools",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#getSelectorEditorTools",
+            "dep:calls:ts:src/packages/autopilot-uia/src/setupDelegate.ts#setupUiaAutopilot->ts:src/packages/autopilot-uia/src/setupDelegate.ts#resolveIframeUrl",
+            "dep:instantiates:ts:src/aria/app/src/mocks/MockChatInterface.ts#delegateMockChatInterface->ts:src/aria/app/src/mocks/MockChatInterface.ts#MockChatInterface",
+            "dep:references:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx#AttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "dep:references:ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx#ChatAttachmentRenderer->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "dep:references:ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarness->ts:src/packages/autopilot-delegate-iframe/src/mock-entry.tsx#MockHarnessProps",
+            "min:ts:src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "min:ts:src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "min:ts:src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx->ts:src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx"
+          ],
+          "reviewFiles": [
+            "AttachmentContent · function",
+            "AttachmentDescription · function",
+            "AttachmentRenderer · function",
+            "ChatAttachmentRenderer · function",
+            "ChatAttachmentsContainer · function",
+            "chatMessageToFrameworkMessage · function",
+            "isEmbeddedHost · function",
+            "isPortalHost · function",
+            "isUiaHost · function",
+            "MessageAttachmentCard · function",
+            "MockHarness · function",
+            "setupUiaAutopilot · function",
+            "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+            "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+            "src/aria/app/src/components/ui/Attachment.tsx",
+            "src/aria/app/src/lib/attachmentCategory.ts",
+            "src/aria/app/src/mocks/MockChatInterface.ts",
+            "src/aria/app/src/sdk/hostPlatform.ts",
+            "src/aria/app/src/sdk/sdk.css",
+            "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+            "src/packages/autopilot-uia/src/setupDelegate.ts"
+          ]
+        },
+        "exactRevision": {
+          "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+          "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+          "preparedBaseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+          "baseTipDrift": false
+        },
+        "partialOnlyContinuation": {
+          "version": 2,
+          "delivery": "partial-runtime-only-v1",
+          "pairId": "a6c92d5cb20d1c7da358",
+          "streamEnded": true,
+          "readyDoneSamePair": true,
+          "postTerminalDwellMs": 300,
+          "canonicalGraphRequests": 0,
+          "canonicalGraphResponses": 0,
+          "canonicalReconciliationMarks": 0,
+          "repositoryAnalysisWorkerPidsAfterTerminal": [],
+          "boundedPartialWorkerPidsAtDwellStart": [],
+          "graphProjectWorkerPidsAtDwellStart": [
+            59142
+          ],
+          "boundedPartialWorkerPidsDuringDwell": [],
+          "graphProjectWorkerPidsDuringDwell": [
+            59142
+          ],
+          "newBoundedPartialWorkerPidsDuringDwell": [],
+          "newGraphProjectWorkerPidsDuringDwell": [],
+          "processObservation": {
+            "scope": "same-dwell-start-and-sampled-union",
+            "sampleIntervalMs": 50,
+            "sampleCount": 5
+          },
+          "preDwellGraphWork": {
+            "partialProjectionRequests": 2,
+            "partialProjectionWarmRequests": 2,
+            "sourceIndexRequests": 0,
+            "fullGenerationRequests": 0
+          },
+          "postReadyGraphWork": {
+            "partialProjectionRequests": 0,
+            "partialProjectionWarmRequests": 0,
+            "sourceIndexRequests": 0,
+            "fullGenerationRequests": 0
+          },
+          "routeCounterScope": "same-dwell-request-delta",
+          "allowedBackgroundWork": "syntax-symbol-topology-index-and-explicit-bounded-partial-expansion-only"
+        },
+        "analyzeTerminals": [
+          {
+            "stage": "done",
+            "pairId": "a6c92d5cb20d1c7da358",
+            "completeness": "provisional",
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "comparisonGraphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "headSha": "78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "baseSha": "6ea1527fb84880f669147927ca3f9381ba3b35b3",
+            "mergeBaseSha": "1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "counts": {
+              "nodes": 1419,
+              "edges": 2902
+            },
+            "changedFiles": [
+              {
+                "path": "src/aria/app/__test__/ChatAttachmentRenderer.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.renderer.test.tsx",
+                "status": "added"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatAttachmentsContainer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/AttachmentRenderer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/ChatAttachmentRenderer.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.renderer.test.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/chat/ChatRenderers/MessageAttachmentCard.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/components/ui/Attachment.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/lib/attachmentCategory.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/mocks/MockChatInterface.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/hostPlatform.test.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/hostPlatform.ts",
+                "status": "modified"
+              },
+              {
+                "path": "src/aria/app/src/sdk/sdk.css",
+                "status": "modified"
+              },
+              {
+                "path": "src/packages/autopilot-delegate-iframe/src/mock-entry.tsx",
+                "status": "modified"
+              },
+              {
+                "path": "src/packages/autopilot-uia/src/setupDelegate.ts",
+                "status": "modified"
+              }
+            ],
+            "warnings": [
+              "TypeScript: 2344 unresolved edge(s)",
+              "TypeScript: 2075 unresolved edge(s)"
+            ],
+            "cache": "hit",
+            "initialProjectionCache": {
+              "version": 1,
+              "depth": 1,
+              "prefetchDepth": 3,
+              "headKey": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+              "comparisonKey": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+              "ready": true
+            }
+          }
+        ],
+        "analyzeRequests": [
+          {
+            "method": "POST",
+            "progressiveFalse": false,
+            "fullBaselineCapabilityHeaderPresent": false
+          }
+        ],
+        "initialProjectionCacheHits": [
+          {
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "seedGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "method": "POST",
+            "path": "/api/graph/project",
+            "status": 200,
+            "cache": "hit",
+            "key": "1e573d0b02b248f88348e651431083371aed2dae3f7d1539d5350c2abe4c19fa",
+            "ready": true,
+            "responseBodyRead": false,
+            "source": "request-and-response-headers"
+          },
+          {
+            "graphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "seedGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "method": "POST",
+            "path": "/api/graph/project",
+            "status": 200,
+            "cache": "hit",
+            "key": "d4d086c33e9a9aa19e44c16a21b886c3733f9369fad8f4d62640f452fc6a7a0e",
+            "ready": true,
+            "responseBodyRead": false,
+            "source": "request-and-response-headers"
+          }
+        ],
+        "performanceMarks": [
+          {
+            "name": "meridian:progressive-graph-request-start",
+            "startTimeMs": 99.39999997615814,
+            "detail": null
+          },
+          {
+            "name": "meridian:progressive-graph-ready",
+            "startTimeMs": 134,
+            "detail": null
+          },
+          {
+            "name": "meridian:first-actionable-canvas",
+            "startTimeMs": 2357.7000000476837,
+            "detail": {
+              "nodes": 201,
+              "edges": 212
+            }
+          },
+          {
+            "name": "meridian:navigation-restored",
+            "startTimeMs": 2738.2000000476837,
+            "detail": null
+          }
+        ],
+        "graphs": [],
+        "projections": [
+          {
+            "version": 1,
+            "graphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "rootsKind": "changed-files",
+            "seedGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "generation": null,
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "rootCount": null,
+            "readyRootCount": null,
+            "loadedFileCount": null,
+            "counts": null,
+            "responseBodyRead": false,
+            "transportStatus": 200,
+            "source": "request-and-response-headers"
+          },
+          {
+            "version": 1,
+            "graphId": "pr-partial-base-a6c92d5cb20d1c7da358-1b2d6d8ca68a6962d8030ccacfac59bc6508cbd8",
+            "rootsKind": "changed-files",
+            "seedGraphId": "pr-partial-a6c92d5cb20d1c7da358-78a392a22d86edf8c0b5265fc5d8e24a09f531f9",
+            "generation": null,
+            "requestedDepth": 1,
+            "prefetchDepth": 3,
+            "loadedDepth": null,
+            "rootCount": null,
+            "readyRootCount": null,
+            "loadedFileCount": null,
+            "counts": null,
+            "responseBodyRead": false,
+            "transportStatus": 200,
+            "source": "request-and-response-headers"
+          }
+        ],
+        "pageErrors": [],
+        "consoleErrors": []
+      }
+    }
+  }
+}

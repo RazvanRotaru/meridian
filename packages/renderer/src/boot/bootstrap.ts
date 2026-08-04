@@ -13,6 +13,13 @@ import {
 import { createHttpTelemetryProvider } from "../telemetry/httpProvider";
 import type { TelemetrySourceDescriptor, TelemetrySourceRegistration } from "../telemetry/provider";
 import { createBlueprintStore, type BlueprintStore } from "../state/store";
+import {
+  changedFileProjectionRequest,
+  fetchGraphProjection,
+  isProjectionReadyForCanvas,
+  projectionToArtifact,
+} from "../state/progressiveGraph";
+import type { GraphArtifact, GraphProjectionV1 } from "@meridian/core";
 import { restoreFromUrl, startUrlSync } from "../state/urlSync";
 import {
   progressStageFromReviewState,
@@ -41,6 +48,8 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
   let initialRestoreGeneration = 0;
   let pendingInitialRestoreSearch: string | null = null;
   let initialRestoreStore: BlueprintStore | null = null;
+  let initialProjectionAbort: AbortController | null = null;
+  let initialProjectionGeneration: number | null = null;
   // Start synchronously, before the first artifact/provider await: a `rev=1` reload must be guarded
   // from its first splash frame, including the time before a store exists to say `preparing`.
   const navigationGuard = startPrReviewNavigationGuard({
@@ -49,6 +58,7 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
         return;
       }
       initialRestoreGeneration += 1;
+      initialProjectionAbort?.abort();
       pendingInitialRestoreSearch = search;
       const state = initialRestoreStore?.getState();
       if (state?.prReviewStatus === "preparing") {
@@ -108,11 +118,102 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       }
       graphViewLease = startGraphViewLease(boot.graphViewLease, prApi.graphId);
     }
-    const artifact = await loadArtifact(boot.graphUrl);
+    let initialGraphProjection: GraphProjectionV1 | null = null;
+    let artifact: GraphArtifact;
+    const initialSearch = typeof window === "undefined" ? "" : window.location.search;
+    const bootSearch = new URLSearchParams(initialSearch);
+    const progressiveRequested = progressiveGraphDeliveryEnabled(restoringReview, initialSearch);
+    const partialMarkers = bootSearch.getAll("partial");
+    const pairMarkers = bootSearch.getAll("pair");
+    const progressiveMarkers = bootSearch.getAll("progressive");
+    const hasProvisionalMarker = partialMarkers.length > 0 || pairMarkers.length > 0;
+    const provisionalBoot = hasProvisionalMarker
+      && partialMarkers.length === 1
+      && partialMarkers[0] === "1"
+      && pairMarkers.length === 1
+      && /^[a-f0-9]{20}$/.test(pairMarkers[0]!)
+      && progressiveMarkers.length === 1
+      && progressiveMarkers[0] === "1";
+    if (hasProvisionalMarker && !provisionalBoot) {
+      throw new Error("malformed provisional PR graph URL");
+    }
+    const progressiveRestore = restoringReview
+      && progressiveRequested
+      && boot.graphProjectUrl !== null
+      && boot.graphProjectUrl !== undefined
+      && boot.graphSymbolsUrl !== null
+      && boot.graphSymbolsUrl !== undefined
+      && prApi.graphId !== null;
+    if (provisionalBoot && !progressiveRestore) {
+      throw new Error("the provisional PR graph cannot boot without its verified depth-one projection");
+    }
+    if (restoringReview && progressiveRequested && !progressiveRestore) {
+      throw new Error("the partial PR graph cannot boot without projection and symbol capabilities");
+    }
+    if (progressiveRestore) {
+      performanceMark("meridian:progressive-graph-request-start");
+      const projectionGeneration = initialRestoreGeneration;
+      const controller = new AbortController();
+      initialProjectionAbort = controller;
+      try {
+        const projection = await fetchGraphProjection(
+          boot.graphProjectUrl!,
+          // The worker returns only the required depth-1 slice. The renderer requests predicted
+          // depth-2 warming only after the first actionable canvas, so admission wins CPU priority.
+          changedFileProjectionRequest(prApi.graphId!, prApi.graphId!, 1, 3),
+          { signal: controller.signal },
+        );
+        if (!isInitialProgressiveProjectionReady(projection)) {
+          throw new Error("the affected-file projection is not ready through depth 1");
+        }
+        // Back/Forward can arrive while the worker is running. Never construct a store for the new
+        // history entry from the old review's partial graph, even if abort raced with a resolved fetch.
+        if (projectionGeneration !== initialRestoreGeneration) {
+          throw new Error(
+            `${provisionalBoot ? "the provisional" : "the partial"} PR graph history entry changed during bootstrap`,
+          );
+        } else {
+          initialGraphProjection = projection;
+          initialProjectionGeneration = projectionGeneration;
+          artifact = projectionToArtifact(projection);
+          performanceMark("meridian:progressive-graph-ready");
+        }
+      } catch (error) {
+        // A partial artifact is not a complete-artifact fallback. Falling through to the raw graph
+        // route would silently claim that omitted nodes are the complete repository graph.
+        throw new Error(
+          `${provisionalBoot ? "the provisional" : "the partial"} PR graph projection is unavailable`,
+          { cause: error },
+        );
+      } finally {
+        if (initialProjectionAbort === controller) initialProjectionAbort = null;
+      }
+    } else {
+      artifact = await loadArtifact(boot.graphUrl);
+    }
     report("index");
     const index = buildGraphIndex(artifact);
     report("services");
     const telemetrySources = await buildTelemetrySources(boot);
+    // A history transition can also land while telemetry services initialize, after the projection
+    // request itself has settled. Fail this generation instead of treating its bounded backing
+    // artifact as a complete compatibility baseline.
+    if (
+      initialGraphProjection !== null
+      && initialProjectionGeneration !== initialRestoreGeneration
+    ) {
+      // The registered backing artifact is the bounded projection source, not a complete graph.
+      // A late history transition must restart outside this bootstrap generation instead of
+      // silently installing that raw artifact as a complete map.
+      throw new Error(
+        `${provisionalBoot ? "the provisional" : "the partial"} PR graph projection is unavailable`,
+        {
+          cause: new Error(
+            `${provisionalBoot ? "the provisional" : "the partial"} PR graph history entry changed during bootstrap`,
+          ),
+        },
+      );
+    }
     const selectedTelemetrySource = boot.preselectedTelemetrySourceId === null
       ? null
       : telemetrySources.find((source) => source.id === boot.preselectedTelemetrySourceId) ?? null;
@@ -137,6 +238,13 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       prChecksUrl: prApi.prChecksUrl,
       prFileUrl: prApi.prFileUrl,
       graphUrl: boot.graphUrl,
+      graphProjectUrl: boot.graphProjectUrl ?? null,
+      graphSymbolsUrl: boot.graphSymbolsUrl ?? null,
+      initialGraphProjection,
+      initialGraphProvisional: provisionalBoot && initialGraphProjection !== null,
+      loadCanonicalBootArtifact: initialGraphProjection === null || provisionalBoot
+        ? null
+        : (signal) => loadArtifact(boot.graphUrl, { signal }),
       metaUrl: boot.metaUrl,
       prReviewUrl: prApi.prReviewUrl,
       analyzeUrl: boot.githubSource ? prApi.analyzeUrl : null,
@@ -234,6 +342,7 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
     }
     navigationGuard.completeInitialRestore();
     startUrlSync(store);
+    performanceMark("meridian:navigation-restored");
     return { store, boot };
   } catch (error) {
     initialRestoreActive = false;
@@ -242,6 +351,39 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
     navigationGuard.dispose();
     throw error;
   }
+}
+
+function performanceMark(name: string): void {
+  if (typeof performance !== "undefined" && typeof performance.mark === "function") {
+    performance.mark(name);
+  }
+}
+
+export function progressiveGraphDeliveryEnabled(restoringReview: boolean, search: string): boolean {
+  return !restoringReview || new URLSearchParams(search).get("progressive") !== "0";
+}
+
+export function progressiveGraphDeliveryForAcceptedSearch(
+  pendingSearch: string | null,
+  currentSearch: string,
+): boolean {
+  const acceptedSearch = pendingSearch ?? currentSearch;
+  return progressiveGraphDeliveryEnabled(
+    reviewRestoreRequested(acceptedSearch),
+    acceptedSearch,
+  );
+}
+
+/** A changed-file HEAD can legitimately be empty for a deletion-only PR. Its merge-base projection
+ * supplies the review tombstones later; admitting the empty immutable HEAD here avoids needlessly
+ * falling back to the complete artifact while the pair-level gate still protects review entry. */
+export function isInitialProgressiveProjectionReady(projection: GraphProjectionV1): boolean {
+  return isProjectionReadyForCanvas(projection)
+    || (
+      projection.rootFileIds.length === 0
+      && projection.readyFileIds.length === 0
+      && projection.loadedDepth >= projection.requestedDepth
+    );
 }
 
 async function buildTelemetrySources(boot: BootConfig): Promise<TelemetrySourceRegistration[]> {

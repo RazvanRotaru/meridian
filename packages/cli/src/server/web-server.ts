@@ -73,6 +73,17 @@ import type { RepositoryRetentionOptions } from "./web-repository-retention";
 import { isWebServiceShutdown, WEB_SERVICE_SHUTDOWN_MESSAGE } from "./web-service-shutdown";
 import type { TypeScriptRevisionShardMode } from "@meridian/extractor-typescript";
 import { startTypeScriptRevisionShardRetentionScheduler } from "./web-typescript-revision-shard-retention-scheduler";
+import {
+  handleGraphProject,
+  handleGraphProjectWarm,
+  handleGraphProjectWarmStatus,
+  handleGraphSymbols,
+} from "./web-graph-project";
+import { runGraphProjectChild } from "./web-graph-project-child";
+import {
+  WebGraphProjectCache,
+  type WebGraphProjectCacheOptions,
+} from "./web-graph-project-cache";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -102,6 +113,8 @@ export interface WebServerConfig {
   allowSyntheticExecution?: boolean;
   /** Separate opt-in for consent-gated prepared PR-head runs in an available OCI sandbox. */
   allowSyntheticPrExecution?: boolean;
+  /** Loopback benchmark mode; complete PR controls still require a per-request capability marker. */
+  benchmarkPrFullBaseline?: boolean;
   /** Internal upper bound for memory-heavy analysis concurrency; never bypasses the memory budget. */
   maxConcurrentAnalyses?: number;
   /** Internal bounds for deterministic admission/load tests; production uses conservative defaults. */
@@ -112,6 +125,8 @@ export interface WebServerConfig {
   repositoryAnalysis?: typeof runRepositoryAnalysisChild;
   /** Internal artifact-restamp boundary override used by deterministic server tests. */
   repositoryArtifactRestamp?: typeof runRepositoryArtifactRestampChild;
+  /** Internal projection boundary override used by deterministic server tests. */
+  graphProject?: typeof runGraphProjectChild;
   /** Internal persistent repository boundary override used by deterministic server tests. */
   repositories?: RepositoryMirror;
   /** Internal native-picker boundary override used by deterministic lifecycle tests. */
@@ -120,6 +135,8 @@ export interface WebServerConfig {
   repositoryRetention?: Partial<RepositoryRetentionOptions>;
   /** Process-private inactive graph registration budget override. */
   graphRetention?: Partial<GraphRetentionOptions>;
+  /** Process-private projection/symbol file cache budget override. */
+  graphProjectCache?: WebGraphProjectCacheOptions;
   /** Optional background-maintenance diagnostic sink. */
   onRepositoryRetentionError?: (error: unknown) => void;
   /** Optional process-private graph-registry cleanup diagnostic sink. */
@@ -133,6 +150,8 @@ export interface Context {
   shutdownSignal: AbortSignal;
   /** Disk-backed immutable graph registrations; request handlers load at most one artifact. */
   graphStore: WebGraphStore;
+  /** Bounded immutable projection/symbol files; never parsed in the web parent. */
+  graphProjectCache: WebGraphProjectCache;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Ephemeral waiter-safe singleflight plus bounded admission for memory-heavy extraction. */
@@ -143,6 +162,8 @@ export interface Context {
   repositoryAnalysis: typeof runRepositoryAnalysisChild;
   /** Disposable child boundary for immutable branch-provenance derivatives. */
   repositoryArtifactRestamp: typeof runRepositoryArtifactRestampChild;
+  /** Disposable child boundary for projections and background symbol indexes. */
+  graphProject: typeof runGraphProjectChild;
   cacheRoot: string;
   refreshCache: boolean;
   typeScriptRevisionShardMode?: TypeScriptRevisionShardMode;
@@ -159,6 +180,8 @@ export interface Context {
   fallbackUser?: GitHubUser;
   allowSyntheticExecution: boolean;
   allowSyntheticPrExecution: boolean;
+  /** Disabled in normal app launches; never authorizes an unmarked complete-control request. */
+  benchmarkPrFullBaseline: boolean;
   /** Injectable capability probe; production checks for the prebuilt, no-fallback OCI runner. */
   syntheticPrSandboxRuntimeSupported: () => boolean;
   /** Injectable OCI executor; never substituted with the host-process runner. */
@@ -185,6 +208,14 @@ export function createWebService(config: WebServerConfig): WebService {
   const graphStore = new WebGraphStore(config.graphRetention, {
     onError: config.onGraphRetentionError,
   });
+  let graphProjectCache: WebGraphProjectCache;
+  try {
+    graphProjectCache = new WebGraphProjectCache(config.graphProjectCache);
+  } catch (error) {
+    void analysisCoordinator.close();
+    graphStore.dispose();
+    throw error;
+  }
   let repositories: RepositoryMirror;
   try {
     repositories = config.repositories ?? new WebRepositoryMirror({
@@ -194,6 +225,7 @@ export function createWebService(config: WebServerConfig): WebService {
     });
   } catch (error) {
     void analysisCoordinator.close();
+    graphProjectCache.dispose();
     graphStore.dispose();
     throw error;
   }
@@ -222,6 +254,7 @@ export function createWebService(config: WebServerConfig): WebService {
     finishShutdown: () => {
       ctx.prFilesCache.clear();
       ctx.sessions.clear();
+      graphProjectCache.dispose();
       graphStore.dispose();
     },
   });
@@ -229,6 +262,7 @@ export function createWebService(config: WebServerConfig): WebService {
     config,
     staticContext,
     graphStore,
+    graphProjectCache,
     analysisCoordinator,
     analysisMemory,
     repositories,
@@ -242,6 +276,7 @@ function buildContext(
   config: WebServerConfig,
   staticContext: StaticWebContext,
   graphStore: WebGraphStore,
+  graphProjectCache: WebGraphProjectCache,
   analysisCoordinator: AnalysisCoordinator,
   analysisMemory: RepositoryAnalysisMemoryPolicy,
   repositories: RepositoryMirror,
@@ -251,19 +286,30 @@ function buildContext(
   const repositoryAnalysis = config.repositoryAnalysis ?? runRepositoryAnalysisChild;
   const repositoryArtifactRestamp = config.repositoryArtifactRestamp
     ?? runRepositoryArtifactRestampChild;
+  const graphProject = config.graphProject ?? runGraphProjectChild;
   const ctx: Context = {
     shutdownSignal,
     graphStore,
+    graphProjectCache,
     prFilesCache: new Map(),
     analysisCoordinator,
     repositories,
     repositoryAnalysis: (request, options) => repositoryAnalysis(request, {
       ...options,
-      workerHeapMb: analysisMemory.workerHeapMb,
+      // Callers may prove a stricter child bound (for example an <=20k-file partial expansion),
+      // but can never widen the service's startup memory policy.
+      workerHeapMb: Math.min(options?.workerHeapMb ?? analysisMemory.workerHeapMb, analysisMemory.workerHeapMb),
     }),
     repositoryArtifactRestamp: (request, options) => repositoryArtifactRestamp(request, {
       ...options,
       workerHeapMb: analysisMemory.workerHeapMb,
+    }),
+    graphProject: (request, options) => graphProject(request, {
+      ...options,
+      // The projection scheduler may prove that an immutable provisional artifact fits its
+      // separately bounded lightweight lane. Preserve that stricter child heap instead of
+      // widening every graph worker to the repository-extraction allowance.
+      workerHeapMb: options?.workerHeapMb ?? analysisMemory.workerHeapMb,
     }),
     cacheRoot,
     refreshCache: config.refreshCache === true,
@@ -280,6 +326,7 @@ function buildContext(
     fallbackUser: config.fallbackUser,
     allowSyntheticExecution: config.allowSyntheticExecution === true,
     allowSyntheticPrExecution: config.allowSyntheticPrExecution === true,
+    benchmarkPrFullBaseline: config.benchmarkPrFullBaseline === true,
     syntheticPrSandboxRuntimeSupported,
     runSyntheticScenarioInOci,
     folderPicker: config.folderPicker ?? pickFolder,
@@ -356,6 +403,14 @@ async function handleApiPost(ctx: Context, request: IncomingMessage, response: S
   const pathname = url.pathname;
   if (pathname === "/api/graph-views") {
     await handleGraphViewCreate(ctx.graphStore, request, response, ctx.shutdownSignal);
+    return;
+  }
+  if (pathname === "/api/graph/project") {
+    await handleGraphProject(ctx, request, response);
+    return;
+  }
+  if (pathname === "/api/graph/project/warm") {
+    await handleGraphProjectWarm(ctx, request, response);
     return;
   }
   if (pathname === "/api/generate") {
@@ -483,6 +538,14 @@ async function handleApiGet(ctx: Context, request: IncomingMessage, response: Se
   const pathname = url.pathname;
   if (pathname === "/api/graph") {
     await sendGraph(ctx, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/graph/symbols") {
+    await handleGraphSymbols(ctx, request, response, url.searchParams.get("id"));
+    return;
+  }
+  if (pathname === "/api/graph/project/warm/status") {
+    handleGraphProjectWarmStatus(ctx, response, url.searchParams.get("key"));
     return;
   }
   if (pathname === "/api/meta") {

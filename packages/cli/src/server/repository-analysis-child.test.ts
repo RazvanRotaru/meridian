@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -32,6 +34,45 @@ afterEach(() => {
 });
 
 describe("repository analysis child", () => {
+  it("streams one exact changed-file manifest before the canonical artifact completes", async () => {
+    const directory = temporaryDirectory();
+    const root = join(directory, "repo");
+    mkdirSync(join(root, "src"), { recursive: true });
+    writeFileSync(join(root, "src", "index.ts"), "export const value = 1;\n");
+    execFileSync("git", ["init", "-q"], { cwd: root });
+    execFileSync("git", ["config", "user.email", "meridian@example.test"], { cwd: root });
+    execFileSync("git", ["config", "user.name", "Meridian Test"], { cwd: root });
+    execFileSync("git", ["add", "src/index.ts"], { cwd: root });
+    execFileSync("git", ["commit", "-qm", "base"], { cwd: root });
+    const base = execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim();
+    writeFileSync(join(root, "src", "index.ts"), "export const value = 2;\n");
+    const timeline: string[] = [];
+    const manifests: unknown[] = [];
+
+    const result = await runRepositoryAnalysisChild({
+      absoluteRoot: root,
+      cwd: root,
+      changedSince: base,
+    }, {
+      artifactOutputPath: join(directory, "artifact.json"),
+      onChangedManifest: async (manifest) => {
+        timeline.push("manifest");
+        manifests.push(manifest);
+        throw new Error("observer failure is isolated");
+      },
+      timeoutMs: 30_000,
+    });
+    timeline.push("result");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+
+    expect(timeline).toEqual(["manifest", "result"]);
+    expect(manifests).toEqual([{
+      version: 1,
+      changedFiles: [{ path: "src/index.ts", status: "modified" }],
+    }]);
+    expect(result.changedFiles).toEqual((manifests[0] as { changedFiles: unknown[] }).changedFiles);
+  }, 30_000);
+
   it("runs real repository analysis and returns only file-backed compact metadata", async () => {
     const directory = temporaryDirectory();
     const artifactOutputPath = join(directory, "artifact.json");
@@ -376,6 +417,7 @@ describe("repository analysis child", () => {
             },
             target: artifact.target,
             changedFiles: [],
+            initialGraphSeedFiles: [],
             emptySideHints: [],
             sourceFiles: ["src/index.ts"],
             changedSinceBaseRef: null,
@@ -414,7 +456,7 @@ describe("repository analysis child", () => {
 
     expect(error).toMatchObject({
       exitCode: 1,
-      message: "repository analysis worker exited without a valid response",
+      message: "repository analysis worker exited without a valid response (exit 2)",
     });
     expect((error as Error).message).not.toContain("private/source/path");
     expect((error as Error).message).not.toContain("github_pat_");
@@ -596,6 +638,7 @@ describe("repository analysis child", () => {
             },
             target: artifact.target,
             changedFiles: [],
+            initialGraphSeedFiles: [],
             emptySideHints: [],
             sourceFiles: ["src/index.ts"],
             changedSinceBaseRef: null,

@@ -313,6 +313,7 @@ function remoteFixture(
         summary: material.summary,
         target: remoteArtifact.target,
         changedFiles: [],
+        initialGraphSeedFiles: [],
         emptySideHints: [],
         sourceFiles: [],
         changedSinceBaseRef: null,

@@ -5,6 +5,7 @@
  */
 
 import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import type { OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { pipeline } from "node:stream/promises";
 
@@ -34,10 +35,21 @@ export function sendHtml(
 
 /** Stream an already-serialized JSON document. `pipeline` observes writable backpressure and does
  * not construct a second whole-artifact string or Buffer in the server process. */
-export async function sendJsonFile(response: ServerResponse, path: string): Promise<void> {
+export async function sendJsonFile(
+  response: ServerResponse,
+  path: string,
+  extraHeaders: OutgoingHttpHeaders = {},
+): Promise<void> {
+  // Graph artifacts and projections are immutable once registered. Publishing their exact length
+  // lets clients enforce bounded reads before allocation and gives transport observers an exact
+  // payload size even when Chromium reports an application-consumed stream as ERR_ABORTED rather
+  // than emitting loadingFinished.
+  const file = await stat(path);
   response.writeHead(200, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
+    ...extraHeaders,
+    "content-length": file.size,
   });
   await pipeline(createReadStream(path), response);
 }

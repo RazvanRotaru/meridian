@@ -9,9 +9,11 @@ import {
   type GraphArtifact,
 } from "@meridian/core";
 import {
+  boundedRepositoryAnalysisEarlyManifest,
   changedMetadataForWorker,
   createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
+  initialGraphSeedFilesForWorker,
   isRepositoryAnalysisWorkerRequest,
   isRepositoryAnalysisFacts,
   isRepositoryAnalysisProgress,
@@ -31,6 +33,95 @@ describe("repository analysis worker protocol", () => {
     } as never)).toThrow("cannot contain a TypeScript shard policy");
   });
 
+  it("normalizes only a complete bounded topology preselection for private expansion", () => {
+    const normalized = normalizeRepositoryAnalysisRequest({
+      absoluteRoot: "/repo",
+      cwd: "/repo",
+      initialGraph: {
+        depth: 2,
+        seedFiles: ["src/root.ts"],
+        selectedFiles: ["src/dep.ts", "src/root.ts"],
+        extractionFiles: ["src/dep.ts", "src/root.ts"],
+        frontierFiles: ["src/dep.ts"],
+        lineage: { graphId: "pr-partial-test", generation: "a".repeat(64) },
+      },
+    });
+    expect(normalized.initialGraph).toEqual({
+      depth: 2,
+      seedFiles: ["src/root.ts"],
+      selectedFiles: ["src/dep.ts", "src/root.ts"],
+      extractionFiles: ["src/dep.ts", "src/root.ts"],
+      frontierFiles: ["src/dep.ts"],
+      lineage: { graphId: "pr-partial-test", generation: "a".repeat(64) },
+    });
+    expect(isRepositoryAnalysisWorkerRequest({
+      type: "analyze",
+      id: "expand",
+      request: normalized,
+      artifactOutputPath: "/tmp/expanded.json",
+      earlyManifest: false,
+      branchVariant: null,
+      reviewFingerprints: { mode: "all" },
+      progressContext: null,
+      typeScriptRevisionShards: null,
+    })).toBe(true);
+
+    const incomplete = {
+      ...normalized,
+      initialGraph: { ...normalized.initialGraph!, lineage: null },
+    };
+    expect(isRepositoryAnalysisWorkerRequest({
+      type: "analyze",
+      id: "expand",
+      request: incomplete,
+      artifactOutputPath: "/tmp/expanded.json",
+      earlyManifest: false,
+      branchVariant: null,
+      reviewFingerprints: null,
+      progressContext: null,
+      typeScriptRevisionShards: null,
+    })).toBe(false);
+  });
+
+  it("uses shared UTF-16 binary order for preselection and changed-file path envelopes", () => {
+    const childOrder = [
+      "src/Z.ts",
+      "src/a.ts",
+      "src/é.ts",
+      "src/\uE000.ts",
+      "src/😀.ts",
+    ];
+    const canonical = [
+      "src/Z.ts",
+      "src/a.ts",
+      "src/é.ts",
+      "src/😀.ts",
+      "src/\uE000.ts",
+    ];
+    const normalized = normalizeRepositoryAnalysisRequest({
+      absoluteRoot: "/repo",
+      cwd: "/repo",
+      initialGraph: {
+        depth: 1,
+        seedFiles: childOrder,
+        selectedFiles: [...childOrder].reverse(),
+        extractionFiles: [...childOrder].reverse(),
+        frontierFiles: ["src/\uE000.ts", "src/😀.ts"],
+        lineage: { graphId: "pr-partial-test", generation: "a".repeat(64) },
+      },
+    });
+
+    expect(normalized.initialGraph).toMatchObject({
+      seedFiles: canonical,
+      selectedFiles: canonical,
+      frontierFiles: ["src/😀.ts", "src/\uE000.ts"],
+    });
+    expect(boundedRepositoryAnalysisEarlyManifest(childOrder.map((path) => ({
+      path,
+      status: "modified" as const,
+    })))?.changedFiles.map(({ path }) => path)).toEqual(canonical);
+  });
+
   it("strictly validates a server-owned TypeScript shard policy on private IPC", () => {
     const request = {
       type: "analyze",
@@ -44,8 +135,10 @@ describe("repository analysis worker protocol", () => {
         changedSinceTimeoutMs: null,
         hintedFiles: [],
         allowEmpty: false,
+        initialGraph: null,
       },
       artifactOutputPath: "/tmp/artifact.json",
+      earlyManifest: false,
       branchVariant: null,
       reviewFingerprints: null,
       progressContext: null,
@@ -98,6 +191,60 @@ describe("repository analysis worker protocol", () => {
         admission: { ...signer, keyId: "0".repeat(64) },
       },
     })).toBe(false);
+  });
+
+  it("admits only complete bounded early manifests and validates their strict IPC envelope", () => {
+    const changedFiles = Array.from({ length: 512 }, (_, index) => ({
+      path: `src/file-${String(index).padStart(3, "0")}.ts`,
+      status: "modified" as const,
+    }));
+    const manifest = boundedRepositoryAnalysisEarlyManifest([...changedFiles].reverse());
+
+    expect(manifest).toEqual({ version: 1, changedFiles });
+    expect(isRepositoryAnalysisWorkerResponse({
+      type: "manifest",
+      id: "analysis",
+      manifest,
+    })).toBe(true);
+    expect(isRepositoryAnalysisWorkerResponse({
+      type: "manifest",
+      id: "analysis",
+      manifest: { ...manifest, unexpected: true },
+    })).toBe(false);
+    expect(boundedRepositoryAnalysisEarlyManifest([
+      ...changedFiles,
+      { path: "src/file-512.ts", status: "modified" },
+    ])).toBeNull();
+  });
+
+  it("requires an exact changed-since request before enabling the early-manifest IPC channel", () => {
+    const base = {
+      type: "analyze",
+      id: "analysis",
+      request: {
+        absoluteRoot: "/repo",
+        cwd: "/repo",
+        targetName: null,
+        vcs: null,
+        changedSince: null,
+        changedSinceTimeoutMs: null,
+        hintedFiles: [],
+        allowEmpty: false,
+        initialGraph: null,
+      },
+      artifactOutputPath: "/tmp/artifact.json",
+      branchVariant: null,
+      earlyManifest: true,
+      reviewFingerprints: null,
+      progressContext: null,
+      typeScriptRevisionShards: null,
+    } as const;
+
+    expect(isRepositoryAnalysisWorkerRequest(base)).toBe(false);
+    expect(isRepositoryAnalysisWorkerRequest({
+      ...base,
+      request: { ...base.request, changedSince: "a".repeat(40) },
+    })).toBe(true);
   });
 
   it("sorts canonical status-rich changed files without losing rename or non-textual provenance", () => {
@@ -167,6 +314,7 @@ describe("repository analysis worker protocol", () => {
         },
         target: fixtureArtifact().target,
         changedFiles: [],
+        initialGraphSeedFiles: [],
         emptySideHints: [],
         sourceFiles: [],
         changedSinceBaseRef: null,
@@ -217,6 +365,7 @@ describe("repository analysis worker protocol", () => {
         status: "modified",
         nonTextualChanges: true,
       }],
+      initialGraphSeedFiles: ["src/index.ts"],
       emptySideHints: ["src/index.ts"],
       sourceFiles: ["src/index.ts"],
       changedSinceBaseRef: "base",
@@ -239,6 +388,40 @@ describe("repository analysis worker protocol", () => {
         }],
       }), String(nonTextualChanges)).toBe(false);
     }
+  });
+
+  it("exports exact provisional seeds without promoting a docs-heavy changed manifest", () => {
+    const docs = Array.from({ length: 1_000 }, (_, index) => ({
+      path: `docs/page-${String(index).padStart(4, "0")}.md`,
+      status: "modified" as const,
+    }));
+    const artifact: GraphArtifact = {
+      ...fixtureArtifact(),
+      extensions: {
+        changedSince: { manifest: docs },
+        prInitialGraph: {
+          version: 1,
+          complete: false,
+          depth: 1,
+          seedFiles: [],
+          selectedFiles: [],
+          frontierFiles: [],
+        },
+      },
+    };
+
+    expect(initialGraphSeedFilesForWorker(artifact)).toEqual([]);
+    expect(initialGraphSeedFilesForWorker({ ...artifact, extensions: undefined })).toEqual([]);
+    expect(() => initialGraphSeedFilesForWorker({
+      ...artifact,
+      extensions: {
+        ...artifact.extensions,
+        prInitialGraph: {
+          ...(artifact.extensions?.prInitialGraph as Record<string, unknown>),
+          seedFiles: ["src/z.ts", "src/a.ts"],
+        },
+      },
+    })).toThrow(/seed metadata exceeds worker limits/);
   });
 
   it("enriches, bounds, and caps real extractor progress while preserving required phases", () => {

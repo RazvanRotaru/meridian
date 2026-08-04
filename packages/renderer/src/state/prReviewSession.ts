@@ -75,13 +75,17 @@ export interface PrReviewComparison {
 /** GET the prepared PR-head artifact from the same graph endpoint the boot artifact came from,
  * exchanging the `id` query param. Validation matches boot exactly (`loadArtifact`): the schema
  * MAJOR gate only — lenient like `view`/`web`, never Tier-1/2 strict. */
-export async function fetchPreparedArtifact(graphUrl: string, preparedGraphId: string): Promise<GraphArtifact> {
+export async function fetchPreparedArtifact(
+  graphUrl: string,
+  preparedGraphId: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GraphArtifact> {
   if (graphUrl === "") {
     throw new Error("this session has no graph endpoint to load the prepared PR artifact from");
   }
   const url = new URL(graphUrl, requestOrigin());
   url.searchParams.set("id", preparedGraphId);
-  return loadArtifact(url.toString());
+  return loadArtifact(url.toString(), options);
 }
 
 /** Load both halves of a prepared review session before committing either. A valid graph paired
@@ -105,6 +109,23 @@ export async function fetchPreparedGraphSession(
   return { artifact, ...capability };
 }
 
+/** Fetch only the small execution-capability half when the graph itself arrived as a bounded
+ * projection. Identity validation remains identical to the complete-artifact transaction. */
+export async function fetchPreparedSyntheticCapabilityForGraph(
+  metaUrl: string,
+  preparedGraphId: string,
+  expectedIdentity: PreparedGraphIdentity,
+): Promise<PreparedSyntheticCapability> {
+  if (metaUrl === "") {
+    throw new Error("this session has no meta endpoint to load prepared synthetic capabilities from");
+  }
+  const preparedMetaUrl = new URL(metaUrl, requestOrigin());
+  preparedMetaUrl.searchParams.set("id", preparedGraphId);
+  const capability = await fetchPreparedSyntheticCapability(preparedMetaUrl.toString());
+  assertPreparedCapabilityIdentity(capability, expectedIdentity);
+  return capability;
+}
+
 /**
  * Make the prepared PR-head artifact the CURRENT graph. The boot pair is saved ONCE — a re-review
  * (the same PR again, or another PR without leaving the session) must keep restoring to the
@@ -120,19 +141,25 @@ export function swapToPreparedArtifact(
   comparison: GraphArtifact | null = null,
   /** Reuse the already-built boot index when direct preparation booted this exact HEAD graph. */
   preparedIndex?: GraphIndex,
+  /** Override baseline capture for a direct projection boot. Partial-only boots pass their bounded,
+   * expandable boot baseline; legacy projection boots may pass null while awaiting a complete
+   * compatibility artifact. */
+  baselineOverride?: PrReviewBaseline | null,
 ): void {
   const state = get();
   // Snapshot the review the BOOT artifact itself carries (if any) — never the live PR review:
   // the sync-first flow means a PR review is already running when the first head-extract swaps,
   // and session-end restore must not resurrect it.
-  const baseline = state.prReviewBaseline ?? {
-    artifact: state.artifact,
-    index: state.index,
-    review: deriveReviewData(state.artifact, state.index),
-    syntheticExecutionUrl: state.syntheticExecutionUrl,
-    syntheticScenarios: [...state.syntheticScenarios],
-    syntheticExecutionTrust: state.syntheticExecutionTrust,
-  };
+  const baseline = baselineOverride !== undefined
+    ? baselineOverride
+    : state.prReviewBaseline ?? {
+        artifact: state.artifact,
+        index: state.index,
+        review: deriveReviewData(state.artifact, state.index),
+        syntheticExecutionUrl: state.syntheticExecutionUrl,
+        syntheticScenarios: [...state.syntheticScenarios],
+        syntheticExecutionTrust: state.syntheticExecutionTrust,
+      };
   invalidateArtifactCaches();
   set({
     artifact: prepared,

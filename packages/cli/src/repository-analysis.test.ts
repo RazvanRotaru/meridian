@@ -24,7 +24,9 @@ describe("canonical repository analysis", () => {
     });
 
     expect(Object.isFrozen(REPOSITORY_ANALYSIS_POLICY)).toBe(true);
-    expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(0);
+    // Version 12 invalidates persisted partial slices whose target language varied with whichever
+    // parser happened to produce files in that individual slice.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(13);
     expect(extractToArtifact).toHaveBeenCalledWith({
       absoluteRoot: "/repo",
       cwd: "/repo",

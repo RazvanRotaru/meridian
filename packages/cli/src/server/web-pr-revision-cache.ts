@@ -437,6 +437,7 @@ function analysisFacts(result: RepositoryAnalysisChildResult): RepositoryAnalysi
     summary: result.summary,
     target: result.target,
     changedFiles: result.changedFiles,
+    initialGraphSeedFiles: result.initialGraphSeedFiles,
     emptySideHints: result.emptySideHints,
     sourceFiles: result.sourceFiles,
     changedSinceBaseRef: result.changedSinceBaseRef,

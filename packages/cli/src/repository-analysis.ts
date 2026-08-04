@@ -36,9 +36,11 @@ export function analyzeRepository(request: RepositoryAnalysisRequest): Promise<P
     changedSinceGitExecutor: request.changedSinceGitExecutor,
     hintedFiles: request.hintedFiles,
     allowEmpty: request.allowEmpty,
+    initialGraph: request.initialGraph,
     targetName: request.targetName,
     vcs: request.vcs,
     onExtractionProgress: request.onExtractionProgress,
+    onChangedManifest: request.onChangedManifest,
     typeScriptRevisionShards: request.typeScriptRevisionShards,
   });
 }

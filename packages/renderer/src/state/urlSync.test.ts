@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GraphArtifact } from "@meridian/core";
+import type { GraphArtifact, GraphProjectionV1 } from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { TelemetryProvider, TelemetrySourceRegistration } from "../telemetry/provider";
-import { createBlueprintStore } from "./store";
+import { createBlueprintStore, type ProgressiveGraphSessionState } from "./store";
+import type { PrSummary } from "./prTypes";
 import { restoreFromUrl, startUrlSync } from "./urlSync";
+import { decodeNavState } from "./urlState";
 
 const PACKAGE_ID = "ts:src";
 const FILE_ID = "ts:src/a.ts";
@@ -24,6 +26,56 @@ const HEAD_ARTIFACT: GraphArtifact = {
   ...BOOT_ARTIFACT,
   generatedAt: "2026-07-02T00:00:00.000Z",
 };
+
+const HEAD_PROJECTION: GraphProjectionV1 = {
+  version: 1,
+  graphId: "pr-head-76",
+  seedGraphId: "pr-head-76",
+  generation: "immutable-pr-head-76",
+  requestedDepth: 1,
+  prefetchDepth: 1,
+  loadedDepth: 1,
+  schemaVersion: HEAD_ARTIFACT.schemaVersion,
+  generatedAt: HEAD_ARTIFACT.generatedAt,
+  generator: HEAD_ARTIFACT.generator,
+  target: HEAD_ARTIFACT.target,
+  nodes: HEAD_ARTIFACT.nodes,
+  edges: HEAD_ARTIFACT.edges,
+  rootFileIds: [FILE_ID],
+  readyFileIds: [FILE_ID],
+  loadedFileIds: [FILE_ID],
+  frontier: [{ fileId: FILE_ID, hasMore: false, completeThroughDepth: 1 }],
+  counts: {
+    full: { nodes: HEAD_ARTIFACT.nodes.length, edges: 0, files: 1 },
+    slice: { nodes: HEAD_ARTIFACT.nodes.length, edges: 0, files: 1 },
+  },
+};
+
+const REVIEW_SUMMARY: PrSummary = {
+  number: 76,
+  title: "History delivery contract",
+  body: null,
+  author: "octo",
+  headRef: "feature/history-delivery",
+  headSha: "abc1234def5678900000",
+  baseRef: "main",
+  updatedAt: "2026-07-02T00:00:00.000Z",
+  draft: false,
+  state: "open",
+  url: "https://github.com/o/r/pull/76",
+};
+
+function progressiveReviewSession(): ProgressiveGraphSessionState {
+  return {
+    head: HEAD_PROJECTION,
+    comparison: null,
+    explicitFileIds: [],
+    affectedDepth: 1,
+    requestedDepth: 1,
+    status: "ready",
+    error: null,
+  };
+}
 
 function freshStore(telemetry?: {
   provider: TelemetryProvider;
@@ -253,6 +305,119 @@ describe("restoreFromUrl review exit", () => {
 });
 
 describe("startUrlSync extraction history", () => {
+  it("writes the opt-in marker when an in-SPA review admits a progressive graph session", async () => {
+    const store = freshStore();
+    const browser = stubUrlSyncBrowser();
+    await restoreFromUrl(store, "");
+    const stop = startUrlSync(store);
+
+    store.setState({
+      prReviewed: 76,
+      progressiveGraph: {
+        head: HEAD_PROJECTION,
+        comparison: null,
+        explicitFileIds: [],
+        affectedDepth: 1,
+        requestedDepth: 1,
+        status: "ready",
+        error: null,
+      },
+    });
+
+    const encoded = new URLSearchParams(browser.location.search);
+    expect(encoded.get("prn")).toBe("76");
+    expect(encoded.get("rev")).toBe("1");
+    expect(encoded.get("progressive")).toBe("1");
+    expect(decodeNavState(encoded).progressiveReview).toBe(true);
+
+    // The controlled full-artifact benchmark is an explicit opt-out; an absent marker now defaults
+    // old/copied review URLs to the production partial-only path.
+    store.setState({ progressiveGraph: null });
+    expect(new URLSearchParams(browser.location.search).get("progressive")).toBe("0");
+
+    stop();
+  });
+
+  it("switches active same-PR delivery modes in both popstate directions with an explicit benchmark opt-out", async () => {
+    const store = freshStore();
+    const browser = stubUrlSyncBrowser();
+    const files = [{
+      path: "src/a.ts",
+      status: "modified" as const,
+      additions: 1,
+      deletions: 0,
+      hunks: [{ start: 1, end: 1 }],
+    }];
+    const ensurePrSummary = vi.fn(async () => undefined);
+    const selectPr = vi.fn(async (
+      number: number | null,
+      _options: { endReviewSession?: boolean } = {},
+    ) => {
+      if (number === null) {
+        store.setState({
+          prSelected: null,
+          prReviewed: null,
+          prFiles: null,
+          progressiveGraph: null,
+          minimalSeedIds: [],
+          minimalMemberIds: [],
+        });
+        return;
+      }
+      store.setState({ prSelected: number, prFiles: files });
+    });
+    const reviewPrInGraph = vi.fn(async (
+      options: { progressiveGraphDelivery?: boolean } = {},
+    ) => {
+      store.setState({
+        viewMode: "modules",
+        prSelected: 76,
+        prReviewed: 76,
+        prPreparedGraphId: "pr-head-76",
+        prPreparedArtifactCurrent: true,
+        progressiveGraph: options.progressiveGraphDelivery ? progressiveReviewSession() : null,
+        minimalSeedIds: [FILE_ID],
+        minimalMemberIds: [FILE_ID],
+      });
+    });
+    store.setState({
+      prExtraSummaries: { 76: REVIEW_SUMMARY },
+      prSelected: 76,
+      prReviewed: 76,
+      prFiles: files,
+      prPreparedGraphId: "pr-head-76",
+      prPreparedArtifactCurrent: true,
+      progressiveGraph: progressiveReviewSession(),
+      minimalSeedIds: [FILE_ID],
+      minimalMemberIds: [FILE_ID],
+      ensurePrSummary,
+      selectPr,
+      reviewPrInGraph,
+    });
+    browser.location.search = "?prn=76&rev=1&progressive=1";
+    const stop = startUrlSync(store);
+
+    await browser.dispatchPopState("?prn=76&rev=1&progressive=0");
+
+    expect(selectPr).toHaveBeenNthCalledWith(1, null, { endReviewSession: true });
+    expect(reviewPrInGraph).toHaveBeenNthCalledWith(1, { progressiveGraphDelivery: false });
+    expect(store.getState().progressiveGraph).toBeNull();
+    expect(new URLSearchParams(browser.location.search).get("progressive")).toBe("0");
+
+    // A later non-navigation write must preserve the benchmark opt-out after suppression ends.
+    store.setState({ prsError: "secondary canonical state write" });
+    expect(new URLSearchParams(browser.location.search).get("progressive")).toBe("0");
+
+    await browser.dispatchPopState("?prn=76&rev=1&progressive=1");
+
+    expect(selectPr).toHaveBeenNthCalledWith(3, null, { endReviewSession: true });
+    expect(reviewPrInGraph).toHaveBeenNthCalledWith(2, { progressiveGraphDelivery: true });
+    expect(store.getState().progressiveGraph).not.toBeNull();
+    expect(new URLSearchParams(browser.location.search).get("progressive")).toBe("1");
+
+    stop();
+  });
+
   it("does not wake Blueprint or URL subscribers while a line-comment draft changes", async () => {
     const store = freshStore();
     const browser = stubUrlSyncBrowser();
@@ -345,6 +510,7 @@ describe("startUrlSync extraction history", () => {
 
 function stubUrlSyncBrowser() {
   const location = { origin: "http://meridian.local", search: "", pathname: "/", hash: "" };
+  let popstateListener: (() => unknown) | null = null;
   const applyUrl = (url: string | URL | null) => {
     if (url === null) return;
     const next = new URL(String(url), location.origin);
@@ -354,11 +520,26 @@ function stubUrlSyncBrowser() {
   };
   const pushState = vi.fn((_data: unknown, _unused: string, url: string | URL | null) => applyUrl(url));
   const replaceState = vi.fn((_data: unknown, _unused: string, url: string | URL | null) => applyUrl(url));
+  const addEventListener = vi.fn((type: string, listener: () => unknown) => {
+    if (type === "popstate") popstateListener = listener;
+  });
+  const removeEventListener = vi.fn((type: string, listener: () => unknown) => {
+    if (type === "popstate" && popstateListener === listener) popstateListener = null;
+  });
   vi.stubGlobal("window", {
     location,
     history: { pushState, replaceState },
-    addEventListener: vi.fn(),
-    removeEventListener: vi.fn(),
+    addEventListener,
+    removeEventListener,
   });
-  return { location, pushState, replaceState };
+  return {
+    location,
+    pushState,
+    replaceState,
+    async dispatchPopState(search: string) {
+      applyUrl(search);
+      if (popstateListener === null) throw new Error("popstate listener is not installed");
+      await popstateListener();
+    },
+  };
 }

@@ -119,6 +119,25 @@ describe("materializeChannels", () => {
       summary: expect.stringContaining("60% confidence"),
     });
   });
+
+  it("keeps open-vocabulary protocol and lane values distinct from the candidate marker", () => {
+    const exactPort = {
+      ...port("ts:a#send", "out" as const, "candidate", "review"),
+      lane: "candidate",
+    };
+    const candidatePort = { ...exactPort, confidence: 0.999 };
+    const channelOf = (value: Port) => materializeChannels(NODES, NO_EDGES, [value]).nodes
+      .find((entry) => entry.kind === "channel");
+
+    expect(channelOf(exactPort)).toMatchObject({
+      summary: "candidate channel (candidate) — joined by exact static evidence",
+      tags: ["candidate", "candidate"],
+    });
+    expect(channelOf(candidatePort)).toMatchObject({
+      summary: "candidate selector (candidate) — candidate IPC correlation (100% confidence)",
+      tags: ["candidate", "candidate", "candidate"],
+    });
+  });
 });
 
 describe("matchRouteTemplate", () => {
