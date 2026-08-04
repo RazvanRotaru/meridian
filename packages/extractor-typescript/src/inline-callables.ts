@@ -27,6 +27,24 @@ export function isInlineCallback(node: Node): node is ArrowFunction | FunctionEx
   return Node.isArrowFunction(node) || Node.isFunctionExpression(node);
 }
 
+/** Strip only expression syntax that preserves the represented runtime value. */
+export function unwrapTransparentExpression(node: Node | undefined): Node | undefined {
+  let current = node;
+  while (
+    current &&
+    (
+      Node.isParenthesizedExpression(current) ||
+      Node.isNonNullExpression(current) ||
+      Node.isAsExpression(current) ||
+      Node.isSatisfiesExpression(current) ||
+      Node.isTypeAssertion(current)
+    )
+  ) {
+    current = current.getExpression();
+  }
+  return current;
+}
+
 /**
  * What a declaration's initializer/exported expression binds as a callable:
  * - `body` — an inline arrow/function expression, possibly under React component wrappers

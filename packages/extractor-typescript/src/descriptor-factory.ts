@@ -22,6 +22,8 @@ export interface IdContext {
 export interface MemberSpec {
   kind: NodeKind;
   localName: string;
+  /** Optional UI label when the stable qualified identity is intentionally synthetic. */
+  displayName?: string;
   enclosingNames: string[];
   parent: NodeDescriptor;
   declarationNode: Node;
@@ -81,7 +83,7 @@ export function memberDescriptor(context: IdContext, spec: MemberSpec): NodeDesc
   return {
     kind: spec.kind,
     idParts: { lang: context.lang, modulePath: context.modulePath, qualname: qualifiedName },
-    displayName: spec.localName,
+    displayName: spec.displayName ?? spec.localName,
     qualifiedName,
     summary: context.identityOnly ? null : summaryOf(spec.declarationNode),
     signature: context.identityOnly ? null : signatureOf(spec.localName, spec.signatureSource),

@@ -113,6 +113,22 @@ export function iterateFrom() {
 function getItems(): string[] { return []; }
 function use(x: string) {}
 
+export function iterateWrapped(items: string[]) {
+  items.forEach(((x) => {
+    seen(x);
+  }) as (value: string) => void);
+}
+
+export function iterateWrappedCallee(items: string[]) {
+  (items.forEach as typeof items.forEach)((x) => {
+    seen(x);
+  });
+}
+
+export function handOffWrapped() {
+  setTimeout((() => log("later")) as () => void, 0);
+}
+
 export async function placeOrder(flag: boolean) {
   if (!flag) {
     audit();
@@ -642,6 +658,33 @@ describe("logic-flow pass", () => {
     if (loop.kind === "loop") {
       expect(loop.label).toBe("for each x");
       expect(callLabels(loop.body)).toEqual(["use"]);
+    }
+  });
+
+  it("treats transparent callback wrappers as the same inline iteration (iterateWrapped)", () => {
+    const steps = stepsFor("iterateWrapped") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["loop"]);
+    expect(steps[0]).toMatchObject({ kind: "loop", label: "for each x" });
+    if (steps[0]?.kind === "loop") {
+      expect(callLabels(steps[0].body)).toEqual(["seen"]);
+    }
+  });
+
+  it("retains iteration semantics through a transparent callee wrapper (iterateWrappedCallee)", () => {
+    const steps = stepsFor("iterateWrappedCallee") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["loop"]);
+    expect(steps[0]).toMatchObject({ kind: "loop", label: "for each x" });
+    if (steps[0]?.kind === "loop") {
+      expect(callLabels(steps[0].body)).toEqual(["seen"]);
+    }
+  });
+
+  it("retains a generic inline callback through transparent wrappers (handOffWrapped)", () => {
+    const steps = stepsFor("handOffWrapped") ?? [];
+    expect(steps.map((step) => step.kind)).toEqual(["call", "callback"]);
+    expect(steps[1]).toMatchObject({ kind: "callback", label: "callback → setTimeout" });
+    if (steps[1]?.kind === "callback") {
+      expect(callLabels(steps[1].body)).toEqual(["log"]);
     }
   });
 

@@ -94,7 +94,7 @@ const DIRECT_BODY = {
 const HEAD_SHA = "abc1234def5678900000aaaabbbbccccddddeeee";
 const BASE_SHA = "def1234def5678900000aaaabbbbccccddddeeee";
 const MERGE_BASE_SHA = "0123456789abcdef0123456789abcdef01234567";
-const LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES = 7;
+const LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS = 14;
 
 const ARTIFACT = {
   schemaVersion: SCHEMA_VERSION,
@@ -1560,7 +1560,7 @@ describe("handlePrAnalyze", () => {
     expect(existsSync(comparisonRoot)).toBe(true);
   });
 
-  it("rebuilds stale pair metadata from separately verified immutable revision artifacts", async () => {
+  it("rebuilds v14 pair metadata after value callback extraction from verified revision artifacts", async () => {
     const firstCtx = githubCtx(undefined, undefined, undefined, true);
     const first = (await invoke(firstCtx, BODY)).lines();
     const firstDone = first.at(-1)!;
@@ -1569,10 +1569,10 @@ describe("handlePrAnalyze", () => {
     const metadataPath = currentPrSnapshotMetadataPath();
     const metadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
     expect(metadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
-    expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
+    expect(REPOSITORY_ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS);
     writeFileSync(metadataPath, JSON.stringify({
       ...metadata,
-      analysisVersion: LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES,
+      analysisVersion: LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS,
     }));
 
     const restarted = githubCtx(undefined, undefined, undefined, true);
@@ -1595,7 +1595,7 @@ describe("handlePrAnalyze", () => {
     const restoredMetadataPath = currentPrSnapshotMetadataPath();
     expect(restoredMetadataPath).not.toBe(metadataPath);
     const retainedLegacyMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
-    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_RUNTIME_IMPORT_EDGES);
+    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS);
     const restoredMetadata = JSON.parse(readFileSync(restoredMetadataPath, "utf8")) as Record<string, unknown>;
     expect(restoredMetadata.analysisVersion).toBe(REPOSITORY_ANALYSIS_VERSION);
   });
