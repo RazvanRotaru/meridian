@@ -39,6 +39,21 @@ describe("web TypeScript incremental opt-in", () => {
     }));
   });
 
+  it("passes the complete-control benchmark mode only when explicitly requested", async () => {
+    await buildProgram().parseAsync([
+      "node",
+      "meridian",
+      "web",
+      "--no-open",
+      "--benchmark-pr-full-baseline",
+    ]);
+
+    expect(runWeb).toHaveBeenCalledWith(undefined, expect.objectContaining({
+      benchmarkPrFullBaseline: true,
+      open: false,
+    }));
+  });
+
   it("rejects unknown modes at the CLI boundary", async () => {
     await expect(buildProgram().parseAsync([
       "node",

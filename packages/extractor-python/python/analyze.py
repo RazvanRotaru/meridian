@@ -35,7 +35,14 @@ def main() -> None:
     root = os.path.abspath(sys.argv[1])
     options = read_options(sys.argv[2] if len(sys.argv) > 2 else None)
     diagnostics: list[str] = []
-    discovered = list(discover_modules(root, options["include"], options["exclude"]))
+    # No include filter is canonical all-source analysis. An explicit empty include is a trusted
+    # partial-selection capability and must stay empty instead of inheriting discovery's ordinary
+    # "no patterns means all files" convention.
+    discovered = (
+        []
+        if options["include"] == []
+        else list(discover_modules(root, options["include"] or (), options["exclude"]))
+    )
     parsed = parse_modules(discovered, diagnostics, options["progress"])
     emit_progress(options["progress"], "structure")
     aliases = module_aliases(module.discovered for module in parsed)
@@ -50,13 +57,16 @@ def main() -> None:
 
 def read_options(raw: str | None) -> dict:
     if raw is None:
-        return {"include": [], "exclude": [], "valueRefs": False, "progress": False}
+        return {"include": None, "exclude": [], "valueRefs": False, "progress": False}
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError as error:
         raise SystemExit(f"invalid analyzer options JSON: {error}") from error
+    raw_include = parsed.get("include")
+    if raw_include is not None and not isinstance(raw_include, list):
+        raise SystemExit("invalid analyzer include option")
     return {
-        "include": list(parsed.get("include") or []),
+        "include": None if raw_include is None else list(raw_include),
         "exclude": list(parsed.get("exclude") or []),
         "valueRefs": bool(parsed.get("valueRefs")),
         "progress": bool(parsed.get("progress")),

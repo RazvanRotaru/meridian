@@ -5,6 +5,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -19,10 +20,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventEmitter } from "node:events";
-import { Readable } from "node:stream";
+import { Readable, Writable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { SCHEMA_VERSION } from "@meridian/core";
-import type { GraphArtifact } from "@meridian/core";
+import { buildNodeId, SCHEMA_VERSION } from "@meridian/core";
+import type { GraphArtifact, GraphProjectionV1 } from "@meridian/core";
 import { analyzeRepository, REPOSITORY_ANALYSIS_VERSION } from "../repository-analysis";
 import { runGit } from "./git-exec";
 import { handlePrAnalyze, handlePrPrepare } from "./web-pr-analyze";
@@ -30,12 +31,28 @@ import type { Context } from "./web-server";
 import type { ArtifactSource } from "./web-source";
 import { SessionStore } from "./session";
 import { sendJson } from "./http-response";
+import { sendGraph } from "./web-graph";
 import { WebError } from "./web-error";
+import {
+  parsePrAnalyzeRequest,
+  PR_FULL_BASELINE_BENCHMARK_CAPABILITY,
+  PR_FULL_BASELINE_BENCHMARK_HEADER,
+} from "./web-pr-request";
 import { createGitHubClient } from "./github";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
 import type { GraphRetentionOptions } from "./web-graph-retention";
 import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import type { AnalysisCoordinatorOptions } from "./web-analysis-coordinator";
+import { WebGraphProjectCache } from "./web-graph-project-cache";
+import {
+  GRAPH_PROJECTION_CACHE_HEADER,
+  GRAPH_PROJECTION_KEY_HEADER,
+  GRAPH_PROJECTION_READY_HEADER,
+  handleGraphProject,
+  handleGraphProjectWarm,
+  handleGraphSymbols,
+} from "./web-graph-project";
+import type { GraphProjectWorkerRequest, GraphProjectWorkerResult } from "./web-graph-project-worker-job";
 import {
   runRepositoryAnalysisChildInProcess,
   runRepositoryArtifactRestampChildInProcess,
@@ -67,7 +84,7 @@ vi.mock("./synthetic-fingerprint", async (importOriginal) => {
   return { ...actual, syntheticSourceFingerprintForFiles: vi.fn(() => "fixture-fingerprint") };
 });
 
-const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x" };
+const BODY = { id: "artifact", prNumber: 41, baseRef: "main", headRef: "feat/x", progressive: false };
 const DIRECT_BODY = {
   repository: "org/repo",
   prNumber: 41,
@@ -117,13 +134,27 @@ const COMPARISON_ARTIFACT = {
 let cacheRoot: string;
 let activeGraphStores: WebGraphStore[];
 let activeCoordinators: AnalysisCoordinator[];
+let activeGraphProjectCaches: WebGraphProjectCache[];
+let activeShutdownControllers: AbortController[];
 let repositories: FakePrRepositoryMirror;
 
 describe("handlePrAnalyze", () => {
+  it("defaults an omitted delivery flag to the production partial-only contract", () => {
+    expect(parsePrAnalyzeRequest({
+      id: "artifact",
+      prNumber: 41,
+      baseRef: "main",
+      headRef: "feat/x",
+    }).progressive).toBe(true);
+    expect(parsePrAnalyzeRequest(BODY).progressive).toBe(false);
+  });
+
   beforeEach(() => {
     cacheRoot = mkdtempSync(join(tmpdir(), "meridian-pr-cache-test-"));
     activeGraphStores = [];
     activeCoordinators = [];
+    activeGraphProjectCaches = [];
+    activeShutdownControllers = [];
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
     repositories = new FakePrRepositoryMirror(cacheRoot, MERGE_BASE_SHA);
@@ -133,6 +164,9 @@ describe("handlePrAnalyze", () => {
     };
     mockGitRevisions();
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      if (request.initialGraph !== undefined) {
+        throw new Error("initial graph fixture is opt-in per test");
+      }
       const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
       return {
         artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
@@ -144,12 +178,41 @@ describe("handlePrAnalyze", () => {
   });
 
   afterEach(async () => {
+    for (const controller of activeShutdownControllers) controller.abort();
     await Promise.all(activeCoordinators.map((coordinator) => coordinator.close()));
+    for (const cache of activeGraphProjectCaches) cache.dispose();
     for (const store of activeGraphStores) store.dispose();
     repositories.releaseAllForTest();
     rmSync(cacheRoot, { recursive: true, force: true });
     vi.unstubAllEnvs();
     vi.clearAllMocks();
+  });
+
+  it("rejects progressive:false in a normal app before graph or repository work", async () => {
+    const ctx = githubCtx();
+    ctx.benchmarkPrFullBaseline = false;
+    const acquire = vi.spyOn(ctx.graphStore, "acquire");
+
+    const captured = await invoke(ctx, BODY);
+
+    expect(captured.status()).toBe(403);
+    expect(captured.lines()).toEqual([{
+      error: "complete PR graph baselines require the loopback benchmark capability",
+    }]);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(repositories.prepareCalls).toEqual([]);
+    expect(runGit).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unmarked progressive:false request even on a benchmark server", async () => {
+    const ctx = githubCtx();
+    const acquire = vi.spyOn(ctx.graphStore, "acquire");
+
+    const captured = await invoke(ctx, BODY, {});
+
+    expect(captured.status()).toBe(403);
+    expect(acquire).not.toHaveBeenCalled();
+    expect(repositories.prepareCalls).toEqual([]);
   });
 
   it("streams clone -> checkout -> HEAD -> merge-base -> done and registers the persistent checkout", async () => {
@@ -252,35 +315,554 @@ describe("handlePrAnalyze", () => {
     ]);
   });
 
-  it("prepares an immutable pair directly from the landing selection and boots its HEAD graph", async () => {
+  it("ends progressive preparation at the accepted bounded pair without starting canonical extraction", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const repositoryAnalysis = vi.fn(ctx.repositoryAnalysis);
+    ctx.repositoryAnalysis = repositoryAnalysis;
+    const running = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+
+    await vi.waitFor(() => expect(
+      running.captured.lines().some((line) => line.stage === "ready"),
+    ).toBe(true));
+    const ready = running.captured.lines().find((line) => line.stage === "ready")!;
+    expect(ready).toMatchObject({
+      completeness: "provisional",
+      pairId: expect.stringMatching(/^[a-f0-9]{20}$/),
+      graphId: expect.stringMatching(/^pr-partial-/),
+      comparisonGraphId: expect.stringMatching(/^pr-partial-base-/),
+      initialProjectionCache: { ready: true, depth: 1, prefetchDepth: 3 },
+      preparedPair: { completeness: "provisional" },
+    });
+    const earlyDestination = new URL(String(ready.viewUrl), "http://meridian.local");
+    expect(earlyDestination.searchParams.get("partial")).toBe("1");
+    expect(earlyDestination.searchParams.get("pair")).toBe(ready.pairId);
+    const provisionalRequests = vi.mocked(analyzeRepository).mock.calls
+      .map(([request]) => request)
+      .filter((request) => request.initialGraph !== undefined);
+    expect(provisionalRequests).toEqual([
+      expect.objectContaining({
+        changedSince: MERGE_BASE_SHA,
+        initialGraph: { depth: 1 },
+        vcs: { repository: "https://github.com/org/repo.git", commit: HEAD_SHA, branch: "feat/x" },
+      }),
+      expect.objectContaining({
+        initialGraph: {
+          depth: 1,
+          seedFiles: ["assets/logo.png", "src/a.ts", "src/gone.ts", "src/old.ts"],
+        },
+        vcs: { repository: "https://github.com/org/repo.git", commit: MERGE_BASE_SHA },
+      }),
+    ]);
+
+    await running.completion;
+    const lines = running.captured.lines();
+    expect(lines.findIndex((line) => line.stage === "ready"))
+      .toBeLessThan(lines.findIndex((line) => line.stage === "done"));
+    expect(lines.at(-1)).toMatchObject({
+      stage: "done",
+      completeness: "provisional",
+      pairId: ready.pairId,
+      graphId: ready.graphId,
+      comparisonGraphId: ready.comparisonGraphId,
+    });
+    expect(vi.mocked(analyzeRepository).mock.calls.every(([request]) => (
+      request.initialGraph !== undefined
+    ))).toBe(true);
+    expect(repositoryAnalysis.mock.calls.map(([, options]) => options.workerHeapMb)).toEqual([
+      2_048,
+      2_048,
+    ]);
+  });
+
+  it("publishes distinct exact HEAD and merge-base root plans instead of the raw manifest", async () => {
+    const headSeeds = Array.from(
+      { length: 513 },
+      (_, index) => `src/head-${String(index).padStart(3, "0")}.ts`,
+    );
+    const baseSeeds = Array.from(
+      { length: 513 },
+      (_, index) => `src/base-${String(index).padStart(3, "0")}.ts`,
+    );
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      const seeds = request.changedSince ? headSeeds : baseSeeds;
+      return {
+        artifact: {
+          ...template,
+          target: { ...template.target, vcs: request.vcs },
+          extensions: {
+            ...(template.extensions ?? {}),
+            prInitialGraph: {
+              version: 1,
+              complete: false,
+              depth: 1,
+              seedFiles: seeds,
+              selectedFiles: seeds,
+              frontierFiles: seeds,
+            },
+          },
+        },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const running = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    await running.completion;
+    const ready = running.captured.lines().find((line) => line.stage === "ready")!;
+
+    expect(graphDescriptor(ctx, String(ready.graphId)).projectionRootChunks).toEqual([
+      headSeeds.slice(0, 512),
+      headSeeds.slice(512),
+    ]);
+    expect(graphDescriptor(ctx, String(ready.comparisonGraphId)).projectionRootChunks).toEqual([
+      baseSeeds.slice(0, 512),
+      baseSeeds.slice(512),
+    ]);
+    expect(headSeeds).not.toContain("assets/logo.png");
+  });
+
+  it("releases every joined foreground waiter at the bounded terminal", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const first = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    const joined = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+
+    await vi.waitFor(() => expect([
+      first.captured.lines().some((line) => line.stage === "ready"),
+      joined.captured.lines().some((line) => line.stage === "ready"),
+    ]).toEqual([true, true]));
+    const ready = first.captured.lines().find((line) => line.stage === "ready")!;
+
+    await Promise.all([first.completion, joined.completion]);
+    // Both preparation waiters have finished and released foreground ownership; symbol indexing now
+    // enters the ordinary bounded analysis lane.
+    await expect(invokeSymbols(ctx, String(ready.graphId))).resolves.toMatchObject({
+      status: 200,
+      json: {
+        graphId: ready.graphId,
+        complete: true,
+      },
+    });
+    expect(first.captured.lines().at(-1)).toMatchObject({ stage: "done", completeness: "provisional" });
+    expect(joined.captured.lines().at(-1)).toMatchObject({ stage: "done", completeness: "provisional" });
+  });
+
+  it("finishes bounded cleanup without publishing a canonical pair after landing navigation", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const publishBatch = vi.spyOn(ctx.graphStore, "publishBatch");
+    const landing = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+
+    await vi.waitFor(() => expect(
+      landing.captured.lines().some((line) => line.stage === "ready"),
+    ).toBe(true));
+    landing.request.emit("aborted");
+    await landing.completion;
+
+    const deliveredDone = landing.captured.lines().find((line) => line.stage === "done");
+    if (deliveredDone !== undefined) {
+      expect(deliveredDone).toMatchObject({ completeness: "provisional" });
+    }
+    expect(publishBatch).toHaveBeenCalledTimes(1);
+    expect(publishBatch.mock.calls[0]![0].map(({ id }) => id)).toEqual([
+      expect.stringMatching(/^pr-partial-/),
+      expect.stringMatching(/^pr-partial-base-/),
+    ]);
+    expect(publishBatch.mock.calls[0]![1]).toEqual({
+      receipt: true,
+      publicationHandoffTtlMs: 60_000,
+    });
+    expect(vi.mocked(analyzeRepository).mock.calls.every(([request]) => request.initialGraph !== undefined)).toBe(true);
+    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 3, sourceLeases: 2 });
+    expect(repositories.activeLeaseCount).toBe(2);
+    await expect(ctx.analysisCoordinator.run(
+      "after-service-owned-pr-completion",
+      ({ runAnalysis }) => runAnalysis(async () => "drained"),
+    )).resolves.toBe("drained");
+  });
+
+  it("reuses a delayed landing pair after its publication handoff TTL while registrations survive", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    let now = Date.parse("2026-08-03T12:00:00.000Z");
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+
+    const first = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
+    const firstReady = first.find((line) => line.stage === "ready")!;
+    const analysisCalls = vi.mocked(analyzeRepository).mock.calls.length;
+    expect(firstReady).toMatchObject({ completeness: "provisional", cache: "miss" });
+    const projectionCacheAcquire = vi.spyOn(ctx.graphProjectCache, "acquire");
+
+    // The publication is now retention-eligible, but it still exists. Its server-owned metadata
+    // must remain reusable so a long render/control measurement cannot manufacture a new graph id.
+    now += 60_001;
+    const delayed = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
+
+    expect(delayed.map((line) => line.stage)).toEqual(["ready", "done"]);
+    expect(delayed[0]).toMatchObject({
+      cache: "hit",
+      graphId: firstReady.graphId,
+      comparisonGraphId: firstReady.comparisonGraphId,
+      pairId: firstReady.pairId,
+    });
+    expect(delayed[1]).toMatchObject({
+      cache: "hit",
+      graphId: firstReady.graphId,
+      comparisonGraphId: firstReady.comparisonGraphId,
+      pairId: firstReady.pairId,
+    });
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(analysisCalls);
+    expect(repositories.prepareCalls).toHaveLength(1);
+    // Revalidation must re-prove and reserve both initial projections; the old evidence's
+    // reservation is intentionally shorter-lived than this retained metadata.
+    expect(projectionCacheAcquire).toHaveBeenCalled();
+    nowSpy.mockRestore();
+  });
+
+  it("enforces a picker-pinned head for a waiter joining an unpinned progressive job", async () => {
+    const releaseCanonical = deferred<void>();
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      if (request.initialGraph === undefined && request.changedSince) {
+        await releaseCanonical.promise;
+      }
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const live = beginInvoke(ctx, { ...BODY, progressive: true });
+    await vi.waitFor(() => expect(
+      live.captured.lines().some((line) => line.stage === "ready"),
+    ).toBe(true));
+
+    const stalePicker = beginInvokePrepare(ctx, {
+      ...DIRECT_BODY,
+      headSha: "f".repeat(40),
+    });
+    await stalePicker.completion;
+
+    expect(stalePicker.captured.lines().some((line) => line.stage === "ready")).toBe(false);
+    expect(stalePicker.captured.lines().at(-1)).toEqual({
+      stage: "error",
+      message: "the pull request head changed after it was selected; refresh and try again",
+    });
+    expect(repositories.prepareCalls).toHaveLength(1);
+
+    releaseCanonical.resolve();
+    await live.completion;
+    expect(live.captured.lines().at(-1)?.stage).toBe("done");
+  });
+
+  it("publishes the manifest before the exact boot pair and delivers done only after both are reserved", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
     const ctx = githubCtx();
-    const captured = await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    const originalGraphProject = ctx.graphProject;
+    const releaseProjections = deferred<void>();
+    const graphProject = vi.fn(async (
+      request: GraphProjectWorkerRequest,
+      options: Parameters<Context["graphProject"]>[1] = {},
+    ) => {
+      await releaseProjections.promise;
+      return originalGraphProject(request, options);
+    });
+    ctx.graphProject = graphProject;
+    const running = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+
+    await vi.waitFor(() => expect(graphProject).toHaveBeenCalledTimes(2));
+    expect(running.captured.lines().some((line) => line.stage === "manifest-ready")).toBe(true);
+    expect(running.captured.lines().some((line) => line.stage === "done")).toBe(false);
+    releaseProjections.resolve();
+    await running.completion;
+    expect(graphProject).toHaveBeenCalledTimes(2);
+    expect(graphProject.mock.calls.map(([request]) => request.projection)).toEqual([
+      expect.objectContaining({
+        graphId: expect.stringMatching(/^pr-/),
+        roots: { kind: "changed-files", seedGraphId: expect.stringMatching(/^pr-/) },
+        requestedDepth: 1,
+        prefetchDepth: 3,
+      }),
+      expect.objectContaining({
+        graphId: expect.stringMatching(/^pr-partial-base-/),
+        roots: { kind: "changed-files", seedGraphId: expect.stringMatching(/^pr-/) },
+        requestedDepth: 1,
+        prefetchDepth: 3,
+      }),
+    ]);
+    const captured = running.captured;
 
     expect(captured.status()).toBe(200);
     const lines = captured.lines();
+    const manifestReady = lines.find((line) => line.stage === "manifest-ready");
+    expect(Object.keys(manifestReady ?? {}).sort()).toEqual([
+      "baseSha",
+      "changedFiles",
+      "headSha",
+      "mergeBaseSha",
+      "stage",
+    ]);
+    expect(manifestReady).toEqual({
+      stage: "manifest-ready",
+      headSha: HEAD_SHA,
+      baseSha: BASE_SHA,
+      mergeBaseSha: MERGE_BASE_SHA,
+      changedFiles: [
+        { path: "assets/logo.png", status: "modified" },
+        { path: "src/a.ts", status: "modified" },
+        { path: "src/gone.ts", status: "deleted" },
+        { path: "src/new.ts", status: "renamed", previousPath: "src/old.ts" },
+      ],
+    });
+    expect(lines.indexOf(manifestReady!)).toBeLessThan(lines.length - 1);
     expect(lines.at(-1)).toMatchObject({
       stage: "done",
-      graphId: expect.stringMatching(/^pr-/),
-      comparisonGraphId: expect.stringMatching(/^pr-base-/),
+      completeness: "provisional",
+      graphId: expect.stringMatching(/^pr-partial-/),
+      comparisonGraphId: expect.stringMatching(/^pr-partial-base-/),
       headSha: HEAD_SHA,
       baseSha: BASE_SHA,
       mergeBaseSha: MERGE_BASE_SHA,
       preparedPair: {
         version: 1,
         prNumber: 41,
-        headGraphId: expect.stringMatching(/^pr-/),
-        mergeBaseGraphId: expect.stringMatching(/^pr-base-/),
+        completeness: "provisional",
+        headGraphId: expect.stringMatching(/^pr-partial-/),
+        mergeBaseGraphId: expect.stringMatching(/^pr-partial-base-/),
         headSha: HEAD_SHA,
         baseSha: BASE_SHA,
         mergeBaseSha: MERGE_BASE_SHA,
       },
+      initialProjectionCache: {
+        version: 1,
+        depth: 1,
+        prefetchDepth: 3,
+        headKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+        comparisonKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+        ready: true,
+      },
     });
     const done = lines.at(-1)!;
+    expect(manifestReady?.changedFiles).toEqual(done.changedFiles);
     const destination = new URL(String(done.viewUrl), "http://meridian.local");
     expect(destination.pathname).toBe("/view");
     expect(destination.searchParams.get("id")).toBe(done.graphId);
     expect(destination.searchParams.get("prn")).toBe("41");
     expect(destination.searchParams.get("rev")).toBe("1");
+    expect(destination.searchParams.get("progressive")).toBe("1");
+    expect(destination.searchParams.get("partial")).toBe("1");
+    expect(destination.searchParams.get("pair")).toBe(done.pairId);
+
+    for (const graphId of [String(done.graphId), String(done.comparisonGraphId)]) {
+      const registration = ctx.graphStore.acquire(graphId);
+      expect(registration?.descriptor.rawGraphPayload).toBe("projection-only");
+      registration?.release();
+
+      const raw = capturedResponse();
+      await sendGraph(ctx, raw.response, graphId);
+      expect(raw.status()).toBe(409);
+      expect(JSON.parse(raw.body())).toEqual({
+        error: "raw graph payload is unavailable for a projection-only graph",
+      });
+    }
+
+    const initialProjectionCache = done.initialProjectionCache as {
+      headKey: string;
+      comparisonKey: string;
+    };
+    const headProjection = await invokeProjection(ctx, {
+      version: 1,
+      graphId: done.graphId,
+      roots: { kind: "changed-files", seedGraphId: done.graphId },
+      requestedDepth: 1,
+      prefetchDepth: 3,
+    });
+    const comparisonProjection = await invokeProjection(ctx, {
+      version: 1,
+      graphId: done.comparisonGraphId,
+      roots: { kind: "changed-files", seedGraphId: done.graphId },
+      requestedDepth: 1,
+      prefetchDepth: 3,
+    });
+    expect(headProjection).toMatchObject({
+      status: 200,
+      headers: {
+        [GRAPH_PROJECTION_CACHE_HEADER]: "hit",
+        [GRAPH_PROJECTION_KEY_HEADER]: initialProjectionCache.headKey,
+        [GRAPH_PROJECTION_READY_HEADER]: "true",
+      },
+    });
+    expect(comparisonProjection).toMatchObject({
+      status: 200,
+      headers: {
+        [GRAPH_PROJECTION_CACHE_HEADER]: "hit",
+        [GRAPH_PROJECTION_KEY_HEADER]: initialProjectionCache.comparisonKey,
+        [GRAPH_PROJECTION_READY_HEADER]: "true",
+      },
+    });
+    expect(graphProject).toHaveBeenCalledTimes(2);
+
+    const analysisCallsAfterBoundedTerminal = vi.mocked(analyzeRepository).mock.calls.length;
+    const warm = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
+    expect(warm.map((line) => line.stage)).toEqual(["ready", "done"]);
+    expect(warm[0]).toMatchObject({ completeness: "provisional", cache: "hit" });
+    expect(warm[1]).toMatchObject({ completeness: "provisional", cache: "hit" });
+    expect(warm[0]?.changedFiles).toEqual(warm[1]?.changedFiles);
+    expect(warm[1]?.initialProjectionCache).toMatchObject({ ready: true, depth: 1, prefetchDepth: 3 });
+    expect(graphProject).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(analysisCallsAfterBoundedTerminal);
+    expect(repositories.prepareCalls).toHaveLength(1);
+  });
+
+  it("gives concurrent evidence and landing subscribers the same progressive pair terminal", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx();
+    const originalGraphProject = ctx.graphProject;
+    const releaseProjections = deferred<void>();
+    const graphProject = vi.fn(async (
+      request: GraphProjectWorkerRequest,
+      options: Parameters<Context["graphProject"]>[1] = {},
+    ) => {
+      await releaseProjections.promise;
+      return originalGraphProject(request, options);
+    });
+    ctx.graphProject = graphProject;
+
+    const evidenceSubscriber = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    await vi.waitFor(() => expect(graphProject).toHaveBeenCalledTimes(2));
+    const landingSubscriber = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    await vi.waitFor(() => expect(
+      landingSubscriber.captured.lines().some((line) => line.stage === "manifest-ready"),
+    ).toBe(true));
+    expect(landingSubscriber.captured.lines().some((line) => line.stage === "done")).toBe(false);
+
+    releaseProjections.resolve();
+    await Promise.all([evidenceSubscriber.completion, landingSubscriber.completion]);
+    expect(graphProject).toHaveBeenCalledTimes(2);
+    const terminals = [evidenceSubscriber, landingSubscriber].map(({ captured }) => captured.lines().at(-1)!);
+    for (const terminal of terminals) {
+      expect(terminal).toMatchObject({
+        stage: "done",
+        initialProjectionCache: {
+          version: 1,
+          depth: 1,
+          prefetchDepth: 3,
+          headKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+          comparisonKey: expect.stringMatching(/^[a-f0-9]{64}$/),
+          ready: true,
+        },
+      });
+      expect(new URL(String(terminal.viewUrl), "http://meridian.local").searchParams.get("progressive"))
+        .toBe("1");
+    }
+    expect(terminals[0]?.initialProjectionCache).toEqual(terminals[1]?.initialProjectionCache);
+    expect(graphProject).toHaveBeenCalledTimes(2);
+    expect(ctx.graphProjectCache.stats()).toMatchObject({ entries: 2, pins: 2 });
+  });
+
+  it("fails progressive preparation without starting canonical analysis when projection readiness fails", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx();
+    ctx.graphProject = vi.fn(async () => {
+      throw new Error("sensitive projection worker path");
+    });
+
+    const captured = await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    const lines = captured.lines();
+    expect(lines.at(-1)).toEqual({
+      stage: "error",
+      message: "the bounded PR graph could not be prepared; try again",
+    });
+    expect(JSON.stringify(lines)).not.toContain("sensitive projection worker path");
+    expect(vi.mocked(analyzeRepository).mock.calls.filter(([request]) => (
+      request.initialGraph === undefined
+    ))).toHaveLength(0);
+    expect(ctx.graphProjectCache.stats()).toEqual({ entries: 0, bytes: 0, pins: 0 });
+    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+    expect(repositories.activeLeaseCount).toBe(0);
+  });
+
+  it("cancels and drains the initial projection gate without emitting a terminal line", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const workerSignals: AbortSignal[] = [];
+    ctx.graphProject = vi.fn((
+      _request: GraphProjectWorkerRequest,
+      options: Parameters<Context["graphProject"]>[1] = {},
+    ) => new Promise<GraphProjectWorkerResult>((_resolve, reject) => {
+      const signal = options.signal ?? new AbortController().signal;
+      workerSignals.push(signal);
+      const onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }));
+
+    const abandoned = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    await vi.waitFor(() => expect(workerSignals).toHaveLength(1));
+    expect(abandoned.captured.lines().some((line) => line.stage === "manifest-ready")).toBe(true);
+    abandoned.request.emit("aborted");
+    await abandoned.completion;
+
+    expect(workerSignals[0]?.aborted).toBe(true);
+    expect(abandoned.captured.lines().some((line) => (
+      line.stage === "done" || line.stage === "error"
+    ))).toBe(false);
+    expect(ctx.graphProjectCache.stats()).toEqual({ entries: 0, bytes: 0, pins: 0 });
+    await expect(ctx.analysisCoordinator.run(
+      "after-cancelled-initial-projection",
+      ({ runAnalysis }) => runAnalysis(async () => "drained"),
+    )).resolves.toBe("drained");
+    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+    expect(repositories.activeLeaseCount).toBe(0);
   });
 
   it("does not coalesce a picker-pinned direct request with an unpinned live revalidation", async () => {
@@ -565,6 +1147,50 @@ describe("handlePrAnalyze", () => {
     releasePreparation.resolve();
     releaseAnalysis.resolve();
     await Promise.all([preparation, analysis]);
+  });
+
+  it("preempts active speculation before a capacity-one PR analysis asks for admission", async () => {
+    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const warmStarted = deferred<void>();
+    let warmAborted = false;
+    ctx.graphProject = vi.fn((
+      _request: GraphProjectWorkerRequest,
+      options: Parameters<Context["graphProject"]>[1] = {},
+    ) => new Promise<GraphProjectWorkerResult>((_resolve, reject) => {
+      const signal = options.signal ?? new AbortController().signal;
+      warmStarted.resolve();
+      const onAbort = () => {
+        warmAborted = true;
+        reject(signal.reason);
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
+      if (signal.aborted) onAbort();
+    }));
+
+    const warm = await invokeWarmProjection(ctx, {
+      version: 1,
+      graphId: "artifact",
+      roots: { kind: "changed-files", seedGraphId: "artifact" },
+      requestedDepth: 2,
+      prefetchDepth: 2,
+    });
+    expect(warm).toMatchObject({ status: 202, json: { accepted: true, completed: false } });
+    await warmStarted.promise;
+
+    // No worker release is provided. The real PR route must preempt the warm before entering the
+    // coordinator, then use the freed sole slot for repository extraction.
+    const review = await invoke(ctx, BODY);
+    expect(review.lines().at(-1)).toMatchObject({ stage: "done", cache: "miss" });
+    await vi.waitFor(() => expect(warmAborted).toBe(true));
+    await vi.waitFor(() => expect(ctx.graphProjectCache.stats()).toEqual({
+      entries: 0,
+      bytes: 0,
+      pins: 0,
+    }));
+    await expect(ctx.analysisCoordinator.run(
+      "after-foreground-preemption",
+      ({ runAnalysis }) => runAnalysis(async () => "drained"),
+    )).resolves.toBe("drained");
   });
 
   it("singleflights identical PR requests while preserving each response stream", async () => {
@@ -1226,7 +1852,14 @@ describe("handlePrAnalyze", () => {
     });
   });
 
-  it("keeps the landing-prepared immutable pair when only the live base tip moves", async () => {
+  it("lets an explicit legacy request prepare a complete pair after a bounded landing session", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
     const ctx = githubCtx(undefined, undefined, undefined, true);
     const firstLines = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
     const first = firstLines.at(-1)!;
@@ -1236,19 +1869,29 @@ describe("handlePrAnalyze", () => {
     const second = secondLines.at(-1)!;
 
     expect(secondLines.map((line) => line.stage)).toEqual([
-      "clone", "checkout", "reuse-head", "reuse-merge-base", "done",
+      "clone", "checkout", "extract", "extract-head", "lane-complete",
+      "extract-merge-base", "lane-complete", "done",
     ]);
     expect(second.cache).toBe("miss");
     expect(second.baseSha).toBe(movedBaseSha);
     expect(second.headSha).toBe(first.headSha);
     expect(second.mergeBaseSha).toBe(first.mergeBaseSha);
-    expect(second.graphId).toBe(first.graphId);
-    expect(second.comparisonGraphId).toBe(first.comparisonGraphId);
+    expect(second.graphId).not.toBe(first.graphId);
+    expect(second.comparisonGraphId).not.toBe(first.comparisonGraphId);
     expect(repositories.prepareCalls).toHaveLength(2);
-    expect(analyzeRepository).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(analyzeRepository).mock.calls.filter(([request]) => (
+      request.initialGraph === undefined
+    ))).toHaveLength(2);
   });
 
   it("changes the immutable HEAD id and rebuilds when the live merge base changes", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: request.changedSince ? ["w1"] : ["base warning"],
+      } as never;
+    });
     const ctx = githubCtx(undefined, undefined, undefined, true);
     const first = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines().at(-1)!;
     const movedBaseSha = "eee1234def5678900000aaaabbbbccccddddeeee";
@@ -1286,7 +1929,9 @@ describe("handlePrAnalyze", () => {
     expect(second.graphId).not.toBe(first.graphId);
     expect(second.comparisonGraphId).not.toBe(first.comparisonGraphId);
     expect(repositories.prepareCalls).toHaveLength(2);
-    expect(analyzeRepository).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(analyzeRepository).mock.calls.filter(([request]) => (
+      request.initialGraph === undefined
+    ))).toHaveLength(2);
   });
 
   it("uses the mirror's exact merge base for both comparison source and canonical diff", async () => {
@@ -1410,27 +2055,35 @@ function mockGitRevisions(headSha = HEAD_SHA, baseRef = "main", baseSha = BASE_S
   });
 }
 
-async function invoke(ctx: Context, body: unknown) {
-  const running = beginInvoke(ctx, body);
+async function invoke(ctx: Context, body: unknown, headers?: Record<string, string>) {
+  const running = beginInvoke(ctx, body, headers);
   await running.completion;
   return running.captured;
 }
 
 async function invokePrepare(ctx: Context, body: unknown) {
-  const captured = capturedResponse();
-  const request = requestWith(body);
-  try {
-    await handlePrPrepare(ctx, request, captured.response);
-  } catch (error) {
-    if (!(error instanceof WebError)) throw error;
-    sendJson(captured.response, error.status, { error: error.message });
-  }
-  return captured;
+  const running = beginInvokePrepare(ctx, body);
+  await running.completion;
+  return running.captured;
 }
 
-function beginInvoke(ctx: Context, body: unknown) {
+function beginInvokePrepare(ctx: Context, body: unknown) {
   const captured = capturedResponse();
   const request = requestWith(body);
+  const completion = (async () => {
+    try {
+      await handlePrPrepare(ctx, request, captured.response);
+    } catch (error) {
+      if (!(error instanceof WebError)) throw error;
+      sendJson(captured.response, error.status, { error: error.message });
+    }
+  })();
+  return { captured, completion, request };
+}
+
+function beginInvoke(ctx: Context, body: unknown, headers?: Record<string, string>) {
+  const captured = capturedResponse();
+  const request = requestWith(body, headers);
   const completion = (async () => {
     try {
       await handlePrAnalyze(ctx, request, captured.response);
@@ -1451,12 +2104,17 @@ function githubCtx(
   experimentalPrRevisionCache = false,
 ): Context {
   const graphStore = new WebGraphStore(graphRetention);
+  const graphProjectCache = new WebGraphProjectCache({ sweepIntervalMs: 60_000 });
   const analysisCoordinator = new AnalysisCoordinator(coordinatorOptions);
+  const shutdown = new AbortController();
   activeGraphStores.push(graphStore);
+  activeGraphProjectCaches.push(graphProjectCache);
   activeCoordinators.push(analysisCoordinator);
+  activeShutdownControllers.push(shutdown);
   graphStore.publish({
     id: "artifact",
     material: materializeValidatedArtifact(ARTIFACT),
+    rawGraphPayload: "complete",
     metadata: {
       sourceRoot: cacheRoot,
       source: source ?? { kind: "github", owner: "org", repo: "repo" },
@@ -1464,12 +2122,14 @@ function githubCtx(
     },
   });
   return {
-    shutdownSignal: new AbortController().signal,
+    shutdownSignal: shutdown.signal,
     graphStore,
+    graphProjectCache,
     analysisCoordinator,
     repositories,
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
     repositoryArtifactRestamp: runRepositoryArtifactRestampChildInProcess,
+    graphProject: async (request: GraphProjectWorkerRequest) => writeGraphProjectResult(request),
     prFilesCache: new Map(),
     rendererIndex: "",
     landingHtml: "",
@@ -1482,10 +2142,13 @@ function githubCtx(
     experimentalPrRevisionCache,
     allowSyntheticExecution: false,
     allowSyntheticPrExecution: false,
+    // Existing BODY-based tests exercise the deliberately complete benchmark control. Dedicated
+    // denial tests above turn this off or omit its per-request marker.
+    benchmarkPrFullBaseline: true,
     syntheticPrSandboxRuntimeSupported: () => false,
     runSyntheticScenarioInOci,
     folderPicker: async () => null,
-  } as Context;
+  } as unknown as Context;
 }
 
 function stageEntries(): string[] {
@@ -1527,8 +2190,187 @@ function hasGraph(ctx: Context, id: string): boolean {
   return registration !== undefined;
 }
 
-function requestWith(body: unknown): IncomingMessage {
-  return Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { headers: {} }) as unknown as IncomingMessage;
+function requestWith(body: unknown, headers?: Record<string, string>): IncomingMessage {
+  const benchmarkHeaders = typeof body === "object"
+    && body !== null
+    && !Array.isArray(body)
+    && (body as { progressive?: unknown }).progressive === false
+    ? { [PR_FULL_BASELINE_BENCHMARK_HEADER]: PR_FULL_BASELINE_BENCHMARK_CAPABILITY }
+    : {};
+  return Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), {
+    headers: headers ?? benchmarkHeaders,
+  }) as unknown as IncomingMessage;
+}
+
+async function invokeProjection(ctx: Context, body: unknown): Promise<ProjectionResponseResult> {
+  const response = new ProjectionResponse();
+  await handleGraphProject(ctx, requestWith(body), response as unknown as ServerResponse);
+  return response.result();
+}
+
+async function invokeWarmProjection(ctx: Context, body: unknown): Promise<ProjectionResponseResult> {
+  const response = new ProjectionResponse();
+  await handleGraphProjectWarm(ctx, requestWith(body), response as unknown as ServerResponse);
+  return response.result();
+}
+
+async function invokeSymbols(ctx: Context, graphId: string): Promise<ProjectionResponseResult> {
+  const response = new ProjectionResponse();
+  const request = Object.assign(Readable.from([]), { headers: {} }) as unknown as IncomingMessage;
+  await handleGraphSymbols(ctx, request, response as unknown as ServerResponse, graphId);
+  return response.result();
+}
+
+interface ProjectionResponseResult {
+  status: number;
+  json: Record<string, unknown>;
+  headers: Record<string, string>;
+}
+
+class ProjectionResponse extends Writable {
+  status = 0;
+  readonly headers: Record<string, string> = {};
+  readonly chunks: Buffer[] = [];
+
+  writeHead(status: number, headers: Record<string, unknown> = {}): this {
+    this.status = status;
+    for (const [name, value] of Object.entries(headers)) {
+      if (value !== undefined) this.headers[name.toLowerCase()] = String(value);
+    }
+    return this;
+  }
+
+  result(): ProjectionResponseResult {
+    return {
+      status: this.status,
+      json: JSON.parse(Buffer.concat(this.chunks).toString("utf8")) as Record<string, unknown>,
+      headers: { ...this.headers },
+    };
+  }
+
+  override _write(
+    chunk: Buffer | string,
+    _encoding: BufferEncoding,
+    callback: (error?: Error | null) => void,
+  ): void {
+    this.chunks.push(Buffer.isBuffer(chunk) ? Buffer.from(chunk) : Buffer.from(chunk));
+    callback();
+  }
+}
+
+function writeGraphProjectResult(request: GraphProjectWorkerRequest): GraphProjectWorkerResult {
+  if (request.type === "symbols") {
+    if (request.symbolOutputPath === null) throw new TypeError("symbol output path is missing");
+    const payload = {
+      version: 1,
+      graphId: request.graph.graphId,
+      generation: request.generation,
+      complete: true,
+      indexedSymbolCount: 0,
+      totalSymbolCount: 0,
+      symbols: [],
+    };
+    const bytes = Buffer.from(`${JSON.stringify(payload)}\n`);
+    writeFileSync(request.symbolOutputPath, bytes);
+    let topology: GraphProjectWorkerResult["topology"] = null;
+    if (request.topologyOutputPath !== null) {
+      const artifact = JSON.parse(readFileSync(request.graph.path, "utf8")) as GraphArtifact;
+      const marker = artifact.extensions?.prInitialGraph as {
+        seedFiles?: string[];
+        selectedFiles?: string[];
+      } | undefined;
+      const selectedFiles = [...(marker?.selectedFiles ?? [])].sort();
+      const topologyPayload = {
+        version: 1,
+        graphId: request.graph.graphId,
+        generation: request.generation,
+        target: artifact.target,
+        changedSinceBaseRef: typeof (artifact.extensions?.changedSince as { baseRef?: unknown } | undefined)?.baseRef
+          === "string"
+          ? (artifact.extensions!.changedSince as { baseRef: string }).baseRef
+          : null,
+        seeds: [...(marker?.seedFiles ?? [])].sort(),
+        files: selectedFiles.map((path) => ({
+          path,
+          fileId: buildNodeId({ lang: "ts", modulePath: path }),
+          neighbors: [],
+          uncertain: false,
+        })),
+      };
+      const topologyBytes = Buffer.from(`${JSON.stringify(topologyPayload)}\n`);
+      writeFileSync(request.topologyOutputPath, topologyBytes);
+      topology = {
+        path: request.topologyOutputPath,
+        bytes: topologyBytes.length,
+        sha256: createHash("sha256").update(topologyBytes).digest("hex"),
+        files: selectedFiles.length,
+        adjacencyEntries: 0,
+      };
+    }
+    return {
+      id: request.id,
+      operation: "symbols",
+      graphId: request.graph.graphId,
+      generation: request.generation,
+      projection: null,
+      symbols: {
+        path: request.symbolOutputPath,
+        bytes: bytes.length,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        count: 0,
+      },
+      topology,
+    };
+  }
+  if (request.projection === null || request.projectionOutputPath === null) {
+    throw new TypeError("graph projection coordinates are missing");
+  }
+  const projection: GraphProjectionV1 = {
+    version: 1,
+    graphId: request.graph.graphId,
+    seedGraphId: request.projection.roots.kind === "changed-files"
+      ? request.projection.roots.seedGraphId
+      : request.graph.graphId,
+    generation: request.generation,
+    requestedDepth: request.projection.requestedDepth,
+    prefetchDepth: request.projection.prefetchDepth,
+    loadedDepth: request.projection.requestedDepth,
+    schemaVersion: ARTIFACT.schemaVersion,
+    generatedAt: ARTIFACT.generatedAt,
+    generator: ARTIFACT.generator,
+    target: ARTIFACT.target,
+    nodes: [],
+    edges: [],
+    rootFileIds: [],
+    readyFileIds: [],
+    loadedFileIds: [],
+    frontier: [],
+    counts: {
+      full: { nodes: 0, edges: 0, files: 0 },
+      slice: { nodes: 0, edges: 0, files: 0 },
+    },
+  };
+  const bytes = Buffer.from(`${JSON.stringify(projection)}\n`);
+  writeFileSync(request.projectionOutputPath, bytes);
+  return {
+    id: request.id,
+    operation: "project",
+    graphId: request.graph.graphId,
+    generation: request.generation,
+    projection: {
+      path: request.projectionOutputPath,
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      nodes: 0,
+      edges: 0,
+      files: 0,
+      roots: 0,
+      completeRoots: 0,
+      loadedDepth: projection.loadedDepth,
+    },
+    symbols: null,
+    topology: null,
+  };
 }
 
 function capturedResponse() {
@@ -1539,9 +2381,7 @@ function capturedResponse() {
   const events = new EventEmitter();
   const response = Object.assign(events, {
     destroyed: false,
-    get writableEnded() {
-      return writableEnded;
-    },
+    writableEnded: false,
     writeHead(code: number, headers?: Record<string, string>) {
       status = code;
       contentType = headers?.["content-type"] ?? "";
@@ -1566,6 +2406,9 @@ function capturedResponse() {
       return response;
     },
   }) as unknown as ServerResponse;
+  // Object.assign evaluates accessors on its source, so install this live ServerResponse property
+  // explicitly; a normal post-end `close` must not look like peer cancellation to the handler.
+  Object.defineProperty(response, "writableEnded", { get: () => writableEnded });
   return {
     response,
     status: () => status,

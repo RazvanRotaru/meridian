@@ -12,6 +12,11 @@ import { StringDecoder } from "node:string_decoder";
 import { ServiceShutdownError } from "./service-shutdown";
 import { OperationCancelledError } from "./web-cancellation";
 import { WebError } from "./web-error";
+import {
+  benchmarkGitOwnerArgs,
+  registerBenchmarkOwnedChild,
+  terminateUnregisteredBenchmarkChild,
+} from "./benchmark-owned-process-registry";
 
 const DEFAULT_GIT_TIMEOUT_MS = 60_000;
 const MAX_STDERR_BYTES = 4_000;
@@ -45,7 +50,7 @@ export function runGit(
   args: string[],
   opts: { cwd: string; token?: string; timeoutMs?: number; signal?: AbortSignal },
 ): Promise<string> {
-  return spawnGit([...authArgs(opts.token), ...args], {
+  return spawnGit([...benchmarkGitOwnerArgs(), ...authArgs(opts.token), ...args], {
     cwd: opts.cwd,
     token: opts.token,
     timeoutMs: opts.timeoutMs ?? DEFAULT_GIT_TIMEOUT_MS,
@@ -67,14 +72,31 @@ function spawnGit(args: string[], opts: SpawnOptions): Promise<string> {
   }
   const redact = redactor(opts.token);
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn("git", args, {
-      cwd: opts.cwd,
-      env: gitEnvironment(opts.token),
-      // A separate POSIX process group lets cancellation terminate Git and any transport helpers
-      // before a persistent repository cache is reused. Windows uses taskkill /T instead.
-      detached: process.platform !== "win32",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    let spawned: ReturnType<typeof spawn> | null = null;
+    try {
+      spawned = spawn("git", args, {
+        cwd: opts.cwd,
+        env: gitEnvironment(opts.token),
+        // A separate POSIX process group lets cancellation terminate Git and any transport helpers
+        // before a persistent repository cache is reused. Windows uses taskkill /T instead.
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      spawned.once("error", () => {});
+      registerBenchmarkOwnedChild(spawned.pid ?? 0);
+    } catch {
+      const error = new WebError(500, "could not run git");
+      if (spawned === null) rejectRun(error);
+      else void terminateUnregisteredBenchmarkChild(spawned).then(
+        () => rejectRun(error),
+        (cleanupError) => {
+          (error as Error & { cause?: unknown }).cause = cleanupError;
+          rejectRun(error);
+        },
+      );
+      return;
+    }
+    const child = spawned;
     let stdout = "";
     const stdoutDecoder = new StringDecoder("utf8");
     let stdoutBytes = 0;

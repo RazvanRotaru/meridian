@@ -12,10 +12,12 @@ import { analyzeRepository, type RepositoryAnalysisRequest } from "./repository-
 import { runGit } from "./server/git-exec";
 import { writeValidatedRepositoryArtifact } from "./server/repository-analysis-artifact-writer";
 import {
+  boundedRepositoryAnalysisEarlyManifest,
   boundedRepositoryWorkerWarnings,
   changedMetadataForWorker,
   createRepositoryAnalysisProgressReporter,
   emptySideHintsForWorker,
+  initialGraphSeedFilesForWorker,
   isRepositoryAnalysisWorkerRequest,
   repositoryAnalysisWorkerFailure,
   syntheticSourceFilesForWorker,
@@ -78,6 +80,7 @@ async function analyzeToFile(
   const { extractors, warnings } = analyzed;
   const changed = changedMetadataForWorker(artifact, request.changedSince);
   const emptySideHints = emptySideHintsForWorker(artifact, changed.changedFiles, extractors);
+  const initialGraphSeedFiles = initialGraphSeedFilesForWorker(artifact);
   const sourceFiles = syntheticSourceFilesForWorker(artifact);
   const written = writeValidatedRepositoryArtifact(message.artifactOutputPath, artifact);
   const branchVariant = message.branchVariant === null
@@ -94,6 +97,7 @@ async function analyzeToFile(
     graphSummary: written.summary,
     target: artifact.target,
     changedFiles: changed.changedFiles,
+    initialGraphSeedFiles,
     emptySideHints,
     sourceFiles,
     changedSinceBaseRef: changed.changedSinceBaseRef,
@@ -130,6 +134,22 @@ function analysisRequest(
     cwd: input.cwd,
     hintedFiles: input.hintedFiles,
     allowEmpty: input.allowEmpty,
+    ...(input.initialGraph === null ? {} : {
+      initialGraph: {
+        depth: input.initialGraph.depth,
+        ...(input.initialGraph.seedFiles === null ? {} : { seedFiles: input.initialGraph.seedFiles }),
+        ...(input.initialGraph.selectedFiles === null ? {} : {
+          selectedFiles: input.initialGraph.selectedFiles,
+        }),
+        ...(input.initialGraph.extractionFiles === null ? {} : {
+          extractionFiles: input.initialGraph.extractionFiles,
+        }),
+        ...(input.initialGraph.frontierFiles === null ? {} : {
+          frontierFiles: input.initialGraph.frontierFiles,
+        }),
+        ...(input.initialGraph.lineage === null ? {} : { lineage: input.initialGraph.lineage }),
+      },
+    }),
     ...(input.targetName === null ? {} : { targetName: input.targetName }),
     ...(input.vcs === null ? {} : { vcs: input.vcs }),
     ...(input.changedSince === null ? {} : { changedSince: input.changedSince }),
@@ -142,6 +162,12 @@ function analysisRequest(
         (progress) => sendProgress(message.id, progress),
       ),
     }),
+    ...(message.earlyManifest ? {
+      onChangedManifest: (manifest) => {
+        const bounded = boundedRepositoryAnalysisEarlyManifest(manifest);
+        if (bounded !== null) sendManifest(message.id, bounded);
+      },
+    } : {}),
     ...(message.typeScriptRevisionShards === null ? {} : {
       typeScriptRevisionShards: message.typeScriptRevisionShards,
     }),
@@ -185,6 +211,7 @@ function restampToFile(
   }
   const artifact = withBranch(validation.artifact, message.branch);
   const changed = changedMetadataForWorker(artifact);
+  const initialGraphSeedFiles = initialGraphSeedFilesForWorker(artifact);
   const sourceFiles = syntheticSourceFilesForWorker(artifact);
   const written = writeValidatedRepositoryArtifact(message.artifactOutputPath, artifact);
   return {
@@ -198,6 +225,7 @@ function restampToFile(
     graphSummary: written.summary,
     target: artifact.target,
     changedFiles: changed.changedFiles,
+    initialGraphSeedFiles,
     emptySideHints: [],
     sourceFiles,
     changedSinceBaseRef: changed.changedSinceBaseRef,
@@ -252,8 +280,25 @@ function sendProgress(
   }
 }
 
+function sendManifest(
+  id: string,
+  manifest: Extract<RepositoryAnalysisWorkerResponse, { type: "manifest" }>["manifest"],
+): void {
+  if (finished || typeof process.send !== "function" || !process.connected) return;
+  try {
+    process.send({ type: "manifest", id, manifest } satisfies RepositoryAnalysisWorkerResponse, (error) => {
+      if (!error || finished) return;
+      finished = true;
+      process.exitCode = 1;
+      if (process.connected) process.disconnect?.();
+    });
+  } catch {
+    // The parent transport owns cancellation/failure. The manifest is observational only.
+  }
+}
+
 function reply(
-  message: Exclude<RepositoryAnalysisWorkerResponse, { type: "progress" }>,
+  message: Extract<RepositoryAnalysisWorkerResponse, { type: "result" | "error" }>,
 ): void {
   if (finished || typeof process.send !== "function" || !process.connected) {
     process.exitCode = 1;

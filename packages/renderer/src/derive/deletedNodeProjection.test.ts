@@ -1,8 +1,19 @@
-import { describe, expect, it } from "vitest";
-import { edgeId } from "@meridian/core";
-import type { ChangedDiffLine, GraphArtifact, GraphEdge, GraphNode, ReviewContext } from "@meridian/core";
+import { describe, expect, it, vi } from "vitest";
+import { edgeId, GRAPH_PROJECTION_VERSION } from "@meridian/core";
+import type {
+  ChangedDiffLine,
+  GraphArtifact,
+  GraphEdge,
+  GraphNode,
+  GraphProjectionV1,
+  ReviewContext,
+} from "@meridian/core";
 import { buildGraphIndex } from "../graph/graphIndex";
 import type { PrChangedFile } from "../state/prTypes";
+import {
+  hydrateHeadProjectionForComparisonContext,
+  projectionToArtifact,
+} from "../state/progressiveGraph";
 import { buildBlockDeps } from "./blockDeps";
 import { deriveDeletedNodeProjection } from "./deletedNodeProjection";
 import { ghostDepWires } from "./ghostDeps";
@@ -42,6 +53,48 @@ function artifact(
     nodes,
     edges: options.edges ?? [],
     ...(options.extensions ? { extensions: options.extensions } : {}),
+  };
+}
+
+function graphProjection(
+  source: GraphArtifact,
+  overrides: Partial<GraphProjectionV1>,
+): GraphProjectionV1 {
+  const nodes = overrides.nodes ?? source.nodes;
+  const edges = overrides.edges ?? source.edges;
+  const moduleIds = nodes.filter((candidate) => candidate.kind === "module").map((candidate) => candidate.id);
+  return {
+    version: GRAPH_PROJECTION_VERSION,
+    graphId: "head",
+    seedGraphId: "head",
+    generation: "head-generation",
+    requestedDepth: 1,
+    prefetchDepth: 3,
+    loadedDepth: 1,
+    schemaVersion: source.schemaVersion,
+    generatedAt: source.generatedAt,
+    generator: source.generator,
+    target: source.target,
+    ...(source.extensions === undefined ? {} : { extensions: source.extensions }),
+    nodes,
+    edges,
+    rootFileIds: moduleIds,
+    readyFileIds: moduleIds,
+    loadedFileIds: moduleIds,
+    frontier: moduleIds.map((fileId) => ({ fileId, hasMore: false, completeThroughDepth: 1 })),
+    counts: {
+      full: {
+        nodes: source.nodes.length,
+        edges: source.edges.length,
+        files: source.nodes.filter((candidate) => candidate.kind === "module").length,
+      },
+      slice: {
+        nodes: nodes.length,
+        edges: edges.length,
+        files: moduleIds.length,
+      },
+    },
+    ...overrides,
   };
 }
 
@@ -242,7 +295,7 @@ describe("deriveDeletedNodeProjection", () => {
     expect(result.survivingAffectedHeadIds.has(formattingId)).toBe(false);
   });
 
-  it("projects every extracted unit plus its incoming callers and outgoing calls for a fully removed file", () => {
+  it("keeps canonical caller/callee ghosts when a deletion-only progressive pair hydrates HEAD context", async () => {
     const removedModule = "ts:src/removed.ts";
     const removedClass = `${removedModule}#Removed`;
     const removedMethod = `${removedModule}#Removed.run`;
@@ -309,6 +362,92 @@ describe("deriveDeletedNodeProjection", () => {
       expect.objectContaining({ source: liveCaller, target: removedMethod, kind: "calls" }),
       expect.objectContaining({ source: removedMethod, target: liveCallee, kind: "calls" }),
     ]));
+
+    // A deletion-only changed-files projection has no HEAD roots. Its comparison slice still has
+    // the removed subtree and call endpoints, but those base endpoint nodes are not HEAD truth and
+    // deriveDeletedNodeProjection correctly refuses them until their exact file path is resolved in
+    // HEAD. The pair-aware support fetch restores the same ghosts as canonical full-artifact mode.
+    const emptyHead = graphProjection(head, {
+      graphId: "head",
+      generation: "head-generation",
+      nodes: [],
+      edges: [],
+      rootFileIds: [],
+      readyFileIds: [],
+      loadedFileIds: [],
+      frontier: [],
+    });
+    const comparisonArtifact = artifact(
+      base.nodes.filter((candidate) => candidate.id !== unrelated),
+      { edges: [incoming, outgoing], extensions: base.extensions },
+    );
+    const comparison = graphProjection(comparisonArtifact, {
+      graphId: "base",
+      seedGraphId: "head",
+      generation: "base-generation",
+      rootFileIds: [removedModule],
+      readyFileIds: [removedModule],
+      loadedFileIds: [removedModule, liveModule],
+      frontier: [
+        { fileId: removedModule, hasMore: true, completeThroughDepth: 1 },
+        { fileId: liveModule, hasMore: true, completeThroughDepth: 0 },
+      ],
+    });
+    const support = graphProjection(head, {
+      graphId: "head",
+      generation: "head-generation",
+      requestedDepth: 0,
+      prefetchDepth: 0,
+      loadedDepth: 0,
+      rootFileIds: [liveModule],
+      readyFileIds: [],
+      loadedFileIds: [liveModule],
+      frontier: [{ fileId: liveModule, hasMore: false, completeThroughDepth: 0 }],
+    });
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        roots: unknown;
+        requestedDepth: number;
+        prefetchDepth: number;
+      };
+      expect(request).toMatchObject({
+        roots: { kind: "file-paths", paths: ["src/live.ts"] },
+        requestedDepth: 0,
+        prefetchDepth: 0,
+      });
+      return Response.json(support);
+    });
+    const hydratedHead = await hydrateHeadProjectionForComparisonContext(
+      "/api/graph/project",
+      emptyHead,
+      comparison,
+      { fetchImpl },
+    );
+    // Support files are present but are not promoted to iterative/user roots or marked actionable.
+    expect(hydratedHead.rootFileIds).toEqual([]);
+    expect(hydratedHead.readyFileIds).toEqual([]);
+    const progressive = project(
+      projectionToArtifact(hydratedHead),
+      projectionToArtifact(comparison),
+      [{ path: "src/removed.ts", status: "deleted" }],
+      [{ path: "src/removed.ts", status: "removed", additions: 0, deletions: 30 }],
+    );
+    const progressiveGhosts = ghostDepWires(
+      buildBlockDeps(progressive.index),
+      [],
+      new Set([removedMethod]),
+      progressive.index,
+      (id) => id === removedMethod,
+      new Set(),
+    );
+
+    expect(progressive.artifact.edges).toEqual(result.artifact.edges);
+    expect([...progressiveGhosts.ghosts.keys()].sort()).toEqual([...ghosts.ghosts.keys()].sort());
+    expect(progressiveGhosts.wires).toEqual(expect.arrayContaining([
+      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: "calls" }),
+      expect.objectContaining({ source: removedMethod, target: liveCallee, kind: "calls" }),
+    ]));
+    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("does not invent tombstones for a pure rename", () => {

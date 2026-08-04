@@ -11,7 +11,7 @@ const analysisBuildDefine = {
 
 export default defineConfig([
   {
-    entry: ["src/bin.ts", "src/repository-analysis-worker.ts"],
+    entry: ["src/bin.ts", "src/repository-analysis-worker.ts", "src/graph-project-worker.ts"],
     format: ["esm"],
     dts: false,
     clean: true,

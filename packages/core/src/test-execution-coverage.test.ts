@@ -65,6 +65,25 @@ describe("readTestExecutionCoverage", () => {
     expect(result?.files["src/order.ts"]?.branches[0]?.paths[1]).toEqual({ index: 1, hits: 0 });
   });
 
+  it("validates the whole payload while retaining only an exact projected file set", () => {
+    const value = coverage();
+    value.files["src/other.ts"] = { functions: [], branches: [] };
+    const result = readTestExecutionCoverage(
+      artifactWith(value),
+      { includeFiles: new Set(["src/order.ts"]) },
+    );
+    expect(Object.keys(result?.files ?? {})).toEqual(["src/order.ts"]);
+
+    const malformedOutsideProjection = structuredClone(value) as unknown as {
+      files: Record<string, { functions: unknown; branches: unknown }>;
+    };
+    malformedOutsideProjection.files["src/other.ts"] = { functions: "invalid", branches: [] };
+    expect(readTestExecutionCoverage(
+      artifactWith(malformedOutsideProjection),
+      { includeFiles: new Set(["src/order.ts"]) },
+    )).toBeNull();
+  });
+
   it("returns null for malformed spans, counters, versions, and non-relative paths", () => {
     const cases = [
       { ...coverage(), version: "2.0.0" },

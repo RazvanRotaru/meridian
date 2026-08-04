@@ -117,6 +117,25 @@ describe("createWebService landing + errors", () => {
     expect(html).not.toContain("Cloning + analyzing…");
   });
 
+  it("ships the bounded early PR file checklist without claiming graph readiness", async () => {
+    const html = await (await fetch(`${base}/`)).text();
+    expect(html).toContain('id="prepare-manifest-shell"');
+    expect(html).toContain('aria-label="Changed-file checklist"');
+    expect(html).toContain("inspect exact-revision source while the affected-file view is prepared");
+    expect(html).toContain('data.stage === "manifest-ready"');
+    expect(html).toContain("MAX_PR_MANIFEST_FILES = 512");
+    expect(html).toContain("MAX_PR_MANIFEST_PATH_BYTES = 256 * 1024");
+    expect(html).toContain('performance.mark("meridian:pr-prepare-request-start"');
+    expect(html).toContain('performance.mark("meridian:pr-manifest-shell-actionable"');
+    expect(html).toContain("startTime: actionableAtMs");
+    expect(html).toContain("mark.atMs = performanceEntry.startTime");
+    expect(html).toContain("performanceEntry.startTime - reviewPrepareStartedAtMs");
+    expect(html.indexOf('performanceEntry = performance.mark("meridian:pr-manifest-shell-actionable"'))
+      .toBeLessThan(html.indexOf("window.__MERIDIAN_PR_MANIFEST_SHELL_ACTIONABLE__ = mark"));
+    expect(html).toContain('"https://github.com/" + repository + "/blob/" + sourceSha');
+    expect(html).not.toContain("The graph is ready for review");
+  });
+
   it("400s malformed generate input without touching the network", async () => {
     const bad = await post("/api/generate", { kind: "github", value: "not a repo!!" });
     expect(bad.status).toBe(400);
@@ -223,6 +242,28 @@ describe("createWebService landing + errors", () => {
   it("404s an unknown graph id", async () => {
     expect((await fetch(`${base}/api/graph?id=nope`)).status).toBe(404);
     expect((await fetch(`${base}/view?id=nope`)).status).toBe(404);
+  });
+
+  it("routes explicit projection warming and rejects unknown coordinates before accepting", async () => {
+    const response = await post("/api/graph/project/warm", {
+      version: 1,
+      graphId: "nope",
+      roots: { kind: "files", fileIds: ["ts:src/a.ts"] },
+      requestedDepth: 1,
+      prefetchDepth: 3,
+    });
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toEqual({ error: "unknown graph id" });
+
+    const status = await fetch(`${base}/api/graph/project/warm/status?key=not-a-cache-key`);
+    expect(status.status).toBe(400);
+    expect(await status.json()).toEqual({ error: "graph projection warm status requires a valid key" });
+
+    const absentKey = "0".repeat(64);
+    const absent = await fetch(`${base}/api/graph/project/warm/status?key=${absentKey}`);
+    expect(absent.status).toBe(202);
+    expect(await absent.json()).toEqual({ version: 1, key: absentKey, completed: false });
   });
 
   it("preserves the source-unavailable response when the graph id is missing", async () => {

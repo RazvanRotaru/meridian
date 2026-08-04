@@ -251,6 +251,7 @@ function registeredGraphStore(
     graphStore.publish({
       id,
       material: materializeValidatedArtifact(TEST_ARTIFACT),
+      rawGraphPayload: "complete",
       metadata: {
         sourceRoot: "/workspace/fixture",
         source,

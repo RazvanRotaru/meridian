@@ -7,3 +7,16 @@
  */
 
 export { PythonExtractor, createPythonExtractor } from "./extractor";
+export {
+  closePythonExtractionFiles,
+  indexPythonWorkspaceSources,
+  selectInitialPythonProjectionFiles,
+} from "./source-index";
+export type {
+  InitialPythonProjectionFiles,
+  InitialPythonProjectionOptions,
+  PythonSourceIndex,
+  PythonSourceIndexLimits,
+  PythonSourceIndexOptions,
+  PythonSourceTopologyFile,
+} from "./source-index";

@@ -10,6 +10,7 @@ import { reportExtractionProgress } from "./progress";
 import type { AnalyzeOutput } from "./types";
 
 const ANALYZER_PATH = fileURLToPath(new URL("../python/analyze.py", import.meta.url));
+const SOURCE_INDEX_PATH = fileURLToPath(new URL("../python/source_index.py", import.meta.url));
 const VERSIONED_INTERPRETERS = ["python3.14", "python3.13", "python3.12", "python3.11", "python3.10", "python3.9"];
 const FALLBACK_INTERPRETERS = ["python3", "python"];
 const MAX_OUTPUT_BYTES = 64 * 1024 * 1024;
@@ -45,9 +46,34 @@ export async function runPythonAnalyzer(options: ExtractOptions): Promise<Analyz
   return parseOutput(await spawnAnalyzer(options));
 }
 
+/** Run the bounded, syntax-only progressive source scanner with the same interpreter policy. */
+export async function runPythonSourceIndexer(
+  root: string,
+  options: Record<string, unknown>,
+): Promise<unknown> {
+  const raw = await runAnalyzerCandidates(
+    interpreterCandidates(root),
+    (interpreter) => executePythonScript(
+      interpreter,
+      SOURCE_INDEX_PATH,
+      root,
+      JSON.stringify(options),
+      { root },
+    ),
+  );
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (cause) {
+    const reason = cause instanceof Error ? cause.message : String(cause);
+    throw new Error(`could not parse Python source-index output as JSON: ${reason}`);
+  }
+}
+
 async function spawnAnalyzer(options: ExtractOptions): Promise<string> {
   const analyzerOptions = JSON.stringify({
-    include: options.include ?? [],
+    // `undefined` is canonical all-source extraction; an explicit empty include is the trusted
+    // partial selector's hard zero-file boundary. Preserve that distinction across JSON IPC.
+    include: options.include ?? null,
     exclude: options.exclude ?? [],
     valueRefs: options.valueRefs ?? false,
     progress: options.onProgress !== undefined,
@@ -86,16 +112,26 @@ function executeAnalyzer(
   options: ExtractOptions,
   analyzerOptions: string,
 ): Promise<AnalyzerAttempt> {
+  return executePythonScript(interpreter, ANALYZER_PATH, options.root, analyzerOptions, options);
+}
+
+function executePythonScript(
+  interpreter: string,
+  script: string,
+  root: string,
+  analyzerOptions: string,
+  progressOptions: ExtractOptions,
+): Promise<AnalyzerAttempt> {
   let child;
   try {
-    child = spawn(interpreter, ["-S", ANALYZER_PATH, options.root, analyzerOptions], {
+    child = spawn(interpreter, ["-S", script, root, analyzerOptions], {
       stdio: ["ignore", "pipe", "pipe"],
     });
   } catch (cause) {
     const reason = cause instanceof Error ? cause.message : String(cause);
     return Promise.resolve({ kind: "failure", failure: reason });
   }
-  return collectAnalyzerProcess(child as AnalyzerProcess, options);
+  return collectAnalyzerProcess(child as AnalyzerProcess, progressOptions);
 }
 
 /**

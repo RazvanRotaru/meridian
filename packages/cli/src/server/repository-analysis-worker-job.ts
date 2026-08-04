@@ -11,6 +11,7 @@ import { isAbsolute } from "node:path";
 import {
   SCHEMA_VERSION,
   changedFileManifestFromExtensions,
+  compareBinaryStrings,
   targetSchema,
   type ChangedFileManifestEntry,
   type ExtractionProgress,
@@ -33,6 +34,9 @@ import { syntheticSourceFiles } from "./synthetic-fingerprint";
 
 export const MAX_REPOSITORY_WORKER_STDERR_BYTES = 8_000;
 export const MAX_REPOSITORY_WORKER_CHANGED_FILES = 100_000;
+/** A complete early manifest is optional above this bound; a partial manifest is never emitted. */
+export const MAX_REPOSITORY_WORKER_EARLY_CHANGED_FILES = 512;
+export const MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES = 20_000;
 export const MAX_REPOSITORY_WORKER_SOURCE_FILES = 100_000;
 export const MAX_REPOSITORY_WORKER_SOURCE_PATH_BYTES_TOTAL = 8 * 1024 * 1024;
 export const MAX_REPOSITORY_WORKER_EMPTY_SIDE_HINTS = 64;
@@ -52,6 +56,8 @@ const RESERVED_REQUIRED_PROGRESS_EVENTS =
   + RESERVED_ACTIVITY_PROGRESS_EVENTS
   + RESERVED_INPUT_PROOF_CLEAR_EVENTS;
 const MAX_CHANGED_PATH_BYTES_TOTAL = 1024 * 1024;
+const MAX_EARLY_CHANGED_PATH_BYTES_TOTAL = 256 * 1024;
+const MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL = 4 * 1024 * 1024;
 const MAX_HINT_PATH_BYTES_TOTAL = 256 * 1024;
 const MAX_WARNING_BYTES = 4_000;
 const MAX_WARNING_BYTES_TOTAL = 64 * 1024;
@@ -64,9 +70,10 @@ const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 /** Function-valued Git execution remains inside the worker and cannot cross IPC. */
 export type SerializableRepositoryAnalysisRequest = Omit<
   RepositoryAnalysisRequest,
-  "changedSinceGitExecutor" | "onExtractionProgress" | "typeScriptRevisionShards"
+  "changedSinceGitExecutor" | "onChangedManifest" | "onExtractionProgress" | "typeScriptRevisionShards"
 > & {
   changedSinceGitExecutor?: never;
+  onChangedManifest?: never;
   onExtractionProgress?: never;
   typeScriptRevisionShards?: never;
 };
@@ -80,6 +87,18 @@ export interface NormalizedRepositoryAnalysisRequest {
   changedSinceTimeoutMs: number | null;
   hintedFiles: string[];
   allowEmpty: boolean;
+  initialGraph: {
+    depth: number;
+    /** `null` means derive roots from the exact changed-file manifest inside the worker. */
+    seedFiles: string[] | null;
+    selectedFiles: string[] | null;
+    extractionFiles: string[] | null;
+    frontierFiles: string[] | null;
+    lineage: {
+      graphId: string;
+      generation: string;
+    } | null;
+  } | null;
 }
 
 export interface RepositoryAnalysisWorkerRequestMessage {
@@ -87,6 +106,8 @@ export interface RepositoryAnalysisWorkerRequestMessage {
   id: string;
   request: NormalizedRepositoryAnalysisRequest;
   artifactOutputPath: string;
+  /** Request one complete bounded HEAD diff manifest before extraction starts. */
+  earlyManifest: boolean;
   /** Optional cold-cache derivative written from the same in-memory validated artifact. */
   branchVariant: { artifactOutputPath: string; branch: string } | null;
   /** PR-only bounded semantic/source fingerprints. Ordinary repository graphs omit the sidecar. */
@@ -128,6 +149,12 @@ export interface RepositoryAnalysisProgress extends RepositoryAnalysisProgressCo
   sourceFile: RepositoryAnalysisProgressPosition | null;
 }
 
+/** One complete, bounded copy of the canonical HEAD diff manifest, emitted before extraction. */
+export interface RepositoryAnalysisEarlyManifest {
+  version: 1;
+  changedFiles: ChangedFileManifestEntry[];
+}
+
 export type ReviewFingerprintSelection =
   | { mode: "changed" }
   | { mode: "files"; files: string[] }
@@ -159,6 +186,8 @@ export interface RepositoryAnalysisWorkerFileResult {
   graphSummary: WebGraphArtifactSummary;
   target: Target;
   changedFiles: ChangedFileManifestEntry[];
+  /** Exact server-selected roots of the bounded provisional artifact, not the raw diff manifest. */
+  initialGraphSeedFiles: string[];
   /** One representative path per extractor selected for a potentially empty peer analysis. */
   emptySideHints: string[];
   /** Exact source-file set used by synthetic fingerprinting, never node or edge data. */
@@ -180,6 +209,7 @@ export interface RepositoryAnalysisFacts {
   summary: WebGraphArtifactSummary;
   target: Target;
   changedFiles: ChangedFileManifestEntry[];
+  initialGraphSeedFiles: string[];
   emptySideHints: string[];
   sourceFiles: string[];
   changedSinceBaseRef: string | null;
@@ -204,6 +234,7 @@ export type RepositoryAnalysisWorkerFailure =
 export type RepositoryAnalysisWorkerResponse =
   | { type: "result"; result: RepositoryAnalysisWorkerFileResult }
   | { type: "error"; error: RepositoryAnalysisWorkerFailure }
+  | { type: "manifest"; id: string; manifest: RepositoryAnalysisEarlyManifest }
   | { type: "progress"; id: string; progress: RepositoryAnalysisProgress };
 
 export function normalizeRepositoryAnalysisRequest(
@@ -215,6 +246,9 @@ export function normalizeRepositoryAnalysisRequest(
   if (request.onExtractionProgress !== undefined) {
     throw new TypeError("repository analysis child request cannot contain a progress callback");
   }
+  if (request.onChangedManifest !== undefined) {
+    throw new TypeError("repository analysis child request cannot contain a changed-manifest callback");
+  }
   if (request.typeScriptRevisionShards !== undefined) {
     throw new TypeError("repository analysis child request cannot contain a TypeScript shard policy");
   }
@@ -225,8 +259,28 @@ export function normalizeRepositoryAnalysisRequest(
     vcs: request.vcs ? { ...request.vcs } : null,
     changedSince: request.changedSince ?? null,
     changedSinceTimeoutMs: request.changedSinceTimeoutMs ?? null,
-    hintedFiles: [...new Set(request.hintedFiles ?? [])].sort(),
+    hintedFiles: [...new Set(request.hintedFiles ?? [])].sort(compareBinaryStrings),
     allowEmpty: request.allowEmpty ?? false,
+    initialGraph: request.initialGraph === undefined
+      ? null
+      : {
+          depth: request.initialGraph.depth,
+          seedFiles: request.initialGraph.seedFiles === undefined
+            ? null
+            : [...new Set(request.initialGraph.seedFiles)].sort(compareBinaryStrings),
+          selectedFiles: request.initialGraph.selectedFiles === undefined
+            ? null
+            : [...new Set(request.initialGraph.selectedFiles)].sort(compareBinaryStrings),
+          extractionFiles: request.initialGraph.extractionFiles === undefined
+            ? null
+            : [...new Set(request.initialGraph.extractionFiles)].sort(compareBinaryStrings),
+          frontierFiles: request.initialGraph.frontierFiles === undefined
+            ? null
+            : [...new Set(request.initialGraph.frontierFiles)].sort(compareBinaryStrings),
+          lineage: request.initialGraph.lineage === undefined
+            ? null
+            : { ...request.initialGraph.lineage },
+        },
   };
   if (!isNormalizedAnalysisRequest(normalized)) {
     throw new TypeError("repository analysis child request is invalid");
@@ -244,6 +298,7 @@ export function isRepositoryAnalysisWorkerRequest(
       ? [
           "artifactOutputPath",
           "branchVariant",
+          "earlyManifest",
           "id",
           "progressContext",
           "request",
@@ -254,6 +309,7 @@ export function isRepositoryAnalysisWorkerRequest(
       : [
           "artifactOutputPath",
           "branchVariant",
+          "earlyManifest",
           "id",
           "progressContext",
           "request",
@@ -264,6 +320,8 @@ export function isRepositoryAnalysisWorkerRequest(
         ];
     return hasExactKeys(value, keys)
       && isNormalizedAnalysisRequest(value.request)
+      && typeof value.earlyManifest === "boolean"
+      && (!value.earlyManifest || value.request.changedSince !== null)
       && isBranchVariantRequest(value.branchVariant, value.artifactOutputPath)
       && isReviewFingerprintSelection(value.reviewFingerprints)
       && (value.progressContext === null || isRepositoryAnalysisProgressContext(value.progressContext))
@@ -450,6 +508,11 @@ export function isRepositoryAnalysisWorkerResponse(
       && ITEM_ID.test(asString(value.id))
       && isRepositoryAnalysisProgress(value.progress);
   }
+  if (value.type === "manifest") {
+    return hasExactKeys(value, ["id", "manifest", "type"])
+      && ITEM_ID.test(asString(value.id))
+      && isRepositoryAnalysisEarlyManifest(value.manifest);
+  }
   if (value.type !== "error" || !hasExactKeys(value, ["error", "type"]) || !isRecord(value.error)) {
     return false;
   }
@@ -464,6 +527,30 @@ export function isRepositoryAnalysisWorkerResponse(
     && value.error.details.every((detail) => (
       typeof detail === "string" && Buffer.byteLength(detail) <= MAX_ERROR_TEXT_BYTES
     ));
+}
+
+export function boundedRepositoryAnalysisEarlyManifest(
+  manifest: readonly ChangedFileManifestEntry[],
+): RepositoryAnalysisEarlyManifest | null {
+  const changedFiles = sortChangedFiles(manifest).map((entry) => ({ ...entry }));
+  return isChangedFilesWithin(
+    changedFiles,
+    MAX_REPOSITORY_WORKER_EARLY_CHANGED_FILES,
+    MAX_EARLY_CHANGED_PATH_BYTES_TOTAL,
+  )
+    ? { version: 1, changedFiles }
+    : null;
+}
+
+function isRepositoryAnalysisEarlyManifest(value: unknown): value is RepositoryAnalysisEarlyManifest {
+  return isRecord(value)
+    && hasExactKeys(value, ["changedFiles", "version"])
+    && value.version === 1
+    && isChangedFilesWithin(
+      value.changedFiles,
+      MAX_REPOSITORY_WORKER_EARLY_CHANGED_FILES,
+      MAX_EARLY_CHANGED_PATH_BYTES_TOTAL,
+    );
 }
 
 export function isRepositoryAnalysisProgressContext(
@@ -645,6 +732,7 @@ export function isRepositoryAnalysisFacts(value: unknown): value is RepositoryAn
       "changedFiles",
       "changedSinceBaseRef",
       "emptySideHints",
+      "initialGraphSeedFiles",
       "sourceFiles",
       "summary",
       "target",
@@ -653,10 +741,34 @@ export function isRepositoryAnalysisFacts(value: unknown): value is RepositoryAn
     && isGraphSummary(value.summary)
     && isTarget(value.target)
     && isChangedFiles(value.changedFiles)
+    && isBoundedPaths(
+      value.initialGraphSeedFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    )
     && isBoundedPaths(value.emptySideHints, MAX_REPOSITORY_WORKER_EMPTY_SIDE_HINTS, MAX_HINT_PATH_BYTES_TOTAL)
     && isBoundedPaths(value.sourceFiles, MAX_REPOSITORY_WORKER_SOURCE_FILES, MAX_REPOSITORY_WORKER_SOURCE_PATH_BYTES_TOTAL)
     && (value.changedSinceBaseRef === null || isBoundedNonEmptyString(value.changedSinceBaseRef))
     && isWarnings(value.warnings);
+}
+
+/** Read the exact roots chosen by the initial-selection algorithm while the validated artifact is
+ * already resident in its disposable worker. The long-lived parent receives only this bounded,
+ * sorted list and never reparses the graph artifact to recover private extension metadata. */
+export function initialGraphSeedFilesForWorker(artifact: GraphArtifact): string[] {
+  const marker = artifact.extensions?.prInitialGraph;
+  if (marker === undefined) return [];
+  if (!isRecord(marker)
+    || marker.version !== 1
+    || marker.complete !== false
+    || !isBoundedPaths(
+      marker.seedFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    )) {
+    throw new CliError(EXIT.validation, "repository initial-graph seed metadata exceeds worker limits");
+  }
+  return [...marker.seedFiles];
 }
 
 /** Canonical manifest and base provenance for the compact response. */
@@ -696,14 +808,14 @@ export function emptySideHintsForWorker(
   const candidates = [...new Set([
     ...artifact.nodes.map((node) => node.location.file),
     ...changedFiles.flatMap((file) => [file.path, ...(file.previousPath ? [file.previousPath] : [])]),
-  ].filter(safeLogicalPath))].sort();
+  ].filter(safeLogicalPath))].sort(compareBinaryStrings);
   const hints = [...new Set(extractors.flatMap((extractor) => {
     const extensions = extractor.extensions.map((extension) => extension.toLowerCase());
     const match = candidates.find((file) => extensions.some((extension) => (
       file.toLowerCase().endsWith(extension)
     )));
     return match === undefined ? [] : [match];
-  }))].sort();
+  }))].sort(compareBinaryStrings);
   if (!isBoundedPaths(hints, MAX_REPOSITORY_WORKER_EMPTY_SIDE_HINTS, MAX_HINT_PATH_BYTES_TOTAL)) {
     throw new CliError(EXIT.validation, "repository analysis empty-side hints exceed worker limits");
   }
@@ -927,6 +1039,7 @@ function isNormalizedAnalysisRequest(value: unknown): value is NormalizedReposit
     "changedSinceTimeoutMs",
     "cwd",
     "hintedFiles",
+    "initialGraph",
     "targetName",
     "vcs",
   ])) return false;
@@ -939,7 +1052,59 @@ function isNormalizedAnalysisRequest(value: unknown): value is NormalizedReposit
       Number.isSafeInteger(value.changedSinceTimeoutMs) && (value.changedSinceTimeoutMs as number) > 0
     ))
     && isBoundedPaths(value.hintedFiles, MAX_REPOSITORY_WORKER_SOURCE_FILES, MAX_REPOSITORY_WORKER_SOURCE_PATH_BYTES_TOTAL)
+    && isInitialGraphRequest(value.initialGraph)
     && typeof value.allowEmpty === "boolean";
+}
+
+function isInitialGraphRequest(
+  value: unknown,
+): value is NormalizedRepositoryAnalysisRequest["initialGraph"] {
+  return value === null || (
+    isRecord(value)
+    && hasExactKeys(value, ["depth", "extractionFiles", "frontierFiles", "lineage", "seedFiles", "selectedFiles"])
+    && Number.isSafeInteger(value.depth)
+    && (value.depth as number) >= 1
+    && (value.depth as number) <= 8
+    && (value.seedFiles === null || isBoundedPaths(
+      value.seedFiles,
+      MAX_REPOSITORY_WORKER_EARLY_CHANGED_FILES,
+      MAX_EARLY_CHANGED_PATH_BYTES_TOTAL,
+    ))
+    && (value.selectedFiles === null || isBoundedPaths(
+      value.selectedFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    ))
+    && (value.extractionFiles === null || isBoundedPaths(
+      value.extractionFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    ))
+    && (value.frontierFiles === null || isBoundedPaths(
+      value.frontierFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    ))
+    && (value.lineage === null || (
+      isRecord(value.lineage)
+      && hasExactKeys(value.lineage, ["generation", "graphId"])
+      && isBoundedNonEmptyString(value.lineage.graphId)
+      && typeof value.lineage.generation === "string"
+      && SHA256.test(value.lineage.generation)
+    ))
+    && (value.selectedFiles === null
+      || value.extractionFiles === null
+      || (value.selectedFiles as string[]).every((path) => (value.extractionFiles as string[]).includes(path)))
+    && ((value.selectedFiles === null
+        && value.extractionFiles === null
+        && value.frontierFiles === null
+        && value.lineage === null)
+      || (value.seedFiles !== null
+        && value.selectedFiles !== null
+        && value.extractionFiles !== null
+        && value.frontierFiles !== null
+        && value.lineage !== null))
+  );
 }
 
 function isWorkerFileResult(value: unknown): value is RepositoryAnalysisWorkerFileResult {
@@ -953,6 +1118,7 @@ function isWorkerFileResult(value: unknown): value is RepositoryAnalysisWorkerFi
     "emptySideHints",
     "graphSummary",
     "id",
+    "initialGraphSeedFiles",
     "kind",
     "operation",
     "sourceFiles",
@@ -971,6 +1137,11 @@ function isWorkerFileResult(value: unknown): value is RepositoryAnalysisWorkerFi
     && isGraphSummary(value.graphSummary)
     && isTarget(value.target)
     && isChangedFiles(value.changedFiles)
+    && isBoundedPaths(
+      value.initialGraphSeedFiles,
+      MAX_REPOSITORY_WORKER_INITIAL_GRAPH_FILES,
+      MAX_INITIAL_GRAPH_PATH_BYTES_TOTAL,
+    )
     && isBoundedPaths(value.emptySideHints, MAX_REPOSITORY_WORKER_EMPTY_SIDE_HINTS, MAX_HINT_PATH_BYTES_TOTAL)
     && isBoundedPaths(value.sourceFiles, MAX_REPOSITORY_WORKER_SOURCE_FILES, MAX_REPOSITORY_WORKER_SOURCE_PATH_BYTES_TOTAL)
     && (value.changedSinceBaseRef === null || isBoundedNonEmptyString(value.changedSinceBaseRef))
@@ -1046,14 +1217,26 @@ function requireChangedFiles(value: ChangedFileManifestEntry[]): void {
 }
 
 function isChangedFiles(value: unknown): value is ChangedFileManifestEntry[] {
-  if (!Array.isArray(value) || value.length > MAX_REPOSITORY_WORKER_CHANGED_FILES) return false;
+  return isChangedFilesWithin(
+    value,
+    MAX_REPOSITORY_WORKER_CHANGED_FILES,
+    MAX_CHANGED_PATH_BYTES_TOTAL,
+  );
+}
+
+function isChangedFilesWithin(
+  value: unknown,
+  maxFiles: number,
+  maxPathBytes: number,
+): value is ChangedFileManifestEntry[] {
+  if (!Array.isArray(value) || value.length > maxFiles) return false;
   const seen = new Set<string>();
   let previousPath: string | undefined;
   let bytes = 0;
   for (const entry of value) {
     if (!isRecord(entry) || !safeLogicalPath(entry.path) || seen.has(entry.path)) return false;
     if (entry.nonTextualChanges !== undefined && entry.nonTextualChanges !== true) return false;
-    if (previousPath !== undefined && previousPath.localeCompare(entry.path) >= 0) return false;
+    if (previousPath !== undefined && compareBinaryStrings(previousPath, entry.path) >= 0) return false;
     seen.add(entry.path);
     previousPath = entry.path;
     const nonTextualKey = entry.nonTextualChanges === true ? ["nonTextualChanges"] : [];
@@ -1064,7 +1247,7 @@ function isChangedFiles(value: unknown): value is ChangedFileManifestEntry[] {
     } else if ((entry.status !== "added" && entry.status !== "modified" && entry.status !== "deleted")
       || !hasExactKeys(entry, ["path", "status", ...nonTextualKey])) return false;
     bytes += Buffer.byteLength(entry.path);
-    if (bytes > MAX_CHANGED_PATH_BYTES_TOTAL) return false;
+    if (bytes > maxPathBytes) return false;
   }
   return true;
 }
@@ -1074,7 +1257,8 @@ function isBoundedPaths(value: unknown, maxCount: number, maxBytes: number): val
   let bytes = 0;
   for (let index = 0; index < value.length; index += 1) {
     const path = value[index];
-    if (!safeLogicalPath(path) || (index > 0 && value[index - 1] >= path)) return false;
+    if (!safeLogicalPath(path)
+      || (index > 0 && compareBinaryStrings(value[index - 1]!, path) >= 0)) return false;
     bytes += Buffer.byteLength(path);
     if (bytes > maxBytes) return false;
   }
@@ -1100,7 +1284,7 @@ function safeLogicalPath(value: unknown): value is string {
 }
 
 function sortChangedFiles(value: readonly ChangedFileManifestEntry[]): ChangedFileManifestEntry[] {
-  return [...value].sort((left, right) => left.path.localeCompare(right.path));
+  return [...value].sort((left, right) => compareBinaryStrings(left.path, right.path));
 }
 
 function isBoundedNonEmptyString(value: unknown): value is string {

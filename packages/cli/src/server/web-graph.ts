@@ -105,6 +105,12 @@ export async function sendGraph(ctx: Context, response: ServerResponse, id: stri
     return;
   }
   try {
+    if (registration.descriptor.rawGraphPayload !== "complete") {
+      sendJson(response, 409, {
+        error: "raw graph payload is unavailable for a projection-only graph",
+      });
+      return;
+    }
     await sendJsonFile(response, registration.artifactPath);
   } finally {
     registration.release();

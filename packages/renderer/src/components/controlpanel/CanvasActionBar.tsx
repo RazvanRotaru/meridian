@@ -368,7 +368,7 @@ export function CanvasActionBar({
                 ariaLabel="Close extracted graph"
                 title="Close all extracted graphs and return to the source graph"
                 icon={<CloseIcon size={18} />}
-                onClick={closeMinimalGraph}
+                onClick={() => { closeMinimalGraph(); }}
               />
             </CanvasActionGroup>
           </>
@@ -433,7 +433,7 @@ export function CanvasActionBar({
                 ariaLabel="Close extracted graph"
                 title="Close all extracted graphs and return to the source graph"
                 icon={<CloseIcon size={18} />}
-                onClick={closeMinimalGraph}
+                onClick={() => { closeMinimalGraph(); }}
               />
             </CanvasActionGroup>
           </>

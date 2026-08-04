@@ -7,7 +7,7 @@ import buildConfiguration from "../tsup.config";
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 describe("CLI build memory boundary", () => {
-  it("ships the disposable analysis worker as a split production entry", () => {
+  it("ships analysis and graph-projection workers as split production entries", () => {
     if (!Array.isArray(buildConfiguration)) {
       throw new TypeError("expected one build configuration per worker boundary");
     }
@@ -16,6 +16,7 @@ describe("CLI build memory boundary", () => {
     expect(parentAndAnalysisWorker?.entry).toEqual([
       "src/bin.ts",
       "src/repository-analysis-worker.ts",
+      "src/graph-project-worker.ts",
     ]);
     expect(parentAndAnalysisWorker?.splitting).toBe(true);
     expect(parentAndAnalysisWorker?.clean).toBe(true);

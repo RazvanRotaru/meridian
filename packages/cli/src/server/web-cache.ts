@@ -636,6 +636,7 @@ function requireRestampResult(
   requireBranchTarget(result.target, neutral.facts, branch);
   if (!isDeepStrictEqual(result.summary, neutral.facts.summary)
     || !isDeepStrictEqual(result.changedFiles, neutral.facts.changedFiles)
+    || !isDeepStrictEqual(result.initialGraphSeedFiles, neutral.facts.initialGraphSeedFiles)
     || !isDeepStrictEqual(result.sourceFiles, neutral.facts.sourceFiles)
     || result.changedSinceBaseRef !== neutral.facts.changedSinceBaseRef) {
     throw new Error("repository artifact restamp changed extraction facts");
@@ -647,6 +648,7 @@ function factsFromResult(result: RepositoryAnalysisChildResult): RepositoryAnaly
     summary: result.summary,
     target: result.target,
     changedFiles: result.changedFiles,
+    initialGraphSeedFiles: result.initialGraphSeedFiles,
     emptySideHints: result.emptySideHints,
     sourceFiles: result.sourceFiles,
     changedSinceBaseRef: result.changedSinceBaseRef,

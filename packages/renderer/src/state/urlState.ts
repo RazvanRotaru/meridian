@@ -70,12 +70,16 @@ export interface NavState {
   /** The reviewed PR carried by a modules-lens URL; distinct from the PR-browser selection. */
   reviewPr: number | null;
   reviewActive: boolean;
+  /** True while this review is backed by an active partial graph session. Partial-only is the
+   * default for old/unmarked review URLs; `progressive=0` is reserved for the controlled benchmark
+   * baseline and is always written explicitly so it cannot become the production default. */
+  progressiveReview: boolean;
   telemetrySourceId: string | null;
   environment: string | null;
 }
 
 /** Every param key we own — listed once so `mergeNavIntoSearch` can clear them before rewriting. */
-const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels", "prstate", "prn", "rev", "tsrc", "env"] as const; // focus/sel/expand/flow/depth are LEGACY (pre-unification ui + flow isolation): still cleared on rewrite so stale links tidy up, never written.
+const KEYS = ["view", "focus", "root", "sel", "csel", "lsel", "flow", "depth", "fexp", "fsel", "lroot", "lview", "lstack", "expand", "mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels", "prstate", "prn", "rev", "progressive", "partial", "pair", "tsrc", "env"] as const; // focus/sel/expand/flow/depth are LEGACY; partial/pair are scoped handoff keys retained only by their active partial review.
 
 /** Keys that ride along in EVERY lens: the lens itself, the telemetry env, and the cross-cutting
  * flow explorer (its panel is mounted regardless of the active lens, and reveals across the module
@@ -95,7 +99,7 @@ const LENS_KEYS: Record<ViewMode, readonly string[]> = {
   // `mexp` holds inline service/domain containers, so both survive reload/back/share like Map.
   call: ["root", "csel", "mfocus", "mexp", "mgraph", "mdepth", "hmode", "mhide", "sgroup", "sgsize", "sglabels"],
   // An in-graph PR review is a Map-only surface: prn+rev live on the modules lens alone.
-  modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prn", "rev"],
+  modules: ["mfocus", "mgraph", "mexp", "mdepth", "hmode", "mhide", "prn", "rev", "progressive"],
   logic: ["lroot", "lview", "lstack", "lsel"],
   prs: ["prstate", "prn"],
 };
@@ -125,6 +129,7 @@ export const DEFAULT_NAV: NavState = {
   prSelected: null,
   reviewPr: null,
   reviewActive: false,
+  progressiveReview: false,
   telemetrySourceId: null,
   environment: null,
 };
@@ -154,6 +159,7 @@ interface NavSource {
   prsTab: PrsTab;
   prSelected: number | null;
   prReviewed: number | null;
+  progressiveGraph: unknown | null;
   telemetrySourceId: string | null;
   environment: string | null;
 }
@@ -184,6 +190,7 @@ export function navFrom(state: NavSource): NavState {
     prSelected: state.prSelected,
     reviewPr: state.prReviewed,
     reviewActive: state.prReviewed !== null,
+    progressiveReview: state.prReviewed !== null && state.progressiveGraph !== null,
     telemetrySourceId: state.telemetrySourceId,
     environment: state.environment,
   };
@@ -230,6 +237,7 @@ export function encodeNav(nav: NavState): Map<string, string> {
   } else if (activeReview) {
     out.set("prn", String(nav.reviewPr));
     out.set("rev", "1");
+    out.set("progressive", nav.progressiveReview ? "1" : "0");
   }
   setId(out, "tsrc", nav.telemetrySourceId);
   setId(out, "env", nav.environment);
@@ -297,6 +305,9 @@ export function decodeNav(params: URLSearchParams): Partial<NavState> {
   if (prsTab === "open" || prsTab === "closed") out.prsTab = prsTab;
   const reviewActive = params.get("rev") === "1";
   if (reviewActive) out.reviewActive = true;
+  // Production reviews are partial-only even for old/copied links that predate the marker. Keep
+  // the complete-artifact lane available only through an explicit `progressive=0` benchmark URL.
+  if (reviewActive && params.get("progressive") !== "0") out.progressiveReview = true;
   const prNumber = params.get("prn");
   if (prNumber !== null && Number.isInteger(Number(prNumber)) && Number(prNumber) > 0) {
     if (reviewActive) {
@@ -317,12 +328,28 @@ export function decodeNavState(params: URLSearchParams): NavState {
   return { ...DEFAULT_NAV, ...decodeNav(params) };
 }
 
-/** Rewrite a query string with our keys set from `nav`, preserving any foreign params (e.g. `id`). */
+/** Rewrite a query string with our keys set from `nav`, preserving any foreign params (e.g. `id`).
+ * A server-issued partial/pair marker remains only while that exact partial review is active. This
+ * keeps reload provenance intact, but leaving the review consumes both markers atomically. */
 export function mergeNavIntoSearch(search: string, nav: NavState): string {
   const params = new URLSearchParams(search);
+  const partialMarkers = params.getAll("partial");
+  const pairMarkers = params.getAll("pair");
+  const retainedPartialPair = nav.viewMode === "modules"
+    && nav.reviewActive
+    && nav.reviewPr !== null
+    && nav.progressiveReview
+    && partialMarkers.length === 1
+    && partialMarkers[0] === "1"
+    && pairMarkers.length === 1
+    && /^[a-f0-9]{20}$/.test(pairMarkers[0]!);
   KEYS.forEach((key) => params.delete(key));
   for (const [key, value] of encodeNav(nav)) {
     params.set(key, value);
+  }
+  if (retainedPartialPair) {
+    params.set("partial", "1");
+    params.set("pair", pairMarkers[0]!);
   }
   return params.toString();
 }

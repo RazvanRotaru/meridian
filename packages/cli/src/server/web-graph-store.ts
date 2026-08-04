@@ -30,6 +30,7 @@ import {
   type SyntheticScenarioDescriptor,
 } from "@meridian/core";
 import type { SyntheticExecutionTrust } from "./web-boot";
+import { isGraphProjectRootChunks } from "./web-graph-project-worker-job";
 import {
   resolveGraphRetentionOptions,
   selectGraphRetentionCandidates,
@@ -50,6 +51,9 @@ export interface WebGraphArtifactSummary {
   nodeCount: number;
   edgeCount: number;
 }
+
+/** Whether the stored artifact is itself a complete browser payload or only projection input. */
+export type WebGraphRawPayload = "complete" | "projection-only";
 
 interface ProvenArtifactMaterial {
   readonly [MATERIAL_PROOF]: true;
@@ -128,6 +132,25 @@ export interface WebGraphStoreMaintenance {
   readonly renamePath?: (source: string, destination: string) => void;
 }
 
+/** Opaque proof of the registrations newly created by one successful batch publication. */
+export interface WebGraphPublicationReceipt {
+  readonly createdIds: readonly string[];
+}
+
+export interface WebGraphBatchPublication {
+  readonly descriptors: readonly WebGraphDescriptor[];
+  readonly receipt: WebGraphPublicationReceipt;
+}
+
+export interface WebGraphBatchPublicationOptions {
+  readonly receipt: true;
+  /**
+   * Optional shorter reservation for a publication whose caller has a narrower handoff contract.
+   * It may never extend the store-wide maximum.
+   */
+  readonly publicationHandoffTtlMs?: number;
+}
+
 interface WebGraphEntryState {
   readonly id: string;
   readonly entryPath: string;
@@ -164,6 +187,16 @@ interface ReservedGraphEvictions {
     reservedPath: string;
   }>;
 }
+
+interface WebGraphPublicationReceiptState {
+  readonly store: WebGraphStore;
+  readonly entries: readonly WebGraphEntryState[];
+}
+
+const publicationReceiptStates = new WeakMap<
+  WebGraphPublicationReceipt,
+  WebGraphPublicationReceiptState
+>();
 
 /**
  * Serialize one graph that an upstream analysis boundary has already validated.
@@ -222,8 +255,12 @@ export interface WebGraphDescriptor {
   id: string;
   /** SHA-256 of the exact bytes stored and served for this graph. */
   byteDigest: string;
+  /** Raw `/api/graph` is fail-closed unless publication explicitly proves a complete payload. */
+  rawGraphPayload: WebGraphRawPayload;
   summary: WebGraphArtifactSummary;
   sourceRoot: string;
+  /** Durable oversized changed-file projection plan, retained for this registration's lifetime. */
+  projectionRootChunks?: readonly (readonly string[])[];
   source: ArtifactSource;
   synthetic: {
     scenarios: SyntheticScenarioDescriptor[];
@@ -235,8 +272,11 @@ export interface WebGraphDescriptor {
 export interface WebGraphRegistration {
   id: string;
   material: WebGraphArtifactMaterial;
+  /** Server-owned delivery classification; never accepted from an HTTP request. */
+  rawGraphPayload: WebGraphRawPayload;
   metadata: {
     sourceRoot: string;
+    projectionRootChunks?: readonly (readonly string[])[];
     sourceLease?: WebGraphSourceLease;
     source: ArtifactSource;
     synthetic: {
@@ -297,10 +337,19 @@ export class WebGraphStore {
    * every artifact is staged and every destination rename succeeds. Active owners may temporarily
    * keep the registry above its retention targets; their release triggers another retention pass.
    */
-  publishBatch(registrations: readonly WebGraphRegistration[]): WebGraphDescriptor[] {
+  publishBatch(registrations: readonly WebGraphRegistration[]): WebGraphDescriptor[];
+  publishBatch(
+    registrations: readonly WebGraphRegistration[],
+    options: WebGraphBatchPublicationOptions,
+  ): WebGraphBatchPublication;
+  publishBatch(
+    registrations: readonly WebGraphRegistration[],
+    options?: WebGraphBatchPublicationOptions,
+  ): WebGraphDescriptor[] | WebGraphBatchPublication {
     const transferredLeases = new Set<WebGraphSourceLease>();
     const retainedLeases = new Set<WebGraphSourceLease>();
     const stages: PreparedGraphPublication[] = [];
+    const createdStates: WebGraphEntryState[] = [];
     let duplicateSourceLease = false;
     for (const registration of registrations) {
       const sourceLease = registration.metadata.sourceLease;
@@ -316,7 +365,18 @@ export class WebGraphStore {
         throw new Error("a source workspace lease cannot be published more than once");
       }
       this.#assertActive();
-      if (registrations.length === 0) return [];
+      const publicationHandoffTtlMs = resolvePublicationHandoffTtlMs(
+        options?.publicationHandoffTtlMs,
+        this.#options.publicationHandoffTtlMs,
+      );
+      if (registrations.length === 0) {
+        if (options?.receipt !== true) return [];
+        const receipt = Object.freeze<WebGraphPublicationReceipt>({
+          createdIds: Object.freeze([]),
+        });
+        publicationReceiptStates.set(receipt, { store: this, entries: [] });
+        return { descriptors: [], receipt };
+      }
 
       const ids = new Set<string>();
       const prepared: PreparedGraphPublication[] = registrations.map((registration) => {
@@ -328,8 +388,12 @@ export class WebGraphStore {
           formatVersion: DESCRIPTOR_FORMAT_VERSION,
           id,
           byteDigest: material.byteDigest,
+          rawGraphPayload: registration.rawGraphPayload,
           summary: material.summary,
           sourceRoot: registration.metadata.sourceRoot,
+          ...(registration.metadata.projectionRootChunks === undefined
+            ? {}
+            : { projectionRootChunks: registration.metadata.projectionRootChunks }),
           source: registration.metadata.source,
           synthetic: registration.metadata.synthetic,
         }, id);
@@ -367,7 +431,7 @@ export class WebGraphStore {
         publishedAtMs: item.existingState?.publishedAtMs ?? now,
         lastAccessAtMs: now,
         pinned: true,
-        handoffUntilMs: now + this.#options.publicationHandoffTtlMs,
+        handoffUntilMs: now + publicationHandoffTtlMs,
       })));
 
       // Eviction victims are known before any artifact bytes are copied. Record the expected
@@ -422,7 +486,7 @@ export class WebGraphStore {
           item.existingState.lastAccessAtMs = now;
           item.existingState.handoffUntilMs = Math.max(
             item.existingState.handoffUntilMs,
-            now + this.#options.publicationHandoffTtlMs,
+            now + publicationHandoffTtlMs,
           );
           if (item.sourceLease !== undefined && item.existingState.sourceLease === undefined) {
             item.existingState.sourceLease = item.sourceLease;
@@ -430,17 +494,19 @@ export class WebGraphStore {
           }
           continue;
         }
-        this.#entries.set(item.id, {
+        const state: WebGraphEntryState = {
           id: item.id,
           entryPath: item.destinationPath!,
           artifactBytes: item.artifactBytes,
           publishedAtMs: now,
           lastAccessAtMs: now,
-          handoffUntilMs: now + this.#options.publicationHandoffTtlMs,
+          handoffUntilMs: now + publicationHandoffTtlMs,
           requestPins: 0,
           viewPins: 0,
           ...(item.sourceLease === undefined ? {} : { sourceLease: item.sourceLease }),
-        });
+        };
+        this.#entries.set(item.id, state);
+        createdStates.push(state);
         if (item.sourceLease !== undefined) retainedLeases.add(item.sourceLease);
       }
 
@@ -451,7 +517,13 @@ export class WebGraphStore {
       // keep retrying maintenance while new publications remain available.
       this.#removeCommittedEvictions(reservation);
 
-      return prepared.map((item) => item.descriptor);
+      const descriptors = prepared.map((item) => item.descriptor);
+      if (options?.receipt !== true) return descriptors;
+      const receipt = Object.freeze<WebGraphPublicationReceipt>({
+        createdIds: Object.freeze(createdStates.map(({ id }) => id)),
+      });
+      publicationReceiptStates.set(receipt, { store: this, entries: createdStates });
+      return { descriptors, receipt };
     } finally {
       for (const stage of stages) {
         if (stage.stagePath !== undefined && existsSync(stage.stagePath)) {
@@ -462,6 +534,38 @@ export class WebGraphStore {
         if (!retainedLeases.has(lease)) releaseSourceLease(lease);
       }
     }
+  }
+
+  /**
+   * Atomically discard only the registrations newly created by one publication attempt.
+   *
+   * This is a failed-handoff cleanup path, so it deliberately ignores publication handoff TTL.
+   * A request/view pin on any still-current member preserves the entire set for that concurrent
+   * owner and leaves ordinary retention responsible for eventual reclamation. Exact registrations
+   * which predated the receipt are never included and therefore cannot be removed here.
+   */
+  discardPublication(receipt: WebGraphPublicationReceipt): boolean {
+    if (this.#disposed) return false;
+    const owned = publicationReceiptStates.get(receipt);
+    if (owned === undefined || owned.store !== this) return false;
+    publicationReceiptStates.delete(receipt);
+
+    const current = owned.entries.filter((entry) => this.#entries.get(entry.id) === entry);
+    if (current.some((entry) => entry.requestPins > 0 || entry.viewPins > 0)) return false;
+    if (current.length === 0) return true;
+
+    let reservation: ReservedGraphEvictions | null;
+    try {
+      reservation = this.#reserveEvictions(current);
+    } catch (error) {
+      // Failed cleanup must not replace the preparation error which motivated it. The reservation
+      // helper has already restored every recoverable member; retention owns anything left behind.
+      this.#reportMaintenanceError(error);
+      return false;
+    }
+    this.#commitReservedEvictions(reservation);
+    this.#removeCommittedEvictions(reservation);
+    return true;
   }
 
   /** Acquire one request-scoped registration reference. Callers must release it in `finally`. */
@@ -939,6 +1043,16 @@ function releaseSourceLease(lease: WebGraphSourceLease): void {
   }
 }
 
+function resolvePublicationHandoffTtlMs(value: number | undefined, maximum: number): number {
+  const resolved = value ?? maximum;
+  if (!Number.isSafeInteger(resolved) || resolved < 0 || resolved > maximum) {
+    throw new RangeError(
+      `publication handoff TTL must be a non-negative safe integer no greater than ${maximum} milliseconds`,
+    );
+  }
+  return resolved;
+}
+
 function publishArtifactMaterial(material: WebGraphArtifactMaterial, destination: string): void {
   if (material.kind === "serialized") {
     writeFileSync(destination, material.bytes, { flag: "wx", mode: 0o600 });
@@ -998,6 +1112,8 @@ function parseDescriptor(input: unknown, expectedId: string): WebGraphDescriptor
     "byteDigest",
     "formatVersion",
     "id",
+    ...(descriptor.projectionRootChunks === undefined ? [] : ["projectionRootChunks"]),
+    "rawGraphPayload",
     "source",
     "sourceRoot",
     "summary",
@@ -1009,7 +1125,18 @@ function parseDescriptor(input: unknown, expectedId: string): WebGraphDescriptor
   const id = requireNonEmptyString(descriptor.id, `graph '${expectedId}' descriptor id`);
   if (id !== expectedId) throw new Error(`graph '${expectedId}' descriptor id does not match its lookup key`);
   const byteDigest = requireSha256(descriptor.byteDigest, `graph '${expectedId}' artifact byte digest`);
+  const rawGraphPayload = parseRawGraphPayload(
+    descriptor.rawGraphPayload,
+    `graph '${expectedId}' raw graph payload`,
+  );
   const summary = parseSummary(descriptor.summary, `graph '${expectedId}' summary`);
+  const projectionRootChunks = descriptor.projectionRootChunks === undefined
+    ? undefined
+    : isGraphProjectRootChunks(descriptor.projectionRootChunks)
+      ? descriptor.projectionRootChunks.map((chunk) => [...chunk])
+      : (() => {
+          throw new Error(`graph '${expectedId}' projection root chunks are invalid`);
+        })();
   const synthetic = requireRecord(descriptor.synthetic, `graph '${expectedId}' synthetic metadata`);
   requireExactKeys(synthetic, ["scenarios", "sourceFingerprint", "trust"], `graph '${expectedId}' synthetic metadata`);
   if (!Array.isArray(synthetic.scenarios)) throw new Error(`graph '${expectedId}' synthetic scenarios must be an array`);
@@ -1018,8 +1145,10 @@ function parseDescriptor(input: unknown, expectedId: string): WebGraphDescriptor
     formatVersion: DESCRIPTOR_FORMAT_VERSION,
     id,
     byteDigest,
+    rawGraphPayload,
     summary,
     sourceRoot: requireNonEmptyString(descriptor.sourceRoot, `graph '${expectedId}' source root`),
+    ...(projectionRootChunks === undefined ? {} : { projectionRootChunks }),
     source: parseSource(descriptor.source, expectedId),
     synthetic: {
       scenarios: synthetic.scenarios.map((scenario, index) => parseScenario(scenario, expectedId, index)),
@@ -1027,6 +1156,13 @@ function parseDescriptor(input: unknown, expectedId: string): WebGraphDescriptor
       trust: parseTrust(synthetic.trust, expectedId),
     },
   };
+}
+
+function parseRawGraphPayload(input: unknown, label: string): WebGraphRawPayload {
+  if (input !== "complete" && input !== "projection-only") {
+    throw new Error(`${label} must be complete or projection-only`);
+  }
+  return input;
 }
 
 function parseSource(input: unknown, id: string): ArtifactSource {

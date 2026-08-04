@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from "react-dom/server";
+import type { ComponentProps } from "react";
 import { describe, expect, it } from "vitest";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
 import type { ReviewCodePreviewTrigger, ReviewFlowSplitView } from "../../state/reviewPreferences";
@@ -14,6 +15,7 @@ function render(
   codePreviewTrigger: ReviewCodePreviewTrigger = "hover",
   hideAddedSourceCommentDiffs = false,
   excludeFormatOnlyChanges = true,
+  progressiveContext: ComponentProps<typeof ReviewPreferencesPane>["progressiveContext"] = null,
 ) {
   return renderToStaticMarkup(
     <ReviewPreferencesPane
@@ -24,6 +26,7 @@ function render(
       openFlowSplitOnSelect={openFlowSplitOnSelect}
       codePreviewTrigger={codePreviewTrigger}
       hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
+      progressiveContext={progressiveContext}
       onExcludeTestChangesChange={() => undefined}
       onExcludeFormatOnlyChangesChange={() => undefined}
       onHideNodesNotInDiffChange={() => undefined}
@@ -31,6 +34,7 @@ function render(
       onOpenFlowSplitOnSelectChange={() => undefined}
       onCodePreviewTriggerChange={() => undefined}
       onHideAddedSourceCommentDiffsChange={() => undefined}
+      onProgressiveDepthChange={() => undefined}
       onClose={() => undefined}
     />,
   );
@@ -120,6 +124,38 @@ describe("ReviewPreferencesPane", () => {
 
     expect(markup).not.toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-format-only-description")[^>]*>/);
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*checked="")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
+  });
+
+  it("shows adjustable progressive context without changing legacy graph preferences", () => {
+    const markup = render("timeline", true, true, false, "hover", false, true, {
+      requestedDepth: 2,
+      loadedDepth: 2,
+      loadedFiles: 37,
+      totalFiles: 912,
+      status: "ready",
+      error: null,
+    });
+
+    expect(markup).toContain("Loaded context depth");
+    expect(markup).toContain('id="review-context-depth"');
+    expect(markup).toMatch(/<option value="2" selected="">2 edges<\/option>/);
+    expect(markup).toContain("37 of 912 files resident per revision");
+    expect(markup).toContain("resolved imports (including literal dynamic imports) and exact IPC joins");
+    expect(markup).toContain("Depth 2 is prepared after the canvas becomes actionable; deeper levels load only when chosen");
+  });
+
+  it("presents rename-safe resident counts with their per-revision denominator", () => {
+    const markup = render("timeline", true, true, false, "hover", false, true, {
+      requestedDepth: 1,
+      loadedDepth: 1,
+      loadedFiles: 1,
+      totalFiles: 1,
+      status: "ready",
+      error: null,
+    });
+
+    expect(markup).toContain("1 of 1 files resident per revision");
+    expect(markup).not.toContain("2 of 1");
   });
 
   it.each(MODES)("marks only %s as selected", (mode) => {

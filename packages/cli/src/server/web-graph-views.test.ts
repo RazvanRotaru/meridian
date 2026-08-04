@@ -291,6 +291,7 @@ function registration(id: string): WebGraphRegistration {
   return {
     id,
     material: materializeValidatedArtifact(ARTIFACT),
+    rawGraphPayload: "complete",
     metadata: {
       sourceRoot: "/workspace/lease-contract",
       source: { kind: "path" },

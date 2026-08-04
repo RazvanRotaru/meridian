@@ -1,6 +1,15 @@
 import type { GraphNode } from "@meridian/core";
 import type { GraphIndex } from "../graph/graphIndex";
 
+/** A source file's canonical graph root. Python models a package initializer as the package node
+ * itself, while namespace/directory packages remain structural containers with no file identity. */
+export function isCanonicalFileNode(node: GraphNode | undefined): boolean {
+  return node !== undefined && (
+    node.kind === "module"
+    || (node.kind === "package" && node.location.file.endsWith(".py"))
+  );
+}
+
 export interface ModuleRevealState {
   moduleFocus: string | null;
   moduleExpanded: Set<string>;
@@ -20,7 +29,7 @@ export function moduleRevealStateFor(nodeIds: readonly string[], index: GraphInd
   };
 }
 
-/** The distinct home FILES (nearest module ancestor-or-self) of `nodeIds`, first-seen order — what
+/** The distinct home FILES (nearest canonical file ancestor-or-self) of `nodeIds`, first-seen order — what
  * a bulk reveal draws and selects. Exposed so the UI lens can run the same file normalization as
  * `moduleRevealStateFor` before its own (render-root-aware) reveal picks the focus. */
 export function nearestModuleIds(nodeIds: readonly string[], index: GraphIndex): string[] {
@@ -43,7 +52,7 @@ function uniqueModules(nodeIds: readonly string[], index: GraphIndex): GraphNode
 function nearestModule(nodeId: string, index: GraphIndex): GraphNode | null {
   const ancestors = index.ancestorsOf(nodeId);
   for (let i = ancestors.length - 1; i >= 0; i -= 1) {
-    if (ancestors[i].kind === "module") {
+    if (isCanonicalFileNode(ancestors[i])) {
       return ancestors[i];
     }
   }

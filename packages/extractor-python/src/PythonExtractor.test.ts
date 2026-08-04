@@ -53,6 +53,20 @@ function artifactFrom(result: ExtractionResult): GraphArtifact {
 }
 
 describe("PythonExtractor over orders-service-py", () => {
+  it("distinguishes canonical discovery from an explicit empty partial selection", async () => {
+    const root = await mkdtemp(join(tmpdir(), "meridian-py-empty-selection-"));
+    try {
+      await writeFile(join(root, "app.py"), "def main():\n    return 1\n");
+      const canonical = await createPythonExtractor().extract({ root });
+      const empty = await createPythonExtractor().extract({ root, include: [] });
+
+      expect(canonical.stats.files).toBe(1);
+      expect(empty).toMatchObject({ nodes: [], edges: [], stats: { files: 0 } });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("reports real selected and parsed files without changing graph output", async () => {
     const root = await mkdtemp(join(tmpdir(), "meridian-pyprogress-"));
     try {

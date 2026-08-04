@@ -88,6 +88,10 @@ function registerWeb(program: Command): void {
       "--allow-synthetic-pr-execution",
       "allow consent-gated synthetic-flow runs for prepared PR heads in an available OCI sandbox",
     )
+    .option(
+      "--benchmark-pr-full-baseline",
+      "enable header-gated complete PR graph controls for the loopback benchmark harness",
+    )
     .action(async (source, _options, command) => {
       const { runWeb } = await import("./commands/web");
       return runWeb(source, command.optsWithGlobals() as WebOptions);

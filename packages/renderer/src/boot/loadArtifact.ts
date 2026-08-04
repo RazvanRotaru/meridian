@@ -12,8 +12,11 @@ import type { GraphArtifact } from "@meridian/core";
 // only, so the supported major is a local literal rather than a bundled runtime const.
 const SUPPORTED_MAJOR = 1;
 
-export async function loadArtifact(graphUrl: string): Promise<GraphArtifact> {
-  const response = await fetch(graphUrl);
+export async function loadArtifact(
+  graphUrl: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GraphArtifact> {
+  const response = await fetch(graphUrl, { signal: options.signal });
   if (!response.ok) {
     throw new Error(`graph fetch failed (${response.status}) from ${graphUrl}`);
   }

@@ -31,3 +31,6 @@ export * from "./affected-flows";
 export * from "./causal-flow";
 export * from "./change-groups";
 export * from "./test-execution-coverage";
+export * from "./graph-projection";
+export * from "./binary-order";
+export * from "./python-partial-identity";
