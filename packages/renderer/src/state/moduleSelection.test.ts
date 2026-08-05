@@ -1286,6 +1286,25 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(state.minimalRfNodes.some((node) => node.id === ROUTES_METHOD)).toBe(true);
   });
 
+  it("reveals a nested method without duplicating its already-present home file", async () => {
+    const store = withBuiltGraph();
+    store.setState({
+      minimalMemberIds: [...store.getState().minimalMemberIds, ROUTES_FILE],
+      moduleExpanded: new Set(["keep-open"]),
+    });
+    await store.getState().minimalRelayout();
+
+    store.getState().promoteGhost(ROUTES_METHOD);
+
+    expect(store.getState().minimalLayoutStatus).toBe("laying-out");
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const state = store.getState();
+    expect(state.minimalMemberIds.filter((id) => id === ROUTES_FILE)).toHaveLength(1);
+    expect(state.moduleExpanded).toEqual(new Set(["keep-open", ROUTES_FILE, ROUTES_UNIT]));
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({ id: ROUTES_METHOD, type: "block" }));
+    expect(state.minimalRfNodes.some((node) => node.id === ROUTES_METHOD && node.type === "ghost")).toBe(false);
+  });
+
   it("derives the initial ghost ring from the current members without leaking later hops", async () => {
     const store = withBuiltIterativeGhostGraph();
     await store.getState().minimalRelayout();
