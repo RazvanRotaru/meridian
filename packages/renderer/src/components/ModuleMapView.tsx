@@ -275,6 +275,7 @@ function ModuleSourceSurface({ covered }: { covered: boolean }) {
       selectionReady={layoutStatus === "ready" && !covered}
       busy={busy}
       autoFitView={false}
+      paletteFocusEnabled={!covered}
       semanticLayers={semanticLayers}
       semanticDepths={semanticNavigation.semanticDepths}
       semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}

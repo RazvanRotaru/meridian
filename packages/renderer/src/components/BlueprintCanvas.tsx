@@ -19,6 +19,7 @@ import { FlowExplorerPanel } from "./flowexplorer/FlowExplorerPanel";
 import { FlowPane, flowPaneShouldRender } from "./flowexplorer/FlowPane";
 import { FlowSplitView } from "./flowexplorer/FlowSplitView";
 import { PrsView } from "./prs/PrsView";
+import { PaletteCanvasNodeProvider } from "./canvas/PaletteCanvasNodes";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
 // the module surface whole. Toolbar (the tab toggle + sidebar) and the modal CodePanel stay mounted
@@ -39,32 +40,35 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
       && (state.reviewOpenFlowSplitOnSelect || state.reviewFlowExplicitView !== null));
   const syntheticFlowOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic" && state.flowSelection !== null);
   return (
-    <div style={SHELL_STYLE}>
-      <FlowExplorerPanel />
-      <FlowSplitView
-        open={flowPaneOpen}
-        review={reviewFlowOpen}
-        synthetic={syntheticFlowOpen}
-        graph={(
-          <div style={MAIN_STYLE}>
-            {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
-                React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
-                one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
-                always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
-            <ReactFlowProvider key={viewMode}>
-              {viewMode === "logic" ? <LogicFlowView /> : viewMode === "prs" ? <PrsView /> : <ModuleMapView />}
-            </ReactFlowProvider>
-            <Toolbar preselectedEnv={props.preselectedEnv} />
-            {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works in every view mode. */}
-            <CommandPalette />
-          </div>
-        )}
-        flow={<FlowPane />}
-      />
-      {/* Source is opened from both split panes. Keep its modal host outside the resizable panes so
-          minimizing the graph cannot clip it or place it inside an aria-hidden/inert subtree. */}
-      <CodePanel />
-    </div>
+    <PaletteCanvasNodeProvider>
+      <div style={SHELL_STYLE}>
+        <FlowExplorerPanel />
+        <FlowSplitView
+          open={flowPaneOpen}
+          review={reviewFlowOpen}
+          synthetic={syntheticFlowOpen}
+          graph={(
+            <div style={MAIN_STYLE}>
+              {/* Each view is its OWN ReactFlow surface; keying a fresh provider per mode gives each its own
+                  React Flow store, so a tab switch can never bleed the previous surface's nodes into the next
+                  one's first render (which crashed its MiniMap nodeColor on foreign-shaped data). The
+                  always-mounted Toolbar's <Panel> keeps using the outer App-level provider. */}
+              <ReactFlowProvider key={viewMode}>
+                {viewMode === "logic" ? <LogicFlowView /> : viewMode === "prs" ? <PrsView /> : <ModuleMapView />}
+              </ReactFlowProvider>
+              <Toolbar preselectedEnv={props.preselectedEnv} />
+              {/* Global Cmd/Ctrl+P quick-open — mounted here so the shortcut works everywhere and can
+                  offer focus only for ids published by the active graph surface. */}
+              <CommandPalette />
+            </div>
+          )}
+          flow={<FlowPane />}
+        />
+        {/* Source is opened from both split panes. Keep its modal host outside the resizable panes so
+            minimizing the graph cannot clip it or place it inside an aria-hidden/inert subtree. */}
+        <CodePanel />
+      </div>
+    </PaletteCanvasNodeProvider>
   );
 }
 

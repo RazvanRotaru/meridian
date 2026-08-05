@@ -34,7 +34,7 @@
  * the ghost "+" ring) in `flowExtras`, which receives the PAINTED view.
  */
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ReactFlowProvider,
   useStore,
@@ -120,6 +120,7 @@ import {
 import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicators";
 import { REVIEW_NODE_VIEWED_CSS } from "../review/ReviewFileNodeViewedControls";
 import { SurfaceSelectionGraphProvider } from "./SurfaceSelectionGraphContext";
+import { usePaletteCanvasNodeRegistry } from "./PaletteCanvasNodes";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -289,6 +290,9 @@ export interface GraphSurfaceProps {
   /** Whether actions may mutate selection for the painted scene. Defaults to the absence of a busy
    * overlay; mount-local layouts can supply their stronger ready/error contract explicitly. */
   selectionReady?: boolean;
+  /** Publish this active surface's current semantic population to the command palette. Covered or
+   * inactive canvases leave this false so they cannot advertise focus targets behind an overlay. */
+  paletteFocusEnabled?: boolean;
 }
 
 export function GraphSurface(props: GraphSurfaceProps) {
@@ -436,6 +440,22 @@ export function GraphSurface(props: GraphSurfaceProps) {
     const currentDepth = semanticDepths[0];
     return renderedNodesAtSemanticDepth(reactFlowNodes, currentDepth);
   }, [reactFlowNodes, semanticDepths]);
+  const paletteCanvasOwner = useId();
+  const paletteCanvasNodeRegistry = usePaletteCanvasNodeRegistry();
+  const paletteCanvasNodeIds = useMemo(() => occupancyNodes.map((node) => node.id), [occupancyNodes]);
+  useLayoutEffect(() => {
+    if (props.paletteFocusEnabled !== true) {
+      paletteCanvasNodeRegistry.clear(paletteCanvasOwner);
+      return;
+    }
+    paletteCanvasNodeRegistry.publish(paletteCanvasOwner, paletteCanvasNodeIds);
+    return () => paletteCanvasNodeRegistry.clear(paletteCanvasOwner);
+  }, [
+    paletteCanvasNodeIds,
+    paletteCanvasNodeRegistry,
+    paletteCanvasOwner,
+    props.paletteFocusEnabled,
+  ]);
   const surfaceSelectionGraph = useMemo(() => {
     const nodeIds = new Set(occupancyNodes.map((node) => node.id));
     return {

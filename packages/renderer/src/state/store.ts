@@ -923,10 +923,13 @@ export interface BlueprintState {
   minimalGraphHistory: MinimalGraphHistoryEntry[];
   /** Snapshot of the full seed list at review time — the "All groups" restore target. */
   reviewAllSeedIds: string[];
-  /** Bumped by the Toolbar's "Recenter" action. The active graph surface subscribes to it and, on a
-   * change, re-fits its viewport to the current selection — or to the whole graph when nothing is
-   * selected. Ephemeral: never serialized to the URL (it is a signal, not navigation state). */
+  /** Bumped by viewport-focus actions. The active graph surface subscribes to it and, on a change,
+   * either fits one explicit `recenterTargetId` or applies the normal selection/whole-graph recenter.
+   * Ephemeral: never serialized to the URL (it is a signal, not navigation state). */
   recenterSeq: number;
+  /** One exact node requested by `focusNodeInView`; null keeps the ordinary Toolbar/review recenter
+   * contract. The active React Flow instance re-checks that the target is still rendered. */
+  recenterTargetId: NodeId | null;
   telemetry: Record<string, NodeMetrics>;
   /** Request executions captured for the explicitly loaded environment. */
   requestTraces: RequestTrace[];
@@ -1094,6 +1097,9 @@ export interface BlueprintState {
   collapseAll(): void;
   collapseLogicOccurrences(nodeIds: readonly string[]): void;
   recenter(): void;
+  /** Select one canonical node through the ordinary module-surface semantics, then ask the active
+   * React Flow instance to fit only that exact node. Inert outside Map/Service/UI surfaces. */
+  focusNodeInView(id: NodeId): boolean;
   toggleFlowExplorer(): void;
   selectFlowEntry(ref: FlowSelectionRef | null): void;
   /** Open one review flow in a requested projection without changing saved review preferences. */
@@ -2855,7 +2861,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && current.reviewSelectedId === reveal.selectedId
           && isRealMinimalNode(current, reveal.selectedId)
         ) {
-          set({ recenterSeq: current.recenterSeq + 1 });
+          set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: null });
         }
       });
       return true;
@@ -2917,7 +2923,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           && current.reviewSelectedId === reveal.selectedId
           && isRealMinimalNode(current, reveal.selectedId)
         ) {
-          set({ recenterSeq: current.recenterSeq + 1 });
+          set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: null });
         }
       });
       return true;
@@ -5273,6 +5279,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalGraphHistory: [],
     reviewAllSeedIds: [],
     recenterSeq: 0,
+    recenterTargetId: null,
     telemetry: {},
     requestTraces: [],
     selectedTraceId: null,
@@ -5411,7 +5418,20 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // selection, or the whole graph if none). A pure signal — no relayout, no navigation change; the
     // surface reads the value change via useRecenter and calls React Flow's fitView.
     recenter() {
-      set({ recenterSeq: get().recenterSeq + 1 });
+      set({ recenterSeq: get().recenterSeq + 1, recenterTargetId: null });
+    },
+
+    // The command palette's magnifier is a camera gesture, not reveal/add navigation. Preserve the
+    // shared selection semantics (including review-flow ownership), then carry the exact target to
+    // the active React Flow surface. Its getNode check is the final authority after any paint race.
+    focusNodeInView(id) {
+      if (moduleSurfaceSpec(get().viewMode) === null) {
+        return false;
+      }
+      get().selectModule(id);
+      const current = get();
+      set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: id });
+      return true;
     },
 
     toggleFlowExplorer() {
@@ -5529,7 +5549,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         }
         const recenterIfCurrent = () => {
           if (get().flowSelection === ref && get().logicSelected === null) {
-            set({ recenterSeq: get().recenterSeq + 1 });
+            set({ recenterSeq: get().recenterSeq + 1, recenterTargetId: null });
           }
         };
         if (needsRelayout) {
@@ -5616,7 +5636,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       void get().moduleRelayout({ label: `Revealing ${revealedIds.length} observed node${revealedIds.length === 1 ? "" : "s"}…` }).then(() => {
         const current = get();
         if (current.selectedTraceId === traceId && current.viewMode === "modules") {
-          set({ recenterSeq: current.recenterSeq + 1 });
+          set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: null });
         }
       });
     },
@@ -5786,13 +5806,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         set({
           reviewFlowExplicitView: view,
           recenterSeq: state.recenterSeq + 1,
+          recenterTargetId: null,
           flowPaneRfNodes: [],
           flowPaneRfEdges: [],
           flowPaneLayoutStatus: "idle",
         });
         return;
       }
-      set({ reviewFlowExplicitView: view, recenterSeq: state.recenterSeq + 1 });
+      set({ reviewFlowExplicitView: view, recenterSeq: state.recenterSeq + 1, recenterTargetId: null });
       void get().flowPaneRelayout();
     },
 
@@ -6027,7 +6048,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             && current.moduleLayoutStatus === "ready"
             && current.moduleSelected.has(graphTarget)
           ) {
-            set({ recenterSeq: current.recenterSeq + 1 });
+            set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: null });
           }
         };
 
@@ -6043,7 +6064,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           // No layout is pending on the fast path; its current graph is already ready by definition.
           const current = get();
           if (current.moduleLayoutStatus === "ready" || current.moduleLayoutStatus === "idle") {
-            set({ recenterSeq: current.recenterSeq + 1 });
+            set({ recenterSeq: current.recenterSeq + 1, recenterTargetId: null });
           }
           return;
         }
@@ -6099,7 +6120,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
       const recenterIfCurrent = () => {
         if (get().flowSelection === selection && get().logicSelected === nodeId) {
-          set({ recenterSeq: get().recenterSeq + 1 });
+          set({ recenterSeq: get().recenterSeq + 1, recenterTargetId: null });
         }
       };
       if (needsRelayout) {
@@ -8477,7 +8498,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
       const recenter = () => {
         if (id !== null && get().reviewSelectedId === id) {
-          set({ recenterSeq: get().recenterSeq + 1 });
+          set({ recenterSeq: get().recenterSeq + 1, recenterTargetId: null });
         }
       };
       if (flowBaseline !== null) {
@@ -8545,7 +8566,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       });
       const recenter = () => {
         if (get().reviewSelectedId === file.moduleId) {
-          set({ recenterSeq: get().recenterSeq + 1 });
+          set({ recenterSeq: get().recenterSeq + 1, recenterTargetId: null });
         }
       };
       if (flowBaseline !== null) {
@@ -9036,7 +9057,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         && state.reviewFlowBaseline !== null;
       set({
         reviewOpenFlowSplitOnSelect: open,
-        ...(reviewFlowSelected ? { recenterSeq: state.recenterSeq + 1 } : {}),
+        ...(reviewFlowSelected ? { recenterSeq: state.recenterSeq + 1, recenterTargetId: null } : {}),
       });
       if (!reviewFlowSelected) {
         return;
