@@ -4,7 +4,8 @@
  *
  *   - The MAP lenses (Map = "modules", Service = "call", UI = "ui") REVEAL the pick — Map/UI go to
  *     its definition, the Service lens pins + selects it — via `revealInView`, and every row carries
- *     a "+" that instead ADDS the node into the visible graph (`addToView`) without navigating,
+ *     a magnifier that FOCUSES an already-drawn exact node, and a "+" that instead ADDS the node
+ *     into the visible graph (`addToView`) without navigating,
  *     grafting an out-of-scope symbol onto the canvas (including an open Minimal Graph).
  *     ⌘/Ctrl+↵ adds from the keyboard; the palette
  *     stays open so several nodes can be added in a row.
@@ -16,7 +17,7 @@
  */
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { CheckIcon, ChevronDownIcon } from "@radix-ui/react-icons";
+import { CheckIcon, ChevronDownIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import type { CompactGraphSymbolEntry, GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { ViewMode } from "../derive/edgeSelection";
@@ -29,6 +30,7 @@ import {
   type GraphSymbolSearchScope,
   type GraphSymbolSearchScopeCounts,
 } from "../state/graphSymbolSearch";
+import { usePaletteCanvasNodeIds } from "./canvas/PaletteCanvasNodes";
 
 // The map lenses: here a pick is REVEALED (navigate) or ADDED ("+") into the current graph.
 const MAP_VIEWS: ReadonlySet<ViewMode> = new Set<ViewMode>(["call", "modules", "ui"]);
@@ -137,10 +139,12 @@ export function CommandPalette() {
   const progressiveReadyFileIds = useBlueprint((state) => state.progressiveGraph?.head.readyFileIds ?? null);
   const reviewBaseNodeIds = useBlueprint((state) => state.reviewBaseNodeIds);
   const viewMode = useBlueprint((state) => state.viewMode);
+  const paletteCanvasNodeIds = usePaletteCanvasNodeIds();
   const {
     openLogicFlow,
     revealInView,
     addToView,
+    focusNodeInView,
     ensureNodeReady,
     queryProgressiveSymbols,
     startProgressiveSymbolIndex,
@@ -331,6 +335,12 @@ export function CommandPalette() {
   const addPick = async (entry: SymbolEntry) => {
     await settlePick(entry, () => addToView(entry.id));
   };
+  // The magnifier is deliberately separate from reveal: it preserves the current graph and asks
+  // its active React Flow surface to select + fit an exact node which that surface already published.
+  const focusPick = (entry: SymbolEntry) => {
+    if (!paletteCanvasNodeIds.has(entry.id)) return;
+    if (focusNodeInView(entry.id)) close();
+  };
 
   // Arrow keys move the highlight (clamped to the list). Enter loads a nonresident row or opens a
   // ready one; Cmd/Ctrl+Enter adds only a ready map row. Escape closes. Option/Alt+P opens scope.
@@ -408,6 +418,7 @@ export function CommandPalette() {
                 entry={entry}
                 active={row === highlighted}
                 canAdd={isMap}
+                canFocus={isMap && paletteCanvasNodeIds.has(entry.id)}
                 progressive={progressiveReadyFileIds !== null}
                 resident={index.nodesById.has(entry.id)}
                 failed={failedNodeIds.has(entry.id)}
@@ -416,6 +427,7 @@ export function CommandPalette() {
                 busy={progressivePendingNodeIds.has(entry.id)}
                 onOpen={() => { void openPick(entry); }}
                 onLoad={() => { void loadPick(entry); }}
+                onFocusNode={() => focusPick(entry)}
                 onAdd={() => { void addPick(entry); }}
               />
             ))
@@ -576,8 +588,9 @@ export function SearchScopeControl(props: {
   );
 }
 
-/** One result: name over a faint (mono) qualified name/path, a step-count chip when it has a flow, a
- * kind tag, and — in a map lens — a "+" that adds the node to the current view without navigating. */
+/** One result: name over a faint (mono) qualified name/path, a step-count chip when it has a flow,
+ * a kind tag, a conditional focus action for an exact node already drawn by the active canvas, and
+ * — in a map lens — a "+" that adds the node to the current view without navigating. */
 export type SymbolRowReadiness = "canonical" | "loadable" | "hydrating" | "ready" | "retry";
 
 export function symbolRowReadiness(
@@ -596,6 +609,7 @@ export function ResultRow(props: {
   entry: SymbolEntry;
   active: boolean;
   canAdd: boolean;
+  canFocus: boolean;
   progressive: boolean;
   resident: boolean;
   failed: boolean;
@@ -604,6 +618,7 @@ export function ResultRow(props: {
   onHover: () => void;
   onOpen: () => void;
   onLoad: () => void;
+  onFocusNode: () => void;
   onAdd: () => void;
 }) {
   const { entry } = props;
@@ -642,6 +657,20 @@ export function ResultRow(props: {
       {readiness === "retry" ? <span style={RETRY_CHIP_STYLE}>Retry load</span> : null}
       {readiness === "hydrating" ? <span style={LOADING_CHIP_STYLE}>loading nearby graph…</span> : null}
       <span style={kindTagStyle(entry.kind)}>{entry.kind}</span>
+      {props.canFocus ? (
+        <button
+          type="button"
+          style={FOCUS_BUTTON_STYLE}
+          title="Focus this node in the current graph"
+          aria-label={`Focus ${entry.displayName} in the current graph`}
+          onClick={(event) => {
+            event.stopPropagation();
+            props.onFocusNode();
+          }}
+        >
+          <MagnifyingGlassIcon width={14} height={14} aria-hidden="true" />
+        </button>
+      ) : null}
       {props.canAdd ? (
         <button
           type="button"
@@ -1022,6 +1051,22 @@ const KIND_TAG_STYLE: React.CSSProperties = {
   borderRadius: 4,
   padding: "1px 6px",
   color: "#7B8695",
+};
+// Focus is navigation within the current scene, so it uses the palette's cool blue navigation
+// accent rather than the green mutation accent reserved for adding a card.
+const FOCUS_BUTTON_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  width: 22,
+  height: 22,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  borderRadius: 5,
+  border: "1px solid #304157",
+  background: "#15202B",
+  color: "#9CBBD8",
+  cursor: "pointer",
+  padding: 0,
 };
 // The "+" affordance: a compact square button that adds the row's node to the current view. Accented
 // so it reads as the secondary action next to the primary (row) click.

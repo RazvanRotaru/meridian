@@ -216,6 +216,7 @@ export function MinimalCodebaseView({
       requestOverlayChrome={false}
       busy={layoutStatus === "laying-out" ? { label: "Locating code in the codebase…" } : undefined}
       autoFitView={false}
+      paletteFocusEnabled
       semanticLayers={[]}
       semanticDepths={navigation.semanticDepths}
       semanticBandOriginDepth={navigation.semanticBandOriginDepth}

@@ -383,12 +383,14 @@ describe("progressive symbol row readiness", () => {
     loaded?: boolean;
     progressive?: boolean;
     resident?: boolean;
+    focusable?: boolean;
     busy?: boolean;
     failed?: boolean;
   } = {}) => renderToStaticMarkup(createElement(ResultRow, {
     entry: { ...entry, isLoaded: options.loaded ?? false },
     active: false,
     canAdd: true,
+    canFocus: options.focusable ?? false,
     progressive: options.progressive ?? true,
     resident: options.resident ?? false,
     busy: options.busy ?? false,
@@ -396,6 +398,7 @@ describe("progressive symbol row readiness", () => {
     onHover: () => undefined,
     onOpen: () => undefined,
     onLoad: () => undefined,
+    onFocusNode: () => undefined,
     onAdd: () => undefined,
   }));
 
@@ -417,6 +420,16 @@ describe("progressive symbol row readiness", () => {
     expect(markup).toContain('data-symbol-readiness="loadable"');
     expect(markup).toContain('data-symbol-resident="true"');
     expect(markup).toContain('aria-label="Load nearby graph for searchTarget"');
+    expect(markup).not.toContain('aria-label="Focus searchTarget in the current graph"');
+  });
+
+  it("offers an accessible magnifier only when the exact node is drawn on the active canvas", () => {
+    const focusable = renderRow({ loaded: true, resident: true, focusable: true });
+    const residentOnly = renderRow({ loaded: true, resident: true });
+
+    expect(focusable).toContain('aria-label="Focus searchTarget in the current graph"');
+    expect(focusable).toContain('title="Focus this node in the current graph"');
+    expect(residentOnly).not.toContain('aria-label="Focus searchTarget in the current graph"');
   });
 
   it("disables the row while hydration is in flight", () => {

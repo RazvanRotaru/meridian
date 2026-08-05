@@ -260,6 +260,7 @@ export function MinimalGraphView({
         showGhostNodes={showGhostNodes}
         busy={layoutStatus === "laying-out" ? layoutActivity ?? undefined : undefined}
         autoFitView={false}
+        paletteFocusEnabled
         semanticLayers={semanticLayers}
         semanticDepths={semanticNavigation.semanticDepths}
         semanticBandOriginDepth={semanticNavigation.semanticBandOriginDepth}

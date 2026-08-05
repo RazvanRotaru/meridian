@@ -41,8 +41,8 @@ function freshStore(): BlueprintStore {
 }
 
 describe("recenter signal", () => {
-  it("starts at zero", () => {
-    expect(freshStore().getState().recenterSeq).toBe(0);
+  it("starts at zero without an explicit target", () => {
+    expect(freshStore().getState()).toMatchObject({ recenterSeq: 0, recenterTargetId: null });
   });
 
   it("each recenter() bumps the counter monotonically", () => {
@@ -51,14 +51,36 @@ describe("recenter signal", () => {
     expect(store.getState().recenterSeq).toBe(1);
     store.getState().recenter();
     expect(store.getState().recenterSeq).toBe(2);
+    expect(store.getState().recenterTargetId).toBeNull();
   });
 
-  it("does not touch selection or module focus (a pure repaint signal)", () => {
+  it("focusNodeInView selects through the module action and emits a repeatable exact-target request", () => {
     const store = freshStore();
-    store.getState().selectModule("ts:src/a.ts");
+
+    expect(store.getState().focusNodeInView("ts:src/a.ts")).toBe(true);
+    expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
+    expect(store.getState()).toMatchObject({ recenterSeq: 1, recenterTargetId: "ts:src/a.ts" });
+
+    expect(store.getState().focusNodeInView("ts:src/a.ts")).toBe(true);
+    expect(store.getState()).toMatchObject({ recenterSeq: 2, recenterTargetId: "ts:src/a.ts" });
+  });
+
+  it.each(["logic", "prs"] as const)("rejects exact-node focus outside module-family mode %s", (viewMode) => {
+    const store = freshStore();
+    store.setState({ viewMode });
+
+    expect(store.getState().focusNodeInView("ts:src/a.ts")).toBe(false);
+    expect(store.getState().moduleSelected).toEqual(new Set());
+    expect(store.getState()).toMatchObject({ recenterSeq: 0, recenterTargetId: null });
+  });
+
+  it("normal recenter clears an exact target without touching selection or module focus", () => {
+    const store = freshStore();
+    store.getState().focusNodeInView("ts:src/a.ts");
     const focusBefore = store.getState().moduleFocus;
     store.getState().recenter();
     expect(store.getState().moduleSelected).toEqual(new Set(["ts:src/a.ts"]));
     expect(store.getState().moduleFocus).toBe(focusBefore);
+    expect(store.getState()).toMatchObject({ recenterSeq: 2, recenterTargetId: null });
   });
 });
