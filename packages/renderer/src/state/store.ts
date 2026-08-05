@@ -7500,6 +7500,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
       if (minimalOpen) {
         if (state.minimalMemberIds.includes(member)) {
+          // A nested ghost can belong to a file that is already in the overlay while its
+          // containment path is still collapsed. Preserve that member's position, but commit the
+          // newly required file/class expansion so relayout can replace the ghost with its real node.
+          if (moduleExpanded.size === state.moduleExpanded.size) {
+            return;
+          }
+          set({ moduleExpanded });
+          void requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
           return;
         }
         const minimalBasePositions =
