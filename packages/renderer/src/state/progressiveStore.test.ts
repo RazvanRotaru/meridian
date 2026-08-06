@@ -644,7 +644,7 @@ describe("progressive graph store", () => {
     expect(store.getState().progressivePendingNodeIds).toEqual(new Set());
   });
 
-  it("admits a Python initializer ghost before hydrating and refreshing its nearby graph", async () => {
+  it("admits a Python initializer ghost and keeps hydration pending across a superseded admission layout", async () => {
     const boundary = projection({
       nodes: [packageNode, fileA, methodA, pythonNamespace, pythonInit, pythonFunction],
       roots: [FILE_A],
@@ -658,10 +658,13 @@ describe("progressive graph store", () => {
     const hydrationResponse = new Promise<Response>((resolve) => { resolveHydration = resolve; });
     let releaseAdmissionRelayout!: () => void;
     const admissionRelayout = new Promise<void>((resolve) => { releaseAdmissionRelayout = resolve; });
+    let releaseSupersedingRelayout!: () => void;
+    const supersedingRelayout = new Promise<void>((resolve) => { releaseSupersedingRelayout = resolve; });
     let releaseContextRelayout!: () => void;
     const contextRelayout = new Promise<void>((resolve) => { releaseContextRelayout = resolve; });
     const minimalRelayout = vi.fn()
       .mockReturnValueOnce(admissionRelayout)
+      .mockReturnValueOnce(supersedingRelayout)
       .mockReturnValueOnce(contextRelayout);
     store.setState({
       progressiveGraph: {
@@ -675,6 +678,7 @@ describe("progressive graph store", () => {
       },
       minimalSeedIds: [FILE_A],
       minimalMemberIds: [FILE_A],
+      minimalLayoutStatus: "laying-out",
       minimalRelayout,
     });
     const hydrated = projection({
@@ -708,15 +712,23 @@ describe("progressive graph store", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(minimalRelayout).toHaveBeenCalledOnce();
 
+    void store.getState().minimalRelayout({ label: "Re-arranging extracted graph…" });
+    store.setState({ minimalLayoutStatus: "laying-out" });
+    releaseAdmissionRelayout();
+    await Promise.resolve();
+    expect(minimalRelayout).toHaveBeenCalledTimes(2);
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
+    expect(fetchMock).not.toHaveBeenCalled();
+
     store.setState({
       minimalLayoutStatus: "ready",
       minimalRfNodes: [{ id: PY_INIT, type: "package", position: { x: 0, y: 0 }, data: {} }],
     });
-    releaseAdmissionRelayout();
+    releaseSupersedingRelayout();
     await vi.waitFor(() => expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION])));
     expect(fetchMock).toHaveBeenCalledOnce();
     releaseHydration();
-    await vi.waitFor(() => expect(minimalRelayout).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(minimalRelayout).toHaveBeenCalledTimes(3));
     expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
     releaseContextRelayout();
     await vi.waitFor(() => expect(store.getState().progressivePendingNodeIds).toEqual(new Set()));
@@ -724,7 +736,7 @@ describe("progressive graph store", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(store.getState().progressiveGraph?.head.readyFileIds).toContain(PY_INIT);
     expect(store.getState().minimalMemberIds.filter((id) => id === PY_INIT)).toHaveLength(1);
-    expect(minimalRelayout.mock.calls[1]?.[0]).toEqual({ label: "Loading nearby graph for bootstrap…" });
+    expect(minimalRelayout.mock.calls[2]?.[0]).toEqual({ label: "Loading nearby graph for bootstrap…" });
   });
 
   it("keeps an immediately admitted ghost on the canvas when nearby hydration fails", async () => {

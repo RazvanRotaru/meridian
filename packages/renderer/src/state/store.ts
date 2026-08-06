@@ -2565,7 +2565,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // auto-root a meaningful entry is an open design question (see docs/service-composition-design.md §8).
   const defaultCompRoot = null;
 
-  return createStore<BlueprintState>((set, get) => {
+  return createStore<BlueprintState>((set, get, api) => {
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
     const scheduleProgressiveSymbolIndex = (): void => {
@@ -7617,36 +7617,57 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // the clicked ghost with its real card; the second incorporates the newly loaded neighbourhood.
         // Serializing those phases guarantees that a slow neighbourhood never delays first inspection.
         const hydrateAfterAdmission = () => {
-          const admitted = get();
-          if (
-            hydrationNodeSequence !== progressiveNodeSeq
-            ||
-            admitted.minimalSeedIds.length === 0
-            || !admitted.minimalMemberIds.includes(member)
-            || admitted.minimalLayoutStatus !== "ready"
-            || !admitted.minimalRfNodes.some((node) =>
-              (node.id === ghostId || node.id === member) && node.type !== "ghost")
-          ) {
-            clearHydrationPending();
-            return;
-          }
-          hydrateNearbyGraph?.(async () => {
-            const hydrated = get();
-            if (
-              hydrated.minimalSeedIds.length === 0
-              || !hydrated.minimalMemberIds.includes(member)
-            ) {
+          let finished = false;
+          let unsubscribe: () => void = () => undefined;
+          const finish = (hydrate: boolean) => {
+            if (finished) return;
+            finished = true;
+            unsubscribe();
+            if (!hydrate) {
+              clearHydrationPending();
               return;
             }
-            await hydrated.minimalRelayout(nodeLayoutActivity(hydrated, "Loading nearby graph for", ghostId));
-          });
+            hydrateNearbyGraph?.(async () => {
+              const hydrated = get();
+              if (
+                hydrated.minimalSeedIds.length === 0
+                || !hydrated.minimalMemberIds.includes(member)
+              ) {
+                return;
+              }
+              await hydrated.minimalRelayout(nodeLayoutActivity(hydrated, "Loading nearby graph for", ghostId));
+            });
+          };
+          const inspectAdmission = () => {
+            const admitted = get();
+            if (
+              hydrationNodeSequence !== progressiveNodeSeq
+              || admitted.minimalSeedIds.length === 0
+              || !admitted.minimalMemberIds.includes(member)
+            ) {
+              finish(false);
+              return;
+            }
+            // A superseded minimalRelayout resolves normally while its newer replacement is still
+            // active. Keep the node-local spinner and wait for the authoritative settled scene.
+            if (admitted.minimalLayoutStatus === "laying-out") return;
+            finish(
+              admitted.minimalLayoutStatus === "ready"
+              && admitted.minimalRfNodes.some((node) =>
+                (node.id === ghostId || node.id === member) && node.type !== "ghost"),
+            );
+          };
+          unsubscribe = api.subscribe(inspectAdmission);
+          // Close the subscribe/check race if the admission settled between starting its relayout
+          // and installing this one-shot watcher.
+          inspectAdmission();
         };
         if (needsRelayout) {
           const admission = requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
           if (hydrateNearbyGraph === null) {
             void admission;
           } else {
-            void admission.then(hydrateAfterAdmission);
+            hydrateAfterAdmission();
           }
         } else {
           hydrateAfterAdmission();
