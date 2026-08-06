@@ -10,6 +10,17 @@ export async function saveNote(id: string, body: string): Promise<number> {
   return ipcRenderer.invoke("notes:save", id, body);
 }
 
+export interface AutosaveReceipt {
+  noteId: string;
+  revision: number;
+  savedAt: number;
+}
+
+/** Persist one renderer revision without blocking the editor's typing loop. */
+export async function autosaveNote(id: string, body: string, revision: number): Promise<AutosaveReceipt> {
+  return ipcRenderer.invoke("notes:autosave", { id, body, revision });
+}
+
 export function deleteNote(id: string): void {
   ipcRenderer.send("notes:delete", id);
 }
