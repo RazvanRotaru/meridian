@@ -750,9 +750,12 @@ export interface BlueprintState {
   moduleRadius: number;
   /** Whether Module-map selection lights incident node wires only, or the full radius-based reach. */
   highlightMode: HighlightMode;
-  /** Whether cross-container edges merge into thick "highway" bundles. Every surface switches at
-   * paint time over its settled exact-edge substrate; selected-node wires always draw individually. */
+  /** Whether ordinary module surfaces merge cross-container edges into thick "highway" bundles.
+   * Paint-only over the settled exact-edge substrate; selected-node wires draw individually. */
   showHighways: boolean;
+  /** Review-local highway visibility. Kept separate so the PR's decluttered default cannot leak back
+   * into the ordinary Map when the review closes; nested review frames preserve it through history. */
+  reviewShowHighways: boolean;
   /** Whether utility hubs demote into the COMMONS DOCK below the graph (commonsDemotion). A
    * RELAYOUT toggle like Tests — the docked cards leave/rejoin ELK, so positions change. */
   showCommons: boolean;
@@ -1929,6 +1932,24 @@ export function collapsibleViewedNodeCount(state: BlueprintState): number {
   return collapsibleViewedNodeIds(state).length;
 }
 
+/** Resolve the highway toggle for the active experience without leaking PR defaults into the Map. */
+export function selectShowHighways(
+  state: Pick<
+    BlueprintState,
+    "review" | "viewMode" | "prReviewed" | "minimalSeedIds" | "showHighways" | "reviewShowHighways"
+  >,
+): boolean {
+  return reviewOwnsHighways(state) ? state.reviewShowHighways : state.showHighways;
+}
+
+function reviewOwnsHighways(
+  state: Pick<BlueprintState, "review" | "viewMode" | "prReviewed" | "minimalSeedIds">,
+): boolean {
+  return state.review !== null
+    && state.viewMode === "modules"
+    && (state.prReviewed === null || state.minimalSeedIds.length > 0);
+}
+
 /** Resolve selected minimal-graph nodes to promoted member ancestors. Canonical GraphIndex
  * ancestry covers ordinary unit/block selections; the laid parent chain also covers view-only
  * nodes such as logic-flow steps. Walking upward from the selection is intentionally conservative:
@@ -2830,7 +2851,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         },
         minimalGraphHistory: [...state.minimalGraphHistory, captureHistoryWithReviewProjection(state)],
         minimalView: "graph",
-        minimalShowGhostNodes: true,
+        minimalShowGhostNodes: false,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: reveal?.selectedId ?? null,
@@ -5219,6 +5240,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     moduleRadius: 1,
     highlightMode: "node",
     showHighways: true,
+    reviewShowHighways: false,
     showCommons: true,
     showExternalGhosts: true,
     groupGhostsByParent: true,
@@ -5244,7 +5266,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     minimalLayoutStatus: "idle",
     minimalLayoutActivity: null,
     minimalView: "graph",
-    minimalShowGhostNodes: true,
+    minimalShowGhostNodes: review === null,
     minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     review,
@@ -7703,7 +7725,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // edges, so this is presentation-only: the canvas bundles or restores them without derivation,
     // layout, scene replacement, or a camera reset.
     toggleHighways() {
-      set({ showHighways: !get().showHighways });
+      const state = get();
+      if (reviewOwnsHighways(state)) {
+        set({ reviewShowHighways: !state.reviewShowHighways });
+      } else {
+        set({ showHighways: !state.showHighways });
+      }
     },
 
     // Park/unpark utility hubs in the commons dock. A RELAYOUT toggle (like Tests): the docked
@@ -7930,7 +7957,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutActivity: { label: "Extracting selection…" },
         minimalGraphHistory: history,
         minimalView: "graph",
-        minimalShowGhostNodes: true,
+        minimalShowGhostNodes: state.review === null,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
@@ -8122,7 +8149,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutActivity: null,
         minimalGraphHistory: [],
         minimalView: "graph",
-        minimalShowGhostNodes: true,
+        minimalShowGhostNodes: stateBeforeClose.review === null
+          ? true
+          : stateBeforeClose.minimalShowGhostNodes,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewFocusedSubgraph: null,
@@ -8655,7 +8684,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewFocusedSubgraph: null,
         minimalGraphHistory: [],
         minimalView: "graph",
-        minimalShowGhostNodes: true,
+        minimalShowGhostNodes: false,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
@@ -8716,7 +8745,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         reviewFocusedSubgraph: null,
         minimalGraphHistory: [],
         minimalView: "graph",
-        minimalShowGhostNodes: true,
+        minimalShowGhostNodes: false,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewSelectedId: null,
@@ -12190,6 +12219,7 @@ function applyPrReviewToMap(
   });
   const migratedProgress = promoteFullyViewedUnitTicks(files, progress.unitTicks, progress.fileTicks);
   const currentSelection = get();
+  const enteringReview = currentSelection.prReviewed !== prSelected;
   const loadedRevision = options.reprojecting
     ? currentSelection.prReviewRevision
     : summary === null ? null : reviewRevision(summary, swapped ? prPreparedHeadSha : null);
@@ -12304,9 +12334,14 @@ function applyPrReviewToMap(
     reviewFocusedSubgraph: null,
     minimalGraphHistory: [],
     minimalView: "graph",
-    minimalShowGhostNodes: true,
+    minimalShowGhostNodes: enteringReview
+      ? false
+      : currentSelection.minimalShowGhostNodes,
     minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
+    reviewShowHighways: enteringReview
+      ? false
+      : currentSelection.reviewShowHighways,
     reviewAllSeedIds: workspaceSeeds,
     viewMode: "modules",
     moduleFocus: null,

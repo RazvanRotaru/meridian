@@ -120,6 +120,7 @@ describe("restoreFromUrl review exit", () => {
     await restoreFromUrl(store, "view=modules&prn=7&rev=1", { onReviewDetails });
 
     expect(onReviewDetails).toHaveBeenCalledOnce();
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
   });
 
   it("does not start review preparation after a newer history restore supersedes detail loading", async () => {

@@ -23,7 +23,12 @@ import { countTestFiles } from "../components/controlpanel/OverlaysSection";
 import { ReviewPanel } from "../components/review/ReviewPanel";
 import { applyChangedIds, buildGraphIndex } from "../graph/graphIndex";
 import { restorePrReviewBaseline, swapToPreparedArtifact } from "./prReviewSession";
-import { createBlueprintStore, selectedPrSummary, type StoreDependencies } from "./store";
+import {
+  createBlueprintStore,
+  selectShowHighways,
+  selectedPrSummary,
+  type StoreDependencies,
+} from "./store";
 import { StoreProvider } from "./StoreContext";
 import type { PrGitHubComment, PrSummary } from "./prTypes";
 
@@ -2159,6 +2164,10 @@ describe("PR store slice", () => {
   it("projects artifact-carried review paint and rows through the Tests toggle and nested Back", async () => {
     const store = freshStoreForArtifact(ARTIFACT_REVIEW_WITH_TESTS);
 
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().showHighways).toBe(true);
+    expect(store.getState().reviewShowHighways).toBe(false);
+    expect(selectShowHighways(store.getState())).toBe(false);
     expect(store.getState().reviewFiles.map((file) => file.path)).toEqual(["src/a.ts"]);
     expect(store.getState().reviewAffectedIds).toEqual(new Set([METHOD_ID]));
     expect(store.getState().index.changedIds).toEqual(new Set([METHOD_ID]));
@@ -2579,7 +2588,7 @@ describe("PR store slice", () => {
     expect(selectedPrSummary(store.getState())).toEqual(listed);
   });
 
-  it("reviews a PR with only the visible graph layout, then restores the Map on close", async () => {
+  it("uses review presentation defaults without leaking them into the Map", async () => {
     const store = freshStore();
     const moduleRelayout = vi.fn(async () => {});
     const minimalRelayout = vi.fn(async () => {});
@@ -2591,10 +2600,21 @@ describe("PR store slice", () => {
       moduleRelayout,
       minimalRelayout,
     });
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(selectShowHighways(store.getState())).toBe(true);
+    store.getState().toggleHighways();
+    expect(store.getState().showHighways).toBe(false);
+    expect(selectShowHighways(store.getState())).toBe(false);
+
     await store.getState().reviewPrInGraph();
     expect(store.getState().viewMode).toBe("modules");
     expect(store.getState().prReviewed).toBe(7);
     expect(store.getState().minimalSeedIds).toEqual(["ts:src/a.ts"]);
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().minimalShowNonDiffGhostNodes).toBe(true);
+    expect(store.getState().showHighways).toBe(false);
+    expect(store.getState().reviewShowHighways).toBe(false);
+    expect(selectShowHighways(store.getState())).toBe(false);
     expect(minimalRelayout).toHaveBeenCalledOnce();
     expect(moduleRelayout).not.toHaveBeenCalled();
     // The PR's line diff is joined into changedSince so the code panel's </> highlights the added
@@ -2603,9 +2623,21 @@ describe("PR store slice", () => {
     expect(changedSince?.files?.["src/a.ts"]).toEqual([{ start: 1, end: 1 }]);
     expect(changedSince?.kinds?.["src/a.ts"]).toEqual([{ start: 1, end: 1, kind: "added" }]);
 
+    store.getState().setMinimalShowGhostNodes(true);
+    store.getState().toggleHighways();
+    store.getState().toggleShowTests();
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(store.getState().reviewShowHighways).toBe(true);
+    expect(selectShowHighways(store.getState())).toBe(true);
+
     store.getState().closeMinimalGraph();
     await vi.waitFor(() => expect(moduleRelayout).toHaveBeenCalledOnce());
     expect(store.getState().minimalSeedIds).toEqual([]);
+    expect(selectShowHighways(store.getState())).toBe(false);
+
+    await store.getState().resumePrReview();
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(selectShowHighways(store.getState())).toBe(true);
   });
 
   it("toggles a session-only diff-node graph projection and clears selections it hides", async () => {

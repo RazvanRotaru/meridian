@@ -176,6 +176,8 @@ describe("change groups in PR review", () => {
     expect(store.getState().reviewActiveGroupId).toBeNull();
     expect(store.getState().reviewAllSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B, FILE_C]);
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().reviewShowHighways).toBe(false);
   });
 
   it("assigns each affected flow to the group of the files it touches", () => {
@@ -191,13 +193,19 @@ describe("change groups in PR review", () => {
     const isolated = store.getState().reviewGroups!.groups[1];
     // Group isolation owns its declaration-level expansion too; this simulates switching from a
     // full-review rollup where the isolated file path was deliberately absent.
-    store.setState({ moduleExpanded: new Set() });
+    store.setState({
+      moduleExpanded: new Set(),
+      minimalShowGhostNodes: true,
+      reviewShowHighways: true,
+    });
     store.getState().selectReviewGroup(isolated.id);
     expect(store.getState().reviewActiveGroupId).toBe(isolated.id);
     expect(store.getState().minimalSeedIds).toEqual([FILE_C]);
     expect(store.getState().minimalMemberIds).toEqual([FILE_C]);
     expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID, FILE_C]));
     expect(store.getState().reviewSelectedId).toBeNull();
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().reviewShowHighways).toBe(true);
   });
 
   it("keeps a nested deleted unit visible when selecting its change group", () => {
@@ -222,11 +230,13 @@ describe("change groups in PR review", () => {
 
   it("narrows the active review to a segment-safe path prefix and clears it losslessly", () => {
     const store = reviewedStore(MIXED_PR);
+    store.setState({ minimalShowGhostNodes: true });
 
     store.getState().selectReviewPathScope("./src/");
     expect(store.getState().reviewPathScope).toBe("src");
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
     expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
 
     store.getState().selectReviewPathScope(null);
     expect(store.getState().reviewPathScope).toBeNull();
@@ -286,6 +296,7 @@ describe("change groups in PR review", () => {
       minimalRfNodes: outerNodes,
       minimalRfEdges: outerEdges,
       minimalArrange: true,
+      minimalShowGhostNodes: true,
       moduleSelected: new Set([FS_ID]),
       moduleExpanded: outerExpanded,
       reviewSelectedId: FN_A,
@@ -308,6 +319,7 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalSeedIds).toEqual([FILE_A, FILE_B]);
     expect(store.getState().minimalMemberIds).toEqual([FILE_A, FILE_B]);
     expect(store.getState().minimalRollups).toEqual({});
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
     expect(store.getState().moduleExpanded).toEqual(new Set([PACKAGE_ID]));
     expect(store.getState().moduleSelected).toEqual(new Set());
     expect(store.getState()).toMatchObject({
@@ -333,6 +345,7 @@ describe("change groups in PR review", () => {
     expect(store.getState().minimalRfNodes).toBe(outerNodes);
     expect(store.getState().minimalRfEdges).toBe(outerEdges);
     expect(store.getState().minimalArrange).toBe(true);
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
     expect(store.getState().moduleSelected).toEqual(new Set([FS_ID]));
     expect(store.getState().moduleExpanded).toEqual(outerExpanded);
     expect(store.getState().reviewSelectedId).toBe(FN_A);
@@ -496,13 +509,17 @@ describe("change groups in PR review", () => {
     const outerSeeds = [...store.getState().minimalSeedIds];
     const review = store.getState().review;
     const groups = store.getState().reviewGroups;
-    store.setState({ moduleSelected: new Set([FILE_A]) });
+    store.setState({
+      moduleSelected: new Set([FILE_A]),
+      minimalShowGhostNodes: true,
+    });
 
     store.getState().buildMinimalGraph();
     await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
 
     expect(store.getState().minimalSeedIds).toEqual([FILE_A]);
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
     expect(store.getState().prReviewed).toBe(5);
     expect(store.getState().review).toBe(review);
     expect(store.getState().reviewGroups).toBe(groups);
@@ -513,5 +530,6 @@ describe("change groups in PR review", () => {
     store.getState().backMinimalGraph();
     expect(store.getState().minimalSeedIds).toEqual(outerSeeds);
     expect(store.getState().minimalGraphHistory).toHaveLength(0);
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
   });
 });

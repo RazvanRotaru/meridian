@@ -22,6 +22,7 @@ export interface MinimalGraphHistoryEntry {
   minimalShowNonDiffGhostNodes: BlueprintState["minimalShowNonDiffGhostNodes"];
   minimalCodebaseExpansionOverrides: BlueprintState["minimalCodebaseExpansionOverrides"];
   showHighways: BlueprintState["showHighways"];
+  reviewShowHighways: BlueprintState["reviewShowHighways"];
   showTests: BlueprintState["showTests"];
   /** Projection provenance only; Back never overwrites this browser-local preference. */
   reviewHideAddedSourceCommentDiffs: BlueprintState["reviewHideAddedSourceCommentDiffs"];
@@ -84,6 +85,7 @@ export function captureMinimalGraphHistory(state: BlueprintState): MinimalGraphH
     minimalShowNonDiffGhostNodes: state.minimalShowNonDiffGhostNodes,
     minimalCodebaseExpansionOverrides: new Map(state.minimalCodebaseExpansionOverrides),
     showHighways: state.showHighways,
+    reviewShowHighways: state.reviewShowHighways,
     showTests: state.showTests,
     reviewHideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
     reviewDiffOnly: state.reviewDiffOnly,
@@ -139,6 +141,7 @@ export function restoreMinimalGraphHistory(parent: MinimalGraphHistoryEntry): Pa
     minimalShowNonDiffGhostNodes: parent.minimalShowNonDiffGhostNodes,
     minimalCodebaseExpansionOverrides: new Map(parent.minimalCodebaseExpansionOverrides),
     showHighways: parent.showHighways,
+    reviewShowHighways: parent.reviewShowHighways,
     showTests: parent.showTests,
     reviewDiffOnly: parent.reviewDiffOnly,
     reviewActiveGroupId: parent.reviewActiveGroupId,

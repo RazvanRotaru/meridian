@@ -6,7 +6,7 @@
 
 import { EXTERNAL_CONTAINER_ID, type CoverageSummary } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import type { BlueprintState } from "../../state/store";
+import { selectShowHighways, type BlueprintState } from "../../state/store";
 import { moduleSurfaceSpec } from "../canvas/surfaceSpec";
 import { COVERAGE_COLORS } from "../../theme/coverageColors";
 import { accentForKind } from "../../theme/kindColors";
@@ -36,7 +36,7 @@ export function OverlaysSection() {
   const telemetryAvailable = useBlueprint((state) => (
     state.hasOverlay || state.provider !== null || state.telemetrySources.length > 0
   ));
-  const showHighways = useBlueprint((state) => state.showHighways);
+  const showHighways = useBlueprint(selectShowHighways);
   const showCommons = useBlueprint((state) => state.showCommons);
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const hasExternalGhosts = useBlueprint(hasExternalDependencies);

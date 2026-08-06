@@ -89,7 +89,7 @@ export async function restoreFromUrl(
   // sparser URL resets fields the previous state had set — otherwise a dive/selection never undoes.
   // Telemetry coordinates are deliberately excluded: nulling loaded data on every sparse history
   // restore is undesirable, so explicit source/env values are apply-only below.
-  store.setState(structuralState(nav));
+  store.setState(structuralState(nav, rebuildingReview || store.getState().review !== null));
   // The restored viewMode decides which layout pass runs; every module surface routes through
   // relayout() (→ moduleRelayout), "logic" needs its own ELK pass. This is the boot's first layout.
   if (store.getState().viewMode === "logic") {
@@ -273,7 +273,7 @@ function applyTelemetryCoordinates(
 // `hiddenCategories`) rebuilt as Sets. Always the complete set (not a sparse patch) so absent URL
 // keys reset to their default. Excludes telemetry source/environment, which are apply-only.
 // Exported for the serviceScope tests, which assert a restore always resets the scope.
-export function structuralState(nav: NavState): Record<string, unknown> {
+export function structuralState(nav: NavState, reviewPresentation = nav.reviewActive): Record<string, unknown> {
   const rebuildingReview = nav.reviewActive && nav.reviewPr !== null;
   return {
     // A rev=1 restore must not expose the URL's base-graph Map while HEAD preparation is pending.
@@ -317,7 +317,7 @@ export function structuralState(nav: NavState): Record<string, unknown> {
     minimalArrange: false,
     minimalGraphHistory: [],
     minimalView: "graph",
-    minimalShowGhostNodes: true,
+    minimalShowGhostNodes: !reviewPresentation,
     minimalShowNonDiffGhostNodes: true,
     minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
     reviewFocusedSubgraph: null,
