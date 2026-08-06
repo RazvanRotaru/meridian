@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
+import { Children, isValidElement, type ReactElement } from "react";
 import { ReactFlowProvider, type Edge, type Node } from "@xyflow/react";
 import { StoreProvider } from "../../state/StoreContext";
-import { ALPHA, ALPHA_RUN, freshStore } from "../../parity/surfaceFixture";
+import { A_FILE, ALPHA, ALPHA_RUN, freshStore } from "../../parity/surfaceFixture";
 import { ModuleMapView } from "../ModuleMapView";
 import { MinimalGraphView } from "../MinimalGraphView";
 
@@ -92,6 +93,46 @@ describe("GraphSurface mount semantic-navigation parity", () => {
     const interactions = mount.interactions as { paintSelectionOverride: unknown };
     expect(mount.paintSelectionOverride).toBeUndefined();
     expect(interactions.paintSelectionOverride).toBeNull();
+  });
+
+  it("wires progressive node loading to the Minimal Graph's painted-node extras", () => {
+    const pendingIds = new Set([ALPHA_RUN]);
+    const promotedMember = rfNode(A_FILE, "file");
+    const store = freshStore();
+    store.setState({
+      minimalSeedIds: [A_FILE],
+      minimalMemberIds: [A_FILE],
+      minimalRfNodes: [promotedMember],
+      minimalLayoutStatus: "ready",
+      progressivePendingNodeIds: pendingIds,
+    });
+    const pendingState = store.getState();
+    Object.assign(store, { getInitialState: () => pendingState });
+
+    renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReactFlowProvider><MinimalGraphView onShowCodebase={() => undefined} /></ReactFlowProvider>
+      </StoreProvider>,
+    );
+
+    const flowExtras = graphSurfaceMounts[0].flowExtras as (view: {
+      nodes: Node[];
+      beacons: ReadonlySet<string>;
+    }) => React.ReactNode;
+    const extras = flowExtras({ nodes: [promotedMember], beacons: new Set() });
+    const children = Children.toArray(
+      (extras as ReactElement<{ children: React.ReactNode }>).props.children,
+    ).filter(isValidElement) as Array<ReactElement<Record<string, unknown>>>;
+
+    expect(children).toHaveLength(2);
+    expect(children[0].props.pendingIds).toBe(pendingIds);
+    expect(children[1].props.pendingNodeIds).toBe(pendingIds);
+    expect(children[1].props.visibleNodes).toEqual([promotedMember]);
+    const resolvePendingNodeId = children[1].props.resolvePendingNodeId as (
+      pendingId: string,
+      visibleIds: ReadonlySet<string>,
+    ) => string | null;
+    expect(resolvePendingNodeId(ALPHA_RUN, new Set([A_FILE]))).toBe(A_FILE);
   });
 
   it("filters only non-diff, non-member ghosts before the PR graph reaches GraphSurface", () => {

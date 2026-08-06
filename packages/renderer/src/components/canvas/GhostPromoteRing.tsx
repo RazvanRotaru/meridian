@@ -31,11 +31,16 @@ interface GhostPromoteRingProps {
   nodes: Node[];
   title: string;
   onPromote: (id: string, at: GhostSpot) => void;
+  /** Pending promotions render a node-attached status instead of another actionable "+". */
+  pendingIds?: ReadonlySet<string>;
 }
 
 /** Keep the viewport subscriber out of the tree when this scene has no promotion affordances. */
 export function GhostPromoteRing(props: GhostPromoteRingProps) {
-  const candidates = useMemo(() => promotableGhostNodes(props.nodes), [props.nodes]);
+  const candidates = useMemo(
+    () => promotableGhostNodes(props.nodes, props.pendingIds),
+    [props.nodes, props.pendingIds],
+  );
   if (candidates.length === 0) {
     return null;
   }
@@ -55,7 +60,7 @@ function VisibleGhostPromoteRing(props: GhostPromoteRingProps & { candidates: re
   return (
     <ViewportPortal>
       {ghosts.map((ghost) => (
-        <div key={ghost.id} style={ghostAddWrap(ghost)}>
+        <div key={ghost.id} style={nodeCornerMarkerWrap(ghost, "all")}>
           <button
             type="button"
             data-ghost-id={ghost.id}
@@ -80,8 +85,11 @@ function VisibleGhostPromoteRing(props: GhostPromoteRingProps & { candidates: re
 // temporary inspection preview is already rendered with its real node kind/id, but remains just as
 // ephemeral as a ghost until the reader explicitly promotes it. A legacy synthetic/fallback group
 // has no graph identity and must disclose a real child first.
-export function promotableGhostNodes(nodes: readonly Node[]): Node[] {
-  return nodes.filter((node) => ghostPromotionTarget(node) !== null);
+export function promotableGhostNodes(
+  nodes: readonly Node[],
+  pendingIds: ReadonlySet<string> = NO_PENDING_IDS,
+): Node[] {
+  return nodes.filter((node) => !pendingIds.has(node.id) && ghostPromotionTarget(node) !== null);
 }
 
 export function ghostPromotionTarget(node: Node): string | null {
@@ -145,9 +153,8 @@ function intersectsViewport(
   canvasHeight: number,
 ): boolean {
   const rect = absoluteRectOf(node, byId);
-  const style = (node.style ?? {}) as { width?: number; height?: number };
-  const width = style.width ?? node.width ?? 0;
-  const height = style.height ?? node.height ?? 0;
+  const width = renderedNodeDimension(node, "width");
+  const height = renderedNodeDimension(node, "height");
   const left = rect.x * viewport.zoom + viewport.x;
   const top = rect.y * viewport.zoom + viewport.y;
   const right = left + width * viewport.zoom;
@@ -159,35 +166,68 @@ function intersectsViewport(
 }
 
 // The "+" add button's size in FLOW units — so ViewportPortal scales it with the node at every zoom.
-const ADD_SIZE = 20;
-type GhostCorner = { id: string; promoteId: string; x: number; y: number; right: number };
+export const NODE_CORNER_MARKER_SIZE = 20;
+const NO_PENDING_IDS = new Set<string>();
+export type NodeTopRightCorner = { id: string; x: number; y: number; right: number };
+type GhostCorner = NodeTopRightCorner & { promoteId: string };
 
 // The target's top-left + top-right corner in absolute flow coordinates. Ordinary painted ghosts
 // are root-level; an inspection preview can be nested in its temporary file/unit frames, so climb
 // its React Flow parent chain before positioning the shared ViewportPortal control.
 function ghostCorner(node: Node, byId: ReadonlyMap<string, Node>): GhostCorner {
-  const rect = absoluteRectOf(node, byId);
-  const width = ((node.style ?? {}) as { width?: number }).width ?? 0;
+  const corner = nodeTopRightCorner(node, byId);
   return {
-    id: node.id,
+    ...corner,
     promoteId: ghostPromotionTarget(node)!,
-    x: rect.x,
-    y: rect.y,
-    right: rect.x + width,
   };
 }
 
-// Centre the "+" on that corner (half in / half out). left/top:0 + translate is the ViewportPortal idiom;
-// it applies the canvas zoom/pan transform, so a flow-unit-sized child scales with the graph.
-function ghostAddWrap(corner: GhostCorner): React.CSSProperties {
-  return { position: "absolute", left: 0, top: 0, transform: `translate(${corner.right - ADD_SIZE / 2}px, ${corner.y - ADD_SIZE / 2}px)`, pointerEvents: "all" };
+/** The node's absolute top-right corner, shared by the temporary `+` and its pending spinner. */
+export function nodeTopRightCorner(
+  node: Node,
+  byId: ReadonlyMap<string, Node>,
+): NodeTopRightCorner {
+  const rect = absoluteRectOf(node, byId);
+  return {
+    id: node.id,
+    x: rect.x,
+    y: rect.y,
+    right: rect.x + renderedNodeDimension(node, "width"),
+  };
+}
+
+/** Centre a flow-space marker on the corner, half inside and half outside the owning node. */
+export function nodeCornerMarkerWrap(
+  corner: NodeTopRightCorner,
+  pointerEvents: React.CSSProperties["pointerEvents"],
+): React.CSSProperties {
+  return {
+    position: "absolute",
+    left: 0,
+    top: 0,
+    transform: `translate(${corner.right - NODE_CORNER_MARKER_SIZE / 2}px, ${corner.y - NODE_CORNER_MARKER_SIZE / 2}px)`,
+    pointerEvents,
+  };
+}
+
+function renderedNodeDimension(node: Node, axis: "width" | "height"): number {
+  const style = (node.style ?? {}) as { width?: unknown; height?: unknown };
+  const measured = node.measured?.[axis];
+  const direct = node[axis];
+  const initial = axis === "width" ? node.initialWidth : node.initialHeight;
+  for (const candidate of [style[axis], measured, direct, initial]) {
+    if (typeof candidate === "number" && Number.isFinite(candidate) && candidate >= 0) {
+      return candidate;
+    }
+  }
+  return 0;
 }
 
 // The subtle "add this ghost" affordance: a small round + straddling the ghost card's top-right corner
 // (half in, half out), not a loud button. Neutral until hovered so it stays quiet among many ghosts.
 const ADD_GHOST_STYLE: React.CSSProperties = {
-  width: ADD_SIZE,
-  height: ADD_SIZE,
+  width: NODE_CORNER_MARKER_SIZE,
+  height: NODE_CORNER_MARKER_SIZE,
   borderRadius: "50%",
   display: "grid",
   placeItems: "center",

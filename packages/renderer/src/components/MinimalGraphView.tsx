@@ -35,6 +35,7 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { MapLegend } from "./MapLegend";
 import { GraphSurface } from "./canvas/GraphSurface";
 import { GhostPromoteRing } from "./canvas/GhostPromoteRing";
+import { NearbyGraphLoadingIndicators } from "./canvas/NearbyGraphLoadingIndicators";
 import { SEMANTIC_LAYER_FADE_MS } from "./canvas/MapLod";
 import {
   adaptMinimalGraphToSemanticSource,
@@ -55,6 +56,7 @@ import {
   filterGhostNodesByAllowedIds,
 } from "./moduleMapPaint";
 import { relationKindOf } from "../graph/relationEdge";
+import { nearestModuleIds } from "../state/flowExplorer";
 
 // A review-panel click centers on a single (possibly tiny) method card, so cap how far the fit zooms in.
 const RECENTER_OPTIONS = { maxZoom: 1 } as const;
@@ -90,6 +92,7 @@ export function MinimalGraphView({
   const showExternalGhosts = useBlueprint((state) => state.showExternalGhosts);
   const showGhostNodes = useBlueprint((state) => state.minimalShowGhostNodes);
   const showNonDiffGhostNodes = useBlueprint((state) => state.minimalShowNonDiffGhostNodes);
+  const progressivePendingNodeIds = useBlueprint((state) => state.progressivePendingNodeIds);
   const {
     closeMinimalGraph,
     promoteGhost,
@@ -120,6 +123,9 @@ export function MinimalGraphView({
     });
     return [...kinds];
   }, [edges]);
+  const resolvePendingLoadingNode = useCallback((pendingId: string, visibleIds: ReadonlySet<string>) =>
+    nearestModuleIds([pendingId], index).find((id) => visibleIds.has(id)) ?? null,
+  [index]);
   const toggleGhostNodes = useCallback(() => {
     const next = !showGhostNodes;
     if (!next && [...selected].some((id) => ghostIds.has(id))) {
@@ -268,7 +274,21 @@ export function MinimalGraphView({
         semanticCommitEnabled={semanticNavigation.semanticCommitEnabled}
         onSemanticCommit={semanticNavigation.onSemanticCommit}
         onInit={semanticNavigation.onInit}
-        flowExtras={(view) => <GhostPromoteRing nodes={view.nodes} title="Add to the graph" onPromote={promoteGhost} />}
+        flowExtras={(view) => (
+          <>
+            <GhostPromoteRing
+              nodes={view.nodes}
+              title="Add to the graph"
+              onPromote={promoteGhost}
+              pendingIds={progressivePendingNodeIds}
+            />
+            <NearbyGraphLoadingIndicators
+              visibleNodes={view.nodes}
+              pendingNodeIds={progressivePendingNodeIds}
+              resolvePendingNodeId={resolvePendingLoadingNode}
+            />
+          </>
+        )}
       >
         {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
             overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row

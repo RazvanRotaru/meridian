@@ -56,6 +56,8 @@ describe("ghost promotion", () => {
     expect(ghostPromotionTarget(parent)).toBe("ts:dep.ts#Worker");
     expect(ghostPromotionTarget(exact)).toBe(exact.id);
     expect(ghostPromotionTarget(synthetic)).toBeNull();
+    expect(promotableGhostNodes([preview, parent, exact], new Set([preview.id, exact.id])))
+      .toEqual([parent]);
   });
 });
 
