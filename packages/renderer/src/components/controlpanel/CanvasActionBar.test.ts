@@ -22,15 +22,15 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(936, "codebase")).toEqual({ position: "bottom-center", layout: "row" });
   });
 
-  it("accounts for the review-only neighbourhood, ghost-diff, and code-preview actions in row and stacked placement", () => {
-    expect(canvasActionPlacement(1439, "review-focus", null, 135)).toEqual({ position: "bottom-center", layout: "row" });
-    expect(canvasActionPlacement(1128, "review-focus", null, 135)).toEqual({
+  it("accounts for the review-only neighbourhood, viewed-collapse, ghost-diff, and code-preview actions", () => {
+    expect(canvasActionPlacement(1484, "review-focus", null, 180)).toEqual({ position: "bottom-center", layout: "row" });
+    expect(canvasActionPlacement(1173, "review-focus", null, 180)).toEqual({
       position: "bottom-left",
       layout: "row",
       left: 327,
       bottom: 181,
     });
-    expect(canvasActionPlacement(1127, "review-focus", null, 135)).toEqual({
+    expect(canvasActionPlacement(1172, "review-focus", null, 180)).toEqual({
       position: "bottom-left",
       layout: "stacked",
       left: 327,
@@ -254,6 +254,86 @@ describe("CanvasActionBar empty review sentinel", () => {
     const markup = renderActionBar(store);
     expect(actionButtonMarkup(markup, "Rearrange extracted graph")).toContain('aria-disabled="true"');
     expect(actionButtonMarkup(markup, "Reset extracted graph")).toContain('aria-disabled="true"');
+  });
+});
+
+describe("CanvasActionBar viewed-node collapse", () => {
+  it("appears only on an extracted review graph and reflects whether a viewed scope is open", () => {
+    const store = actionBarStore();
+    expect(renderActionBar(store)).not.toContain('aria-label="Collapse all viewed nodes"');
+
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-collapse-viewed",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      reviewFiles: [{
+        path: "src/action.ts",
+        status: "modified",
+        moduleId: ACTION_FILE,
+        isTest: false,
+        units: [{
+          nodeId: ACTION_METHOD,
+          displayName: "run",
+          kind: "method",
+          startLine: 1,
+          endLine: 1,
+          depth: 0,
+          isTest: false,
+          fingerprint: "action-method",
+        }],
+        fingerprint: "action-file",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      minimalLayoutStatus: "ready",
+      minimalRfNodes: [{
+        id: ACTION_FILE,
+        type: "file",
+        position: { x: 0, y: 0 },
+        data: { isContainer: true, isExpanded: false },
+      }],
+      reviewUnitTicks: {
+        [ACTION_METHOD]: { at: "now", fingerprint: "action-method" },
+      },
+    });
+
+    const disabledMarkup = renderActionBar(store);
+    const disabledButton = actionButtonMarkup(disabledMarkup, "Collapse all viewed nodes");
+    expect(disabledButton).toContain('aria-disabled="true"');
+    expect(describedText(disabledMarkup, disabledButton)).toBe("No viewed nodes are currently expanded");
+
+    store.setState({
+      moduleExpanded: new Set([ACTION_FILE]),
+      minimalRfNodes: [{
+        id: ACTION_FILE,
+        type: "file",
+        position: { x: 0, y: 0 },
+        data: { isContainer: true, isExpanded: true },
+      }],
+    });
+    const enabledMarkup = renderActionBar(store);
+    const enabledButton = actionButtonMarkup(enabledMarkup, "Collapse all viewed nodes");
+    expect(enabledButton).not.toContain("aria-disabled");
+    expect(describedText(enabledMarkup, enabledButton)).toBe(
+      "Collapse every open container inside nodes already marked viewed",
+    );
+    expect(enabledMarkup.indexOf('aria-label="Collapse all viewed nodes"')).toBeGreaterThan(
+      enabledMarkup.indexOf('aria-label="Collapse all"'),
+    );
+    expect(renderActionBar(store, { minimalView: "codebase" })).not.toContain(
+      'aria-label="Collapse all viewed nodes"',
+    );
   });
 });
 

@@ -1,6 +1,17 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { CodePreviewVisibilityIcon } from "./icons";
+import { CodePreviewVisibilityIcon, CollapseViewedIcon } from "./icons";
+
+describe("CollapseViewedIcon", () => {
+  it("combines collapse chevrons with a decorative check using the button color", () => {
+    const markup = renderToStaticMarkup(<CollapseViewedIcon size={18} />);
+
+    expect(markup).toContain('aria-hidden="true"');
+    expect(markup).toContain('stroke="currentColor"');
+    expect(markup).toContain('d="m15.5 12 2 2 3.5-4"');
+    expect(markup).not.toMatch(/aria-label=|role=|<title/);
+  });
+});
 
 describe("CodePreviewVisibilityIcon", () => {
   it("keeps the selected braces-over-preview-cards glyph decorative and color-adaptive", () => {

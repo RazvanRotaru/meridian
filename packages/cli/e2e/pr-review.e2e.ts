@@ -525,6 +525,28 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
     ]);
 
+    // The review-wide presentation action closes only viewed scopes. It must leave the unviewed
+    // sibling open, retain progress, and avoid another GitHub viewed-state mutation.
+    const loyaltyFileNode = extractedReviewSurface.locator(
+      `.react-flow__node[data-id="${LOYALTY_TIERS_MODULE_ID}"]`,
+    );
+    const orderServiceNode = extractedReviewSurface.locator(
+      `.react-flow__node[data-id="${ORDER_SERVICE_MODULE_ID}"]`,
+    );
+    await loyaltyFileNode.getByRole("button", { name: "Collapse" }).waitFor();
+    await orderServiceNode.getByRole("button", { name: "Collapse" }).waitFor();
+    const viewedMutationCount = viewedFileMutations.length;
+    await extractedReviewSurface.getByRole("button", { name: "Collapse all viewed nodes" }).click();
+    await loyaltyFileNode.getByRole("button", { name: "Expand" }).waitFor();
+    await loyaltyTierNode.waitFor({ state: "detached" });
+    await orderServiceNode.getByRole("button", { name: "Collapse" }).waitFor();
+    await page.getByText("1/3 files viewed", { exact: true }).waitFor();
+    expect(viewedFileMutations).toHaveLength(viewedMutationCount);
+
+    // Restore the fixture's disclosure for the remaining review journey.
+    await loyaltyFileNode.getByRole("button", { name: "Expand" }).click();
+    await loyaltyTierNode.waitFor();
+
     // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
     await page.getByRole("button", { name: "Submit comments" }).click();
     await page.getByText("Comments submitted", { exact: true }).waitFor();
