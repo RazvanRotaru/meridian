@@ -5382,6 +5382,10 @@ function graphLeaseMock() {
   const controller: GraphViewLeaseController = {
     leaseId: "test-view",
     beginPreparedGraphHandoff,
+    beginPreparedReviewHandoff: vi.fn(async () => ({
+      commit: vi.fn(async () => {}),
+      release: vi.fn(async () => {}),
+    })),
     replacePreparedGraphIds,
     dispose: vi.fn(),
   };
@@ -5964,6 +5968,10 @@ describe("PR head preparation (prepareHeadGraph)", () => {
     const controller: GraphViewLeaseController = {
       leaseId: "test-view",
       beginPreparedGraphHandoff,
+      beginPreparedReviewHandoff: vi.fn(async () => ({
+        commit: vi.fn(async () => {}),
+        release: vi.fn(async () => {}),
+      })),
       replacePreparedGraphIds: vi.fn(async () => {}),
       dispose: vi.fn(),
     };

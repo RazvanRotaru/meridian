@@ -36,7 +36,7 @@ import {
   reviewRestoreRequested,
   startPrReviewNavigationGuard,
 } from "./prReviewNavigationGuard";
-import { startGraphViewLease } from "./graphViewLease";
+import { startGraphViewLease, type GraphViewLeaseHandoff } from "./graphViewLease";
 
 export interface BootResult {
   store: BlueprintStore;
@@ -67,6 +67,7 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
     },
   });
   let graphViewLease: ReturnType<typeof startGraphViewLease> | null = null;
+  let preparedReviewHandoff: GraphViewLeaseHandoff | null = null;
   const restoringReview = typeof window !== "undefined" && reviewRestoreRequested(window.location.search);
   const restoringPrNumber = typeof window === "undefined"
     ? null
@@ -118,7 +119,16 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       }
       graphViewLease = startGraphViewLease(boot.graphViewLease, prApi.graphId);
     }
+    if (boot.preparedReviewHandoff !== null) {
+      if (graphViewLease === null) {
+        throw new Error("boot contract violation: prepared review handoff requires a graph view lease");
+      }
+      preparedReviewHandoff = await graphViewLease.beginPreparedReviewHandoff(
+        boot.preparedReviewHandoff,
+      );
+    }
     let initialGraphProjection: GraphProjectionV1 | null = null;
+    let initialComparisonGraphProjection: GraphProjectionV1 | null = null;
     let artifact: GraphArtifact;
     const initialSearch = typeof window === "undefined" ? "" : window.location.search;
     const bootSearch = new URLSearchParams(initialSearch);
@@ -165,14 +175,31 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       const controller = new AbortController();
       initialProjectionAbort = controller;
       try {
-        const projection = await fetchGraphProjection(
-          boot.graphProjectUrl!,
-          // The worker returns only the required depth-1 slice. The renderer requests predicted
-          // depth-2 warming only after the first actionable canvas, so admission wins CPU priority.
-          changedFileProjectionRequest(prApi.graphId!, prApi.graphId!, 1, 3),
-          { signal: controller.signal },
-        );
-        if (!isInitialProgressiveProjectionReady(projection)) {
+        const [projection, comparisonProjection] = await Promise.all([
+          fetchGraphProjection(
+            boot.graphProjectUrl!,
+            // The worker returns only the required depth-1 slice. The renderer requests predicted
+            // depth-2 warming only after the first actionable canvas, so admission wins CPU priority.
+            changedFileProjectionRequest(prApi.graphId!, prApi.graphId!, 1, 3),
+            { signal: controller.signal },
+          ),
+          boot.preparedReviewHandoff === null
+            ? Promise.resolve(null)
+            : fetchGraphProjection(
+                boot.graphProjectUrl!,
+                changedFileProjectionRequest(
+                  boot.preparedReviewHandoff.comparisonGraphId,
+                  boot.preparedReviewHandoff.headGraphId,
+                  1,
+                  3,
+                ),
+                { signal: controller.signal },
+              ),
+        ]);
+        if (
+          !isInitialProgressiveProjectionReady(projection)
+          || (comparisonProjection !== null && !isInitialProgressiveProjectionReady(comparisonProjection))
+        ) {
           throw new Error("the affected-file projection is not ready through depth 1");
         }
         // Back/Forward can arrive while the worker is running. Never construct a store for the new
@@ -183,6 +210,7 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
           );
         } else {
           initialGraphProjection = projection;
+          initialComparisonGraphProjection = comparisonProjection;
           initialProjectionGeneration = projectionGeneration;
           artifact = projectionToArtifact(projection);
           performanceMark("meridian:progressive-graph-ready");
@@ -250,6 +278,7 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       graphProjectUrl: boot.graphProjectUrl ?? null,
       graphSymbolsUrl: boot.graphSymbolsUrl ?? null,
       initialGraphProjection,
+      initialComparisonGraphProjection,
       initialGraphProvisional: provisionalBoot && initialGraphProjection !== null,
       loadCanonicalBootArtifact: initialGraphProjection === null || provisionalBoot
         ? null
@@ -260,6 +289,10 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
       graphId: boot.githubSource ? prApi.graphId : null,
       graphViewLease,
     });
+    if (preparedReviewHandoff !== null) {
+      await preparedReviewHandoff.commit();
+      preparedReviewHandoff = null;
+    }
     if (activeReviewProgress !== null) {
       store.setState({ prReviewProgress: activeReviewProgress });
     }
@@ -356,6 +389,8 @@ export async function bootstrap(options: BootstrapProgressOptions = {}): Promise
   } catch (error) {
     initialRestoreActive = false;
     initialRestoreStore = null;
+    await preparedReviewHandoff?.release().catch(() => undefined);
+    preparedReviewHandoff = null;
     graphViewLease?.dispose();
     navigationGuard.dispose();
     throw error;

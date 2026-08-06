@@ -9,30 +9,39 @@ const BASE_SHA = "b".repeat(40);
 const MERGE_BASE_SHA = "c".repeat(40);
 const HEAD_KEY = "d".repeat(64);
 const COMPARISON_KEY = "e".repeat(64);
+const HANDOFF_CLAIM_ID = "h".repeat(32);
+const CANONICAL_VIEW_URL = "/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1";
 
 type TerminalValidator = (
   data: Record<string, unknown>,
   request: Record<string, unknown>,
   origin: string,
-) => { destination: string; evidence: unknown; pair: unknown } | null;
+) => {
+  destination: string;
+  canonicalDestination: string;
+  evidence: unknown;
+  pair: unknown;
+} | null;
 
 describe("landing PR preparation terminal contract", () => {
   const validate = shippedTerminalValidator();
 
-  it("accepts ready progressive and advisory canonical handoffs", () => {
+  it("accepts a claimed progressive handoff and ordinary claimless compatibility terminals", () => {
     expect(validate(terminal(), request(), ORIGIN)).toMatchObject({
-      destination: "/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1",
+      destination: `${CANONICAL_VIEW_URL}&handoff=${HANDOFF_CLAIM_ID}`,
+      canonicalDestination: CANONICAL_VIEW_URL,
       evidence: { ready: true, depth: 1, prefetchDepth: 3 },
     });
 
-    expect(validate(terminal({
+    expect(validate(claimlessTerminal({
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1",
       initialProjectionCache: { ...evidence(), ready: false },
     }), request(), ORIGIN)).toMatchObject({
       destination: "/view?id=head-graph&view=modules&prn=41&rev=1",
+      canonicalDestination: "/view?id=head-graph&view=modules&prn=41&rev=1",
       evidence: { ready: false },
     });
-    expect(validate(terminal({
+    expect(validate(claimlessTerminal({
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1",
       initialProjectionCache: {
         ...evidence(),
@@ -42,7 +51,7 @@ describe("landing PR preparation terminal contract", () => {
       },
     }), request(), ORIGIN)).not.toBeNull();
 
-    const withoutEvidence = terminal({
+    const withoutEvidence = claimlessTerminal({
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1",
     });
     delete withoutEvidence.initialProjectionCache;
@@ -60,17 +69,59 @@ describe("landing PR preparation terminal contract", () => {
         completeness: "provisional",
         pairId,
       },
-      viewUrl: `/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1&partial=1&pair=${pairId}`,
+      canonicalViewUrl: provisionalCanonicalViewUrl(pairId),
+      viewUrl: claimedViewUrl(provisionalCanonicalViewUrl(pairId)),
     });
     expect(validate(ready, request(), ORIGIN)).toMatchObject({
-      destination: `/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1&partial=1&pair=${pairId}`,
+      destination: claimedViewUrl(provisionalCanonicalViewUrl(pairId)),
+      canonicalDestination: provisionalCanonicalViewUrl(pairId),
     });
     const done = { ...ready, stage: "done" };
     expect(validate(done, request(), ORIGIN)).toMatchObject({
-      destination: `/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1&partial=1&pair=${pairId}`,
+      destination: claimedViewUrl(provisionalCanonicalViewUrl(pairId)),
+      canonicalDestination: provisionalCanonicalViewUrl(pairId),
     });
     expect(validate({ ...ready, pairId: "wrong" }, request(), ORIGIN)).toBeNull();
     expect(validate({ ...ready, viewUrl: terminal().viewUrl }, request(), ORIGIN)).toBeNull();
+  });
+
+  it("requires one exact claim and a separate claimless canonical destination", () => {
+    const missingHandoff = terminal();
+    delete missingHandoff.preparedReviewHandoff;
+    expect(validate(missingHandoff, request(), ORIGIN)).toBeNull();
+
+    const missingCanonical = terminal();
+    delete missingCanonical.canonicalViewUrl;
+    expect(validate(missingCanonical, request(), ORIGIN)).toBeNull();
+
+    expect(validate(terminal({ viewUrl: CANONICAL_VIEW_URL }), request(), ORIGIN)).toBeNull();
+    expect(validate(terminal({
+      viewUrl: `${claimedViewUrl(CANONICAL_VIEW_URL)}&handoff=${HANDOFF_CLAIM_ID}`,
+    }), request(), ORIGIN)).toBeNull();
+    expect(validate(terminal({
+      canonicalViewUrl: `${CANONICAL_VIEW_URL}&handoff=${HANDOFF_CLAIM_ID}`,
+    }), request(), ORIGIN)).toBeNull();
+  });
+
+  it.each([
+    ["short claim", { claimId: "too-short", url: "/api/pr-review-handoffs/too-short" }],
+    ["claim URL mismatch", { url: `/api/pr-review-handoffs/${"i".repeat(32)}` }],
+    ["foreign claim URL", { url: `https://example.test/api/pr-review-handoffs/${HANDOFF_CLAIM_ID}` }],
+    ["head mismatch", { headGraphId: "different-head" }],
+    ["comparison mismatch", { comparisonGraphId: "different-base" }],
+    ["invalid expiry", { expiresAtMs: -1 }],
+    ["unsupported version", { version: 2 }],
+    ["extra field", { extra: true }],
+  ])("rejects a malformed prepared review handoff: %s", (_label, override) => {
+    expect(validate(terminal({
+      preparedReviewHandoff: { ...handoff(), ...override },
+    }), request(), ORIGIN)).toBeNull();
+  });
+
+  it("rejects a view URL whose claim does not match its handoff", () => {
+    expect(validate(terminal({
+      viewUrl: claimedViewUrl(CANONICAL_VIEW_URL, "i".repeat(32)),
+    }), request(), ORIGIN)).toBeNull();
   });
 
   it("requires the exact version-one initial projection evidence shape", () => {
@@ -96,10 +147,11 @@ describe("landing PR preparation terminal contract", () => {
     expect(validate(terminal({
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1",
     }), request(), ORIGIN)).toBeNull();
-    expect(validate(terminal({
+    expect(validate(claimlessTerminal({
       initialProjectionCache: { ...evidence(), ready: false },
+      viewUrl: CANONICAL_VIEW_URL,
     }), request(), ORIGIN)).toBeNull();
-    expect(validate(terminal({
+    expect(validate(claimlessTerminal({
       initialProjectionCache: { ...evidence(), ready: false },
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1&progressive=0",
     }), request(), ORIGIN)).toBeNull();
@@ -107,7 +159,7 @@ describe("landing PR preparation terminal contract", () => {
       viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1&progressive=1",
     }), request(), ORIGIN)).toBeNull();
 
-    const absentButProgressive = terminal();
+    const absentButProgressive = claimlessTerminal({ viewUrl: CANONICAL_VIEW_URL });
     delete absentButProgressive.initialProjectionCache;
     expect(validate(absentButProgressive, request(), ORIGIN)).toBeNull();
   });
@@ -136,12 +188,12 @@ describe("landing PR preparation terminal contract", () => {
       [terminal({ headSha: "f".repeat(40) }), request()],
       [terminal({ baseSha: "f".repeat(40) }), request()],
       [terminal({ mergeBaseSha: "f".repeat(40) }), request()],
-      [terminal({ viewUrl: "/view?id=stale&view=modules&prn=41&rev=1&progressive=1" }), request()],
-      [terminal({ viewUrl: "/view?id=head-graph&view=modules&prn=42&rev=1&progressive=1" }), request()],
-      [terminal({ viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=2&progressive=1" }), request()],
-      [terminal({ viewUrl: "/view?id=head-graph&view=files&prn=41&rev=1&progressive=1" }), request()],
-      [terminal({ viewUrl: "https://example.test/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1" }), request()],
-      [terminal({ viewUrl: "/view?id=head-graph&id=head-graph&view=modules&prn=41&rev=1&progressive=1" }), request()],
+      [terminalForCanonical("/view?id=stale&view=modules&prn=41&rev=1&progressive=1"), request()],
+      [terminalForCanonical("/view?id=head-graph&view=modules&prn=42&rev=1&progressive=1"), request()],
+      [terminalForCanonical("/view?id=head-graph&view=modules&prn=41&rev=2&progressive=1"), request()],
+      [terminalForCanonical("/view?id=head-graph&view=files&prn=41&rev=1&progressive=1"), request()],
+      [terminalForCanonical("https://example.test/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1"), request()],
+      [terminalForCanonical("/view?id=head-graph&id=head-graph&view=modules&prn=41&rev=1&progressive=1"), request()],
     ] as const;
     for (const [data, activeRequest] of invalid) {
       expect(validate(data, activeRequest, ORIGIN)).toBeNull();
@@ -190,7 +242,43 @@ function terminal(overrides: Record<string, unknown> = {}): Record<string, unkno
       baseSha: BASE_SHA,
       mergeBaseSha: MERGE_BASE_SHA,
     },
-    viewUrl: "/view?id=head-graph&view=modules&prn=41&rev=1&progressive=1",
+    preparedReviewHandoff: handoff(),
+    canonicalViewUrl: CANONICAL_VIEW_URL,
+    viewUrl: claimedViewUrl(CANONICAL_VIEW_URL),
+    ...overrides,
+  };
+}
+
+function claimlessTerminal(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  const value = terminal(overrides);
+  delete value.preparedReviewHandoff;
+  delete value.canonicalViewUrl;
+  return value;
+}
+
+function terminalForCanonical(canonicalViewUrl: string): Record<string, unknown> {
+  return terminal({
+    canonicalViewUrl,
+    viewUrl: claimedViewUrl(canonicalViewUrl),
+  });
+}
+
+function claimedViewUrl(canonicalViewUrl: string, claimId = HANDOFF_CLAIM_ID): string {
+  return `${canonicalViewUrl}&handoff=${encodeURIComponent(claimId)}`;
+}
+
+function provisionalCanonicalViewUrl(pairId: string): string {
+  return `${CANONICAL_VIEW_URL}&partial=1&pair=${pairId}`;
+}
+
+function handoff(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    version: 1,
+    claimId: HANDOFF_CLAIM_ID,
+    url: `/api/pr-review-handoffs/${HANDOFF_CLAIM_ID}`,
+    expiresAtMs: 10_000,
+    headGraphId: "head-graph",
+    comparisonGraphId: "base-graph",
     ...overrides,
   };
 }

@@ -84,6 +84,16 @@ import {
   WebGraphProjectCache,
   type WebGraphProjectCacheOptions,
 } from "./web-graph-project-cache";
+import {
+  PrReviewHandoffRegistry,
+  type PrReviewHandoffRegistryOptions,
+} from "./web-pr-review-handoff";
+import {
+  handlePrReviewHandoffAttach,
+  handlePrReviewHandoffCommit,
+  handlePrReviewHandoffRelease,
+  prReviewHandoffClaimIdFromPath,
+} from "./web-pr-review-handoff-api";
 
 const WEB_TELEMETRY_SOURCE = { kind: "none" } as const;
 
@@ -137,6 +147,8 @@ export interface WebServerConfig {
   graphRetention?: Partial<GraphRetentionOptions>;
   /** Process-private projection/symbol file cache budget override. */
   graphProjectCache?: WebGraphProjectCacheOptions;
+  /** Internal prepared-pair admission and claim bounds; production uses conservative defaults. */
+  prReviewHandoffs?: PrReviewHandoffRegistryOptions;
   /** Optional background-maintenance diagnostic sink. */
   onRepositoryRetentionError?: (error: unknown) => void;
   /** Optional process-private graph-registry cleanup diagnostic sink. */
@@ -152,6 +164,8 @@ export interface Context {
   graphStore: WebGraphStore;
   /** Bounded immutable projection/symbol files; never parsed in the web parent. */
   graphProjectCache: WebGraphProjectCache;
+  /** Pair-scoped preparation admission and browser-handoff ownership. */
+  prReviewHandoffs: PrReviewHandoffRegistry;
   /** Per-PR repo-root changed paths, invalidated when GitHub's updated_at or head SHA changes. */
   prFilesCache: Map<string, { updatedAt: string; headSha: string | null; paths: string[] }>;
   /** Ephemeral waiter-safe singleflight plus bounded admission for memory-heavy extraction. */
@@ -217,6 +231,19 @@ export function createWebService(config: WebServerConfig): WebService {
     throw error;
   }
   let repositories: RepositoryMirror;
+  let prReviewHandoffs: PrReviewHandoffRegistry;
+  try {
+    prReviewHandoffs = new PrReviewHandoffRegistry(
+      graphStore,
+      graphProjectCache,
+      config.prReviewHandoffs,
+    );
+  } catch (error) {
+    void analysisCoordinator.close();
+    graphProjectCache.dispose();
+    graphStore.dispose();
+    throw error;
+  }
   try {
     repositories = config.repositories ?? new WebRepositoryMirror({
       cacheRoot,
@@ -225,6 +252,7 @@ export function createWebService(config: WebServerConfig): WebService {
     });
   } catch (error) {
     void analysisCoordinator.close();
+    void prReviewHandoffs.close();
     graphProjectCache.dispose();
     graphStore.dispose();
     throw error;
@@ -247,6 +275,7 @@ export function createWebService(config: WebServerConfig): WebService {
       { connection: "close" },
     ),
     beginShutdown: [
+      () => prReviewHandoffs.close(),
       () => analysisCoordinator.close(),
       () => repositories.close(),
       () => shardRetention?.close(),
@@ -263,6 +292,7 @@ export function createWebService(config: WebServerConfig): WebService {
     staticContext,
     graphStore,
     graphProjectCache,
+    prReviewHandoffs,
     analysisCoordinator,
     analysisMemory,
     repositories,
@@ -277,6 +307,7 @@ function buildContext(
   staticContext: StaticWebContext,
   graphStore: WebGraphStore,
   graphProjectCache: WebGraphProjectCache,
+  prReviewHandoffs: PrReviewHandoffRegistry,
   analysisCoordinator: AnalysisCoordinator,
   analysisMemory: RepositoryAnalysisMemoryPolicy,
   repositories: RepositoryMirror,
@@ -291,6 +322,7 @@ function buildContext(
     shutdownSignal,
     graphStore,
     graphProjectCache,
+    prReviewHandoffs,
     prFilesCache: new Map(),
     analysisCoordinator,
     repositories,
@@ -362,7 +394,7 @@ async function handle(ctx: Context, request: IncomingMessage, response: ServerRe
     return;
   }
   if (url.pathname === "/view") {
-    sendView(ctx, response, url.searchParams.get("id"));
+    sendView(ctx, response, url);
     return;
   }
   if (url.pathname === "/") {
@@ -382,6 +414,16 @@ async function handleApi(ctx: Context, request: IncomingMessage, response: Serve
     return;
   }
   const graphViewLeaseId = graphViewLeaseIdFromPath(url.pathname);
+  const handoffClaimId = prReviewHandoffClaimIdFromPath(url.pathname);
+  if (request.method === "PUT" && handoffClaimId !== null) {
+    assertJsonContentType(request);
+    await handlePrReviewHandoffCommit(ctx, request, response, handoffClaimId);
+    return;
+  }
+  if (request.method === "DELETE" && handoffClaimId !== null) {
+    handlePrReviewHandoffRelease(ctx, response, handoffClaimId);
+    return;
+  }
   if (request.method === "PUT" && graphViewLeaseId !== null) {
     assertJsonContentType(request);
     await handleGraphViewPut(ctx.graphStore, request, response, graphViewLeaseId, ctx.shutdownSignal);
@@ -401,6 +443,11 @@ function graphViewLeaseIdFromPath(pathname: string): string | null {
 
 async function handleApiPost(ctx: Context, request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> {
   const pathname = url.pathname;
+  const handoffClaimId = prReviewHandoffClaimIdFromPath(pathname);
+  if (handoffClaimId !== null) {
+    await handlePrReviewHandoffAttach(ctx, request, response, handoffClaimId);
+    return;
+  }
   if (pathname === "/api/graph-views") {
     await handleGraphViewCreate(ctx.graphStore, request, response, ctx.shutdownSignal);
     return;

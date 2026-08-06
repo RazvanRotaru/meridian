@@ -21,6 +21,25 @@ const BASE_CONFIG = {
   defaultEnv: null,
 };
 
+const HANDOFF_CLAIM_ID = "h".repeat(32);
+const PREPARED_REVIEW_HANDOFF = {
+  version: 1,
+  claimId: HANDOFF_CLAIM_ID,
+  url: `/api/pr-review-handoffs/${HANDOFF_CLAIM_ID}`,
+  expiresAtMs: 10_000,
+  headGraphId: "graph-1",
+  comparisonGraphId: "base-graph",
+};
+
+const PREPARED_REVIEW_CONFIG = {
+  ...BASE_CONFIG,
+  graphViewLease: {
+    ...BASE_CONFIG.graphViewLease,
+    graphIds: ["graph-1", "base-graph"],
+  },
+  preparedReviewHandoff: PREPARED_REVIEW_HANDOFF,
+};
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("telemetry boot config", () => {
@@ -51,7 +70,107 @@ describe("telemetry boot config", () => {
       syntheticExecutionTrust: null,
       syntheticScenarios: [],
       graphViewLease: BASE_CONFIG.graphViewLease,
+      preparedReviewHandoff: null,
     });
+  });
+
+  it("accepts an exact prepared review handoff protected by the boot view lease", () => {
+    vi.stubGlobal("window", { __MERIDIAN__: PREPARED_REVIEW_CONFIG });
+
+    expect(readBootConfig()).toMatchObject({
+      graphViewLease: {
+        ...BASE_CONFIG.graphViewLease,
+        graphIds: ["graph-1", "base-graph"],
+      },
+      preparedReviewHandoff: PREPARED_REVIEW_HANDOFF,
+    });
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["explicit null", null],
+  ])("keeps an ordinary paired view claimless when the handoff is %s", (_label, handoffValue) => {
+    const { preparedReviewHandoff: _omitted, ...claimlessConfig } = PREPARED_REVIEW_CONFIG;
+    vi.stubGlobal("window", {
+      __MERIDIAN__: handoffValue === undefined
+        ? claimlessConfig
+        : { ...claimlessConfig, preparedReviewHandoff: handoffValue },
+    });
+
+    expect(readBootConfig().preparedReviewHandoff).toBeNull();
+  });
+
+  it.each([
+    ["non-object", "claim"],
+    ["extra field", { ...PREPARED_REVIEW_HANDOFF, extra: true }],
+    ["unsupported version", { ...PREPARED_REVIEW_HANDOFF, version: 2 }],
+    ["short claim", {
+      ...PREPARED_REVIEW_HANDOFF,
+      claimId: "too-short",
+      url: "/api/pr-review-handoffs/too-short",
+    }],
+    ["mismatched claim URL", {
+      ...PREPARED_REVIEW_HANDOFF,
+      url: `/api/pr-review-handoffs/${"i".repeat(32)}`,
+    }],
+    ["foreign claim URL", {
+      ...PREPARED_REVIEW_HANDOFF,
+      url: `https://example.test/api/pr-review-handoffs/${HANDOFF_CLAIM_ID}`,
+    }],
+    ["claim URL query", {
+      ...PREPARED_REVIEW_HANDOFF,
+      url: `/api/pr-review-handoffs/${HANDOFF_CLAIM_ID}?retry=1`,
+    }],
+    ["same pair graph", {
+      ...PREPARED_REVIEW_HANDOFF,
+      comparisonGraphId: "graph-1",
+    }],
+    ["negative expiry", { ...PREPARED_REVIEW_HANDOFF, expiresAtMs: -1 }],
+  ])("rejects a malformed prepared review handoff: %s", (_label, preparedReviewHandoff) => {
+    vi.stubGlobal("window", {
+      __MERIDIAN__: { ...PREPARED_REVIEW_CONFIG, preparedReviewHandoff },
+    });
+
+    expect(() => readBootConfig()).toThrow("preparedReviewHandoff is invalid");
+  });
+
+  it.each([
+    ["different boot graph", {
+      ...PREPARED_REVIEW_CONFIG,
+      graphUrl: "/api/graph?id=other-head",
+    }],
+    ["unprotected comparison graph", {
+      ...PREPARED_REVIEW_CONFIG,
+      graphViewLease: {
+        ...PREPARED_REVIEW_CONFIG.graphViewLease,
+        graphIds: ["graph-1"],
+      },
+    }],
+    ["mismatched handoff head", {
+      ...PREPARED_REVIEW_CONFIG,
+      preparedReviewHandoff: {
+        ...PREPARED_REVIEW_HANDOFF,
+        headGraphId: "other-head",
+      },
+    }],
+  ])("rejects a prepared review handoff bound to a %s", (_label, config) => {
+    vi.stubGlobal("window", { __MERIDIAN__: config });
+
+    expect(() => readBootConfig()).toThrow("preparedReviewHandoff is not protected by this view");
+  });
+
+  it("rejects duplicate graph protection instead of ambiguously accepting a handoff", () => {
+    vi.stubGlobal("window", {
+      __MERIDIAN__: {
+        ...PREPARED_REVIEW_CONFIG,
+        graphViewLease: {
+          ...PREPARED_REVIEW_CONFIG.graphViewLease,
+          graphIds: ["graph-1", "base-graph", "base-graph"],
+        },
+      },
+    });
+
+    expect(() => readBootConfig()).toThrow("graphViewLease is invalid");
   });
 
   it("accepts only paired same-origin progressive graph capabilities", () => {

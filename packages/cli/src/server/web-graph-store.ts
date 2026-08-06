@@ -671,6 +671,16 @@ export class WebGraphStore {
     };
   }
 
+  /** Prove that one active browser lease already protects every graph in a prepared handoff.
+   * This is an observation only: it neither renews the lease nor changes its selection. */
+  viewLeaseProtects(leaseId: string, graphIds: readonly string[]): boolean {
+    this.#assertActive();
+    this.#expireViews(this.#now());
+    const view = this.#views.get(leaseId);
+    if (view === undefined) return false;
+    return graphIds.length > 0 && graphIds.every((id) => view.graphIds.has(id));
+  }
+
   /** Explicit close is best-effort and idempotent; crashes are reclaimed by TTL. */
   releaseViewLease(leaseId: string): void {
     if (this.#disposed) return;

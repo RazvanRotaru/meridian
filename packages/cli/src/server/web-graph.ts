@@ -14,6 +14,7 @@ import {
   responseCanWrite,
 } from "./web-cancellation";
 import { WebGraphViewLeaseError } from "./web-graph-store";
+import { PrReviewHandoffClaimError } from "./web-pr-review-handoff";
 import { generateGraph } from "./web-generation";
 import { parseGenerateRequest, readJsonBody } from "./web-request";
 import type { Context } from "./web-server";
@@ -145,7 +146,43 @@ export function sendMeta(ctx: Context, response: ServerResponse, id: string | nu
   }
 }
 
-export function sendView(ctx: Context, response: ServerResponse, id: string | null): void {
+export function sendView(ctx: Context, response: ServerResponse, url: URL): void {
+  const ids = url.searchParams.getAll("id");
+  const handoffIds = url.searchParams.getAll("handoff");
+  if (handoffIds.length > 1 || (handoffIds.length === 1 && ids.length !== 1)) {
+    sendHtml(
+      response,
+      "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Invalid prepared review URL.</p>",
+      400,
+      { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+    );
+    return;
+  }
+  const id = ids[0] ?? null;
+  let handoff: ReturnType<Context["prReviewHandoffs"]["inspectClaim"]> | null = null;
+  if (handoffIds.length === 1) {
+    try {
+      handoff = ctx.prReviewHandoffs.inspectClaim(handoffIds[0]!);
+    } catch (error) {
+      if (!(error instanceof PrReviewHandoffClaimError)) throw error;
+      sendHtml(
+        response,
+        "<!doctype html><meta charset=utf-8><title>Meridian</title><p>This prepared review link has expired. Return to the pull request picker and try again.</p>",
+        410,
+        { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+      );
+      return;
+    }
+    if (id !== handoff.pair.headGraphId) {
+      sendHtml(
+        response,
+        "<!doctype html><meta charset=utf-8><title>Meridian</title><p>The prepared review link does not match this graph.</p>",
+        409,
+        { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+      );
+      return;
+    }
+  }
   const registration = id ? ctx.graphStore.acquire(id) : undefined;
   if (registration === undefined) {
     sendHtml(response, "<!doctype html><meta charset=utf-8><title>Meridian</title><p>Unknown graph id.</p>", 404);
@@ -155,8 +192,16 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
   try {
     const descriptor = registration.descriptor;
     const graphId = id as string;
-    const grant = ctx.graphStore.createViewLease(graphId);
+    const protectedGraphIds = handoff === null
+      ? [graphId]
+      : [handoff.pair.headGraphId, handoff.pair.comparisonGraphId];
+    const grant = ctx.graphStore.createViewLease(graphId, protectedGraphIds);
     viewLeaseId = grant.leaseId;
+    const attached = handoff === null
+      ? null
+      : ctx.prReviewHandoffs.attach(handoff.claimId, grant.leaseId);
+    const canonicalUrl = new URL(url.pathname + url.search, "http://meridian.local");
+    canonicalUrl.searchParams.delete("handoff");
     sendHtml(response, injectViewBoot(
       ctx.rendererIndex,
       graphId,
@@ -166,14 +211,35 @@ export function sendView(ctx: Context, response: ServerResponse, id: string | nu
         leaseId: grant.leaseId,
         url: `/api/graph-views/${grant.leaseId}`,
         createUrl: "/api/graph-views",
+        graphIds: protectedGraphIds,
         expiresAtMs: grant.expiresAtMs,
         heartbeatIntervalMs: grant.heartbeatIntervalMs,
       },
       descriptor.synthetic.scenarios,
       descriptor.synthetic.trust,
-    ), 200, { "cache-control": "no-store" });
+      attached === null ? {} : {
+        preparedReviewHandoff: {
+          version: 1,
+          claimId: attached.claimId,
+          url: `/api/pr-review-handoffs/${attached.claimId}`,
+          expiresAtMs: attached.expiresAtMs,
+          headGraphId: attached.pair.headGraphId,
+          comparisonGraphId: attached.pair.comparisonGraphId,
+        },
+        canonicalUrl: `${canonicalUrl.pathname}${canonicalUrl.search}`,
+      },
+    ), 200, { "cache-control": "no-store", "referrer-policy": "no-referrer" });
   } catch (error) {
     if (viewLeaseId !== null) ctx.graphStore.releaseViewLease(viewLeaseId);
+    if (error instanceof PrReviewHandoffClaimError) {
+      sendHtml(
+        response,
+        "<!doctype html><meta charset=utf-8><title>Meridian</title><p>This prepared review link is no longer available. Return to the pull request picker and try again.</p>",
+        410,
+        { "cache-control": "no-store", "referrer-policy": "no-referrer" },
+      );
+      return;
+    }
     if (error instanceof WebGraphViewLeaseError && error.code === "capacity") {
       sendHtml(
         response,

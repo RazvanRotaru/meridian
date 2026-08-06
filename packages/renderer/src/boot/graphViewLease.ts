@@ -8,8 +8,10 @@
 export const MAX_PROTECTED_GRAPH_IDS = 5;
 
 const MAX_GRAPH_ID_LENGTH = 256;
+const PREPARED_REVIEW_CLAIM_ID = /^[A-Za-z0-9_-]{32}$/;
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 const UPDATE_ERROR_MESSAGE = "Unable to renew graph view protection.";
+const HANDOFF_ERROR_MESSAGE = "Unable to transfer prepared review protection.";
 const INACTIVE_ERROR_MESSAGE = "Graph view protection is no longer active.";
 
 export interface GraphViewLeaseGrant {
@@ -17,8 +19,20 @@ export interface GraphViewLeaseGrant {
   leaseId: string;
   url: string;
   createUrl: string;
+  /** Exact graph set already protected by a server-rendered document. Recreated grants omit it
+   * because the controller retains the requested desired set locally. */
+  graphIds?: string[];
   expiresAtMs: number;
   heartbeatIntervalMs: number;
+}
+
+export interface PreparedReviewHandoffGrant {
+  version: 1;
+  claimId: string;
+  url: string;
+  expiresAtMs: number;
+  headGraphId: string;
+  comparisonGraphId: string;
 }
 
 export interface GraphViewLeaseHandoff {
@@ -35,6 +49,8 @@ export interface GraphViewLeaseController {
    * until the returned transaction is explicitly committed or released.
    */
   beginPreparedGraphHandoff(graphIds: readonly string[]): Promise<GraphViewLeaseHandoff>;
+  /** Attach a server-issued prepared pair to this view before loading either projection. */
+  beginPreparedReviewHandoff(grant: PreparedReviewHandoffGrant): Promise<GraphViewLeaseHandoff>;
   /** Reflect a mounted-state change while always preserving the boot graph id. */
   replacePreparedGraphIds(graphIds: readonly string[]): Promise<void>;
   /** Stop renewal, remove browser listeners, and best-effort release the server lease. */
@@ -54,8 +70,14 @@ export function startGraphViewLease(
   const baseId = validateGraphId(baseGraphId);
   let currentLeaseId = grant.leaseId;
 
-  let desiredGraphIds = [baseId];
-  let mountedPreparedGraphIds: string[] = [];
+  const initiallyProtected = grant.graphIds === undefined
+    ? [baseId]
+    : uniqueGraphIds(grant.graphIds);
+  if (!initiallyProtected.includes(baseId) || initiallyProtected.length > MAX_PROTECTED_GRAPH_IDS) {
+    throw new Error("Invalid graph view lease contract.");
+  }
+  let desiredGraphIds = initiallyProtected;
+  let mountedPreparedGraphIds = initiallyProtected.filter((id) => id !== baseId);
   let pendingHandoff: { generation: number; graphIds: string[]; key: string } | null = null;
   let nextHandoffGeneration = 0;
   let desiredKey = graphIdSetKey(desiredGraphIds);
@@ -64,6 +86,7 @@ export function startGraphViewLease(
   let renewalGeneration = 0;
   let synchronizedRenewalGeneration = 0;
   let drainPromise: Promise<void> | null = null;
+  let requestInFlight: Promise<unknown> | null = null;
   let activeRequest: AbortController | null = null;
   let disposed = false;
 
@@ -165,7 +188,35 @@ export function startGraphViewLease(
     }
   }
 
-  async function putGraphIds(graphIds: readonly string[]): Promise<void> {
+  function runSerializedRequest<Result>(request: () => Promise<Result>): Promise<Result> {
+    if (disposed) {
+      return Promise.reject(new Error(INACTIVE_ERROR_MESSAGE));
+    }
+    if (requestInFlight !== null) {
+      return requestInFlight
+        .catch(() => undefined)
+        .then(() => runSerializedRequest(request));
+    }
+    let running: Promise<Result>;
+    try {
+      // Invoke immediately when idle. Besides preserving the controller's existing observable
+      // ordering, this ensures a graph-set PUT owns the lane before a lifecycle heartbeat can join.
+      running = request();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const tracked = running.finally(() => {
+      if (requestInFlight === tracked) requestInFlight = null;
+    });
+    requestInFlight = tracked;
+    return tracked;
+  }
+
+  function putGraphIds(graphIds: readonly string[]): Promise<void> {
+    return runSerializedRequest(() => performPutGraphIds(graphIds));
+  }
+
+  async function performPutGraphIds(graphIds: readonly string[]): Promise<void> {
     const controller = new AbortController();
     activeRequest = controller;
     try {
@@ -237,6 +288,83 @@ export function startGraphViewLease(
     const recreated = parseRecreatedGrant(result, grant.createUrl);
     currentLeaseId = recreated.leaseId;
     endpoint = validateSameOriginEndpoint(recreated.url);
+  }
+
+  function attachPreparedReviewHandoff(handoffEndpoint: string): Promise<void> {
+    return mutatePreparedReviewHandoff(handoffEndpoint, "POST");
+  }
+
+  function commitPreparedReviewHandoff(handoffEndpoint: string): Promise<void> {
+    return mutatePreparedReviewHandoff(handoffEndpoint, "PUT", "commit");
+  }
+
+  function releasePreparedReviewHandoff(handoffEndpoint: string): Promise<void> {
+    return runSerializedRequest(async () => {
+      const controller = new AbortController();
+      activeRequest = controller;
+      try {
+        let response: Response;
+        try {
+          response = await fetch(handoffEndpoint, {
+            method: "DELETE",
+            mode: "same-origin",
+            credentials: "same-origin",
+            cache: "no-store",
+            signal: controller.signal,
+          });
+        } catch {
+          throw new Error(HANDOFF_ERROR_MESSAGE);
+        }
+        if (response.status !== 204) {
+          throw new Error(`${HANDOFF_ERROR_MESSAGE} (HTTP ${response.status})`);
+        }
+      } finally {
+        if (activeRequest === controller) activeRequest = null;
+      }
+    });
+  }
+
+  function mutatePreparedReviewHandoff(
+    handoffEndpoint: string,
+    method: "POST" | "PUT",
+    action?: "commit",
+  ): Promise<void> {
+    return runSerializedRequest(async () => {
+      const controller = new AbortController();
+      activeRequest = controller;
+      try {
+        let response: Response;
+        try {
+          response = await fetch(handoffEndpoint, {
+            method,
+            mode: "same-origin",
+            credentials: "same-origin",
+            cache: "no-store",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              version: 1,
+              viewLeaseId: currentLeaseId,
+              ...(action === undefined ? {} : { action }),
+            }),
+            signal: controller.signal,
+          });
+        } catch {
+          throw new Error(HANDOFF_ERROR_MESSAGE);
+        }
+        const result = await readResponseJson(response).catch(() => {
+          throw new Error(HANDOFF_ERROR_MESSAGE);
+        });
+        if (!response.ok) {
+          throw new Error(`${HANDOFF_ERROR_MESSAGE} (HTTP ${response.status})`);
+        }
+        validatePreparedReviewHandoffResponse(result);
+      } finally {
+        if (activeRequest === controller) activeRequest = null;
+      }
+    });
   }
 
   function release(): void {
@@ -336,6 +464,110 @@ export function startGraphViewLease(
         release: () => settle(false),
       };
     },
+    async beginPreparedReviewHandoff(grant) {
+      const validated = validatePreparedReviewHandoffGrant(grant);
+      const prepared = validated.graphIds;
+      const previousMounted = [...mountedPreparedGraphIds];
+      const protectedUnion = uniqueGraphIds([baseId, ...previousMounted, ...prepared]);
+      if (protectedUnion.length > MAX_PROTECTED_GRAPH_IDS) {
+        throw new Error(
+          `A graph view can protect at most ${MAX_PROTECTED_GRAPH_IDS} graph registrations.`,
+        );
+      }
+      const generation = ++nextHandoffGeneration;
+      pendingHandoff = { generation, graphIds: prepared, key: graphIdSetKey(prepared) };
+      await setDesiredGraphIds(protectedUnion);
+      // `setDesiredGraphIds` drains through the newest complete desired set. If another local
+      // transaction superseded this one while that happened, never attach the stale server claim.
+      if (pendingHandoff?.generation !== generation) {
+        return settledGraphHandoff();
+      }
+      try {
+        await attachPreparedReviewHandoff(validated.endpoint);
+      } catch (error) {
+        if (pendingHandoff?.generation === generation) {
+          // No transaction can be returned when attach fails. Restore the prior local set so an
+          // abandoned retry cannot keep renewing its candidate; a response-lost server attach is
+          // independently reclaimed by the claim TTL, and repeating begin is server-idempotent.
+          pendingHandoff = null;
+          mountedPreparedGraphIds = previousMounted;
+          try {
+            await setDesiredGraphIds([baseId, ...previousMounted]);
+          } catch {
+            // The smaller desired set remains installed and is retried by the next heartbeat.
+          }
+        }
+        throw error;
+      }
+
+      let settled = false;
+      let settlementPromise: Promise<void> | null = null;
+      const settle = (action: "commit" | "release"): Promise<void> => {
+        if (settlementPromise !== null) return settlementPromise;
+        if (settled) return Promise.resolve();
+        const settlement = settleOnce(action);
+        const tracked = settlement.finally(() => {
+          if (settlementPromise === tracked) settlementPromise = null;
+        });
+        settlementPromise = tracked;
+        return tracked;
+      };
+
+      const settleOnce = async (action: "commit" | "release"): Promise<void> => {
+        if (pendingHandoff?.generation !== generation) {
+          settled = true;
+          return;
+        }
+
+        if (action === "release") {
+          mountedPreparedGraphIds = previousMounted;
+          try {
+            await setDesiredGraphIds([baseId, ...previousMounted]);
+            if (pendingHandoff?.generation !== generation) {
+              settled = true;
+              return;
+            }
+            await releasePreparedReviewHandoff(validated.endpoint);
+            if (pendingHandoff?.generation === generation) pendingHandoff = null;
+            settled = true;
+          } catch (error) {
+            // The smaller desired set remains authoritative, so heartbeats keep retrying candidate
+            // removal. Keep the local transaction live as well so DELETE can be retried explicitly.
+            throw error;
+          }
+          return;
+        }
+
+        mountedPreparedGraphIds = prepared;
+        try {
+          await setDesiredGraphIds([baseId, ...prepared]);
+          if (pendingHandoff?.generation !== generation) {
+            settled = true;
+            return;
+          }
+          await commitPreparedReviewHandoff(validated.endpoint);
+          if (pendingHandoff?.generation === generation) pendingHandoff = null;
+          settled = true;
+        } catch (error) {
+          if (pendingHandoff?.generation === generation) {
+            // A failed commit may have reached either server boundary. Restore the protected union
+            // and the prior mounted state before exposing the retryable transaction to its caller.
+            mountedPreparedGraphIds = previousMounted;
+            try {
+              await setDesiredGraphIds(protectedUnion);
+            } catch {
+              // The complete desired union remains installed locally; the next heartbeat retries it.
+            }
+          }
+          throw error;
+        }
+      };
+
+      return {
+        commit: () => settle("commit"),
+        release: () => settle("release"),
+      };
+    },
     replacePreparedGraphIds(graphIds) {
       let mounted: string[];
       try {
@@ -379,11 +611,74 @@ function validateGrant(grant: GraphViewLeaseGrant): string {
     || grant.url.length === 0
     || typeof grant.createUrl !== "string"
     || grant.createUrl.length === 0
+    || (grant.graphIds !== undefined && !Array.isArray(grant.graphIds))
   ) {
     throw new Error("Invalid graph view lease contract.");
   }
   validateSameOriginEndpoint(grant.createUrl);
   return validateSameOriginEndpoint(grant.url);
+}
+
+function validatePreparedReviewHandoffGrant(
+  grant: PreparedReviewHandoffGrant,
+): { endpoint: string; graphIds: [string, string] } {
+  if (typeof grant !== "object" || grant === null || Array.isArray(grant)) {
+    throw new Error("Invalid prepared review handoff contract.");
+  }
+  const keys = Object.keys(grant).sort();
+  if (
+    keys.length !== 6
+    || keys[0] !== "claimId"
+    || keys[1] !== "comparisonGraphId"
+    || keys[2] !== "expiresAtMs"
+    || keys[3] !== "headGraphId"
+    || keys[4] !== "url"
+    || keys[5] !== "version"
+    || grant.version !== 1
+    || typeof grant.claimId !== "string"
+    || !PREPARED_REVIEW_CLAIM_ID.test(grant.claimId)
+    || typeof grant.url !== "string"
+    || grant.url.length === 0
+    || !Number.isSafeInteger(grant.expiresAtMs)
+    || grant.expiresAtMs < 0
+  ) {
+    throw new Error("Invalid prepared review handoff contract.");
+  }
+  const headGraphId = validateGraphId(grant.headGraphId);
+  const comparisonGraphId = validateGraphId(grant.comparisonGraphId);
+  if (headGraphId === comparisonGraphId) {
+    throw new Error("Invalid prepared review handoff contract.");
+  }
+  return {
+    endpoint: validateSameOriginEndpoint(grant.url),
+    graphIds: [headGraphId, comparisonGraphId],
+  };
+}
+
+function validatePreparedReviewHandoffResponse(value: unknown): void {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(HANDOFF_ERROR_MESSAGE);
+  }
+  const response = value as Record<string, unknown>;
+  const keys = Object.keys(response).sort();
+  if (
+    keys.length !== 2
+    || keys[0] !== "expiresAtMs"
+    || keys[1] !== "version"
+    || response.version !== 1
+    || typeof response.expiresAtMs !== "number"
+    || !Number.isSafeInteger(response.expiresAtMs)
+    || response.expiresAtMs < 0
+  ) {
+    throw new Error(HANDOFF_ERROR_MESSAGE);
+  }
+}
+
+function settledGraphHandoff(): GraphViewLeaseHandoff {
+  return {
+    commit: () => Promise.resolve(),
+    release: () => Promise.resolve(),
+  };
 }
 
 function validateSameOriginEndpoint(value: string): string {

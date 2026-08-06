@@ -1422,6 +1422,8 @@ export interface StoreDependencies {
   loadGraphSymbolsInlineForTest?: typeof fetchGraphSymbols;
   /** Validated depth-1 projection used for a direct PR-review boot. */
   initialGraphProjection?: GraphProjectionV1 | null;
+  /** Matching merge-base projection transferred by the direct-review handoff. */
+  initialComparisonGraphProjection?: GraphProjectionV1 | null;
   /** True only for the `partial=1` boot contract. Its bounded artifact and projection are the
    * durable, incrementally expandable baseline for this document. */
   initialGraphProvisional?: boolean;
@@ -2397,7 +2399,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       setState({
         progressiveGraph: initialGraphProjection === null || restoringCanonicalFullBaseline ? null : {
           head: initialGraphProjection,
-          comparison: null,
+          comparison: initialComparisonGraphProjection,
           explicitFileIds: [],
           affectedDepth: initialGraphProjection.loadedDepth,
           requestedDepth: initialGraphProjection.requestedDepth,
@@ -2465,6 +2467,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     : dependencies.syntheticExecutionTrust;
   const initialSyntheticScenarios = [...(dependencies.syntheticScenarios ?? [])];
   const initialGraphProjection = dependencies.initialGraphProjection ?? null;
+  const initialComparisonGraphProjection = dependencies.initialComparisonGraphProjection ?? null;
   const initialGraphProvisional = dependencies.initialGraphProvisional === true
     && initialGraphProjection !== null;
   const bootReviewBaseline: PrReviewBaseline = {
@@ -5388,7 +5391,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     graphUrl: dependencies.graphUrl ?? "",
     progressiveGraph: initialGraphProjection === null ? null : {
       head: initialGraphProjection,
-      comparison: null,
+      comparison: initialComparisonGraphProjection,
       explicitFileIds: [],
       affectedDepth: initialGraphProjection.loadedDepth,
       requestedDepth: initialGraphProjection.requestedDepth,
@@ -11382,6 +11385,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
                   );
               const comparisonProjectionPromise = analysis.comparisonGraphId === null
                 ? Promise.resolve(null)
+                : initialComparisonGraphProjection?.graphId === analysis.comparisonGraphId
+                  && initialComparisonGraphProjection.loadedDepth >= progressiveDepth
+                  ? Promise.resolve(initialComparisonGraphProjection)
                 : fetchGraphProjection(
                     graphProjectUrl,
                     changedFileProjectionRequest(

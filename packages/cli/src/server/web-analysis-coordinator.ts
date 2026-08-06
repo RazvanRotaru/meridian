@@ -363,6 +363,9 @@ class BoundedAdmission {
  * settles, the next call for the same key starts new work (normally after the durable cache check).
  */
 export class AnalysisCoordinator {
+  /** Immutable worker-slot capacity, exposed so pair-level callers can avoid over-enqueuing when
+   * one slot intentionally serializes their member jobs. */
+  readonly analysisCapacity: number;
   readonly #analysisAdmission: BoundedAdmission;
   readonly #coordinationAdmission: BoundedAdmission;
   readonly #preparationAdmission: BoundedAdmission;
@@ -383,6 +386,7 @@ export class AnalysisCoordinator {
     requireNonNegativeInteger(maxQueuedAnalyses, "maxQueuedAnalyses");
     requireNonNegativeInteger(maxQueuedCoordinations, "maxQueuedCoordinations");
     requireNonNegativeInteger(maxQueuedPreparations, "maxQueuedPreparations");
+    this.analysisCapacity = options.maxConcurrentAnalyses;
     this.#analysisAdmission = new BoundedAdmission(
       "analysis",
       options.maxConcurrentAnalyses,

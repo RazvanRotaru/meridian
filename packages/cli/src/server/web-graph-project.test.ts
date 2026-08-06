@@ -964,7 +964,7 @@ describe("web graph projection route", () => {
       .toThrow("graph projection warm status requires a valid key");
   });
 
-  it("reserves the complete initial pair for the full bounded handoff despite unrelated exact requests", async () => {
+  it("holds the complete initial pair in explicit preparation pins despite unrelated exact requests", async () => {
     let now = 0;
     let projectCalls = 0;
     const harness = createHarness(async (request) => {
@@ -1030,7 +1030,7 @@ describe("web graph projection route", () => {
     expect(projectCalls).toBe(2);
     expect(harness.cache.stats()).toMatchObject({ entries: 2, pins: 2 });
 
-    controller.abort();
+    prepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(0);
     now = 40;
     harness.cache.sweep();
@@ -1126,7 +1126,7 @@ describe("web graph projection route", () => {
       seedGraphId: "large-head",
       counts: { slice: { nodes: 514, edges: 0, files: 513 } },
     });
-    controller.abort();
+    prepared.releasePreparationPins();
 
     // The compact server-owned plan survives projection-cache pressure for the lifetime of this
     // process-local graph registration. A reload recomputes the same partial chunks, never a full
@@ -1249,6 +1249,7 @@ describe("web graph projection route", () => {
     expect(prepared.evidence.ready).toBe(true);
     expect(calls.map(({ type }) => type)).toEqual(["project", "project"]);
     expect(calls.every(({ projection }) => projection?.roots.kind === "changed-files")).toBe(true);
+    prepared.releasePreparationPins();
   });
 
   it("rejects more than twenty thousand exact roots before any worker can be constructed", () => {
@@ -1284,7 +1285,7 @@ describe("web graph projection route", () => {
     expect(harness.cache.stats()).toMatchObject({ pins: 0 });
   });
 
-  it("shares one bounded reservation across concurrent subscribers for the same exact pair", async () => {
+  it("gives concurrent callers independent preparation pins for the same exact pair", async () => {
     const releaseWorker = deferred<void>();
     let projectCalls = 0;
     const harness = createHarness(async (request) => {
@@ -1320,46 +1321,14 @@ describe("web graph projection route", () => {
     expect(latestPrepared).toMatchObject({ evidence: { ready: true }, warning: null });
     expect(firstPrepared.evidence).toEqual(latestPrepared.evidence);
     expect(projectCalls).toBe(2);
-    expect(harness.cache.stats()).toMatchObject({ entries: 2, pins: 2 });
-    firstController.abort();
+    expect(harness.cache.stats()).toMatchObject({ entries: 2, pins: 4 });
+    firstPrepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(2);
-    latestController.abort();
+    latestPrepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(0);
   });
 
-  it("bounds same-pair reservation owners without disturbing the admitted cohort", async () => {
-    let projectCalls = 0;
-    const harness = createHarness(async (request) => {
-      if (request.type === "project") projectCalls += 1;
-      return writeWorkerResult(request);
-    }, 2, { maxEntries: 2 }, 2);
-    harness.graphStore.publish(registration("comparison", {
-      ...ARTIFACT,
-      generatedAt: "2026-07-31T00:00:01.000Z",
-    }));
-    const controllers = Array.from({ length: 65 }, () => new AbortController());
-    const results = [];
-    for (const controller of controllers) {
-      results.push(await prepareInitialGraphProjectionCache(
-        harness.ctx,
-        "graph",
-        "comparison",
-        controller.signal,
-      ));
-    }
-
-    expect(results.slice(0, 64).every(({ evidence }) => evidence.ready)).toBe(true);
-    expect(results[64]).toMatchObject({
-      evidence: { ready: false },
-      warning: expect.stringContaining("partial PR review"),
-    });
-    expect(projectCalls).toBe(2);
-    expect(harness.cache.stats()).toMatchObject({ entries: 2, pins: 2 });
-    for (const controller of controllers) controller.abort();
-    expect(harness.cache.stats().pins).toBe(0);
-  });
-
-  it("lets a newer different pair replace the preceding bounded landing reservation", async () => {
+  it("keeps two independently prepared graph pairs usable at the same time", async () => {
     const releaseWorker = deferred<void>();
     let projectCalls = 0;
     const harness = createHarness(async (request) => {
@@ -1393,14 +1362,14 @@ describe("web graph projection route", () => {
     );
     releaseWorker.resolve();
 
-    const [stale, current] = await Promise.all([first, latest]);
-    expect(stale).toMatchObject({ evidence: { ready: false } });
-    expect(current).toMatchObject({ evidence: { ready: true }, warning: null });
+    const [firstPrepared, latestPrepared] = await Promise.all([first, latest]);
+    expect(firstPrepared).toMatchObject({ evidence: { ready: true }, warning: null });
+    expect(latestPrepared).toMatchObject({ evidence: { ready: true }, warning: null });
     expect(projectCalls).toBe(4);
-    expect(harness.cache.stats()).toMatchObject({ entries: 4, pins: 2 });
-    firstController.abort();
+    expect(harness.cache.stats()).toMatchObject({ entries: 4, pins: 4 });
+    firstPrepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(2);
-    latestController.abort();
+    latestPrepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(0);
   });
 
@@ -1449,7 +1418,7 @@ describe("web graph projection route", () => {
     expect(harness.cache.stats().pins).toBe(0);
   });
 
-  it("bounds initial pair reservations and releases them on timeout, cancellation, and shutdown", async () => {
+  it("keeps preparation ownership explicit across request cancellation and shutdown", async () => {
     let now = 0;
     const harness = createHarness(
       async (request) => writeWorkerResult(request),
@@ -1461,43 +1430,26 @@ describe("web graph projection route", () => {
       generatedAt: "2026-07-31T00:00:01.000Z",
     }));
 
-    const timed = await prepareInitialGraphProjectionCache(
+    const prepared = await prepareInitialGraphProjectionCache(
       harness.ctx,
       "graph",
       "comparison",
       new AbortController().signal,
-      { reservationTtlMs: 5 },
     );
-    expect(timed.evidence.ready).toBe(true);
-    await vi.waitFor(() => expect(harness.cache.stats().pins).toBe(0));
+    expect(prepared.evidence.ready).toBe(true);
+    expect(harness.cache.stats().pins).toBe(2);
     now = 20;
     harness.cache.sweep();
-    expect(harness.cache.stats().entries).toBe(0);
+    expect(harness.cache.stats()).toMatchObject({ entries: 2, pins: 2 });
 
-    const cancelledController = new AbortController();
-    const cancelled = await prepareInitialGraphProjectionCache(
-      harness.ctx,
-      "graph",
-      "comparison",
-      cancelledController.signal,
-    );
-    expect(cancelled.evidence.ready).toBe(true);
+    harness.shutdown.abort();
     expect(harness.cache.stats().pins).toBe(2);
-    cancelledController.abort();
+    prepared.releasePreparationPins();
+    prepared.releasePreparationPins();
     expect(harness.cache.stats().pins).toBe(0);
     now = 40;
     harness.cache.sweep();
     expect(harness.cache.stats().entries).toBe(0);
-
-    const shutdownReserved = await prepareInitialGraphProjectionCache(
-      harness.ctx,
-      "graph",
-      "comparison",
-      new AbortController().signal,
-    );
-    expect(shutdownReserved.evidence.ready).toBe(true);
-    harness.shutdown.abort();
-    expect(harness.cache.stats().pins).toBe(0);
   });
 
   it("releases a partially acquired graph pair when the comparison graph is unavailable", async () => {

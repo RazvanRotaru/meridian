@@ -1,12 +1,16 @@
 import type { ServerResponse } from "node:http";
 import { AnalysisCoordinatorOverloadedError } from "./web-analysis-coordinator";
 import { sendJson } from "./http-response";
+import { PrReviewHandoffOverloadedError } from "./web-pr-review-handoff";
 
 const OVERLOAD_RETRY_AFTER_SECONDS = 5;
 
 /** Translate the transport-agnostic admission failure before an HTTP response has started. */
 export function sendOverloadJson(response: ServerResponse, error: unknown): boolean {
-  if (!(error instanceof AnalysisCoordinatorOverloadedError)) {
+  if (
+    !(error instanceof AnalysisCoordinatorOverloadedError)
+    && !(error instanceof PrReviewHandoffOverloadedError)
+  ) {
     return false;
   }
   sendJson(
@@ -20,7 +24,10 @@ export function sendOverloadJson(response: ServerResponse, error: unknown): bool
 
 /** Preserve an already-started NDJSON response while making overload explicitly retryable. */
 export function streamedOverloadLine(error: unknown): Record<string, unknown> | undefined {
-  if (!(error instanceof AnalysisCoordinatorOverloadedError)) {
+  if (
+    !(error instanceof AnalysisCoordinatorOverloadedError)
+    && !(error instanceof PrReviewHandoffOverloadedError)
+  ) {
     return undefined;
   }
   return {

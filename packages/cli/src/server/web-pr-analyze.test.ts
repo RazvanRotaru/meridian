@@ -45,6 +45,10 @@ import { AnalysisCoordinator } from "./web-analysis-coordinator";
 import type { AnalysisCoordinatorOptions } from "./web-analysis-coordinator";
 import { WebGraphProjectCache } from "./web-graph-project-cache";
 import {
+  PrReviewHandoffRegistry,
+  type PrReviewHandoffRegistryOptions,
+} from "./web-pr-review-handoff";
+import {
   GRAPH_PROJECTION_CACHE_HEADER,
   GRAPH_PROJECTION_KEY_HEADER,
   GRAPH_PROJECTION_READY_HEADER,
@@ -135,6 +139,7 @@ let cacheRoot: string;
 let activeGraphStores: WebGraphStore[];
 let activeCoordinators: AnalysisCoordinator[];
 let activeGraphProjectCaches: WebGraphProjectCache[];
+let activePrReviewHandoffRegistries: PrReviewHandoffRegistry[];
 let activeShutdownControllers: AbortController[];
 let repositories: FakePrRepositoryMirror;
 
@@ -154,6 +159,7 @@ describe("handlePrAnalyze", () => {
     activeGraphStores = [];
     activeCoordinators = [];
     activeGraphProjectCaches = [];
+    activePrReviewHandoffRegistries = [];
     activeShutdownControllers = [];
     vi.stubEnv("GITHUB_TOKEN", "");
     vi.stubEnv("GH_TOKEN", "");
@@ -179,6 +185,7 @@ describe("handlePrAnalyze", () => {
 
   afterEach(async () => {
     for (const controller of activeShutdownControllers) controller.abort();
+    await Promise.all(activePrReviewHandoffRegistries.map((registry) => registry.close()));
     await Promise.all(activeCoordinators.map((coordinator) => coordinator.close()));
     for (const cache of activeGraphProjectCaches) cache.dispose();
     for (const store of activeGraphStores) store.dispose();
@@ -510,17 +517,24 @@ describe("handlePrAnalyze", () => {
     });
     let now = Date.parse("2026-08-03T12:00:00.000Z");
     const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
-    const ctx = githubCtx(undefined, { maxConcurrentAnalyses: 1 });
+    const ctx = githubCtx(
+      undefined,
+      { maxConcurrentAnalyses: 1 },
+      {},
+      false,
+      { readyTtlMs: 5, claimTtlMs: 5 },
+    );
 
     const first = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
     const firstReady = first.find((line) => line.stage === "ready")!;
     const analysisCalls = vi.mocked(analyzeRepository).mock.calls.length;
     expect(firstReady).toMatchObject({ completeness: "provisional", cache: "miss" });
+    now += 60_001;
+    await vi.waitFor(() => expect(ctx.prReviewHandoffs.stats().activePairs).toBe(0));
     const projectionCacheAcquire = vi.spyOn(ctx.graphProjectCache, "acquire");
 
     // The publication is now retention-eligible, but it still exists. Its server-owned metadata
     // must remain reusable so a long render/control measurement cannot manufacture a new graph id.
-    now += 60_001;
     const delayed = (await invokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA })).lines();
 
     expect(delayed.map((line) => line.stage)).toEqual(["ready", "done"]);
@@ -538,8 +552,8 @@ describe("handlePrAnalyze", () => {
     });
     expect(vi.mocked(analyzeRepository)).toHaveBeenCalledTimes(analysisCalls);
     expect(repositories.prepareCalls).toHaveLength(1);
-    // Revalidation must re-prove and reserve both initial projections; the old evidence's
-    // reservation is intentionally shorter-lived than this retained metadata.
+    // Revalidation must re-prove and claim both initial projections; the first browser's expired
+    // capability cannot confer resource ownership on this later, independent navigation.
     expect(projectionCacheAcquire).toHaveBeenCalled();
     nowSpy.mockRestore();
   });
@@ -797,6 +811,82 @@ describe("handlePrAnalyze", () => {
     expect(ctx.graphProjectCache.stats()).toMatchObject({ entries: 2, pins: 2 });
   });
 
+  it("prepares two independent PR-review pairs concurrently without superseding either handoff", async () => {
+    vi.mocked(analyzeRepository).mockImplementation(async (request) => {
+      const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
+      return {
+        artifact: { ...template, target: { ...template.target, vcs: request.vcs } },
+        warnings: [],
+      } as never;
+    });
+    const ctx = githubCtx();
+    const originalGraphProject = ctx.graphProject;
+    const releaseFirstPair = deferred<void>();
+    const releaseSecondPair = deferred<void>();
+    let projectionCallCount = 0;
+    const graphProject = vi.fn(async (
+      request: GraphProjectWorkerRequest,
+      options: Parameters<Context["graphProject"]>[1] = {},
+    ) => {
+      projectionCallCount += 1;
+      await (projectionCallCount <= 2 ? releaseFirstPair.promise : releaseSecondPair.promise);
+      return originalGraphProject(request, options);
+    });
+    ctx.graphProject = graphProject;
+
+    const first = beginInvokePrepare(ctx, { ...DIRECT_BODY, headSha: HEAD_SHA });
+    let second: ReturnType<typeof beginInvokePrepare> | undefined;
+    try {
+      await vi.waitFor(() => expect(graphProject).toHaveBeenCalledTimes(2));
+      second = beginInvokePrepare(ctx, {
+        ...DIRECT_BODY,
+        prNumber: 42,
+        headRef: "feat/second",
+        headSha: HEAD_SHA,
+      });
+      await vi.waitFor(() => expect(second!.captured.lines().length).toBeGreaterThan(0));
+      // The two large projection workers already consume the configured analysis capacity. The
+      // second extraction waits here by design, without cancelling or replacing the first review.
+      expect(graphProject).toHaveBeenCalledTimes(2);
+      expect(second.captured.lines().some((line) => line.stage === "done")).toBe(false);
+
+      releaseFirstPair.resolve();
+      await vi.waitFor(() => expect(graphProject).toHaveBeenCalledTimes(4));
+      expect(ctx.prReviewHandoffs.stats()).toMatchObject({
+        activePairs: 2,
+        preparingPairs: 1,
+        readyPairs: 1,
+        queuedPairs: 0,
+      });
+
+      releaseSecondPair.resolve();
+      await Promise.all([first.completion, second.completion]);
+      const terminals = [first, second].map(({ captured }) => captured.lines().at(-1)!);
+      expect(terminals.map((line) => line.stage)).toEqual(["done", "done"]);
+      expect(terminals.every((line) => (
+        (line.initialProjectionCache as { ready?: unknown } | undefined)?.ready === true
+      ))).toBe(true);
+      expect(new Set(terminals.map((line) => line.graphId)).size).toBe(2);
+      expect(new Set(terminals.map((line) => (
+        (line.preparedReviewHandoff as { claimId?: unknown }).claimId
+      ))).size).toBe(2);
+      expect(ctx.prReviewHandoffs.stats()).toMatchObject({
+        activePairs: 2,
+        readyPairs: 2,
+        activeClaims: 2,
+        projectionHandles: 4,
+      });
+      expect(ctx.graphProjectCache.stats()).toMatchObject({ entries: 4, pins: 4 });
+    } finally {
+      releaseFirstPair.resolve();
+      releaseSecondPair.resolve();
+      await Promise.allSettled([
+        first.completion,
+        ...(second === undefined ? [] : [second.completion]),
+      ]);
+    }
+  });
+
   it("fails progressive preparation without starting canonical analysis when projection readiness fails", async () => {
     vi.mocked(analyzeRepository).mockImplementation(async (request) => {
       const template = request.changedSince ? ARTIFACT : COMPARISON_ARTIFACT;
@@ -821,8 +911,10 @@ describe("handlePrAnalyze", () => {
       request.initialGraph === undefined
     ))).toHaveLength(0);
     expect(ctx.graphProjectCache.stats()).toEqual({ entries: 0, bytes: 0, pins: 0 });
-    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
-    expect(repositories.activeLeaseCount).toBe(0);
+    await vi.waitFor(() => {
+      expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+      expect(repositories.activeLeaseCount).toBe(0);
+    });
   });
 
   it("cancels and drains the initial projection gate without emitting a terminal line", async () => {
@@ -861,8 +953,10 @@ describe("handlePrAnalyze", () => {
       "after-cancelled-initial-projection",
       ({ runAnalysis }) => runAnalysis(async () => "drained"),
     )).resolves.toBe("drained");
-    expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
-    expect(repositories.activeLeaseCount).toBe(0);
+    await vi.waitFor(() => {
+      expect(ctx.graphStore.stats()).toMatchObject({ registrations: 1, sourceLeases: 0 });
+      expect(repositories.activeLeaseCount).toBe(0);
+    });
   });
 
   it("does not coalesce a picker-pinned direct request with an unpinned live revalidation", async () => {
@@ -2102,14 +2196,21 @@ function githubCtx(
   coordinatorOptions: AnalysisCoordinatorOptions = { maxConcurrentAnalyses: 2 },
   graphRetention: Partial<GraphRetentionOptions> = {},
   experimentalPrRevisionCache = false,
+  prReviewHandoffOptions: PrReviewHandoffRegistryOptions = {},
 ): Context {
   const graphStore = new WebGraphStore(graphRetention);
   const graphProjectCache = new WebGraphProjectCache({ sweepIntervalMs: 60_000 });
   const analysisCoordinator = new AnalysisCoordinator(coordinatorOptions);
+  const prReviewHandoffs = new PrReviewHandoffRegistry(
+    graphStore,
+    graphProjectCache,
+    prReviewHandoffOptions,
+  );
   const shutdown = new AbortController();
   activeGraphStores.push(graphStore);
   activeGraphProjectCaches.push(graphProjectCache);
   activeCoordinators.push(analysisCoordinator);
+  activePrReviewHandoffRegistries.push(prReviewHandoffs);
   activeShutdownControllers.push(shutdown);
   graphStore.publish({
     id: "artifact",
@@ -2126,6 +2227,7 @@ function githubCtx(
     graphStore,
     graphProjectCache,
     analysisCoordinator,
+    prReviewHandoffs,
     repositories,
     repositoryAnalysis: runRepositoryAnalysisChildInProcess,
     repositoryArtifactRestamp: runRepositoryArtifactRestampChildInProcess,
