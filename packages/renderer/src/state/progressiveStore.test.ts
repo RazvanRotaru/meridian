@@ -544,7 +544,12 @@ describe("progressive graph store", () => {
       ready: [FILE_A],
     });
     const store = storeWithInitialProjection(projectionToArtifact(boundary));
-    const minimalRelayout = vi.fn(async () => {});
+    const minimalRelayout = vi.fn(async () => {
+      store.setState({
+        minimalLayoutStatus: "ready",
+        minimalRfNodes: [{ id: METHOD_B, type: "block", position: { x: 0, y: 0 }, data: {} }],
+      });
+    });
     store.setState({
       progressiveGraph: {
         head: boundary,
@@ -581,13 +586,16 @@ describe("progressive graph store", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     store.getState().promoteGhost(METHOD_B, { x: 20, y: 30 });
-    await vi.waitFor(() => expect(store.getState().minimalMemberIds).toContain(FILE_B));
+    expect(store.getState().minimalMemberIds).toContain(FILE_B);
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([METHOD_B]));
+    await vi.waitFor(() => expect(minimalRelayout).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(store.getState().progressivePendingNodeIds).toEqual(new Set()));
 
     expect(fetchMock).toHaveBeenCalledOnce();
     expect(store.getState().progressiveGraph?.head.readyFileIds).toContain(FILE_B);
     expect(store.getState().progressiveGraph?.affectedDepth).toBe(2);
     expect(store.getState().progressiveGraph?.explicitFileIds).toEqual([]);
-    expect(store.getState().progressivePendingNodeIds).toEqual(new Set());
+    expect(minimalRelayout).toHaveBeenCalledTimes(2);
   });
 
   it("hydrates a resident Python initializer symbol through its package-backed file root", async () => {
@@ -636,7 +644,7 @@ describe("progressive graph store", () => {
     expect(store.getState().progressivePendingNodeIds).toEqual(new Set());
   });
 
-  it("hydrates a Python initializer ghost before admitting its file root to the minimal canvas", async () => {
+  it("admits a Python initializer ghost and keeps hydration pending across a superseded admission layout", async () => {
     const boundary = projection({
       nodes: [packageNode, fileA, methodA, pythonNamespace, pythonInit, pythonFunction],
       roots: [FILE_A],
@@ -645,7 +653,107 @@ describe("progressive graph store", () => {
       ready: [FILE_A],
     });
     const store = storeWithInitialProjection(projectionToArtifact(boundary));
-    const minimalRelayout = vi.fn(async () => {});
+    let releaseHydration!: () => void;
+    let resolveHydration!: (response: Response) => void;
+    const hydrationResponse = new Promise<Response>((resolve) => { resolveHydration = resolve; });
+    let releaseAdmissionRelayout!: () => void;
+    const admissionRelayout = new Promise<void>((resolve) => { releaseAdmissionRelayout = resolve; });
+    let releaseSupersedingRelayout!: () => void;
+    const supersedingRelayout = new Promise<void>((resolve) => { releaseSupersedingRelayout = resolve; });
+    let releaseContextRelayout!: () => void;
+    const contextRelayout = new Promise<void>((resolve) => { releaseContextRelayout = resolve; });
+    const minimalRelayout = vi.fn()
+      .mockReturnValueOnce(admissionRelayout)
+      .mockReturnValueOnce(supersedingRelayout)
+      .mockReturnValueOnce(contextRelayout);
+    store.setState({
+      progressiveGraph: {
+        head: boundary,
+        comparison: null,
+        explicitFileIds: [],
+        affectedDepth: 1,
+        requestedDepth: 1,
+        status: "ready",
+        error: null,
+      },
+      minimalSeedIds: [FILE_A],
+      minimalMemberIds: [FILE_A],
+      minimalLayoutStatus: "laying-out",
+      minimalRelayout,
+    });
+    const hydrated = projection({
+      nodes: [pythonNamespace, pythonInit, pythonFunction],
+      roots: [PY_INIT],
+      loadedFiles: [PY_INIT],
+      ready: [PY_INIT],
+      prefetchDepth: 1,
+    });
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      const request = JSON.parse(String(init?.body)) as {
+        roots: unknown;
+        requestedDepth: number;
+        prefetchDepth: number;
+      };
+      expect(request.roots).toEqual({ kind: "files", fileIds: [PY_INIT] });
+      expect(request).toMatchObject({ requestedDepth: 1, prefetchDepth: 1 });
+      releaseHydration = () => { resolveHydration(Response.json(hydrated)); };
+      return hydrationResponse;
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    store.getState().promoteGhost(PY_FUNCTION, { x: 20, y: 30 });
+    expect(store.getState().minimalMemberIds).toContain(PY_INIT);
+    expect(store.getState().minimalMemberIds.filter((id) => id === PY_INIT)).toHaveLength(1);
+    expect(store.getState().minimalBasePositions[PY_INIT]).toEqual(expect.objectContaining({ x: 20, y: 30 }));
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+    store.getState().promoteGhost(PY_FUNCTION, { x: 20, y: 30 });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(minimalRelayout).toHaveBeenCalledOnce();
+
+    void store.getState().minimalRelayout({ label: "Re-arranging extracted graph…" });
+    store.setState({ minimalLayoutStatus: "laying-out" });
+    releaseAdmissionRelayout();
+    await Promise.resolve();
+    expect(minimalRelayout).toHaveBeenCalledTimes(2);
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    store.setState({
+      minimalLayoutStatus: "ready",
+      minimalRfNodes: [{ id: PY_INIT, type: "package", position: { x: 0, y: 0 }, data: {} }],
+    });
+    releaseSupersedingRelayout();
+    await vi.waitFor(() => expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION])));
+    expect(fetchMock).toHaveBeenCalledOnce();
+    releaseHydration();
+    await vi.waitFor(() => expect(minimalRelayout).toHaveBeenCalledTimes(3));
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
+    releaseContextRelayout();
+    await vi.waitFor(() => expect(store.getState().progressivePendingNodeIds).toEqual(new Set()));
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(store.getState().progressiveGraph?.head.readyFileIds).toContain(PY_INIT);
+    expect(store.getState().minimalMemberIds.filter((id) => id === PY_INIT)).toHaveLength(1);
+    expect(minimalRelayout.mock.calls[2]?.[0]).toEqual({ label: "Loading nearby graph for bootstrap…" });
+  });
+
+  it("keeps an immediately admitted ghost on the canvas when nearby hydration fails", async () => {
+    const boundary = projection({
+      nodes: [packageNode, fileA, methodA, pythonNamespace, pythonInit, pythonFunction],
+      roots: [FILE_A],
+      loadedFiles: [FILE_A, PY_INIT],
+      frontierFiles: [FILE_A],
+      ready: [FILE_A],
+    });
+    const store = storeWithInitialProjection(projectionToArtifact(boundary));
+    const minimalRelayout = vi.fn(async () => {
+      store.setState({
+        minimalLayoutStatus: "ready",
+        minimalRfNodes: [{ id: PY_INIT, type: "package", position: { x: 0, y: 0 }, data: {} }],
+      });
+    });
     store.setState({
       progressiveGraph: {
         head: boundary,
@@ -660,33 +768,19 @@ describe("progressive graph store", () => {
       minimalMemberIds: [FILE_A],
       minimalRelayout,
     });
-    const hydrated = projection({
-      nodes: [pythonNamespace, pythonInit, pythonFunction],
-      roots: [PY_INIT],
-      loadedFiles: [PY_INIT],
-      ready: [PY_INIT],
-      prefetchDepth: 1,
-    });
-    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      const request = JSON.parse(String(init?.body)) as {
-        roots: unknown;
-        requestedDepth: number;
-        prefetchDepth: number;
-      };
-      expect(request.roots).toEqual({ kind: "files", fileIds: [PY_INIT] });
-      expect(request).toMatchObject({ requestedDepth: 1, prefetchDepth: 1 });
-      return Response.json(hydrated);
-    });
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nearby graph unavailable", { status: 503 })));
 
     store.getState().promoteGhost(PY_FUNCTION, { x: 20, y: 30 });
-    expect(store.getState().minimalMemberIds).not.toContain(PY_INIT);
-    await vi.waitFor(() => expect(store.getState().minimalMemberIds).toContain(PY_INIT));
 
-    expect(fetchMock).toHaveBeenCalledOnce();
-    expect(store.getState().progressiveGraph?.head.readyFileIds).toContain(PY_INIT);
+    expect(store.getState().minimalMemberIds).toContain(PY_INIT);
+    expect(store.getState().progressivePendingNodeIds).toEqual(new Set([PY_FUNCTION]));
+    await vi.waitFor(() => expect(store.getState().progressiveGraph?.status).toBe("error"));
+    expect(store.getState().minimalMemberIds).toContain(PY_INIT);
+    expect(store.getState().progressiveGraph).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("graph projection fetch failed (503)"),
+    });
     expect(store.getState().progressivePendingNodeIds).toEqual(new Set());
-    expect(store.getState().minimalBasePositions[PY_INIT]).toEqual(expect.objectContaining({ x: 20, y: 30 }));
     expect(minimalRelayout).toHaveBeenCalledOnce();
   });
 

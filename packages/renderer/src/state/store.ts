@@ -1085,7 +1085,7 @@ export interface BlueprintState {
   progressiveGraph: ProgressiveGraphSessionState | null;
   /** Background, graph-generation-bound command-palette index. */
   progressiveSymbols: ProgressiveSymbolIndexState;
-  /** IDs whose disconnected depth-1 neighbourhood is currently being admitted from search. */
+  /** IDs whose depth-1 neighbourhood is loading for search or a progressive ghost promotion. */
   progressivePendingNodeIds: Set<string>;
   /** The open source view (inline panel or modal); null when nothing is being shown. */
   codeView: CodeView | null;
@@ -2568,7 +2568,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   // auto-root a meaningful entry is an open design question (see docs/service-composition-design.md §8).
   const defaultCompRoot = null;
 
-  return createStore<BlueprintState>((set, get) => {
+  return createStore<BlueprintState>((set, get, api) => {
     const requestMinimalRelayout = (activity?: LayoutActivity): Promise<void> =>
       get().minimalRelayout(activity);
     const scheduleProgressiveSymbolIndex = (): void => {
@@ -7501,64 +7501,19 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
-    // The one ghost "+" action used by every module canvas. First resolve the same containment
-    // reveal for the clicked artifact, then add its owning member to whichever canvas is currently
-    // visible. The destinations necessarily store membership differently: the minimal overlay owns
-    // an ordered member list and captures the clicked position, while the Map/Service/UI canvases
-    // own a set of extra file cards and let ELK place them. Focus and selection are never replaced.
+    // The one ghost "+" action used by every module canvas. Resolve the same containment reveal for
+    // the clicked artifact, then add its owning member to whichever canvas is currently visible. A
+    // progressive Minimal Graph admits its already-present boundary card immediately and hydrates
+    // the card's nearby graph afterward; the pending id stays attached through the refresh layout so
+    // the canvas can show node-local progress without blocking inspection. The destinations
+    // necessarily store membership differently: the minimal overlay owns an ordered member list and
+    // captures the clicked position, while the Map/Service/UI canvases own a set of extra file cards
+    // and let ELK place them. Focus and selection are never replaced.
     promoteGhost(ghostId, at) {
       const state = get();
       const minimalOpen = state.minimalSeedIds.length > 0;
       if (!minimalOpen && moduleSurfaceSpec(state.viewMode) === null) {
         return;
-      }
-
-      const progressive = state.progressiveGraph;
-      if (progressive !== null && graphProjectUrl !== null) {
-        const readyFiles = new Set(progressive.head.readyFileIds);
-        const candidatePins = ghostPinIds(
-          state.index,
-          ghostId,
-          drawnGhostMembers(state.moduleRfNodes, ghostId),
-        ).filter((id) => isCanonicalFileNode(state.index.nodesById.get(id)));
-        const incompletePins = candidatePins.filter((id) => !readyFiles.has(id));
-        if (incompletePins.length > 0) {
-          if (state.progressivePendingNodeIds.has(ghostId)) return;
-          const nodeSequence = progressiveNodeSeq;
-          set({
-            progressivePendingNodeIds: new Set(state.progressivePendingNodeIds).add(ghostId),
-          });
-          void hydrateProgressiveFiles(incompletePins)
-            .then((ready) => {
-              if (ready && nodeSequence === progressiveNodeSeq) get().promoteGhost(ghostId, at);
-            })
-            .catch((error) => {
-              if (nodeSequence !== progressiveNodeSeq) return;
-              const message = error instanceof Error ? error.message : "could not load ghost context";
-              set((current) => current.progressiveGraph === null
-                || current.progressiveGraph.head.graphId !== progressive.head.graphId
-                || current.progressiveGraph.head.generation !== progressive.head.generation
-                ? {}
-                : { progressiveGraph: { ...current.progressiveGraph, status: "error", error: message } });
-            })
-            .finally(() => {
-              set((current) => {
-                if (
-                  nodeSequence !== progressiveNodeSeq
-                  ||
-                  current.progressiveGraph === null
-                  || current.progressiveGraph.head.graphId !== progressive.head.graphId
-                  || current.progressiveGraph.head.generation !== progressive.head.generation
-                ) {
-                  return {};
-                }
-                const pending = new Set(current.progressivePendingNodeIds);
-                pending.delete(ghostId);
-                return { progressivePendingNodeIds: pending };
-              });
-            });
-          return;
-        }
       }
 
       const member = ghostMemberId(state.index, ghostId);
@@ -7567,24 +7522,167 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
       const moduleExpanded = withMapRevealExpansion(state.moduleExpanded, [ghostId], state.index);
 
+      const progressive = state.progressiveGraph;
+      const hydrationNodeSequence = progressiveNodeSeq;
+      let incompletePins: string[] = [];
+      if (progressive !== null && graphProjectUrl !== null) {
+        const readyFiles = new Set(progressive.head.readyFileIds);
+        const candidatePins = ghostPinIds(
+          state.index,
+          ghostId,
+          drawnGhostMembers(state.moduleRfNodes, ghostId),
+        ).filter((id) => isCanonicalFileNode(state.index.nodesById.get(id)));
+        incompletePins = candidatePins.filter((id) => !readyFiles.has(id));
+        if (incompletePins.length > 0 && state.progressivePendingNodeIds.has(ghostId)) {
+          return;
+        }
+      }
+
+      const clearHydrationPending = progressive === null
+        ? () => undefined
+        : () => {
+            set((current) => {
+              if (
+                hydrationNodeSequence !== progressiveNodeSeq
+                || current.progressiveGraph === null
+                || current.progressiveGraph.head.graphId !== progressive.head.graphId
+                || current.progressiveGraph.head.generation !== progressive.head.generation
+              ) {
+                return {};
+              }
+              const pending = new Set(current.progressivePendingNodeIds);
+              pending.delete(ghostId);
+              return { progressivePendingNodeIds: pending };
+            });
+          };
+
+      const hydrateNearbyGraph = incompletePins.length > 0 && progressive !== null
+        ? (afterReady: () => void | Promise<void>) => {
+            const active = get().progressiveGraph;
+            if (
+              hydrationNodeSequence !== progressiveNodeSeq
+              || active === null
+              || active.head.graphId !== progressive.head.graphId
+              || active.head.generation !== progressive.head.generation
+            ) {
+              return;
+            }
+            const nodeSequence = hydrationNodeSequence;
+            set((current) => ({
+              progressivePendingNodeIds: new Set(current.progressivePendingNodeIds).add(ghostId),
+            }));
+            void hydrateProgressiveFiles(incompletePins)
+              .then(async (ready) => {
+                if (ready && nodeSequence === progressiveNodeSeq) await afterReady();
+              })
+              .catch((error) => {
+                if (nodeSequence !== progressiveNodeSeq) return;
+                const message = error instanceof Error ? error.message : "could not load ghost context";
+                set((current) => current.progressiveGraph === null
+                  || current.progressiveGraph.head.graphId !== progressive.head.graphId
+                  || current.progressiveGraph.head.generation !== progressive.head.generation
+                  ? {}
+                  : { progressiveGraph: { ...current.progressiveGraph, status: "error", error: message } });
+              })
+              .finally(clearHydrationPending);
+          }
+        : null;
+
       if (minimalOpen) {
+        let needsRelayout = false;
         if (state.minimalMemberIds.includes(member)) {
           // A nested ghost can belong to a file that is already in the overlay while its
           // containment path is still collapsed. Preserve that member's position, but commit the
           // newly required file/class expansion so relayout can replace the ghost with its real node.
-          if (moduleExpanded.size === state.moduleExpanded.size) {
-            return;
+          if (moduleExpanded.size !== state.moduleExpanded.size) {
+            set({ moduleExpanded });
+            needsRelayout = true;
           }
-          set({ moduleExpanded });
-          void requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
-          return;
+        } else {
+          const minimalBasePositions =
+            at === undefined
+              ? state.minimalBasePositions
+              : { ...state.minimalBasePositions, [member]: promotedMemberRect(at, !isCanonicalFileNode(state.index.nodesById.get(member))) };
+          set({ minimalMemberIds: [...state.minimalMemberIds, member], minimalBasePositions, moduleExpanded });
+          needsRelayout = true;
         }
-        const minimalBasePositions =
-          at === undefined
-            ? state.minimalBasePositions
-            : { ...state.minimalBasePositions, [member]: promotedMemberRect(at, !isCanonicalFileNode(state.index.nodesById.get(member))) };
-        set({ minimalMemberIds: [...state.minimalMemberIds, member], minimalBasePositions, moduleExpanded });
-        void requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
+
+        if (hydrateNearbyGraph !== null) {
+          // This is the whole two-phase operation guard, not only the network phase: it suppresses a
+          // second "+" while the provisional member is still being laid out and follows that node once
+          // hydration begins.
+          set((current) => ({
+            progressivePendingNodeIds: new Set(current.progressivePendingNodeIds).add(ghostId),
+          }));
+        }
+
+        // Commit and paint the member before starting network hydration. The first relayout replaces
+        // the clicked ghost with its real card; the second incorporates the newly loaded neighbourhood.
+        // Serializing those phases guarantees that a slow neighbourhood never delays first inspection.
+        const hydrateAfterAdmission = () => {
+          let finished = false;
+          let unsubscribe: () => void = () => undefined;
+          const finish = (hydrate: boolean) => {
+            if (finished) return;
+            finished = true;
+            unsubscribe();
+            if (!hydrate) {
+              clearHydrationPending();
+              return;
+            }
+            hydrateNearbyGraph?.(async () => {
+              const hydrated = get();
+              if (
+                hydrated.minimalSeedIds.length === 0
+                || !hydrated.minimalMemberIds.includes(member)
+              ) {
+                return;
+              }
+              await hydrated.minimalRelayout(nodeLayoutActivity(hydrated, "Loading nearby graph for", ghostId));
+            });
+          };
+          const inspectAdmission = () => {
+            const admitted = get();
+            if (
+              hydrationNodeSequence !== progressiveNodeSeq
+              || admitted.minimalSeedIds.length === 0
+              || !admitted.minimalMemberIds.includes(member)
+            ) {
+              finish(false);
+              return;
+            }
+            // A superseded minimalRelayout resolves normally while its newer replacement is still
+            // active. Keep the node-local spinner and wait for the authoritative settled scene.
+            if (admitted.minimalLayoutStatus === "laying-out") return;
+            finish(
+              admitted.minimalLayoutStatus === "ready"
+              && admitted.minimalRfNodes.some((node) =>
+                (node.id === ghostId || node.id === member) && node.type !== "ghost"),
+            );
+          };
+          unsubscribe = api.subscribe(inspectAdmission);
+          // Close the subscribe/check race if the admission settled between starting its relayout
+          // and installing this one-shot watcher.
+          inspectAdmission();
+        };
+        if (needsRelayout) {
+          const admission = requestMinimalRelayout(nodeLayoutActivity(state, "Adding", member));
+          if (hydrateNearbyGraph === null) {
+            void admission;
+          } else {
+            hydrateAfterAdmission();
+          }
+        } else {
+          hydrateAfterAdmission();
+        }
+        return;
+      }
+
+      if (hydrateNearbyGraph !== null) {
+        // Source canvases retain their existing hydration-first contract: an unready file may not
+        // yet have a drawable card at the active semantic level. The Minimal Graph path above is the
+        // safe provisional-admission case because the clicked boundary node is already on screen.
+        hydrateNearbyGraph(() => { get().promoteGhost(ghostId, at); });
         return;
       }
 
