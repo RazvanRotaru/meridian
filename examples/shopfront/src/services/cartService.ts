@@ -25,7 +25,7 @@ export class CartService {
     const cart = this.getCart(cartId);
     const product = this._catalog.getProduct(productId);
     if (!product || !this._inventory.inStock(productId)) {
-      log(`cannot add ${productId}`, "warn");
+      log(`cannot add ${productId} to cart`, "warn");
       return cart;
     }
     const items = [...cart.items, { productId, quantity: clamp(quantity, 1, 99), unitPrice: product.price }];

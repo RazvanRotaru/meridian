@@ -11,7 +11,7 @@ export function CategoryFilter(): ReactElement {
     <ul className="category-filter">
       {CATEGORIES.map((category) => (
         <li key={category}>
-          <button onClick={() => catalog.filter(category)}>{category}</button>
+          <button type="button" onClick={() => catalog.filter(category)}>{category}</button>
         </li>
       ))}
     </ul>
