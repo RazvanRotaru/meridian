@@ -7,64 +7,21 @@
 
 import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
 import type { ReactNode } from "react";
+import type { CheckState } from "../../derive/reviewFiles";
 import {
-  filesViewState,
-  fileViewState,
-  unitViewState,
-  type CheckState,
-  type ReviewFileRow,
-  type ReviewUnitCoordinates,
-  type ReviewUnitRow,
-} from "../../derive/reviewFiles";
-import type { GraphIndex } from "../../graph/graphIndex";
+  reviewViewedTargetFor,
+  reviewViewedTargetScope,
+  reviewViewedTargetState,
+  type ReviewViewedScope,
+  type ReviewViewedTarget,
+  type ReviewViewedTargetScope,
+} from "../../derive/reviewNodeViewed";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { reviewViewedGestureBlockReason } from "../../state/store";
 import { useSurfaceReviewProgressEnabled } from "../canvas/SurfaceInteractionContext";
 import { REVIEW_VIEWED_ACCENT, REVIEW_VIEWED_STALE } from "./reviewPanelKit";
 
-export type ReviewViewedScope = "folder" | "file" | "unit";
-type ReviewViewedTargetScope = ReviewViewedScope | "source";
-
-interface FolderTarget {
-  kind: "folder";
-  label: string;
-  files: readonly ReviewFileRow[];
-}
-
-interface FileTarget {
-  kind: "file";
-  file: ReviewFileRow;
-}
-
-interface UnitTarget {
-  kind: "unit";
-  file: ReviewFileRow;
-  unit: ReviewUnitRow;
-}
-
-interface UnitGroupTarget {
-  kind: "unit-group";
-  label: string;
-  units: readonly UnitTarget[];
-}
-
-type ReviewViewedTarget = FolderTarget | FileTarget | UnitTarget | UnitGroupTarget;
-
-interface CachedFolderTarget {
-  memberIds: readonly string[] | undefined;
-  label: string;
-  target: FolderTarget | null;
-}
-
-interface ReviewTargetIndex {
-  graphIndex: GraphIndex;
-  filesByModuleId: ReadonlyMap<string, FileTarget>;
-  unitsByNodeId: ReadonlyMap<string, UnitTarget>;
-  unitGroupsByNodeId: ReadonlyMap<string, UnitGroupTarget>;
-  foldersByNodeId: Map<string, CachedFolderTarget>;
-}
-
-const TARGET_INDEX_CACHE = new WeakMap<readonly ReviewFileRow[], ReviewTargetIndex>();
+export type { ReviewViewedScope } from "../../derive/reviewNodeViewed";
 
 /** Wrap one graph node in the selected outlined-row treatment when it belongs to the active review. */
 export function ReviewNodeViewedChrome({
@@ -228,7 +185,7 @@ interface ReviewViewedControl {
 }
 
 function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope): ReviewViewedControl | null {
-  const target = useBlueprint((state) => targetFor(
+  const target = useBlueprint((state) => reviewViewedTargetFor(
     state.reviewFiles,
     scope,
     nodeId,
@@ -236,7 +193,7 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
     state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
     state.index,
   ));
-  const state = useBlueprint((blueprint) => viewStateFor(
+  const state = useBlueprint((blueprint) => reviewViewedTargetState(
     target,
     blueprint.reviewUnitTicks,
     blueprint.reviewFileTicks,
@@ -260,7 +217,7 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
     blocked: blockedReason !== null,
     color: stateColor(state),
     label: blockedReason ?? viewedLabel(target, state),
-    scope: scopeForTarget(target),
+    scope: reviewViewedTargetScope(target),
     state,
     onToggle: () => {
       if (target.kind === "folder") {
@@ -276,11 +233,6 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
   };
 }
 
-function scopeForTarget(target: ReviewViewedTarget): ReviewViewedScope {
-  if (target.kind === "folder") return "folder";
-  return target.kind === "file" ? "file" : "unit";
-}
-
 function ViewedIcon({ state }: { state: CheckState }) {
   if (state === "done") {
     return <CheckIcon width={13} height={13} aria-hidden="true" />;
@@ -289,126 +241,6 @@ function ViewedIcon({ state }: { state: CheckState }) {
     return <ReloadIcon width={11} height={11} aria-hidden="true" />;
   }
   return <CircleIcon width={10} height={10} aria-hidden="true" />;
-}
-
-function targetFor(
-  files: readonly ReviewFileRow[],
-  scope: ReviewViewedTargetScope,
-  nodeId: string,
-  folderMemberIds: readonly string[] | undefined,
-  folderLabel: string,
-  graphIndex: GraphIndex,
-): ReviewViewedTarget | null {
-  const index = reviewTargetIndex(files, graphIndex);
-  if (scope === "source") {
-    return index.filesByModuleId.get(nodeId)
-      ?? index.unitGroupsByNodeId.get(nodeId)
-      ?? index.unitsByNodeId.get(nodeId)
-      ?? null;
-  }
-  if (scope === "file") {
-    return index.filesByModuleId.get(nodeId) ?? null;
-  }
-  if (scope === "unit") {
-    return index.unitGroupsByNodeId.get(nodeId) ?? index.unitsByNodeId.get(nodeId) ?? null;
-  }
-  return folderTarget(index, nodeId, folderMemberIds, folderLabel);
-}
-
-/** A review folder is the exact large-review rollup, not every source file in its displayed
- * subtree. That keeps the marker scoped to the changed files represented by this graph node. */
-function folderTarget(
-  index: ReviewTargetIndex,
-  nodeId: string,
-  memberIds: readonly string[] | undefined,
-  label: string,
-): FolderTarget | null {
-  const cached = index.foldersByNodeId.get(nodeId);
-  if (cached !== undefined && cached.memberIds === memberIds && cached.label === label) {
-    return cached.target;
-  }
-  const memberSet = new Set(memberIds ?? []);
-  const files = [...index.filesByModuleId.entries()]
-    .filter(([moduleId]) => memberSet.has(moduleId))
-    .map(([, target]) => target.file);
-  const target = files.length === 0 ? null : { kind: "folder" as const, label, files };
-  index.foldersByNodeId.set(nodeId, { memberIds, label, target });
-  return target;
-}
-
-function reviewTargetIndex(files: readonly ReviewFileRow[], graphIndex: GraphIndex): ReviewTargetIndex {
-  const cached = TARGET_INDEX_CACHE.get(files);
-  if (cached !== undefined && cached.graphIndex === graphIndex) {
-    return cached;
-  }
-  const filesByModuleId = new Map<string, FileTarget>();
-  const unitsByNodeId = new Map<string, UnitTarget>();
-  const groupedUnits = new Map<string, ReviewUnitRow[]>();
-  for (const file of files) {
-    if (file.moduleId !== null) {
-      filesByModuleId.set(file.moduleId, { kind: "file", file });
-    }
-    for (const unit of file.units) {
-      unitsByNodeId.set(unit.nodeId, { kind: "unit", file, unit });
-      for (const ancestor of graphIndex.ancestorsOf(unit.nodeId)) {
-        if (ancestor.id === unit.nodeId || ancestor.kind === "module" || ancestor.kind === "package") {
-          continue;
-        }
-        const group = groupedUnits.get(ancestor.id);
-        group ? group.push(unit) : groupedUnits.set(ancestor.id, [unit]);
-      }
-    }
-  }
-  const unitGroupsByNodeId = new Map([...groupedUnits].map(([nodeId, descendants]) => {
-    const ownUnit = unitsByNodeId.get(nodeId)?.unit;
-    const units = ownUnit === undefined ? descendants : [ownUnit, ...descendants];
-    return [nodeId, {
-      kind: "unit-group" as const,
-      label: graphIndex.nodesById.get(nodeId)?.displayName ?? nodeId,
-      units: units.map((unit) => unitsByNodeId.get(unit.nodeId)!),
-    }];
-  }));
-  const index = {
-    graphIndex,
-    filesByModuleId,
-    unitsByNodeId,
-    unitGroupsByNodeId,
-    foldersByNodeId: new Map<string, CachedFolderTarget>(),
-  };
-  TARGET_INDEX_CACHE.set(files, index);
-  return index;
-}
-
-function viewStateFor(
-  target: ReviewViewedTarget | null,
-  unitTicks: Parameters<typeof fileViewState>[1],
-  fileTicks: Parameters<typeof fileViewState>[2],
-  githubStates: Parameters<typeof fileViewState>[3],
-  coordinates: ReviewUnitCoordinates,
-): CheckState | null {
-  if (target === null) {
-    return null;
-  }
-  if (target.kind === "folder") {
-    return filesViewState(target.files, unitTicks, fileTicks, githubStates, coordinates);
-  }
-  if (target.kind === "unit-group") {
-    const states = target.units.map(({ file, unit }) => {
-      const githubState = githubStates != null && Object.hasOwn(githubStates, file.path)
-        ? githubStates[file.path]
-        : undefined;
-      return unitViewState(unit, unitTicks, githubState, coordinates);
-    });
-    if (states.some((state) => state === "stale")) return "stale";
-    return states.length > 0 && states.every((state) => state === "done") ? "done" : "todo";
-  }
-  if (target.kind === "file") {
-    return fileViewState(target.file, unitTicks, fileTicks, githubStates, coordinates);
-  }
-  const githubState = githubStates != null && Object.hasOwn(githubStates, target.file.path)
-    ? githubStates[target.file.path]
-    : undefined;
-  return unitViewState(target.unit, unitTicks, githubState, coordinates);
 }
 
 function viewedLabel(target: ReviewViewedTarget, state: CheckState): string {

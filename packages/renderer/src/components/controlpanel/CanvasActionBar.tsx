@@ -6,7 +6,7 @@
 
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { removableModuleSelectionCount } from "../../state/store";
+import { collapsibleViewedNodeCount, removableModuleSelectionCount } from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { selectionExpansionCount } from "../../derive/selectionExpansion";
 import { useSurfaceSelectionGraph } from "../canvas/SurfaceSelectionGraphContext";
@@ -24,6 +24,7 @@ import {
   CodebaseHighlightIcon,
   CodePreviewVisibilityIcon,
   CollapseIcon,
+  CollapseViewedIcon,
   DiffOnlyIcon,
   ExpandIcon,
   ExpandSelectionIcon,
@@ -66,6 +67,7 @@ export function CanvasActionBar({
   const selected = useBlueprint((state) => state.moduleSelected);
   const selectedCount = selected.size;
   const removableCount = useBlueprint(removableModuleSelectionCount);
+  const viewedCollapseCount = useBlueprint(collapsibleViewedNodeCount);
   const selectionGraph = useSurfaceSelectionGraph();
   const minimalOpen = useBlueprint((state) => state.minimalSeedIds.length > 0);
   const minimalHasMembers = useBlueprint((state) => state.minimalMemberIds.length > 0);
@@ -120,6 +122,7 @@ export function CanvasActionBar({
     expandAll,
     expandModuleSelectionByOneHop,
     collapseAll,
+    collapseAllViewedNodes,
     buildMinimalGraph,
     backMinimalGraph,
     removeSelectionFromView,
@@ -145,6 +148,7 @@ export function CanvasActionBar({
     && syntheticExecutionStatus !== "running";
   const showSourceSelectionActions = canExtract && !minimalOpen;
   const codebaseView = minimalOpen && minimalView === "codebase";
+  const showCollapseViewedAction = reviewActive && minimalOpen && !codebaseView;
   const showReviewCodePreviewAction = reviewActive && minimalOpen;
   // Ghost satellites belong to the extracted graph presentation. The codebase view deliberately
   // keeps its own structural context and never inherits this paint-only filter.
@@ -166,7 +170,10 @@ export function CanvasActionBar({
     surfaceSize?.width ?? null,
     mode,
     surfaceSize?.height ?? null,
-    45 + (showReviewCodePreviewAction ? 45 : 0) + (showReviewGhostDiffAction ? 45 : 0),
+    45
+      + (showCollapseViewedAction ? 45 : 0)
+      + (showReviewCodePreviewAction ? 45 : 0)
+      + (showReviewGhostDiffAction ? 45 : 0),
   );
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (
@@ -212,6 +219,17 @@ export function CanvasActionBar({
                 icon={<CollapseIcon size={18} />}
                 onClick={collapseAll}
               />
+              {showCollapseViewedAction ? (
+                <CanvasActionButton
+                  ariaLabel="Collapse all viewed nodes"
+                  title={viewedCollapseCount === 0
+                    ? "No viewed nodes are currently expanded"
+                    : "Collapse every open container inside nodes already marked viewed"}
+                  icon={<CollapseViewedIcon size={18} />}
+                  onClick={collapseAllViewedNodes}
+                  disabled={viewedCollapseCount === 0}
+                />
+              ) : null}
               {minimalOpen ? (
                 <CanvasActionButton
                   ariaLabel="Remove added nodes in selection"

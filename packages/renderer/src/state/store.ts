@@ -98,6 +98,10 @@ import type {
 import type { ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
 import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scopedExpansion";
+import {
+  reviewViewedTargetFor,
+  reviewViewedTargetState,
+} from "../derive/reviewNodeViewed";
 import type { LogicViewMode } from "../derive/flowViewModel";
 import { deriveLogicLayout } from "./deriveLogicLayout";
 import { deriveFlowPaneLayout } from "./deriveFlowPaneLayout";
@@ -1095,6 +1099,9 @@ export interface BlueprintState {
   /** Fully collapse the current selection (or the whole view / root container when nothing is
    * selected) — closes every open container in scope in one click. Surface-aware. */
   collapseAll(): void;
+  /** Collapse every open container inside a currently viewed scope on the active review graph.
+   * Selection is intentionally ignored; viewed progress and GitHub state are presentation-neutral. */
+  collapseAllViewedNodes(): void;
   collapseLogicOccurrences(nodeIds: readonly string[]): void;
   recenter(): void;
   /** Select one canonical node through the ordinary module-surface semantics, then ask the active
@@ -1914,6 +1921,12 @@ export function removableModuleSelectionCount(state: BlueprintState): number {
     return minimalSelectionRemovalIds(state).length;
   }
   return moduleSelectionRemovalPlan(state).selectionIds.length;
+}
+
+/** Number of open containers the review-only canvas action would close. A primitive selector keeps
+ * action-bar subscriptions stable while sharing the viewed-state oracle with node chrome. */
+export function collapsibleViewedNodeCount(state: BlueprintState): number {
+  return collapsibleViewedNodeIds(state).length;
 }
 
 /** Resolve selected minimal-graph nodes to promoted member ancestors. Canonical GraphIndex
@@ -5408,6 +5421,16 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Fully collapse the same scope: close every open container within it in one click.
     collapseAll() {
       applyScoped(get, set, () => (moduleGraph ??= buildModuleGraph(get().index)), () => (blockDeps ??= buildBlockDeps(get().index)), idsToCollapse, "close", { label: "Collapsing graph…" });
+    },
+
+    collapseAllViewedNodes() {
+      const state = get();
+      const ids = collapsibleViewedNodeIds(state);
+      if (ids.length === 0) {
+        return;
+      }
+      set({ moduleExpanded: foldIds(state.moduleExpanded, ids, "close") });
+      void relayoutActiveModuleSurface(get, { label: "Collapsing viewed nodes…" });
     },
 
     collapseLogicOccurrences(nodeIds) {
@@ -13455,6 +13478,69 @@ function applyScoped(
     void get().logicRelayout(activity);
   }
   // "prs" has no containment to expand — deliberately a no-op.
+}
+
+/** Resolve the action's final collapse set from the current painted review frontier. A completed
+ * parent is a scope: every open descendant inside it closes too, including flow-step pseudo nodes
+ * that do not own review progress themselves. */
+function collapsibleViewedNodeIds(state: BlueprintState): string[] {
+  if (
+    state.review === null
+    || state.minimalSeedIds.length === 0
+    || state.minimalView !== "graph"
+    || moduleSurfaceSpec(state.viewMode) === null
+  ) {
+    return [];
+  }
+  const visible = minimalViewedCollapseNodes(state);
+  const viewedScopes = visible.flatMap((node) => {
+    if (!node.isContainer || !node.isExpanded) {
+      return [];
+    }
+    const folderMembers = Object.hasOwn(state.minimalRollups, node.id)
+      ? state.minimalRollups[node.id]
+      : undefined;
+    const target = reviewViewedTargetFor(
+      state.reviewFiles,
+      folderMembers === undefined ? "source" : "folder",
+      node.id,
+      folderMembers,
+      state.index.nodesById.get(node.id)?.displayName ?? node.id,
+      state.index,
+    );
+    const viewState = reviewViewedTargetState(
+      target,
+      state.reviewUnitTicks,
+      state.reviewFileTicks,
+      state.reviewFileViewedStates,
+      {
+        viewerId: state.reviewViewedFilesViewerId,
+        headSha: state.prReviewRevision?.headSha,
+      },
+    );
+    return viewState === "done" ? [node.id] : [];
+  });
+  return idsToCollapse(visible, viewedScopes);
+}
+
+/** Minimal graph nodes use `isContainer` for frames/steps and `expandable` for callable blocks.
+ * Normalize both without reading hidden expansion ids from the covered source map. */
+function minimalViewedCollapseNodes(state: BlueprintState): ExpandableNode[] {
+  return state.minimalRfNodes.flatMap((rfNode) => {
+    const data = rfNode.data as { isContainer?: unknown; expandable?: unknown };
+    const isContainer = typeof data.isContainer === "boolean"
+      ? data.isContainer
+      : typeof data.expandable === "boolean" ? data.expandable : null;
+    if (isContainer === null) {
+      return [];
+    }
+    return [{
+      id: rfNode.id,
+      parentId: rfNode.parentId ?? null,
+      isContainer,
+      isExpanded: state.moduleExpanded.has(rfNode.id),
+    }];
+  });
 }
 
 /** Add (open) or remove (close) `ids` in a plain expansion set. */

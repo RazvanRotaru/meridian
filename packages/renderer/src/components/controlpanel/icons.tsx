@@ -42,6 +42,17 @@ export function CollapseIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Inward hierarchy chevrons plus a check — collapse only scopes already marked viewed. */
+export function CollapseViewedIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <path d="M3 5h7M3 12h7M3 19h7" />
+      <path d="m13 5 2.5 2.5L18 5M13 19l2.5-2.5L18 19" />
+      <path d="m15.5 12 2 2 3.5-4" />
+    </svg>
+  );
+}
+
 /** A scan frame — fit the current selection, or the whole graph when nothing is selected. */
 export function RecenterIcon({ size = 15 }: IconProps) {
   return (
