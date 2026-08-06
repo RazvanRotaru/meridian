@@ -3,7 +3,10 @@ import { CartRepository } from "../repository/cartRepository.js";
 import { CatalogService } from "./catalogService.js";
 import { InventoryService } from "./inventoryService.js";
 import { PricingService } from "./pricingService.js";
-import { clamp, formatMoney, nowIso, sum } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
+import { clamp } from "../utils/numbers.js";
+import { nowIso } from "../utils/clock.js";
+import { sum } from "../utils/collections.js";
 import { log } from "../utils/logger.js";
 
 /** Mutates carts and answers "how much is in here?" — leans on catalog, inventory, pricing. */

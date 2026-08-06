@@ -3,7 +3,7 @@
  * nearly every service and repository, giving it a very high fan-in.
  */
 
-import { nowIso } from "./legacy.js";
+import { nowIso } from "./clock.js";
 
 /** Severity levels the logger understands. */
 export type LogLevel = "debug" | "info" | "warn" | "error";

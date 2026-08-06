@@ -1,6 +1,6 @@
 import type { InventoryRecord } from "../domain/inventory.js";
 import { BaseRepository } from "./baseRepository.js";
-import { clamp } from "../utils/legacy.js";
+import { clamp } from "../utils/numbers.js";
 
 /** InventoryRecord adapted to the base store's `id` contract via its productId. */
 interface StoredInventory extends InventoryRecord {

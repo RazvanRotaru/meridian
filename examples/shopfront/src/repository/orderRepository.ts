@@ -1,6 +1,6 @@
 import type { Order } from "../domain/order.js";
 import { BaseRepository } from "./baseRepository.js";
-import { formatMoney } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
 import { log } from "../utils/logger.js";
 
 /** Stores placed orders in memory. */

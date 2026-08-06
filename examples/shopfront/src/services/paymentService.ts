@@ -1,6 +1,7 @@
 import type { Money } from "../domain/money.js";
 import { AuditService } from "./auditService.js";
-import { formatMoney, retry } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
+import { retry } from "../utils/retry.js";
 import { log } from "../utils/logger.js";
 
 /** The outcome of a charge attempt. */

@@ -3,7 +3,7 @@
  * free, which gives the graph a small inheritance fan-in on one base class.
  */
 
-import { deepClone } from "../utils/legacy.js";
+import { deepClone } from "../utils/clone.js";
 import { log } from "../utils/logger.js";
 
 /** Anything with a string `id` can live in the base store. */

@@ -1,6 +1,6 @@
 import type { StockLevel } from "../domain/inventory.js";
 import { InventoryRepository } from "../repository/inventoryRepository.js";
-import { clamp } from "../utils/legacy.js";
+import { clamp } from "../utils/numbers.js";
 import { log } from "../utils/logger.js";
 
 /** Turns raw stock records into stock signals and holds stock during checkout. */
@@ -14,7 +14,7 @@ export class InventoryService {
     if (available <= 0) {
       return "out";
     }
-    return available < 5 ? "low" : "in";
+    return available <= 5 ? "low" : "in";
   }
 
   /** Whether a product can be added to a cart at all. */

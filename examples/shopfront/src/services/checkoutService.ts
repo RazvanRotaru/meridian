@@ -1,5 +1,5 @@
 import type { Cart } from "../domain/cart.js";
-import type { CheckoutRequest, Order, OrderLine } from "../domain/order.js";
+import type { CheckoutRequest, Order } from "../domain/order.js";
 import { CartService } from "./cartService.js";
 import { PricingService } from "./pricingService.js";
 import { PromotionService } from "./promotionService.js";
@@ -9,14 +9,15 @@ import { NotificationService } from "./notificationService.js";
 import { UserService } from "./userService.js";
 import { AuditService } from "./auditService.js";
 import { OrderRepository } from "../repository/orderRepository.js";
-import { formatMoney, nowIso, uuid } from "../utils/legacy.js";
+import { assembleOrder } from "./orderFactory.js";
+import { formatMoney } from "../domain/money.js";
 import { log } from "../utils/logger.js";
 import { err, ok, type Result } from "../utils/result.js";
 
 /**
  * The fan-out orchestrator. placeOrder() is deliberately the busiest method in the codebase:
  * it pulls together nine other collaborators to turn a cart into a paid, stored, confirmed
- * order. Every dependency is type-annotated constructor injection so the calls resolve.
+ * order. Order assembly moved out to orderFactory — this class now only sequences the flow.
  */
 export class CheckoutService {
   constructor(
@@ -40,22 +41,13 @@ export class CheckoutService {
     }
     const price = this._pricing.priceCart(cart);
     const campaigns = this._promotion.eligibleCampaigns(cart);
-    for (const item of cart.items) {
-      this._inventory.reserveStock(item.productId, item.quantity);
-    }
+    this.reserveAll(cart);
     const payment = this._payment.charge(request.paymentToken, price.total);
     if (!payment.ok) {
       this._audit.record("checkout-failed", request.cartId);
       return err("payment declined");
     }
-    const order: Order = {
-      id: uuid("order"),
-      userId: user.id,
-      status: "paid",
-      lines: this.assembleLines(cart),
-      price,
-      createdAt: nowIso(),
-    };
+    const order = assembleOrder(cart, user, price);
     this._orders.record(order);
     this._notifications.sendOrderConfirmation(order);
     this._audit.record("checkout-ok", `${order.id} ${campaigns.join(",")}`);
@@ -69,13 +61,10 @@ export class CheckoutService {
     return formatMoney(breakdown.total);
   }
 
-  /** Freeze cart items into immutable order lines. */
-  private assembleLines(cart: Cart): OrderLine[] {
-    return cart.items.map((item) => ({
-      productId: item.productId,
-      title: item.productId,
-      quantity: item.quantity,
-      lineTotalCents: item.unitPrice.amountCents * item.quantity,
-    }));
+  /** Put a hold on every line before we charge. */
+  private reserveAll(cart: Cart): void {
+    for (const item of cart.items) {
+      this._inventory.reserveStock(item.productId, item.quantity);
+    }
   }
 }

@@ -1,6 +1,7 @@
 import type { Money } from "../domain/money.js";
 import { Logger } from "../utils/logger.js";
-import { formatMoney, uuid } from "../utils/legacy.js";
+import { formatMoney } from "../domain/money.js";
+import { mintId } from "../utils/ids.js";
 
 /** One recorded thing that happened, for the audit trail. */
 export interface AuditEntry {
@@ -16,7 +17,7 @@ export class AuditService {
 
   /** Record an action with an arbitrary detail string. */
   record(action: string, detail: string): AuditEntry {
-    const entry: AuditEntry = { id: uuid("audit"), action, detail };
+    const entry: AuditEntry = { id: mintId("audit"), action, detail };
     this.entries.push(entry);
     this.log.info(`${action}: ${detail}`);
     return entry;
