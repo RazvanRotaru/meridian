@@ -41,6 +41,7 @@ import { buildArtifact } from "./artifact-header";
 import { mergeWarnings, validateOrThrow } from "./validation";
 
 const MAX_REPORTED_DIAGNOSTICS = 20;
+const TYPESCRIPT_DECLARATION_FILE = /\.d\.ts$/;
 
 export interface PipelineRequest {
   absoluteRoot: string;
@@ -257,8 +258,11 @@ async function initialGraphSelection(
     throw new CliError(EXIT.validation, "initial graph changed-file roots need an exact manifest");
   }
   const seedFiles = [...new Set(rawSeeds)].sort(compareBinaryStrings);
+  // Declaration files remain exact-review manifest rows, but the TypeScript graph extractor
+  // deliberately excludes them from its source universe. Do not turn a reviewable `.d.ts` change
+  // into an unsupported graph root which makes the whole bounded pair fail closed.
   const typeScriptSeeds = seedFiles.filter((file) =>
-    file.endsWith(".ts") || file.endsWith(".tsx"),
+    (file.endsWith(".ts") || file.endsWith(".tsx")) && !TYPESCRIPT_DECLARATION_FILE.test(file),
   );
   const pythonSeeds = seedFiles.filter((file) => file.endsWith(".py"));
   // A legitimately empty side (all additions on the merge base, or all deletions on HEAD) still
@@ -331,7 +335,7 @@ function validatePreselectedPaths(
       || isAbsolute(path)
       || path.split("/").some((part) => part.length === 0 || part === "." || part === "..")
       || (!/\.tsx?$/.test(path) && !path.endsWith(".py"))
-      || /\.d\.ts$/.test(path)
+      || TYPESCRIPT_DECLARATION_FILE.test(path)
       || (index > 0 && compareBinaryStrings(normalized[index - 1]!, path) >= 0)
     ) {
       throw new CliError(EXIT.validation, `initial graph ${label} files are invalid`);

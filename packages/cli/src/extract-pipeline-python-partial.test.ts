@@ -185,6 +185,111 @@ describe("partial Python and mixed-language extraction", () => {
     expect(result.artifact.nodes).toEqual([]);
   }, 30_000);
 
+  it("keeps changed TypeScript declarations manifest-only in mixed source neighbourhoods", async () => {
+    const root = workspace({
+      "src/app.ts": "export const app = true;\n",
+      "src/types.d.ts": "declare const value: number;\n",
+      "src/unrelated.ts": "export const unrelated = true;\n",
+      "worker/job.py": "def run():\n    pass\n",
+    });
+    const patch = [
+      "diff --git a/src/app.ts b/src/app.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/app.ts",
+      "+++ b/src/app.ts",
+      "@@ -1 +1 @@",
+      "-export const app = false;",
+      "+export const app = true;",
+      "diff --git a/src/types.d.ts b/src/types.d.ts",
+      "index 3333333..4444444 100644",
+      "--- a/src/types.d.ts",
+      "+++ b/src/types.d.ts",
+      "@@ -1 +1 @@",
+      "-declare const value: string;",
+      "+declare const value: number;",
+      "diff --git a/worker/job.py b/worker/job.py",
+      "index 5555555..6666666 100644",
+      "--- a/worker/job.py",
+      "+++ b/worker/job.py",
+      "@@ -1 +1 @@",
+      "-def old_run():",
+      "+def run():",
+    ].join("\n");
+    const executeDiff = async (_absoluteRoot: string, args: string[]) => (
+      args.includes("--name-status")
+        ? ["M", "src/app.ts", "M", "src/types.d.ts", "M", "worker/job.py", ""].join("\0")
+        : patch
+    );
+
+    const result = await extractToArtifact({
+      absoluteRoot: root,
+      cwd: root,
+      materializeBoundary: true,
+      changedSince: "base",
+      changedSinceGitExecutor: executeDiff,
+      initialGraph: { depth: 1 },
+    });
+
+    expect(changedFileManifestFromExtensions(result.artifact.extensions)).toEqual([
+      { path: "src/app.ts", status: "modified" },
+      { path: "src/types.d.ts", status: "modified" },
+      { path: "worker/job.py", status: "modified" },
+    ]);
+    expect(result.artifact.target.language).toBe("mixed");
+    expect(result.artifact.extensions?.prInitialGraph).toEqual({
+      version: 1,
+      complete: false,
+      depth: 1,
+      seedFiles: ["src/app.ts", "worker/job.py"],
+      selectedFiles: ["src/app.ts", "worker/job.py"],
+      frontierFiles: [],
+    });
+    const sourceFiles = new Set(result.artifact.nodes
+      .map((node) => node.location.file)
+      .filter((file) => /\.(?:tsx?|py)$/.test(file)));
+    expect(sourceFiles).toEqual(new Set(["src/app.ts", "worker/job.py"]));
+  }, 30_000);
+
+  it("lands declaration-only changes as a manifest-only empty partial graph", async () => {
+    const root = workspace({
+      "src/types.d.ts": "declare const value: number;\n",
+    });
+    const patch = [
+      "diff --git a/src/types.d.ts b/src/types.d.ts",
+      "index 1111111..2222222 100644",
+      "--- a/src/types.d.ts",
+      "+++ b/src/types.d.ts",
+      "@@ -1 +1 @@",
+      "-declare const value: string;",
+      "+declare const value: number;",
+    ].join("\n");
+    const executeDiff = async (_absoluteRoot: string, args: string[]) => (
+      args.includes("--name-status") ? ["M", "src/types.d.ts", ""].join("\0") : patch
+    );
+
+    const result = await extractToArtifact({
+      absoluteRoot: root,
+      cwd: root,
+      materializeBoundary: true,
+      changedSince: "base",
+      changedSinceGitExecutor: executeDiff,
+      initialGraph: { depth: 1 },
+    });
+
+    expect(result.extraction).toMatchObject({ language: "typescript", nodes: [], edges: [], stats: { files: 0 } });
+    expect(changedFileManifestFromExtensions(result.artifact.extensions)).toEqual([
+      { path: "src/types.d.ts", status: "modified" },
+    ]);
+    expect(result.artifact.extensions?.prInitialGraph).toEqual({
+      version: 1,
+      complete: false,
+      depth: 1,
+      seedFiles: [],
+      selectedFiles: [],
+      frontierFiles: [],
+    });
+  }, 30_000);
+
   it("keeps incremental collision stabilizers hidden while matching full-source topology IDs", async () => {
     const root = workspace({
       "foo.py": "def same():\n    return 'module'\n",
