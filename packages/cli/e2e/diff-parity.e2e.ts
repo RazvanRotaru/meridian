@@ -494,6 +494,14 @@ async function assertDeletedExecutionNeighbourhood(
   const callees = spec.callees ?? [];
   if (callers.length === 0 && callees.length === 0) return;
 
+  const ghostNodes = reviewSurface.getByRole("button", { name: "Show ghost nodes" });
+  expect(
+    await ghostNodes.getAttribute("aria-pressed"),
+    "PR review must start with ghost nodes hidden",
+  ).toBe("false");
+  await ghostNodes.click();
+  await expect.poll(() => ghostNodes.getAttribute("aria-pressed")).toBe("true");
+
   await nodeHeader(deletedNode).click();
   for (const caller of callers) {
     const callerId = buildNodeId({ lang: "ts", modulePath: caller.path, qualname: caller.qualname });
