@@ -60,7 +60,12 @@ import {
   graphProjectionRootChunks,
   prepareInitialGraphProjectionCache,
   type InitialProjectionCacheEvidence,
+  type InitialProjectionCacheResult,
 } from "./web-graph-project";
+import type {
+  PrReviewHandoffClaim,
+  PrReviewHandoffPair,
+} from "./web-pr-review-handoff";
 
 type GitHubSource = Extract<ArtifactSource, { kind: "github" }>;
 type PrAnalysisStage =
@@ -131,6 +136,18 @@ interface PrAnalysisDone {
   initialProjectionCache?: InitialProjectionCacheEvidence;
 }
 
+interface PreparedInitialReviewPair {
+  readonly evidence: InitialProjectionCacheEvidence;
+  readonly warning: string | null;
+}
+
+class InitialReviewProjectionUnavailable extends Error {
+  constructor(readonly prepared: InitialProjectionCacheResult) {
+    super("initial PR review projection is unavailable");
+    this.name = "InitialReviewProjectionUnavailable";
+  }
+}
+
 export async function handlePrAnalyze(ctx: Context, request: IncomingMessage, response: ServerResponse): Promise<void> {
   const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   let sessionRegistration: ReturnType<Context["graphStore"]["acquire"]> = undefined;
@@ -195,14 +212,15 @@ export async function handlePrPrepare(ctx: Context, request: IncomingMessage, re
       token,
       body,
       cancellation.signal,
-      (completed, initialProjectionCache) => directPreparationDone(
+      (completed, initialProjectionCache, handoff) => directPreparationDone(
         completed,
         direct.prNumber,
         initialProjectionCache,
+        handoff,
       ),
       true,
       true,
-      (ready) => directPreparationReady(ready, direct.prNumber),
+      (ready, handoff) => directPreparationReady(ready, direct.prNumber, handoff),
     );
   } finally {
     cancellation.dispose();
@@ -224,12 +242,39 @@ async function streamAnalysis(
   terminal: (
     completed: PrAnalysisDone,
     initialProjectionCache?: InitialProjectionCacheEvidence,
+    handoff?: PrReviewHandoffClaim,
   ) => Record<string, unknown> = (completed) => ({ ...completed }),
   emitManifestReady = false,
   prepareInitialProjectionCache = false,
-  readyTerminal: (ready: PrAnalysisReadyLine) => Record<string, unknown> = (ready) => ({ ...ready }),
+  readyTerminal: (
+    ready: PrAnalysisReadyLine,
+    handoff?: PrReviewHandoffClaim,
+  ) => Record<string, unknown> = (ready) => ({ ...ready }),
 ): Promise<void> {
-  let releaseTerminalReservation: (() => void) | null = null;
+  let directClaim: PrReviewHandoffClaim | null = null;
+  let directClaimDelivered = false;
+  const claimFor = (graphId: string, comparisonGraphId: string): PrReviewHandoffClaim | undefined => {
+    if (!prepareInitialProjectionCache) return undefined;
+    directClaim ??= ctx.prReviewHandoffs.issueClaim(
+      prReviewHandoffKey(graphId, comparisonGraphId),
+    );
+    return directClaim;
+  };
+  const writePreparedLine = async (
+    line: Record<string, unknown>,
+    claim: PrReviewHandoffClaim | undefined,
+  ): Promise<void> => {
+    try {
+      await writeLine(response, line);
+      if (claim !== undefined) directClaimDelivered = true;
+    } catch (error) {
+      if (claim !== undefined && !directClaimDelivered) {
+        ctx.prReviewHandoffs.release(claim.claimId);
+        directClaim = null;
+      }
+      throw error;
+    }
+  };
   try {
     const credentialKey = token ? createHash("sha256").update(token).digest("hex") : "anonymous";
     const jobKey = prAnalysisJobKey(source, body, credentialKey, ctx.refreshCache);
@@ -238,11 +283,12 @@ async function streamAnalysis(
       : null;
     if (retainedReady !== null) {
       requireExpectedHead(body, retainedReady.headSha);
-      await writeLine(response, readyTerminal(retainedReady));
+      const claim = claimFor(retainedReady.graphId, retainedReady.comparisonGraphId);
+      await writePreparedLine(readyTerminal(retainedReady, claim), claim);
       throwIfAborted(signal);
-      await writeLine(
-        response,
-        terminal(provisionalDoneLine(retainedReady), retainedReady.initialProjectionCache),
+      await writePreparedLine(
+        terminal(provisionalDoneLine(retainedReady), retainedReady.initialProjectionCache, claim),
+        claim,
       );
       return;
     }
@@ -368,20 +414,22 @@ async function streamAnalysis(
         {
           signal,
           onProgress: (progress) => {
+            let claim: PrReviewHandoffClaim | undefined;
             if (typeof progress !== "string" && progress.stage === "ready") {
               requireExpectedHead(body, progress.headSha);
               // Every HTTP subscriber owns an independent foreground fence, including callers
               // joining an already-running singleflight. Release it before writing the actionable
               // terminal so incremental projection and symbol work can enter normal admission.
               releaseForeground();
+              claim = claimFor(progress.graphId, progress.comparisonGraphId);
             }
-            return writeLine(response, (
+            return writePreparedLine((
               typeof progress === "string"
                 ? { stage: progress }
                 : progress.stage === "ready"
-                  ? readyTerminal(progress)
+                  ? readyTerminal(progress, claim)
                   : { ...progress }
-            ));
+            ), claim);
           },
         },
       );
@@ -395,14 +443,13 @@ async function streamAnalysis(
     let terminalCompleted = completed;
     let initialProjectionCache = completed.initialProjectionCache;
     if (prepareInitialProjectionCache && initialProjectionCache === undefined) {
-      const prepared = await prepareInitialGraphProjectionCache(
+      const prepared = await prepareInitialPrReviewPair(
         ctx,
         completed.graphId,
         completed.comparisonGraphId,
         signal,
       );
       initialProjectionCache = prepared.evidence;
-      releaseTerminalReservation = prepared.releaseReservation;
       if (prepared.warning !== null) {
         terminalCompleted = {
           ...completed,
@@ -411,13 +458,19 @@ async function streamAnalysis(
       }
     }
     throwIfAborted(signal);
-    await writeLine(response, terminal(terminalCompleted, initialProjectionCache));
-    // A successfully delivered terminal leaves the bounded pair protected for the short landing
-    // handoff. A newer picker action, timeout, request cancellation, or shutdown owns release.
-    releaseTerminalReservation = null;
+    const terminalClaim = initialProjectionCache?.ready === true
+      ? claimFor(terminalCompleted.graphId, terminalCompleted.comparisonGraphId)
+      : undefined;
+    await writePreparedLine(
+      terminal(terminalCompleted, initialProjectionCache, terminalClaim),
+      terminalClaim,
+    );
   } catch (error) {
-    releaseTerminalReservation?.();
-    releaseTerminalReservation = null;
+    const undeliveredClaim = directClaim as PrReviewHandoffClaim | null;
+    if (undeliveredClaim !== null && !directClaimDelivered) {
+      ctx.prReviewHandoffs.release(undeliveredClaim.claimId);
+      directClaim = null;
+    }
     if (!isOperationCancelled(error) && responseCanWrite(response)) {
       await writeLine(
         response,
@@ -435,6 +488,73 @@ const provisionalPairHandoffs = new WeakMap<Context, Map<string, {
 }>>();
 const PROVISIONAL_PAIR_HANDOFF_TTL_MS = 60_000;
 const MAX_PROVISIONAL_PAIR_HANDOFFS = 32;
+
+/** Pair-scoped admission owns cross-request retention; the projector owns only computation and its
+ * atomic publication pins until this registry has acquired both graphs and both projection files. */
+async function prepareInitialPrReviewPair(
+  ctx: Context,
+  headGraphId: string,
+  comparisonGraphId: string,
+  signal: AbortSignal,
+): Promise<PreparedInitialReviewPair> {
+  const key = prReviewHandoffKey(headGraphId, comparisonGraphId);
+  try {
+    const pair = await ctx.prReviewHandoffs.prepare(key, signal, async (preparationSignal) => {
+      const prepared = await prepareInitialGraphProjectionCache(
+        ctx,
+        headGraphId,
+        comparisonGraphId,
+        preparationSignal,
+      );
+      if (!prepared.evidence.ready) {
+        prepared.releasePreparationPins();
+        throw new InitialReviewProjectionUnavailable(prepared);
+      }
+      return {
+        key,
+        headGraphId,
+        comparisonGraphId,
+        headProjectionKey: prepared.evidence.headKey!,
+        comparisonProjectionKey: prepared.evidence.comparisonKey!,
+        releasePreparationPins: prepared.releasePreparationPins,
+      };
+    });
+    return {
+      evidence: projectionEvidenceForPreparedPair(pair),
+      warning: null,
+    };
+  } catch (error) {
+    if (error instanceof InitialReviewProjectionUnavailable) {
+      return {
+        evidence: error.prepared.evidence,
+        warning: error.prepared.warning,
+      };
+    }
+    throw error;
+  }
+}
+
+function prReviewHandoffKey(headGraphId: string, comparisonGraphId: string): string {
+  const digest = createHash("sha256").update(JSON.stringify({
+    version: 1,
+    headGraphId,
+    comparisonGraphId,
+    depth: 1,
+    prefetchDepth: 3,
+  })).digest("hex");
+  return `pr-review:${digest}`;
+}
+
+function projectionEvidenceForPreparedPair(pair: PrReviewHandoffPair): InitialProjectionCacheEvidence {
+  return {
+    version: 1,
+    depth: 1,
+    prefetchDepth: 3,
+    headKey: pair.headProjectionKey,
+    comparisonKey: pair.comparisonProjectionKey,
+    ready: true,
+  };
+}
 
 /** Keep the exact running singleflight alive only until its accepted bounded terminal settles. */
 function retainPrCompletion(ctx: Context, jobKey: string): void {
@@ -515,14 +635,13 @@ async function reusableProvisionalPair(
     // Projection reservations are deliberately shorter-lived than graph registrations. Re-prove
     // and briefly reserve the boot pair on every delayed handoff instead of replaying stale
     // `ready` evidence after the projection cache has reclaimed its files.
-    const prepared = await prepareInitialGraphProjectionCache(
+    const prepared = await prepareInitialPrReviewPair(
       ctx,
       candidate.ready.graphId,
       candidate.ready.comparisonGraphId,
       signal,
     );
     if (!prepared.evidence.ready) {
-      prepared.releaseReservation();
       handoffs!.delete(jobKey);
       return null;
     }
@@ -622,14 +741,13 @@ async function publishProvisionalPair(
     });
     publicationReceipt = publication.receipt;
     throwIfAborted(signal);
-    const prepared = await prepareInitialGraphProjectionCache(
+    const prepared = await prepareInitialPrReviewPair(
       ctx,
       graphId,
       comparisonGraphId,
       signal,
     );
     if (!prepared.evidence.ready) {
-      prepared.releaseReservation();
       return null;
     }
     // The reservation is TTL-backed and bound to the job signal. It intentionally spans the short
@@ -858,6 +976,7 @@ function directPreparationDone(
   completed: PrAnalysisDone,
   prNumber: number,
   initialProjectionCache?: InitialProjectionCacheEvidence,
+  handoff?: PrReviewHandoffClaim,
 ): Record<string, unknown> {
   const provisional = completed.completeness === "provisional"
     && typeof completed.pairId === "string"
@@ -872,6 +991,18 @@ function directPreparationDone(
     progressive: initialProjectionCache?.ready === true || provisional ? "1" : "0",
     ...(provisional ? { partial: "1", pair: completed.pairId! } : {}),
   });
+  const canonicalViewUrl = `/view?${query.toString()}`;
+  const claimed = initialProjectionCache?.ready === true;
+  if (claimed && (
+    handoff === undefined
+    || handoff.pair.headGraphId !== completed.graphId
+    || handoff.pair.comparisonGraphId !== completed.comparisonGraphId
+  )) {
+    throw new Error("prepared PR review claim does not match its immutable graph pair");
+  }
+  const viewUrl = claimed
+    ? `${canonicalViewUrl}&handoff=${encodeURIComponent(handoff!.claimId)}`
+    : canonicalViewUrl;
   return {
     ...completed,
     preparedPair: {
@@ -885,23 +1016,33 @@ function directPreparationDone(
       ...(provisional ? { completeness: "provisional", pairId: completed.pairId } : {}),
     },
     ...(initialProjectionCache === undefined ? {} : { initialProjectionCache }),
-    viewUrl: `/view?${query.toString()}`,
+    ...(claimed ? {
+      preparedReviewHandoff: {
+        version: 1,
+        claimId: handoff!.claimId,
+        url: `/api/pr-review-handoffs/${handoff!.claimId}`,
+        expiresAtMs: handoff!.expiresAtMs,
+        headGraphId: handoff!.pair.headGraphId,
+        comparisonGraphId: handoff!.pair.comparisonGraphId,
+      },
+      canonicalViewUrl,
+    } : {}),
+    viewUrl,
   };
 }
 
 function directPreparationReady(
   ready: PrAnalysisReadyLine,
   prNumber: number,
+  handoff?: PrReviewHandoffClaim,
 ): Record<string, unknown> {
   const canonicalShape: PrAnalysisDone = { ...ready, stage: "done" };
   const payload = directPreparationDone(
     canonicalShape,
     prNumber,
     ready.initialProjectionCache,
+    handoff,
   );
-  const view = new URL(payload.viewUrl as string, "http://meridian.invalid");
-  view.searchParams.set("partial", "1");
-  view.searchParams.set("pair", ready.pairId);
   return {
     ...payload,
     stage: "ready",
@@ -913,7 +1054,6 @@ function directPreparationReady(
       completeness: "provisional",
       pairId: ready.pairId,
     },
-    viewUrl: `${view.pathname}${view.search}`,
   };
 }
 

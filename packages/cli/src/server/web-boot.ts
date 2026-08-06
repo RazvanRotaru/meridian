@@ -33,8 +33,18 @@ export interface GraphViewLeaseBoot {
   leaseId: string;
   url: string;
   createUrl: string;
+  graphIds: string[];
   expiresAtMs: number;
   heartbeatIntervalMs: number;
+}
+
+export interface PreparedReviewHandoffBoot {
+  version: 1;
+  claimId: string;
+  url: string;
+  expiresAtMs: number;
+  headGraphId: string;
+  comparisonGraphId: string;
 }
 
 /** One exact, per-id capability projection shared by initial boot and subsequent graph/meta swaps. */
@@ -68,6 +78,10 @@ export function injectViewBoot(
   graphViewLease: GraphViewLeaseBoot,
   syntheticScenarios: SyntheticScenarioDescriptor[] | null = null,
   syntheticExecutionTrust: SyntheticExecutionTrust | null = null,
+  options: {
+    preparedReviewHandoff?: PreparedReviewHandoffBoot | null;
+    canonicalUrl?: string;
+  } = {},
 ): string {
   // A catalog is a capability, not just display data. Local paths are admitted as before. GitHub
   // sources require an explicit, per-id sandbox trust record created only after the CLI flag and
@@ -87,6 +101,7 @@ export function injectViewBoot(
     traceUrl: `/api/traces?id=${id}`,
     sourceUrl: `/api/source?id=${id}`,
     graphViewLease,
+    preparedReviewHandoff: options.preparedReviewHandoff ?? null,
     ...syntheticCapability,
     hasOverlay: false,
     overlayKind: null,
@@ -97,7 +112,13 @@ export function injectViewBoot(
     defaultEnv: null,
     githubSource: githubBootSource(source),
   };
-  return injectScript(html, `window.__MERIDIAN__=${escapeForScript(JSON.stringify(boot))}`);
+  const canonicalNavigation = options.canonicalUrl === undefined
+    ? ""
+    : `;history.replaceState(history.state,"",${escapeForScript(JSON.stringify(options.canonicalUrl))})`;
+  return injectScript(
+    html,
+    `window.__MERIDIAN__=${escapeForScript(JSON.stringify(boot))}${canonicalNavigation}`,
+  );
 }
 
 function githubBootSource(source: ArtifactSource | undefined): { repository: string; subdir: string } | null {

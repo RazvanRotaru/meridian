@@ -62,8 +62,6 @@ const speculativeSymbolWaiters = new WeakMap<Context, Map<string, Set<AbortContr
 const speculativeWorkerStates = new WeakMap<Context, SpeculativeWorkerState>();
 const INITIAL_PROJECTION_DEPTH = 1;
 const INITIAL_PROJECTION_PREFETCH_DEPTH = 3;
-const INITIAL_PROJECTION_RESERVATION_TTL_MS = 30_000;
-const MAX_INITIAL_PROJECTION_RESERVATION_OWNERS = 64;
 // Initial PR artifacts are server-generated, immutable, and intentionally much smaller than an
 // entire repository graph. Every dimension is checked before applying the stricter projection heap;
 // all source scans, projections, and later partial extractions still use normal analysis admission.
@@ -76,13 +74,8 @@ const LIGHTWEIGHT_GRAPH_WORKER_HEAP_MB = 1_024;
 // the ordinary repository worker allowance while leaving enough headroom for declaration/flow
 // extraction; the service wrapper may lower this further under a stricter startup policy.
 const PARTIAL_GRAPH_ANALYSIS_WORKER_HEAP_MB = 4_096;
-// A pair can contain two 256 MiB bounded projection files. Keep only the latest short landing
-// handoff per service. A newer picker action invalidates its predecessor before computing so cache
-// pressure can never turn two navigation promises into an unbounded soft-limit overrun.
 const INITIAL_PROJECTION_FALLBACK_WARNING =
   "Initial review context was not reserved; retry the partial PR review.";
-const initialProjectionReservations = new WeakMap<Context, Set<InitialProjectionPairReservation>>();
-const initialProjectionPreparationStates = new WeakMap<Context, InitialProjectionPreparationState>();
 
 export type GraphProjectionCacheDisposition = "hit" | "miss" | "coalesced";
 
@@ -95,6 +88,7 @@ interface ProjectionReadiness {
 interface EnsuredProjection {
   readonly cache: GraphProjectionCacheDisposition;
   readonly readiness: ProjectionReadiness | null;
+  readonly handle: WebGraphProjectCacheHandle;
 }
 
 /** Projection cache entries are process-local. Keep their small readiness attestations beside the
@@ -161,30 +155,8 @@ export interface InitialProjectionCacheEvidence {
 export interface InitialProjectionCacheResult {
   readonly evidence: InitialProjectionCacheEvidence;
   readonly warning: string | null;
-  /** Release a successful landing handoff when its terminal line cannot be delivered. */
-  releaseReservation(): void;
-}
-
-interface InitialProjectionPairReservation {
-  readonly comparisonKey: string;
-  readonly headKey: string;
-  readonly preparationEpoch: number;
-  acquireOwner(signal: AbortSignal, ttlMs: number): InitialProjectionReservationLease | null;
-  release(): void;
-}
-
-interface InitialProjectionReservationLease {
-  release(): void;
-}
-
-interface InitialProjectionReservationOwner {
-  readonly onAbort: () => void;
-  readonly signal: AbortSignal;
-}
-
-interface InitialProjectionPreparationState {
-  readonly epoch: number;
-  readonly pairIdentity: string;
+  /** Release the atomic publication pins after the handoff registry has acquired this pair. */
+  releasePreparationPins(): void;
 }
 
 /**
@@ -217,14 +189,13 @@ export async function handleGraphProject(
 ): Promise<void> {
   const cancellation = requestCancellation(request, response, ctx.shutdownSignal);
   let pins: ProjectionPins | undefined;
-  let cached: ReturnType<Context["graphProjectCache"]["acquire"]>;
+  let cached: WebGraphProjectCacheHandle | undefined;
   try {
     const body = parseGraphProjectionRequest(await readJsonBody(request, cancellation.signal));
     pins = acquireProjectionPins(ctx, body);
     const key = projectionCacheKey(body, pins);
     const ensured = await ensureProjection(ctx, body, pins, key, cancellation.signal, "critical");
-    cached = ctx.graphProjectCache.acquire(key);
-    if (cached === undefined) throw new Error("published graph projection is unavailable");
+    cached = ensured.handle;
     await sendJsonFile(response, cached.path, {
       [GRAPH_PROJECTION_CACHE_HEADER]: ensured.cache,
       [GRAPH_PROJECTION_KEY_HEADER]: key,
@@ -238,24 +209,20 @@ export async function handleGraphProject(
 }
 
 /**
- * Populate and briefly reserve the exact direct-review boot pair. This runs after the outer PR
+ * Populate the exact direct-review boot pair. This runs after the outer PR
  * analysis singleflight has returned, so its two bounded revision lanes enter the coordinator as
  * ordinary top-level work rather than nesting an analysis phase inside another analysis phase.
- * Non-cancellation failures are deliberately advisory: callers retain the bounded provisional
- * artifact and receive only a fixed, path-free warning.
+ * Cross-request ownership belongs to the service's PR-review handoff registry; this projector owns
+ * only cache computation and readiness proof. Non-cancellation failures are deliberately advisory:
+ * callers retain the bounded provisional artifact and receive only a fixed, path-free warning.
  */
 export async function prepareInitialGraphProjectionCache(
   ctx: Context,
   headGraphId: string,
   comparisonGraphId: string,
   signal: AbortSignal,
-  options: {
-    reservationTtlMs?: number;
-  } = {},
 ): Promise<InitialProjectionCacheResult> {
-  const reservationTtlMs = initialProjectionReservationTtl(options.reservationTtlMs);
   throwIfAborted(signal);
-  const preparationEpoch = beginInitialProjectionPreparation(ctx, headGraphId, comparisonGraphId);
   const requests: GraphProjectionRequestV1[] = [
     {
       version: GRAPH_PROJECTION_VERSION,
@@ -312,29 +279,54 @@ export async function prepareInitialGraphProjectionCache(
   signal.addEventListener("abort", cancelPair, { once: true });
   if (signal.aborted) cancelPair();
   let outcomes: PromiseSettledResult<EnsuredProjection>[];
+  const projectMember = async ({ request, pins, key, rootPathChunks }: (typeof work)[number]) => {
+    try {
+      return await ensureProjection(
+        ctx,
+        request,
+        pins,
+        key,
+        pairController.signal,
+        "critical",
+        rootPathChunks,
+      );
+    } catch (error) {
+      if (!pairController.signal.aborted) pairController.abort(error);
+      throw error;
+    }
+  };
   try {
-    outcomes = await Promise.allSettled(work.map(async ({ request, pins, key, rootPathChunks }) => {
-      try {
-        return await ensureProjection(
-          ctx,
-          request,
-          pins,
-          key,
-          pairController.signal,
-          "critical",
-          rootPathChunks,
-        );
-      } catch (error) {
-        if (!pairController.signal.aborted) pairController.abort(error);
-        throw error;
+    if (ctx.analysisCoordinator.analysisCapacity === 1) {
+      outcomes = [];
+      for (const item of work) {
+        try {
+          outcomes.push({ status: "fulfilled", value: await projectMember(item) });
+        } catch (reason) {
+          outcomes.push({ status: "rejected", reason });
+          break;
+        }
       }
-    }));
+    } else {
+      outcomes = await Promise.allSettled(work.map(projectMember));
+    }
   } finally {
     signal.removeEventListener("abort", cancelPair);
     for (const item of work) item.pins.release();
   }
-  throwIfAborted(signal);
+  const projectionHandles = outcomes.flatMap((outcome) => (
+    outcome.status === "fulfilled" ? [outcome.value.handle] : []
+  ));
+  const releaseProjectionHandles = () => {
+    for (const handle of projectionHandles) handle.release();
+  };
+  try {
+    throwIfAborted(signal);
+  } catch (error) {
+    releaseProjectionHandles();
+    throw error;
+  }
   if (outcomes.some((outcome) => outcome.status === "rejected")) {
+    releaseProjectionHandles();
     return initialProjectionFailure(headKey, comparisonKey);
   }
   const readiness = outcomes.flatMap((outcome) => (
@@ -349,18 +341,10 @@ export async function prepareInitialGraphProjectionCache(
       || entry.completeRoots !== entry.roots
     ))
   ) {
+    releaseProjectionHandles();
     return initialProjectionFailure(headKey, comparisonKey);
   }
 
-  const reservation = reserveInitialProjectionPair(
-    ctx,
-    headKey as string,
-    comparisonKey as string,
-    signal,
-    reservationTtlMs,
-    preparationEpoch,
-  );
-  if (reservation === null) return initialProjectionFailure(headKey, comparisonKey);
   return {
     evidence: {
       version: 1,
@@ -371,7 +355,7 @@ export async function prepareInitialGraphProjectionCache(
       ready: true,
     },
     warning: null,
-    releaseReservation: () => reservation.release(),
+    releasePreparationPins: releaseProjectionHandles,
   };
 }
 
@@ -577,13 +561,13 @@ async function ensureProjectionWork(
 ): Promise<EnsuredProjection> {
   const hit = ctx.graphProjectCache.acquire(key);
   if (hit !== undefined) {
-    hit.release();
-    return { cache: "hit", readiness: projectionReadiness.get(ctx)?.get(key) ?? null };
+    return { cache: "hit", readiness: projectionReadiness.get(ctx)?.get(key) ?? null, handle: hit };
   }
   let ownedJob = false;
   const result = await ctx.analysisCoordinator.run<{
     state: "produced" | "raced";
     readiness: ProjectionReadiness | null;
+    publicationPin: ProjectionPublicationPin;
   }>(
     `graph-project:${key}`,
     async ({ runAnalysis, signal: jobSignal }) => {
@@ -593,10 +577,10 @@ async function ensureProjectionWork(
       ownedJob = true;
       const raced = ctx.graphProjectCache.acquire(key);
       if (raced !== undefined) {
-        raced.release();
         return {
           state: "raced",
           readiness: projectionReadiness.get(ctx)?.get(key) ?? null,
+          publicationPin: projectionPublicationPin(raced),
         };
       }
       const expansion = sourceIndex === null
@@ -667,28 +651,59 @@ async function ensureProjectionWork(
             )
           : await runAnalysis(runWorker);
         if (result.projection === null) throw new Error("graph projection worker returned no projection");
-        ctx.graphProjectCache.publish(key, stage, result.projection);
+        const publicationPin = projectionPublicationPin(
+          ctx.graphProjectCache.publishAndAcquire(key, stage, result.projection),
+        );
         const readiness = {
           roots: result.projection.roots,
           completeRoots: result.projection.completeRoots,
           loadedDepth: result.projection.loadedDepth,
         } satisfies ProjectionReadiness;
         rememberProjectionReadiness(ctx, key, readiness);
+        if (jobSignal.aborted) {
+          publicationPin.release();
+          throw jobSignal.reason;
+        }
+        return {
+          state: "produced" as const,
+          readiness,
+          publicationPin,
+        };
       } finally {
         ctx.graphProjectCache.discardStage(stage);
       }
-      if (jobSignal.aborted) throw jobSignal.reason;
-      return {
-        state: "produced",
-        readiness: projectionReadiness.get(ctx)?.get(key) ?? null,
-      };
     },
     { signal },
   );
-  if (!ownedJob || result.state === "raced") {
-    return { cache: "coalesced", readiness: result.readiness };
+  const retained = ctx.graphProjectCache.acquire(key);
+  result.publicationPin.release();
+  if (retained === undefined) {
+    throw new Error("published graph projection is unavailable");
   }
-  return { cache: "miss", readiness: result.readiness };
+  return {
+    cache: !ownedJob || result.state === "raced" ? "coalesced" : "miss",
+    readiness: result.readiness,
+    handle: retained,
+  };
+}
+
+interface ProjectionPublicationPin {
+  release(): void;
+}
+
+/** Keep a newly published result pinned until at least one resolved waiter acquires its own handle.
+ * The timer is only a last-waiter-cancel safety net; ordinary callers release synchronously. */
+function projectionPublicationPin(handle: WebGraphProjectCacheHandle): ProjectionPublicationPin {
+  let released = false;
+  const timer = setTimeout(release, 30_000);
+  timer.unref?.();
+  function release(): void {
+    if (released) return;
+    released = true;
+    clearTimeout(timer);
+    handle.release();
+  }
+  return { release };
 }
 
 function requiresPartialSourceExpansion(
@@ -972,6 +987,7 @@ function scheduleSpeculativeProjection(
   jobs.set(key, job);
 
   void ensureProjection(ctx, request, pins, key, controller.signal, "speculative")
+    .then(({ handle }) => handle.release())
     .catch(() => {})
     .finally(() => {
       ctx.shutdownSignal.removeEventListener("abort", onShutdown);
@@ -1175,112 +1191,6 @@ function registerSpeculativeSymbolWaiter(
   };
 }
 
-function reserveInitialProjectionPair(
-  ctx: Context,
-  headKey: string,
-  comparisonKey: string,
-  requestSignal: AbortSignal,
-  ttlMs: number,
-  preparationEpoch: number,
-): InitialProjectionReservationLease | null {
-  // A different newer picker owns the sole bounded landing promise. Identical concurrent callers
-  // are one cohort (for example the landing UI plus an evidence subscriber) and share the same two
-  // cache pins instead of invalidating one another's exact-pair terminal.
-  if (initialProjectionPreparationStates.get(ctx)?.epoch !== preparationEpoch) return null;
-  const reservations = initialProjectionReservations.get(ctx)
-    ?? new Set<InitialProjectionPairReservation>();
-  const existing = [...reservations].find((candidate) => (
-    candidate.preparationEpoch === preparationEpoch
-    && candidate.headKey === headKey
-    && candidate.comparisonKey === comparisonKey
-  ));
-  if (existing !== undefined) return existing.acquireOwner(requestSignal, ttlMs);
-  // Pair identity changes release the preceding handoff in beginInitialProjectionPreparation. Keep
-  // this defensive cleanup so an inconsistent registry can never pin more than one pair.
-  for (const candidate of [...reservations]) candidate.release();
-  const head = ctx.graphProjectCache.acquire(headKey);
-  if (head === undefined) return null;
-  const comparison = ctx.graphProjectCache.acquire(comparisonKey);
-  if (comparison === undefined) {
-    head.release();
-    return null;
-  }
-
-  const handles = [head, comparison];
-  const owners = new Set<InitialProjectionReservationOwner>();
-  let released = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const refresh = (durationMs: number) => {
-    if (timer !== undefined) clearTimeout(timer);
-    timer = setTimeout(release, durationMs);
-    timer.unref?.();
-  };
-  const release = () => {
-    if (released) return;
-    released = true;
-    if (timer !== undefined) clearTimeout(timer);
-    ctx.shutdownSignal.removeEventListener("abort", release);
-    for (const owner of owners) owner.signal.removeEventListener("abort", owner.onAbort);
-    owners.clear();
-    for (const handle of handles) handle.release();
-    reservations.delete(reservation);
-    if (reservations.size === 0) initialProjectionReservations.delete(ctx);
-  };
-  const reservation: InitialProjectionPairReservation = {
-    comparisonKey,
-    headKey,
-    preparationEpoch,
-    acquireOwner(signal, durationMs) {
-      if (released || signal.aborted || owners.size >= MAX_INITIAL_PROJECTION_RESERVATION_OWNERS) {
-        return null;
-      }
-      let owner!: InitialProjectionReservationOwner;
-      const releaseOwner = () => {
-        if (!owners.delete(owner)) return;
-        signal.removeEventListener("abort", owner.onAbort);
-        if (owners.size === 0) release();
-      };
-      owner = { signal, onAbort: releaseOwner };
-      owners.add(owner);
-      signal.addEventListener("abort", owner.onAbort, { once: true });
-      refresh(durationMs);
-      if (signal.aborted) {
-        releaseOwner();
-        return null;
-      }
-      return { release: releaseOwner };
-    },
-    release,
-  };
-  reservations.add(reservation);
-  initialProjectionReservations.set(ctx, reservations);
-  ctx.shutdownSignal.addEventListener("abort", release, { once: true });
-  if (ctx.shutdownSignal.aborted) {
-    release();
-    return null;
-  }
-  const lease = reservation.acquireOwner(requestSignal, ttlMs);
-  if (lease === null) reservation.release();
-  return lease;
-}
-
-function beginInitialProjectionPreparation(
-  ctx: Context,
-  headGraphId: string,
-  comparisonGraphId: string,
-): number {
-  const pairIdentity = JSON.stringify([headGraphId, comparisonGraphId]);
-  const current = initialProjectionPreparationStates.get(ctx);
-  if (current?.pairIdentity === pairIdentity) return current.epoch;
-  const epoch = (current?.epoch ?? 0) + 1;
-  initialProjectionPreparationStates.set(ctx, { epoch, pairIdentity });
-  const reservations = initialProjectionReservations.get(ctx);
-  if (reservations !== undefined) {
-    for (const reservation of [...reservations]) reservation.release();
-  }
-  return epoch;
-}
-
 function initialProjectionFailure(
   headKey: string | null,
   comparisonKey: string | null,
@@ -1295,18 +1205,8 @@ function initialProjectionFailure(
       ready: false,
     },
     warning: INITIAL_PROJECTION_FALLBACK_WARNING,
-    releaseReservation: () => {},
+    releasePreparationPins: () => {},
   };
-}
-
-function initialProjectionReservationTtl(value: number | undefined): number {
-  const resolved = value ?? INITIAL_PROJECTION_RESERVATION_TTL_MS;
-  if (!Number.isSafeInteger(resolved) || resolved < 1 || resolved > INITIAL_PROJECTION_RESERVATION_TTL_MS) {
-    throw new RangeError(
-      `initial projection reservation TTL must be between 1 and ${INITIAL_PROJECTION_RESERVATION_TTL_MS} milliseconds`,
-    );
-  }
-  return resolved;
 }
 
 /** Sort/dedupe before packing so chunk identity is independent of Git diff order. Both item count

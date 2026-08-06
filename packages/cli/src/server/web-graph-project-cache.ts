@@ -85,6 +85,26 @@ export class WebGraphProjectCache {
     stage: WebGraphProjectCacheStage,
     facts: { bytes: number; sha256: string },
   ): void {
+    this.#publish(key, stage, facts, false);
+  }
+
+  /** Atomically publish and pin a child-verified stage. The returned handle closes the otherwise
+   * observable gap where soft-limit enforcement could evict a new entry before its workflow owner
+   * acquires it. */
+  publishAndAcquire(
+    key: string,
+    stage: WebGraphProjectCacheStage,
+    facts: { bytes: number; sha256: string },
+  ): WebGraphProjectCacheHandle {
+    return this.#publish(key, stage, facts, true) as WebGraphProjectCacheHandle;
+  }
+
+  #publish(
+    key: string,
+    stage: WebGraphProjectCacheStage,
+    facts: { bytes: number; sha256: string },
+    acquire: boolean,
+  ): WebGraphProjectCacheHandle | undefined {
     this.#assertActive();
     if (!this.#isOwnedStage(stage.directory) || stage.outputPath !== join(stage.directory, "result.json")) {
       throw new TypeError("projection cache stage is not owned by this cache");
@@ -102,7 +122,12 @@ export class WebGraphProjectCache {
       existing.lastAccessMs = this.#now();
       existing.lastAccessOrder = ++this.#accessOrder;
       existing.expiresAtMs = existing.lastAccessMs + this.#ttlMs;
-      return;
+      const handle = acquire ? this.acquire(key) : undefined;
+      this.#enforce();
+      if (acquire && handle === undefined) {
+        throw new Error("published projection cache entry is unavailable");
+      }
+      return handle;
     }
     const directory = join(this.rootPath, `entry-${createHash("sha256").update(key).digest("hex")}`);
     if (existsSync(directory)) throw new Error("projection cache destination is unexpectedly occupied");
@@ -119,7 +144,12 @@ export class WebGraphProjectCache {
       expiresAtMs: now + this.#ttlMs,
       pins: 0,
     });
+    const handle = acquire ? this.acquire(key) : undefined;
     this.#enforce();
+    if (acquire && handle === undefined) {
+      throw new Error("published projection cache entry is unavailable");
+    }
+    return handle;
   }
 
   acquire(key: string): WebGraphProjectCacheHandle | undefined {

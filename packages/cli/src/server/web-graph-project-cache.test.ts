@@ -50,6 +50,50 @@ describe("WebGraphProjectCache", () => {
     latest!.release();
   });
 
+  it("publishes and pins atomically before soft retention can evict the new entry", () => {
+    const cache = createCache({ maxEntries: 1, maxBytes: 3 });
+    publish(cache, "existing", "old");
+    const stage = cache.createStage();
+    const bytes = Buffer.from("new");
+    writeFileSync(stage.outputPath, bytes);
+
+    const pinned = cache.publishAndAcquire("replacement", stage, {
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    });
+
+    expect(cache.acquire("existing")).toBeUndefined();
+    expect(cache.stats()).toEqual({ entries: 1, bytes: 3, pins: 1 });
+    expect(pinned.path).toMatch(/result\.json$/);
+    pinned.release();
+  });
+
+  it("allows a bounded pinned overflow and converges after those handles release", () => {
+    const cache = createCache({ maxEntries: 2, maxBytes: 4 });
+    const pins = ["a", "b", "c", "d"].map((key) => publishAndAcquire(cache, key, key.repeat(2)));
+
+    expect(cache.stats()).toEqual({ entries: 4, bytes: 8, pins: 4 });
+    pins[0]!.release();
+    pins[1]!.release();
+    expect(cache.stats()).toEqual({ entries: 2, bytes: 4, pins: 2 });
+    expect(cache.acquire("a")).toBeUndefined();
+    expect(cache.acquire("b")).toBeUndefined();
+    pins[2]!.release();
+    pins[3]!.release();
+  });
+
+  it("pins an exact immutable republish without replacing the existing file", () => {
+    const cache = createCache({ maxEntries: 1, maxBytes: 16 });
+    publish(cache, "same", "payload");
+    const original = cache.acquire("same")!;
+    const republished = publishAndAcquire(cache, "same", "payload");
+
+    expect(republished.path).toBe(original.path);
+    expect(cache.stats()).toEqual({ entries: 1, bytes: 7, pins: 2 });
+    original.release();
+    republished.release();
+  });
+
   it("rejects conflicting bytes for an equal immutable cache key", () => {
     const cache = createCache();
     publish(cache, "same", "first");
@@ -75,6 +119,16 @@ function publish(cache: WebGraphProjectCache, key: string, value: string): void 
   const bytes = Buffer.from(value);
   writeFileSync(stage.outputPath, bytes);
   cache.publish(key, stage, {
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
+}
+
+function publishAndAcquire(cache: WebGraphProjectCache, key: string, value: string) {
+  const stage = cache.createStage();
+  const bytes = Buffer.from(value);
+  writeFileSync(stage.outputPath, bytes);
+  return cache.publishAndAcquire(key, stage, {
     bytes: bytes.length,
     sha256: createHash("sha256").update(bytes).digest("hex"),
   });

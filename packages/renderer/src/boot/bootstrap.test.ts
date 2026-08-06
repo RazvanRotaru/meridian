@@ -20,6 +20,20 @@ const mocks = vi.hoisted(() => {
   };
   const stopProgress = vi.fn();
   const createBlueprintStore = vi.fn(() => store);
+  const preparedReviewHandoffCommit = vi.fn(async () => undefined);
+  const preparedReviewHandoffRelease = vi.fn(async () => undefined);
+  const beginPreparedReviewHandoff = vi.fn(async () => ({
+    commit: preparedReviewHandoffCommit,
+    release: preparedReviewHandoffRelease,
+  }));
+  const graphViewLeaseDispose = vi.fn();
+  const startGraphViewLease = vi.fn(() => ({
+    leaseId: "lease-1",
+    beginPreparedGraphHandoff: vi.fn(),
+    beginPreparedReviewHandoff,
+    replacePreparedGraphIds: vi.fn(async () => undefined),
+    dispose: graphViewLeaseDispose,
+  }));
   const store = {
     getState: () => state,
     setState: vi.fn((update: unknown) => {
@@ -33,17 +47,22 @@ const mocks = vi.hoisted(() => {
   return {
     artifact: { schemaVersion: "1.0.0", nodes: [], edges: [] },
     bindStore: vi.fn(),
+    beginPreparedReviewHandoff,
     cancelPrReviewPreparation,
     completeInitialRestore: vi.fn(),
     createBlueprintStore,
     dispose: vi.fn(),
     fetchGraphProjection,
+    graphViewLeaseDispose,
     guardOptions: null as PrReviewNavigationGuardOptions | null,
+    preparedReviewHandoffCommit,
+    preparedReviewHandoffRelease,
     restoreFromUrl: vi.fn(),
     startUrlSync: vi.fn(),
     state,
     stopProgress,
     startProgressiveSymbolIndex,
+    startGraphViewLease,
     store,
   };
 });
@@ -73,6 +92,7 @@ vi.mock("./bootConfig", () => ({
     graphProjectUrl: "/api/graph/project",
     graphSymbolsUrl: "/api/graph/symbols",
     graphViewLease: null,
+    preparedReviewHandoff: null,
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     traceUrl: "/api/traces",
@@ -132,12 +152,7 @@ vi.mock("./prReviewNavigationGuard", () => ({
   }),
 }));
 vi.mock("./graphViewLease", () => ({
-  startGraphViewLease: vi.fn(() => ({
-    leaseId: "lease-1",
-    beginPreparedGraphHandoff: vi.fn(),
-    replacePreparedGraphIds: vi.fn(async () => undefined),
-    dispose: vi.fn(),
-  })),
+  startGraphViewLease: mocks.startGraphViewLease,
 }));
 
 import {
@@ -155,6 +170,15 @@ import { DEFAULT_NAV, mergeNavIntoSearch } from "../state/urlState";
 
 const PROVISIONAL_PAIR_ID = "0123456789abcdefabcd";
 const PARTIAL_GRAPH_ID = `pr-partial-${PROVISIONAL_PAIR_ID}-${"a".repeat(40)}`;
+const COMPARISON_GRAPH_ID = `pr-partial-base-${PROVISIONAL_PAIR_ID}-${"b".repeat(40)}`;
+const PREPARED_REVIEW_HANDOFF = {
+  version: 1 as const,
+  claimId: "c".repeat(32),
+  url: `/api/pr-review-handoffs/${"c".repeat(32)}`,
+  expiresAtMs: Date.now() + 60_000,
+  headGraphId: PARTIAL_GRAPH_ID,
+  comparisonGraphId: COMPARISON_GRAPH_ID,
+};
 const PROVISIONAL_PROJECTION = {
   graphId: PARTIAL_GRAPH_ID,
   rootFileIds: [],
@@ -165,6 +189,10 @@ const PROVISIONAL_PROJECTION = {
   nodes: [],
   edges: [],
 } as unknown as GraphProjectionV1;
+const COMPARISON_PROJECTION = {
+  ...PROVISIONAL_PROJECTION,
+  graphId: COMPARISON_GRAPH_ID,
+} as unknown as GraphProjectionV1;
 
 describe("bootstrap initial URL restoration", () => {
   beforeEach(() => {
@@ -174,6 +202,12 @@ describe("bootstrap initial URL restoration", () => {
     mocks.state.prReviewProgress = createPrReviewProgressSnapshot();
     mocks.store.subscribe.mockImplementation(() => mocks.stopProgress);
     mocks.createBlueprintStore.mockClear();
+    mocks.preparedReviewHandoffCommit.mockReset().mockResolvedValue(undefined);
+    mocks.preparedReviewHandoffRelease.mockReset().mockResolvedValue(undefined);
+    mocks.beginPreparedReviewHandoff.mockReset().mockImplementation(async () => ({
+      commit: mocks.preparedReviewHandoffCommit,
+      release: mocks.preparedReviewHandoffRelease,
+    }));
     mocks.startProgressiveSymbolIndex.mockClear();
     mocks.fetchGraphProjection.mockReset();
   });
@@ -273,6 +307,7 @@ describe("bootstrap initial URL restoration", () => {
       graphProjectUrl: "/api/graph/project",
       graphSymbolsUrl: "/api/graph/symbols",
     }));
+    expect(mocks.beginPreparedReviewHandoff).not.toHaveBeenCalled();
   });
 
   it("boots an unmarked copied review from its depth-one partial projection", async () => {
@@ -303,6 +338,75 @@ describe("bootstrap initial URL restoration", () => {
       graphProjectUrl: "/api/graph/project",
       graphSymbolsUrl: "/api/graph/symbols",
     }));
+  });
+
+  it("attaches a prepared review before fetching either projection and commits after store creation", async () => {
+    vi.stubGlobal("window", {
+      location: provisionalWindowLocation(),
+    });
+    usePreparedReviewBoot();
+    let resolveAttach!: (handoff: {
+      commit: typeof mocks.preparedReviewHandoffCommit;
+      release: typeof mocks.preparedReviewHandoffRelease;
+    }) => void;
+    mocks.beginPreparedReviewHandoff.mockReturnValueOnce(new Promise((resolve) => {
+      resolveAttach = resolve;
+    }));
+    vi.mocked(fetchGraphProjection)
+      .mockResolvedValueOnce(PROVISIONAL_PROJECTION)
+      .mockResolvedValueOnce(COMPARISON_PROJECTION);
+
+    const completion = bootstrap();
+    await vi.waitFor(() => expect(mocks.beginPreparedReviewHandoff).toHaveBeenCalledOnce());
+    expect(fetchGraphProjection).not.toHaveBeenCalled();
+
+    resolveAttach({
+      commit: mocks.preparedReviewHandoffCommit,
+      release: mocks.preparedReviewHandoffRelease,
+    });
+    await completion;
+
+    expect(mocks.beginPreparedReviewHandoff).toHaveBeenCalledWith(PREPARED_REVIEW_HANDOFF);
+    expect(fetchGraphProjection).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetchGraphProjection).mock.calls.map((call) => call[1])).toEqual([
+      expect.objectContaining({
+        graphId: PARTIAL_GRAPH_ID,
+        roots: { kind: "changed-files", seedGraphId: PARTIAL_GRAPH_ID },
+      }),
+      expect.objectContaining({
+        graphId: COMPARISON_GRAPH_ID,
+        roots: { kind: "changed-files", seedGraphId: PARTIAL_GRAPH_ID },
+      }),
+    ]);
+    expect(mocks.createBlueprintStore).toHaveBeenCalledWith(expect.objectContaining({
+      initialGraphProjection: PROVISIONAL_PROJECTION,
+      initialComparisonGraphProjection: COMPARISON_PROJECTION,
+    }));
+    expect(mocks.createBlueprintStore.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.preparedReviewHandoffCommit.mock.invocationCallOrder[0]!,
+    );
+    expect(mocks.preparedReviewHandoffCommit).toHaveBeenCalledOnce();
+    expect(mocks.preparedReviewHandoffRelease).not.toHaveBeenCalled();
+  });
+
+  it("releases an attached prepared review when projection bootstrap fails", async () => {
+    vi.stubGlobal("window", {
+      location: provisionalWindowLocation(),
+    });
+    usePreparedReviewBoot();
+    vi.mocked(fetchGraphProjection)
+      .mockResolvedValueOnce(PROVISIONAL_PROJECTION)
+      .mockRejectedValueOnce(new Error("comparison unavailable"));
+
+    await expect(bootstrap()).rejects.toThrow(
+      "the provisional PR graph projection is unavailable",
+    );
+
+    expect(mocks.beginPreparedReviewHandoff).toHaveBeenCalledWith(PREPARED_REVIEW_HANDOFF);
+    expect(mocks.createBlueprintStore).not.toHaveBeenCalled();
+    expect(mocks.preparedReviewHandoffCommit).not.toHaveBeenCalled();
+    expect(mocks.preparedReviewHandoffRelease).toHaveBeenCalledOnce();
+    expect(mocks.graphViewLeaseDispose).toHaveBeenCalledOnce();
   });
 
   it("boots the URL written after leaving a partial review without treating consumed handoff markers as malformed", async () => {
@@ -613,6 +717,7 @@ function useProvisionalBoot(
       expiresAtMs: Date.now() + 60_000,
       heartbeatIntervalMs: 30_000,
     },
+    preparedReviewHandoff: null,
     metaUrl: "/api/meta",
     overlayUrl: "/api/overlay",
     traceUrl: "/api/traces",
@@ -644,4 +749,19 @@ function useProvisionalBoot(
     analyzeUrl: `/api/pr/analyze?id=${graphId}`,
     graphId,
   } satisfies PrApiUrls);
+}
+
+function usePreparedReviewBoot(): void {
+  useProvisionalBoot({
+    graphViewLease: {
+      version: 1,
+      leaseId: "lease-1",
+      url: "/api/graph-view/lease-1",
+      createUrl: "/api/graph-view",
+      graphIds: [PARTIAL_GRAPH_ID, COMPARISON_GRAPH_ID],
+      expiresAtMs: Date.now() + 60_000,
+      heartbeatIntervalMs: 30_000,
+    },
+    preparedReviewHandoff: PREPARED_REVIEW_HANDOFF,
+  });
 }

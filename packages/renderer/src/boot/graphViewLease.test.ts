@@ -3,6 +3,7 @@ import {
   MAX_PROTECTED_GRAPH_IDS,
   startGraphViewLease,
   type GraphViewLeaseGrant,
+  type PreparedReviewHandoffGrant,
 } from "./graphViewLease";
 
 const GRANT: GraphViewLeaseGrant = {
@@ -12,6 +13,15 @@ const GRANT: GraphViewLeaseGrant = {
   createUrl: "/api/graph-views",
   expiresAtMs: 50_000,
   heartbeatIntervalMs: 1_000,
+};
+
+const PREPARED_REVIEW_GRANT: PreparedReviewHandoffGrant = {
+  version: 1,
+  claimId: "a".repeat(32),
+  url: `/api/pr-review-handoffs/${"a".repeat(32)}`,
+  expiresAtMs: 45_000,
+  headGraphId: "prepared-head",
+  comparisonGraphId: "prepared-comparison",
 };
 
 describe("graph view lease", () => {
@@ -56,6 +66,221 @@ describe("graph view lease", () => {
     lease.dispose();
     expectDelete(fetchMock, 3);
     expect(browser.listenerCount()).toBe(0);
+  });
+
+  it("renews the server-issued initial graph pair on the first heartbeat", async () => {
+    stubBrowser();
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease({
+      ...GRANT,
+      graphIds: ["base", "prepared-head", "prepared-comparison"],
+    }, "base");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(GRANT.heartbeatIntervalMs);
+    expectPut(fetchMock, 0, ["base", "prepared-head", "prepared-comparison"]);
+    lease.dispose();
+  });
+
+  it("attaches a prepared-review claim after protecting its union and commits it in order", async () => {
+    stubBrowser();
+    const fetchMock = vi.fn().mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    await lease.replacePreparedGraphIds(["mounted-head", "mounted-comparison"]);
+    const handoff = await lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+
+    expectPut(fetchMock, 1, [
+      "base",
+      "mounted-head",
+      "mounted-comparison",
+      "prepared-head",
+      "prepared-comparison",
+    ]);
+    expectPreparedReviewAttach(fetchMock, 2, PREPARED_REVIEW_GRANT);
+
+    await handoff.commit();
+    expectPut(fetchMock, 3, ["base", "prepared-head", "prepared-comparison"]);
+    expectPreparedReviewCommit(fetchMock, 4, PREPARED_REVIEW_GRANT);
+    await handoff.commit();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    lease.dispose();
+  });
+
+  it("restores the prior mounted set before releasing a prepared-review claim", async () => {
+    stubBrowser();
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => (
+      init?.method === "DELETE" ? noContentResponse() : Promise.resolve(okResponse())
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    await lease.replacePreparedGraphIds(["mounted-head", "mounted-comparison"]);
+    const handoff = await lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+    await handoff.release();
+
+    expectPut(fetchMock, 3, ["base", "mounted-head", "mounted-comparison"]);
+    expectPreparedReviewRelease(fetchMock, 4, PREPARED_REVIEW_GRANT);
+    await handoff.release();
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    lease.dispose();
+  });
+
+  it("keeps identical-pair claims independent across browser view controllers", async () => {
+    stubBrowser();
+    const otherLeaseGrant: GraphViewLeaseGrant = {
+      ...GRANT,
+      leaseId: "view-lease-2",
+      url: "/api/graph-view-leases/view-lease-2",
+    };
+    const otherClaim: PreparedReviewHandoffGrant = {
+      ...PREPARED_REVIEW_GRANT,
+      claimId: "b".repeat(32),
+      url: `/api/pr-review-handoffs/${"b".repeat(32)}`,
+    };
+    const fetchMock = vi.fn().mockImplementation((_url: string, init?: RequestInit) => (
+      init?.method === "DELETE" ? noContentResponse() : Promise.resolve(okResponse())
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const firstLease = startGraphViewLease(GRANT, "base");
+    const secondLease = startGraphViewLease(otherLeaseGrant, "base");
+
+    const [first, second] = await Promise.all([
+      firstLease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT),
+      secondLease.beginPreparedReviewHandoff(otherClaim),
+    ]);
+    expect(fetchMock.mock.calls.filter(([url]) => url === PREPARED_REVIEW_GRANT.url)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(1);
+
+    await first.release();
+    expect(fetchMock.mock.calls.filter(([url]) => url === PREPARED_REVIEW_GRANT.url)).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(1);
+    await second.commit();
+    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(2);
+    firstLease.dispose();
+    secondLease.dispose();
+  });
+
+  it("retains a prepared-review commit transaction after network failure and retries safely", async () => {
+    stubBrowser();
+    const commitFailure = new TypeError("network unavailable");
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockRejectedValueOnce(commitFailure)
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    await lease.replacePreparedGraphIds(["mounted-head", "mounted-comparison"]);
+    const handoff = await lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+    await expect(handoff.commit()).rejects.toThrow(
+      "Unable to transfer prepared review protection.",
+    );
+    // The failed claim commit restores the full old + candidate union before returning the error.
+    expectPut(fetchMock, 5, [
+      "base",
+      "mounted-head",
+      "mounted-comparison",
+      "prepared-head",
+      "prepared-comparison",
+    ]);
+
+    await handoff.commit();
+    expectPut(fetchMock, 6, ["base", "prepared-head", "prepared-comparison"]);
+    expectPreparedReviewCommit(fetchMock, 7, PREPARED_REVIEW_GRANT);
+    await handoff.commit();
+    expect(fetchMock).toHaveBeenCalledTimes(8);
+    lease.dispose();
+  });
+
+  it("rolls back a failed claim attachment and permits a clean retry", async () => {
+    stubBrowser();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse())
+      .mockRejectedValueOnce(new TypeError("network unavailable"))
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(okResponse())
+      .mockResolvedValueOnce(noContentResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    await expect(lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT))
+      .rejects.toThrow("Unable to transfer prepared review protection.");
+    const handoff = await lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+
+    // A begin failure cannot return a release handle, so it restores the base set before retry.
+    expectPut(fetchMock, 0, ["base", "prepared-head", "prepared-comparison"]);
+    expectPreparedReviewAttach(fetchMock, 1, PREPARED_REVIEW_GRANT);
+    expectPut(fetchMock, 2, ["base"]);
+    expectPut(fetchMock, 3, ["base", "prepared-head", "prepared-comparison"]);
+    expectPreparedReviewAttach(fetchMock, 4, PREPARED_REVIEW_GRANT);
+    await handoff.release();
+    expectPut(fetchMock, 5, ["base"]);
+    expectPreparedReviewRelease(fetchMock, 6, PREPARED_REVIEW_GRANT);
+    lease.dispose();
+  });
+
+  it("does not attach or settle a stale prepared-review generation", async () => {
+    stubBrowser();
+    const firstPut = deferred<Response>();
+    const nextClaim: PreparedReviewHandoffGrant = {
+      ...PREPARED_REVIEW_GRANT,
+      claimId: "c".repeat(32),
+      url: `/api/pr-review-handoffs/${"c".repeat(32)}`,
+      headGraphId: "next-head",
+      comparisonGraphId: "next-comparison",
+    };
+    const fetchMock = vi.fn()
+      .mockReturnValueOnce(firstPut.promise)
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    const stalePromise = lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+    const currentPromise = lease.beginPreparedReviewHandoff(nextClaim);
+    firstPut.resolve(okResponse());
+    const [stale, current] = await Promise.all([stalePromise, currentPromise]);
+
+    expect(fetchMock.mock.calls.some(([url]) => url === PREPARED_REVIEW_GRANT.url)).toBe(false);
+    expectPreparedReviewAttach(fetchMock, 2, nextClaim);
+    await stale.commit();
+    await stale.release();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await current.commit();
+    expectPreparedReviewCommit(fetchMock, 3, nextClaim);
+    lease.dispose();
+  });
+
+  it("serializes heartbeat renewal behind an in-flight prepared-review attach", async () => {
+    stubBrowser();
+    const attachResponse = deferred<Response>();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(okResponse())
+      .mockReturnValueOnce(attachResponse.promise)
+      .mockResolvedValue(okResponse());
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    const handoff = lease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT);
+    await flushMicrotasks();
+    expectPreparedReviewAttach(fetchMock, 1, PREPARED_REVIEW_GRANT);
+    await vi.advanceTimersByTimeAsync(GRANT.heartbeatIntervalMs);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    attachResponse.resolve(okResponse());
+    await handoff;
+    await flushMicrotasks();
+    expectPut(fetchMock, 2, ["base", "prepared-head", "prepared-comparison"]);
+    lease.dispose();
   });
 
   it("serializes concurrent changes and lets the newest complete set win", async () => {
@@ -364,6 +589,32 @@ describe("graph view lease", () => {
       .rejects.toThrow("no longer active");
   });
 
+  it("strictly validates prepared-review claims before changing the protected graph set", async () => {
+    stubBrowser();
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const lease = startGraphViewLease(GRANT, "base");
+
+    await expect(lease.beginPreparedReviewHandoff({
+      ...PREPARED_REVIEW_GRANT,
+      claimId: "short",
+    })).rejects.toThrow("Invalid prepared review handoff contract.");
+    await expect(lease.beginPreparedReviewHandoff({
+      ...PREPARED_REVIEW_GRANT,
+      url: "https://evil.example/handoff",
+    })).rejects.toThrow("same-origin");
+    await expect(lease.beginPreparedReviewHandoff({
+      ...PREPARED_REVIEW_GRANT,
+      comparisonGraphId: PREPARED_REVIEW_GRANT.headGraphId,
+    })).rejects.toThrow("Invalid prepared review handoff contract.");
+    await expect(lease.beginPreparedReviewHandoff({
+      ...PREPARED_REVIEW_GRANT,
+      headGraphId: " invalid ",
+    })).rejects.toThrow("Invalid graph registration id.");
+    expect(fetchMock).not.toHaveBeenCalled();
+    lease.dispose();
+  });
+
   it("rejects cross-origin and malformed grants before installing lifecycle work", () => {
     const browser = stubBrowser();
     vi.stubGlobal("fetch", vi.fn());
@@ -450,6 +701,49 @@ function expectCreate(fetchMock: ReturnType<typeof vi.fn>, call: number, graphId
   }));
 }
 
+function expectPreparedReviewAttach(
+  fetchMock: ReturnType<typeof vi.fn>,
+  call: number,
+  grant: PreparedReviewHandoffGrant,
+  viewLeaseId = GRANT.leaseId,
+): void {
+  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
+    method: "POST",
+    mode: "same-origin",
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({ version: 1, viewLeaseId }),
+  }));
+}
+
+function expectPreparedReviewCommit(
+  fetchMock: ReturnType<typeof vi.fn>,
+  call: number,
+  grant: PreparedReviewHandoffGrant,
+  viewLeaseId = GRANT.leaseId,
+): void {
+  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
+    method: "PUT",
+    mode: "same-origin",
+    credentials: "same-origin",
+    cache: "no-store",
+    body: JSON.stringify({ version: 1, viewLeaseId, action: "commit" }),
+  }));
+}
+
+function expectPreparedReviewRelease(
+  fetchMock: ReturnType<typeof vi.fn>,
+  call: number,
+  grant: PreparedReviewHandoffGrant,
+): void {
+  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
+    method: "DELETE",
+    mode: "same-origin",
+    credentials: "same-origin",
+    cache: "no-store",
+  }));
+}
+
 function expectDelete(fetchMock: ReturnType<typeof vi.fn>, call: number, url = GRANT.url): void {
   expect(fetchMock).toHaveBeenNthCalledWith(call + 1, url, {
     method: "DELETE",
@@ -466,6 +760,10 @@ function okResponse(): Response {
     status: 200,
     json: () => Promise.resolve({ version: 1, expiresAtMs: 50_000 }),
   } as Response;
+}
+
+function noContentResponse(): Response {
+  return { ok: true, status: 204 } as Response;
 }
 
 function unknownLeaseResponse(): Response {

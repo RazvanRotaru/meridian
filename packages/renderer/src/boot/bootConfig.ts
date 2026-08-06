@@ -11,7 +11,7 @@ import { syntheticScenarioDescriptorSchema, telemetrySourceDescriptorSchema } fr
 import type { SyntheticScenarioDescriptor, TelemetrySourceDescriptor } from "@meridian/core";
 import type { PrSessionSource } from "../state/prTypes";
 import type { SyntheticExecutionTrust } from "../state/syntheticExecutionTrust";
-import type { GraphViewLeaseGrant } from "./graphViewLease";
+import type { GraphViewLeaseGrant, PreparedReviewHandoffGrant } from "./graphViewLease";
 
 export interface BootConfig {
   graphUrl: string;
@@ -21,6 +21,8 @@ export interface BootConfig {
   graphSymbolsUrl?: string | null;
   /** Renewable process-local protection for the boot graph and any prepared PR pair. */
   graphViewLease: GraphViewLeaseGrant | null;
+  /** Opaque server claim which transfers the prepared pair to this document's graph lease. */
+  preparedReviewHandoff: PreparedReviewHandoffGrant | null;
   metaUrl: string;
   overlayUrl: string;
   /** Request-trace endpoint, separate from the aggregate metrics overlay. */
@@ -70,8 +72,10 @@ export interface PrApiUrls {
   graphId: string | null;
 }
 
-interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "graphViewLease" | "graphProjectUrl" | "graphSymbolsUrl" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
+interface InjectedConfig extends Omit<BootConfig, "defaultEnv" | "githubSource" | "graphViewLease" | "preparedReviewHandoff" | "graphProjectUrl" | "graphSymbolsUrl" | "traceUrl" | "traceAvailable" | "telemetrySources" | "preselectedTelemetrySourceId" | "syntheticExecutionUrl" | "syntheticExecutionTrust" | "syntheticScenarios"> {
   graphViewLease: unknown;
+  /** Optional for compatibility with documents served before exact prepared-pair claims. */
+  preparedReviewHandoff?: unknown;
   /** Optional for compatibility with servers predating progressive graph projection. */
   graphProjectUrl?: unknown;
   graphSymbolsUrl?: unknown;
@@ -100,6 +104,7 @@ const DEV_FALLBACK: BootConfig = {
   graphProjectUrl: null,
   graphSymbolsUrl: null,
   graphViewLease: null,
+  preparedReviewHandoff: null,
   metaUrl: "/api/meta",
   overlayUrl: "/api/overlay",
   traceUrl: "/api/traces",
@@ -205,9 +210,23 @@ function assertNeverDefaulted(injected: InjectedConfig): BootConfig {
     ? candidateGraphProjectUrl
     : null;
   const graphSymbolsUrl = graphProjectUrl === null ? null : candidateGraphSymbolsUrl;
+  const preparedReviewHandoff = normalizePreparedReviewHandoff(injected.preparedReviewHandoff);
+  if (preparedReviewHandoff !== null) {
+    const bootGraphId = prApiUrlsFromGraphUrl(injected.graphUrl).graphId;
+    if (
+      graphViewLease === null
+      || bootGraphId !== preparedReviewHandoff.headGraphId
+      || graphViewLease.graphIds === undefined
+      || !graphViewLease.graphIds.includes(preparedReviewHandoff.headGraphId)
+      || !graphViewLease.graphIds.includes(preparedReviewHandoff.comparisonGraphId)
+    ) {
+      throw new Error("boot contract violation: preparedReviewHandoff is not protected by this view");
+    }
+  }
   return {
     ...injected,
     graphViewLease,
+    preparedReviewHandoff,
     graphProjectUrl,
     graphSymbolsUrl,
     traceUrl,
@@ -248,14 +267,11 @@ function normalizeGraphViewLease(value: unknown): GraphViewLeaseGrant | null {
   }
   const candidate = value as Record<string, unknown>;
   const keys = Object.keys(candidate).sort();
+  const expectedKeys = candidate.graphIds === undefined
+    ? ["createUrl", "expiresAtMs", "heartbeatIntervalMs", "leaseId", "url", "version"]
+    : ["createUrl", "expiresAtMs", "graphIds", "heartbeatIntervalMs", "leaseId", "url", "version"];
   if (
-    keys.length !== 6
-    || keys[0] !== "createUrl"
-    || keys[1] !== "expiresAtMs"
-    || keys[2] !== "heartbeatIntervalMs"
-    || keys[3] !== "leaseId"
-    || keys[4] !== "url"
-    || keys[5] !== "version"
+    keys.join("\n") !== expectedKeys.join("\n")
     || candidate.version !== 1
     || typeof candidate.leaseId !== "string"
     || candidate.leaseId.length === 0
@@ -269,6 +285,7 @@ function normalizeGraphViewLease(value: unknown): GraphViewLeaseGrant | null {
     || typeof candidate.heartbeatIntervalMs !== "number"
     || !Number.isSafeInteger(candidate.heartbeatIntervalMs)
     || candidate.heartbeatIntervalMs <= 0
+    || (candidate.graphIds !== undefined && !validGraphIds(candidate.graphIds))
   ) {
     throw new Error("boot contract violation: graphViewLease is invalid");
   }
@@ -277,9 +294,72 @@ function normalizeGraphViewLease(value: unknown): GraphViewLeaseGrant | null {
     leaseId: candidate.leaseId,
     url: candidate.url,
     createUrl: candidate.createUrl,
+    ...(candidate.graphIds === undefined ? {} : { graphIds: [...candidate.graphIds as string[]] }),
     expiresAtMs: candidate.expiresAtMs,
     heartbeatIntervalMs: candidate.heartbeatIntervalMs,
   };
+}
+
+function normalizePreparedReviewHandoff(value: unknown): PreparedReviewHandoffGrant | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("boot contract violation: preparedReviewHandoff is invalid");
+  }
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (
+    keys.length !== 6
+    || keys[0] !== "claimId"
+    || keys[1] !== "comparisonGraphId"
+    || keys[2] !== "expiresAtMs"
+    || keys[3] !== "headGraphId"
+    || keys[4] !== "url"
+    || keys[5] !== "version"
+    || candidate.version !== 1
+    || typeof candidate.claimId !== "string"
+    || !/^[A-Za-z0-9_-]{32}$/.test(candidate.claimId)
+    || typeof candidate.headGraphId !== "string"
+    || candidate.headGraphId.length === 0
+    || candidate.headGraphId.length > 256
+    || typeof candidate.comparisonGraphId !== "string"
+    || candidate.comparisonGraphId.length === 0
+    || candidate.comparisonGraphId.length > 256
+    || candidate.comparisonGraphId === candidate.headGraphId
+    || !Number.isSafeInteger(candidate.expiresAtMs)
+    || (candidate.expiresAtMs as number) < 0
+    || !validPreparedReviewHandoffUrl(candidate.url, candidate.claimId)
+  ) {
+    throw new Error("boot contract violation: preparedReviewHandoff is invalid");
+  }
+  return {
+    version: 1,
+    claimId: candidate.claimId,
+    url: candidate.url as string,
+    expiresAtMs: candidate.expiresAtMs as number,
+    headGraphId: candidate.headGraphId,
+    comparisonGraphId: candidate.comparisonGraphId,
+  };
+}
+
+function validGraphIds(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length > 0
+    && value.length <= 5
+    && new Set(value).size === value.length
+    && value.every((id) => typeof id === "string" && id.length > 0 && id.length <= 256);
+}
+
+function validPreparedReviewHandoffUrl(value: unknown, claimId: string): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 512) return false;
+  try {
+    const url = new URL(value, "http://meridian.local");
+    return url.origin === "http://meridian.local"
+      && url.pathname === `/api/pr-review-handoffs/${claimId}`
+      && url.search === ""
+      && url.hash === "";
+  } catch {
+    return false;
+  }
 }
 
 function normalizeSyntheticExecutionTrust(

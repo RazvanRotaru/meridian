@@ -4063,7 +4063,7 @@
           throw expectedGenerationError("PR preparation changed after its early file manifest was shown.");
         }
         const destination = validated.destination;
-        completeReviewPrepareProgress(data.cache, destination);
+        completeReviewPrepareProgress(data.cache, validated.canonicalDestination);
         return { ...data, viewUrl: destination };
       }
 
@@ -4134,33 +4134,75 @@
           ready = evidence.ready;
         }
 
+        const handoff = data.preparedReviewHandoff;
+        if (ready && (
+          !handoff
+          || typeof handoff !== "object"
+          || Array.isArray(handoff)
+          || Object.keys(handoff).sort().join("\n") !== [
+            "claimId",
+            "comparisonGraphId",
+            "expiresAtMs",
+            "headGraphId",
+            "url",
+            "version",
+          ].join("\n")
+          || handoff.version !== 1
+          || typeof handoff.claimId !== "string"
+          || !/^[A-Za-z0-9_-]{32}$/.test(handoff.claimId)
+          || handoff.headGraphId !== pair.headGraphId
+          || handoff.comparisonGraphId !== pair.mergeBaseGraphId
+          || !Number.isSafeInteger(handoff.expiresAtMs)
+          || handoff.expiresAtMs < 0
+          || handoff.url !== "/api/pr-review-handoffs/" + handoff.claimId
+          || typeof data.canonicalViewUrl !== "string"
+        )) return null;
+        if (!ready && (handoff !== undefined || data.canonicalViewUrl !== undefined)) return null;
+
         let target;
+        let canonicalTarget;
         try {
           target = new URL(data.viewUrl, origin);
+          canonicalTarget = new URL(ready ? data.canonicalViewUrl : data.viewUrl, origin);
         } catch {
           return null;
         }
-        const exactParam = (name, value) => {
-          const values = target.searchParams.getAll(name);
+        const exactParam = (candidate, name, value) => {
+          const values = candidate.searchParams.getAll(name);
           return values.length === 1 && values[0] === value;
         };
-        const progressive = target.searchParams.getAll("progressive");
-        const partial = target.searchParams.getAll("partial");
-        const pairIds = target.searchParams.getAll("pair");
+        const progressive = canonicalTarget.searchParams.getAll("progressive");
+        const partial = canonicalTarget.searchParams.getAll("partial");
+        const pairIds = canonicalTarget.searchParams.getAll("pair");
+        const handoffIds = target.searchParams.getAll("handoff");
         if (target.origin !== origin
+          || canonicalTarget.origin !== origin
           || target.pathname !== "/view"
-          || !exactParam("id", pair.headGraphId)
-          || !exactParam("view", "modules")
-          || !exactParam("prn", String(pair.prNumber))
-          || !exactParam("rev", "1")
+          || canonicalTarget.pathname !== "/view"
+          || !exactParam(canonicalTarget, "id", pair.headGraphId)
+          || !exactParam(canonicalTarget, "view", "modules")
+          || !exactParam(canonicalTarget, "prn", String(pair.prNumber))
+          || !exactParam(canonicalTarget, "rev", "1")
           || (ready
             ? progressive.length !== 1 || progressive[0] !== "1"
             : progressive.length !== 0)
           || (provisional
             ? partial.length !== 1 || partial[0] !== "1"
               || pairIds.length !== 1 || pairIds[0] !== data.pairId
-            : partial.length !== 0 || pairIds.length !== 0)) return null;
-        return { pair, evidence, destination: target.pathname + target.search };
+            : partial.length !== 0 || pairIds.length !== 0)
+          || canonicalTarget.searchParams.has("handoff")
+          || (ready
+            ? handoffIds.length !== 1 || handoffIds[0] !== handoff.claimId
+              || target.pathname + target.search !== canonicalTarget.pathname
+                + canonicalTarget.search + "&handoff=" + encodeURIComponent(handoff.claimId)
+            : handoffIds.length !== 0 || target.pathname + target.search !== canonicalTarget.pathname + canonicalTarget.search)
+        ) return null;
+        return {
+          pair,
+          evidence,
+          destination: target.pathname + target.search,
+          canonicalDestination: canonicalTarget.pathname + canonicalTarget.search,
+        };
       }
 
       function resetReviewManifestShell() {

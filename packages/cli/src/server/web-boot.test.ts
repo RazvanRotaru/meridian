@@ -1,9 +1,13 @@
+import { createHash } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { PR_REVIEW_PROGRESS_MODEL, type GraphArtifact } from "@meridian/core";
 import { describe, expect, it, vi } from "vitest";
 import { injectPrReviewProgressModel, injectViewBoot } from "./web-boot";
 import { sendMeta, sendView } from "./web-graph";
 import { materializeValidatedArtifact, WebGraphStore } from "./web-graph-store";
+import { WebGraphProjectCache } from "./web-graph-project-cache";
+import { PrReviewHandoffRegistry, type PrReviewHandoffPair } from "./web-pr-review-handoff";
 import type { Context } from "./web-server";
 import { artifactSourceFor, type ArtifactSource } from "./web-source";
 
@@ -111,6 +115,35 @@ describe("injectViewBoot", () => {
     expect(html).toContain('"syntheticScenarios":[]');
     expect(html).toContain('"syntheticExecutionTrust":{"mode":"sandboxed-pr"');
   });
+
+  it("injects a prepared pair and canonicalizes its one-use claim before renderer bootstrap", () => {
+    const claimId = "c".repeat(32);
+    const html = injectViewBoot(
+      "<head></head>",
+      "head-graph",
+      { kind: "github", owner: "octo", repo: "repo" },
+      { ...viewLease("head-graph"), graphIds: ["head-graph", "comparison-graph"] },
+      null,
+      null,
+      {
+        preparedReviewHandoff: {
+          version: 1,
+          claimId,
+          url: `/api/pr-review-handoffs/${claimId}`,
+          expiresAtMs: 20_000,
+          headGraphId: "head-graph",
+          comparisonGraphId: "comparison-graph",
+        },
+        canonicalUrl: "/view?id=head-graph&view=modules",
+      },
+    );
+
+    expect(html).toContain(`"preparedReviewHandoff":{"version":1,"claimId":"${claimId}"`);
+    expect(html).toContain('"graphIds":["head-graph","comparison-graph"]');
+    expect(html).toContain(
+      ';history.replaceState(history.state,"","/view?id=head-graph&view=modules")',
+    );
+  });
 });
 
 function viewLease(graphId: string) {
@@ -119,6 +152,7 @@ function viewLease(graphId: string) {
     leaseId: "a".repeat(32),
     url: `/api/graph-views/${graphId}`,
     createUrl: "/api/graph-views",
+    graphIds: [graphId],
     expiresAtMs: 10_000,
     heartbeatIntervalMs: 1_000,
   };
@@ -137,6 +171,76 @@ describe("sendView", () => {
       '"githubSource":{"repository":"octo/repo","subdir":""}',
     );
     expect(capturedView({ kind: "other" })).toContain('"githubSource":null');
+  });
+
+  it("binds a transient review claim to one lease protecting both graphs", async () => {
+    const graphStore = new WebGraphStore();
+    const graphProjectCache = new WebGraphProjectCache({ sweepIntervalMs: 60_000 });
+    const registry = new PrReviewHandoffRegistry(graphStore, graphProjectCache);
+    const pair = {
+      key: "prepared-pair",
+      headGraphId: "head-graph",
+      comparisonGraphId: "comparison-graph",
+      headProjectionKey: "head-projection",
+      comparisonProjectionKey: "comparison-projection",
+    } satisfies PrReviewHandoffPair;
+    publishTestGraph(graphStore, pair.headGraphId, { kind: "github", owner: "octo", repo: "repo" });
+    publishTestGraph(
+      graphStore,
+      pair.comparisonGraphId,
+      { kind: "github", owner: "octo", repo: "repo" },
+    );
+    publishTestProjection(graphProjectCache, pair.headProjectionKey, "head");
+    publishTestProjection(graphProjectCache, pair.comparisonProjectionKey, "comparison");
+    await registry.prepare(pair.key, new AbortController().signal, async () => pair);
+    const claim = registry.issueClaim(pair.key);
+    let html = "";
+    let status = 0;
+    let headers: Record<string, string> = {};
+    const response = {
+      writeHead: vi.fn((nextStatus: number, nextHeaders: Record<string, string>) => {
+        status = nextStatus;
+        headers = nextHeaders;
+      }),
+      end: vi.fn((body: string) => { html = body; }),
+    } as unknown as ServerResponse;
+    const ctx = {
+      graphStore,
+      prReviewHandoffs: registry,
+      allowSyntheticExecution: false,
+      allowSyntheticPrExecution: false,
+      rendererIndex: "<head></head>",
+    } as unknown as Context;
+
+    try {
+      sendView(ctx, response, new URL(
+        `/view?id=${pair.headGraphId}&view=modules&handoff=${claim.claimId}`,
+        "http://localhost",
+      ));
+      expect(status).toBe(200);
+      expect(headers).toMatchObject({ "cache-control": "no-store", "referrer-policy": "no-referrer" });
+      const bootMatch = html.match(/window\.__MERIDIAN__=(.*?);history\.replaceState/);
+      expect(bootMatch).not.toBeNull();
+      const boot = JSON.parse(bootMatch![1]!) as {
+        graphViewLease: { leaseId: string; graphIds: string[] };
+        preparedReviewHandoff: { claimId: string; headGraphId: string; comparisonGraphId: string };
+      };
+      expect(boot.graphViewLease.graphIds).toEqual([pair.headGraphId, pair.comparisonGraphId]);
+      expect(boot.preparedReviewHandoff).toMatchObject({
+        claimId: claim.claimId,
+        headGraphId: pair.headGraphId,
+        comparisonGraphId: pair.comparisonGraphId,
+      });
+      expect(registry.inspectClaim(claim.claimId).attachedViewLeaseId)
+        .toBe(boot.graphViewLease.leaseId);
+      expect(html).toContain(
+        `;history.replaceState(history.state,"","/view?id=${pair.headGraphId}&view=modules")`,
+      );
+    } finally {
+      await registry.close();
+      graphProjectCache.dispose();
+      graphStore.dispose();
+    }
   });
 });
 
@@ -207,7 +311,7 @@ function capturedView(source: ArtifactSource): string {
   } as unknown as ServerResponse;
 
   try {
-    sendView(ctx, response, id);
+    sendView(ctx, response, new URL(`/view?id=${id}`, "http://localhost"));
     return html;
   } finally {
     graphStore.dispose();
@@ -248,23 +352,43 @@ function registeredGraphStore(
 ): WebGraphStore {
   const graphStore = new WebGraphStore();
   try {
-    graphStore.publish({
-      id,
-      material: materializeValidatedArtifact(TEST_ARTIFACT),
-      rawGraphPayload: "complete",
-      metadata: {
-        sourceRoot: "/workspace/fixture",
-        source,
-        synthetic: {
-          scenarios,
-          sourceFingerprint: scenarios.length === 0 ? null : "fixture-fingerprint",
-          trust,
-        },
-      },
-    });
+    publishTestGraph(graphStore, id, source, trust, scenarios);
     return graphStore;
   } catch (error) {
     graphStore.dispose();
     throw error;
   }
+}
+
+function publishTestGraph(
+  graphStore: WebGraphStore,
+  id: string,
+  source: ArtifactSource,
+  trust: import("./web-boot").SyntheticExecutionTrust | null = null,
+  scenarios: import("@meridian/core").SyntheticScenarioDescriptor[] = [],
+): void {
+  graphStore.publish({
+    id,
+    material: materializeValidatedArtifact(TEST_ARTIFACT),
+    rawGraphPayload: "complete",
+    metadata: {
+      sourceRoot: "/workspace/fixture",
+      source,
+      synthetic: {
+        scenarios,
+        sourceFingerprint: scenarios.length === 0 ? null : "fixture-fingerprint",
+        trust,
+      },
+    },
+  });
+}
+
+function publishTestProjection(cache: WebGraphProjectCache, key: string, value: string): void {
+  const stage = cache.createStage();
+  const bytes = Buffer.from(value);
+  writeFileSync(stage.outputPath, bytes);
+  cache.publish(key, stage, {
+    bytes: bytes.length,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  });
 }
