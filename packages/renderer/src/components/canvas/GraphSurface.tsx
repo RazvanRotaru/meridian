@@ -48,6 +48,7 @@ import {
   type ReactFlowInstance,
 } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
+import { selectShowHighways } from "../../state/store";
 import { edgeEvidenceForPair } from "../../graph/edgeEvidence";
 import { moduleNodeTypes } from "../nodes/modulemap/ModuleCardNode";
 import { paintMinimalLevel } from "../paintMinimal";
@@ -312,7 +313,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const radius = useBlueprint((state) => state.moduleRadius);
   const highlightMode = useBlueprint((state) => state.highlightMode);
   const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
-  const showHighways = useBlueprint((state) => state.showHighways);
+  const showHighways = useBlueprint(selectShowHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
   const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
   const edgeEvidenceSourcePath = useBlueprint((state) => state.codeView?.edgeEvidence === undefined

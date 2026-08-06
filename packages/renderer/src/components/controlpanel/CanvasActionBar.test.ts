@@ -570,6 +570,40 @@ describe("CanvasActionBar highway visibility", () => {
     expect(describedText(hiddenMarkup, hiddenButton)).toBe("Enable highways for dense edge traffic");
   });
 
+  it("uses the disabled review default without changing the ordinary Map preference", () => {
+    const store = actionBarStore();
+    store.setState({
+      minimalSeedIds: [ACTION_FILE],
+      minimalMemberIds: [ACTION_FILE],
+      review: {
+        context: {
+          changedFiles: [{ path: "src/action.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "action-bar-highways",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+
+    const hiddenMarkup = renderActionBar(store);
+    const hiddenButton = actionButtonMarkup(hiddenMarkup, "Highways");
+    expect(hiddenButton).toContain('aria-pressed="false"');
+    expect(store.getState().showHighways).toBe(true);
+    expect(store.getState().reviewShowHighways).toBe(false);
+
+    store.getState().toggleHighways();
+
+    const shownMarkup = renderActionBar(store);
+    const shownButton = actionButtonMarkup(shownMarkup, "Highways");
+    expect(shownButton).toContain('aria-pressed="true"');
+    expect(store.getState().showHighways).toBe(true);
+    expect(store.getState().reviewShowHighways).toBe(true);
+  });
+
   it("stays out of base, extraction-entry, and codebase-context action modes", () => {
     const store = actionBarStore();
     expect(renderActionBar(store)).not.toContain('aria-label="Highways"');

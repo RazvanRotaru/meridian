@@ -6,7 +6,11 @@
 
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import { collapsibleViewedNodeCount, removableModuleSelectionCount } from "../../state/store";
+import {
+  collapsibleViewedNodeCount,
+  removableModuleSelectionCount,
+  selectShowHighways,
+} from "../../state/store";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { selectionExpansionCount } from "../../derive/selectionExpansion";
 import { useSurfaceSelectionGraph } from "../canvas/SurfaceSelectionGraphContext";
@@ -76,7 +80,7 @@ export function CanvasActionBar({
   const flowPaneLayoutStatus = useBlueprint((state) => state.flowPaneLayoutStatus);
   const syntheticExecutionStatus = useBlueprint((state) => state.syntheticExecutionStatus);
   const minimalHistory = useBlueprint((state) => state.minimalGraphHistory);
-  const showHighways = useBlueprint((state) => state.showHighways);
+  const showHighways = useBlueprint(selectShowHighways);
   const reviewActive = useBlueprint((state) => state.review !== null);
   const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
   const reviewFlowOwnsSelection = useBlueprint((state) => state.review !== null && state.flowSelection !== null);
