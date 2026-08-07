@@ -16,7 +16,7 @@ const MEMBER: Edge = {
   data: { relationKind: "calls", weight: 1, underlyingEdgeIds: ["artifact-call"] },
 };
 
-function props(data: Record<string, unknown>): EdgeProps {
+function props(data: Record<string, unknown>, interactionWidth?: number): EdgeProps {
   return {
     id: "aggregate:a->b",
     source: "a",
@@ -31,6 +31,7 @@ function props(data: Record<string, unknown>): EdgeProps {
     deletable: false,
     style: { opacity: 1, stroke: "#8C9DFF", filter: "drop-shadow(0 0 3px #8C9DFF)" },
     data,
+    interactionWidth,
   } as unknown as EdgeProps;
 }
 
@@ -83,5 +84,52 @@ describe("incoming-call aggregate edge interaction", () => {
     const markup = renderToStaticMarkup(<svg><BundledEdge {...props(data)} /></svg>);
 
     expect(markup).toContain('<g style="pointer-events:none;filter:drop-shadow(0 0 3px #8C9DFF)">');
+  });
+});
+
+describe("foreground aggregate edge interaction", () => {
+  it("removes the mutual-cycle interaction corridor when its wrapper requests zero width", () => {
+    const data: CycleEdgeData = {
+      members: [MEMBER, { ...MEMBER, id: "calls:b->a", source: "b", target: "a" }],
+      relationKind: "calls",
+      forwardWeight: 1,
+      backwardWeight: 1,
+      crossPackage: false,
+      outsideView: false,
+    };
+
+    const markup = renderToStaticMarkup(<svg><CycleEdge {...props(data, 0)} /></svg>);
+
+    expect(markup).not.toContain("react-flow__edge-interaction");
+  });
+
+  it("removes the ribbon interaction spine when its wrapper requests zero width", () => {
+    const data: RibbonEdgeData = { members: [MEMBER], boosted: true };
+
+    const markup = renderToStaticMarkup(<svg><RibbonEdge {...props(data, 0)} /></svg>);
+
+    expect(markup).not.toContain("react-flow__edge-interaction");
+  });
+
+  it("makes the highway hit path pointer-inert when its wrapper requests zero width", () => {
+    const data: BundleEdgeData = {
+      count: 1,
+      breakdown: { calls: 1 },
+      dominantKind: "calls",
+      relationKind: "calls",
+      constituents: [MEMBER],
+      hasLit: true,
+      crossFrame: true,
+      crossPackage: false,
+      outsideView: false,
+      category: "bundle",
+      sourceParent: "left",
+      targetParent: "right",
+    };
+
+    const markup = renderToStaticMarkup(<svg><BundledEdge {...props(data, 0)} /></svg>);
+
+    expect(markup).toContain('stroke="transparent" stroke-width="0"');
+    expect(markup).toContain('pointer-events="none"');
   });
 });

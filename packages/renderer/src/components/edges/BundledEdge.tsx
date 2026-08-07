@@ -20,6 +20,7 @@ export function BundledEdge({
   targetPosition,
   style = {},
   data,
+  interactionWidth,
 }: EdgeProps) {
   const [hovered, setHovered] = useState(false);
   const bundle = data as BundleEdgeData;
@@ -38,6 +39,7 @@ export function BundledEdge({
   const stroke = (style.stroke as string) ?? "#8B95A3";
   const opacity = hovered ? Math.min((style.opacity as number ?? 0.4) + 0.3, 1) : (style.opacity as number ?? 0.4);
   const dash = style.strokeDasharray as string | undefined;
+  const hitWidth = interactionWidth ?? strokeWidth + 12;
 
   const label = bundleLabel(bundle.breakdown);
 
@@ -52,7 +54,8 @@ export function BundledEdge({
         d={edgePath}
         fill="none"
         stroke="transparent"
-        strokeWidth={strokeWidth + 12}
+        strokeWidth={hitWidth}
+        pointerEvents={hitWidth === 0 ? "none" : undefined}
         style={{ cursor: "pointer" }}
       />
       {/* The visible highway curve */}

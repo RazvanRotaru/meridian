@@ -5,7 +5,9 @@ import { RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
 import { GHOST_HIERARCHY_EDGE_ROLE } from "./presentationEdges";
 import {
   INCOMING_CALL_SPOTLIGHT_Z,
+  SELECTED_NODE_EDGE_Z,
   applyIncomingCallSpotlight,
+  raiseSelectedNodeEdges,
 } from "./useWireHover";
 
 const CALL_ID = "calls:a->target";
@@ -30,6 +32,60 @@ const hierarchy: Edge = {
   type: GHOST_HIERARCHY_EDGE_TYPE,
   data: { edgeRole: GHOST_HIERARCHY_EDGE_ROLE, underlyingEdgeIds: [CALL_ID] },
 };
+
+describe("raiseSelectedNodeEdges", () => {
+  it("raises only semantic wires incident to the selected node above the card layer", () => {
+    const input = [call, unrelated, hierarchy];
+    const result = raiseSelectedNodeEdges(input, new Set(["a", "frame"]));
+
+    expect(result).not.toBe(input);
+    expect(result[0]).toEqual({
+      ...call,
+      zIndex: SELECTED_NODE_EDGE_Z,
+      interactionWidth: 0,
+    });
+    expect(result[1]).toBe(unrelated);
+    expect(result[2]).toBe(hierarchy);
+  });
+
+  it("raises an aggregate that represents an exact selected ghost", () => {
+    const represented: Edge = {
+      id: "represented",
+      source: "grouped-ghost",
+      target: "target",
+      data: {
+        ghostGroupAggregate: true,
+        groupedGhostIds: ["exact-ghost"],
+      },
+    };
+    const aggregate: Edge = {
+      id: "aggregate",
+      source: "grouped-ghost",
+      target: "target",
+      data: { members: [represented] },
+    };
+
+    expect(raiseSelectedNodeEdges([aggregate], new Set(["exact-ghost"]))[0])
+      .toMatchObject({ zIndex: SELECTED_NODE_EDGE_Z });
+  });
+
+  it("keeps the original edge array when selection has no represented wire", () => {
+    const input = [call, unrelated];
+    expect(raiseSelectedNodeEdges(input, new Set())).toBe(input);
+    expect(raiseSelectedNodeEdges(input, new Set(["missing"]))).toBe(input);
+  });
+
+  it("preserves a deliberately higher local layer without cloning", () => {
+    const alreadyHigher = {
+      ...call,
+      zIndex: SELECTED_NODE_EDGE_Z + 1,
+      interactionWidth: 0,
+    };
+    const input = [alreadyHigher];
+
+    expect(raiseSelectedNodeEdges(input, new Set(["a"]))).toBe(input);
+  });
+});
 
 describe("applyIncomingCallSpotlight", () => {
   it("raises and brightens only matching semantic wires without covering card hit targets", () => {

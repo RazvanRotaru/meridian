@@ -13,12 +13,16 @@
  *     by pure passes over every such change (relayout, focus, a filter/highways toggle, the
  *     SELECTION moving), so unpinning on the array's identity covers them all: a panel attributing
  *     a strand no longer drawn would be a claim the canvas contradicts.
- *   - WIRES GO BEHIND CARDS (every surface): React Flow's default z-mode elevates any edge touching
- *     a NESTED node above every top-level card (basic mode ADDS the child node's z to the edge's
- *     own) — a lit fan into a frame member covered unrelated cards' text. The canvas runs
- *     zIndexMode="manual" (GraphSurface) and this hook sets the rule the eye expects: a wire
+ *   - WIRES GO BEHIND CARDS AT REST (every surface): React Flow's default z-mode elevates any edge
+ *     touching a NESTED node above every top-level card (basic mode ADDS the child node's z to the
+ *     edge's own) — a lit fan into a frame member covered unrelated cards' text. The canvas runs
+ *     zIndexMode="manual" (GraphSurface) and this hook sets the resting rule the eye expects: a wire
  *     CROSSING the canvas travels under everything (z 0); a wire living INSIDE one frame sits at
  *     its nesting depth — above its frame's translucent background, below that frame's own cards.
+ *     A selected node's represented semantic wires then move to the foreground rail, making that
+ *     explicit inspection choice readable through the dense graph until selection changes. Their
+ *     oversized transparent hover corridor is removed while raised so crossings do not steal card
+ *     interactions; the visible stroke itself remains inspectable.
  *   - HIDDEN wires (an unlit commons strand, opacity 0) render NOTHING — no path, no marker, no hit
  *     area (opacity 0 alone still hit-tests the stroke, so hovering the exact line would flash it
  *     back). They return only when the emphasis pass lights them.
@@ -29,7 +33,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Edge, Node } from "@xyflow/react";
-import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
+import { BUNDLE_EDGE_TYPE, selectionTouches } from "../../layout/edgeBundling";
 import { pairOf, RIBBON_EDGE_TYPE, type RibbonEdgeData } from "../../layout/parallelWires";
 import { CYCLE_EDGE_TYPE, type CycleEdgeData } from "../../layout/cycleFusion";
 import { WIRE_EDGE_TYPE } from "../edges/WireEdge";
@@ -39,6 +43,9 @@ import { relationKindOf } from "../../graph/relationEdge";
 import { wireReferencesAnyArtifactEdge } from "../../graph/edgeEvidence";
 
 const EMPTY_SPOTLIGHT_EDGE_IDS: ReadonlySet<string> = new Set<string>();
+const EMPTY_SELECTED_NODE_IDS: ReadonlySet<string> = new Set<string>();
+/** Selection-only z above React Flow's card layer, so the chosen node's wires remain traceable. */
+export const SELECTED_NODE_EDGE_Z = 1_000;
 /** Interaction-only z above React Flow's card layer; released as soon as the socket lens closes. */
 export const INCOMING_CALL_SPOTLIGHT_Z = 1_000;
 
@@ -67,6 +74,8 @@ export function useWireHover(
   onInspectPair?: (pair: Edge[]) => void,
   /** Return false to keep the local dock mounted while its source host asks Keep/Discard. */
   onInspectionEnd?: () => boolean | void,
+  /** Literal selected node ids whose represented semantic wires should paint above the cards. */
+  selectedNodeIds: ReadonlySet<string> = EMPTY_SELECTED_NODE_IDS,
   /** Exact artifact call edges temporarily raised by a directional node-socket lens. */
   spotlightEdgeIds: ReadonlySet<string> = EMPTY_SPOTLIGHT_EDGE_IDS,
 ): WireInteractionApi {
@@ -191,9 +200,13 @@ export function useWireHover(
       };
     });
   }, [edges, hover?.id, inspectedIds, nestingById, enabled]);
+  const selectedNodeEdges = useMemo(
+    () => raiseSelectedNodeEdges(baseDressedEdges, selectedNodeIds),
+    [baseDressedEdges, selectedNodeIds],
+  );
   const dressedEdges = useMemo(
-    () => applyIncomingCallSpotlight(baseDressedEdges, spotlightEdgeIds),
-    [baseDressedEdges, spotlightEdgeIds],
+    () => applyIncomingCallSpotlight(selectedNodeEdges, spotlightEdgeIds),
+    [selectedNodeEdges, spotlightEdgeIds],
   );
 
   const labelOf = (id: string) => labelById.get(id);
@@ -230,6 +243,31 @@ export function useWireHover(
       inspect(edge);
     },
   };
+}
+
+/**
+ * Put every semantic wire represented by the literal selection on the foreground edge rail.
+ * Presentation aggregates retain their selected child identity through `selectionTouches`; ghost
+ * hierarchy spokes stay on their structural rail. Preserve any deliberately higher local layer,
+ * but remove the wide transparent interaction stroke while foregrounded so crossings do not cover
+ * unrelated cards.
+ */
+export function raiseSelectedNodeEdges(
+  edges: Edge[],
+  selectedNodeIds: ReadonlySet<string>,
+): Edge[] {
+  if (selectedNodeIds.size === 0) return edges;
+  let changed = false;
+  const raised = edges.map((edge) => {
+    if (isGhostHierarchyEdge(edge) || !selectionTouches(edge, selectedNodeIds)) {
+      return edge;
+    }
+    const zIndex = Math.max(edge.zIndex ?? 0, SELECTED_NODE_EDGE_Z);
+    if (zIndex === edge.zIndex && edge.interactionWidth === 0) return edge;
+    changed = true;
+    return { ...edge, zIndex, interactionWidth: 0 };
+  });
+  return changed ? raised : edges;
 }
 
 /**

@@ -14,7 +14,7 @@ import { WireLabel } from "./WireLabel";
 /** The tension halo: a desaturated warning red, never used by the kind/status palettes. */
 const TENSION = "#B3554E";
 
-export function CycleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, markerStart, data }: EdgeProps) {
+export function CycleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, style, markerEnd, markerStart, data, interactionWidth }: EdgeProps) {
   if (isHiddenWire(data)) {
     return null;
   }
@@ -29,7 +29,7 @@ export function CycleEdge({ id, sourceX, sourceY, targetX, targetY, sourcePositi
       {/* Keep the tension halo's gaps phase-aligned with a semantic boundary dash; a solid halo
           underneath a dashed main stroke would visually fill the gaps and make the cycle read solid. */}
       <path d={path} fill="none" stroke={TENSION} strokeWidth={width + 4} strokeOpacity={0.28 * opacity} strokeDasharray={dash} strokeLinecap="round" pointerEvents="none" />
-      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} markerStart={markerStart} interactionWidth={callLensSpotlight ? 0 : 14} />
+      <BaseEdge id={id} path={path} style={style} markerEnd={markerEnd} markerStart={markerStart} interactionWidth={callLensSpotlight ? 0 : interactionWidth ?? 14} />
       <WireLabel x={labelX} y={labelY} text={cycleLabelText(cycle)} style={style} data={data} color={TENSION} />
     </g>
   );
