@@ -23,6 +23,7 @@ export function BundledEdge({
 }: EdgeProps) {
   const [hovered, setHovered] = useState(false);
   const bundle = data as BundleEdgeData;
+  const callLensSpotlight = (data as { callLensSpotlight?: boolean }).callLensSpotlight === true;
 
   const [edgePath] = getBezierPath({
     sourceX,
@@ -44,6 +45,7 @@ export function BundledEdge({
     <g
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      style={callLensSpotlight ? { pointerEvents: "none", filter: style.filter } : undefined}
     >
       {/* Invisible wider hit area for easier hover */}
       <path

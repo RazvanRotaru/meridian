@@ -36,6 +36,11 @@ import { WIRE_EDGE_TYPE } from "../edges/WireEdge";
 import type { WireHover } from "../WireTooltip";
 import { isGhostHierarchyEdge, isInteractiveSemanticEdge } from "./presentationEdges";
 import { relationKindOf } from "../../graph/relationEdge";
+import { wireReferencesAnyArtifactEdge } from "../../graph/edgeEvidence";
+
+const EMPTY_SPOTLIGHT_EDGE_IDS: ReadonlySet<string> = new Set<string>();
+/** Interaction-only z above React Flow's card layer; released as soon as the socket lens closes. */
+export const INCOMING_CALL_SPOTLIGHT_Z = 1_000;
 
 export interface WireInteractionApi {
   /** The input edges, z-ordered always; hover/inspector-boosted (and hit-widened) when enabled. */
@@ -62,6 +67,8 @@ export function useWireHover(
   onInspectPair?: (pair: Edge[]) => void,
   /** Return false to keep the local dock mounted while its source host asks Keep/Discard. */
   onInspectionEnd?: () => boolean | void,
+  /** Exact artifact call edges temporarily raised by a directional node-socket lens. */
+  spotlightEdgeIds: ReadonlySet<string> = EMPTY_SPOTLIGHT_EDGE_IDS,
 ): WireInteractionApi {
   const [hover, setHover] = useState<WireHover | null>(null);
   const [inspected, setInspected] = useState<Edge | null>(null);
@@ -123,7 +130,7 @@ export function useWireHover(
   // Each node's top-level ancestor + nesting depth, for the manual wire z-order (see the header).
   const nestingById = useMemo(() => nestingOf(nodes), [nodes]);
 
-  const dressedEdges = useMemo(() => {
+  const baseDressedEdges = useMemo(() => {
     return edges.map((edge) => {
       // GraphSurface normally partitions these before the hook. Keep this guard so another caller
       // cannot accidentally add semantic chrome or interaction state to a disclosure spoke.
@@ -139,7 +146,13 @@ export function useWireHover(
         // subject still has a visual anchor on canvas.
         const holdsInspected =
           inspectedIds.size > 0 && (edge.data as { constituents?: Edge[] }).constituents?.some((member) => inspectedIds.has(member.id)) === true;
-        return holdsInspected ? { ...edge, zIndex, style: { ...edge.style, opacity: 1 } } : { ...edge, zIndex };
+        return holdsInspected
+          ? {
+              ...edge,
+              zIndex,
+              style: { ...edge.style, opacity: 1 },
+            }
+          : { ...edge, zIndex };
       }
       const boosted = edge.id === hover?.id || inspectedIds.has(edge.id);
       if (edge.type === RIBBON_EDGE_TYPE) {
@@ -149,7 +162,12 @@ export function useWireHover(
         // pixel-precise hover would resurrect a wire only a SELECTION may light.
         const anyVisible =
           boosted || ((edge.data as RibbonEdgeData).members ?? []).some((member) => (member.style as { opacity?: number } | undefined)?.opacity !== 0);
-        return { ...edge, zIndex, interactionWidth: anyVisible ? 16 : 0, data: { ...edge.data, pulse: true, boosted, hidden: !anyVisible } };
+        return {
+          ...edge,
+          zIndex,
+          interactionWidth: anyVisible ? 16 : 0,
+          data: { ...edge.data, pulse: true, boosted, hidden: !anyVisible },
+        };
       }
       // An INVISIBLE wire (an unlit commons strand, opacity 0) renders NOTHING (see the header).
       const invisible = (edge.style as { opacity?: number } | undefined)?.opacity === 0 && !boosted;
@@ -163,10 +181,20 @@ export function useWireHover(
         type: edge.type ?? WIRE_EDGE_TYPE,
         interactionWidth: invisible ? 0 : 14,
         data: { ...edge.data, pulse: true, hidden: invisible },
-        style: boosted ? { ...edge.style, opacity: 1, strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2 } : edge.style,
+        style: boosted
+          ? {
+              ...edge.style,
+              opacity: 1,
+              strokeWidth: ((edge.style?.strokeWidth as number) ?? 1.5) + 1.2,
+            }
+          : edge.style,
       };
     });
   }, [edges, hover?.id, inspectedIds, nestingById, enabled]);
+  const dressedEdges = useMemo(
+    () => applyIncomingCallSpotlight(baseDressedEdges, spotlightEdgeIds),
+    [baseDressedEdges, spotlightEdgeIds],
+  );
 
   const labelOf = (id: string) => labelById.get(id);
   if (!enabled) {
@@ -201,6 +229,58 @@ export function useWireHover(
     onEdgeClick: (_event, edge) => {
       inspect(edge);
     },
+  };
+}
+
+/**
+ * Raise only presentation wires that retain one of the lens's exact artifact call edges. When the
+ * lens is closed (or no wire matches), return the input array and objects verbatim so unrelated
+ * interaction state does not churn.
+ */
+export function applyIncomingCallSpotlight(
+  edges: Edge[],
+  spotlightEdgeIds: ReadonlySet<string>,
+): Edge[] {
+  if (spotlightEdgeIds.size === 0) return edges;
+  let changed = false;
+  const spotlighted = edges.map((edge) => {
+    if (isGhostHierarchyEdge(edge) || !wireReferencesAnyArtifactEdge(edge, spotlightEdgeIds)) {
+      return edge;
+    }
+    changed = true;
+    if (edge.type === RIBBON_EDGE_TYPE) {
+      return {
+        ...edge,
+        zIndex: INCOMING_CALL_SPOTLIGHT_Z,
+        interactionWidth: 0,
+        style: incomingCallSpotlightStyle(edge.style),
+        data: {
+          ...edge.data,
+          pulse: true,
+          boosted: true,
+          hidden: false,
+          callLensSpotlight: true,
+        },
+      };
+    }
+    return {
+      ...edge,
+      zIndex: INCOMING_CALL_SPOTLIGHT_Z,
+      interactionWidth: 0,
+      style: incomingCallSpotlightStyle(edge.style),
+      data: { ...edge.data, hidden: false, callLensSpotlight: true },
+    };
+  });
+  return changed ? spotlighted : edges;
+}
+
+function incomingCallSpotlightStyle(style: Edge["style"]): Edge["style"] {
+  return {
+    ...style,
+    opacity: 1,
+    strokeWidth: ((style?.strokeWidth as number) ?? 1.5) + 1.2,
+    filter: "drop-shadow(0 0 3px rgba(140, 157, 255, 0.72))",
+    pointerEvents: "none",
   };
 }
 

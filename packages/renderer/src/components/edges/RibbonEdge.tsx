@@ -29,11 +29,12 @@ const STRIPE_WIDTH = 2.4;
 /** Notch rhythm: short transparent cuts, long visible cable segments. */
 const NOTCH_DASH = "4 12";
 
-export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, interactionWidth }: EdgeProps) {
+export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, markerEnd, data, interactionWidth, style }: EdgeProps) {
   if (isHiddenWire(data)) {
     return null;
   }
   const ribbon = data as RibbonEdgeData;
+  const callLensSpotlight = (data as { callLensSpotlight?: boolean }).callLensSpotlight === true;
   const members = ribbon.members ?? [];
   const center = (members.length - 1) / 2;
   const markerIndex = members.reduce((heaviest, member, index) => (weightOf(member) > weightOf(members[heaviest]) ? index : heaviest), 0);
@@ -99,7 +100,11 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         );
       });
   return (
-    <>
+    <g
+      style={callLensSpotlight
+        ? { pointerEvents: "none", filter: style?.filter }
+        : undefined}
+    >
       {boundary ? (
         <>
           {/* The NOTCH mask: a white band along the spine keeps the cable, while a black dashed
@@ -117,11 +122,11 @@ export function RibbonEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosit
         stripes
       )}
       {/* The invisible spine supplies one hit area for the whole cable. */}
-      <BaseEdge id={id} path={spine} style={SPINE} interactionWidth={interactionWidth ?? 16} />
+      <BaseEdge id={id} path={spine} style={SPINE} interactionWidth={callLensSpotlight ? 0 : interactionWidth ?? 16} />
       {routedPath ? null : (
         <WireLabel x={labelX} y={labelY} text={ribbonLabelText(members, markerIndex)} style={{ opacity: anyLit ? 1 : 0 }} data={{ pulse: ribbon.pulse }} color={dominantStrokeOf(members, markerIndex)} />
       )}
-    </>
+    </g>
   );
 }
 

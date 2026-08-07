@@ -11,6 +11,7 @@
 import { memo } from "react";
 import { Handle, Position, type Node, type NodeProps } from "@xyflow/react";
 import { useSurfaceNodeSelected } from "../../canvas/SurfaceInteractionContext";
+import { IncomingCallTargetPort } from "../../canvas/IncomingCallLens";
 import { accentForKind } from "../../../theme/kindColors";
 import type { BlockData } from "../../../derive/moduleLevel";
 import { BaseNode, type BaseNodeModel } from "../BaseNode";
@@ -41,7 +42,12 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
   };
   const handles = (
     <>
-      <Handle type="target" position={Position.Left} style={PIN} isConnectable={false} />
+      <IncomingCallTargetPort
+        nodeId={id}
+        nodeLabel={data.label}
+        callable={data.callable}
+        pinStyle={PIN}
+      />
       <Handle type="source" position={Position.Right} style={PIN} isConnectable={false} />
     </>
   );
@@ -81,6 +87,7 @@ function BlockNodeImpl({ id, data }: NodeProps<BlockRfNode>) {
 export const BlockNode = memo(BlockNodeImpl);
 
 const BLOCK: React.CSSProperties = {
+  position: "relative",
   width: "100%",
   height: "100%",
   boxSizing: "border-box",

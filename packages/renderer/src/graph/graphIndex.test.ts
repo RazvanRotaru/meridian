@@ -52,6 +52,17 @@ describe("childrenOf", () => {
   });
 });
 
+describe("directional edge indexes", () => {
+  it("indexes the same relationship from both its source and target", () => {
+    const edge = rendersEdge("app/ui#Page", "app/ui#Card");
+    const index = makeIndex([edge]);
+
+    expect(index.outEdges.get("app/ui#Page")).toEqual([edge]);
+    expect(index.inEdges.get("app/ui#Card")).toEqual([edge]);
+    expect(index.inEdges.get("app/ui#Page")).toBeUndefined();
+  });
+});
+
 describe("ancestorsOf", () => {
   it("returns the root..id inclusive path", () => {
     const index = makeIndex();

@@ -37,6 +37,15 @@ export function artifactLinksForWire(
   return links;
 }
 
+/** Whether a painted aggregate retains at least one of the requested artifact relationships. */
+export function wireReferencesAnyArtifactEdge(
+  wire: Edge,
+  edgeIds: ReadonlySet<string>,
+): boolean {
+  if (edgeIds.size === 0) return false;
+  return referencesAnyUnderlyingId(wire, edgeIds, new Set<string>());
+}
+
 /**
  * Every truthful source occurrence behind the clicked pair. Pair order is significant: pairOf puts
  * the clicked strand first, so the modal opens on the exact story the reader selected.
@@ -121,6 +130,22 @@ function collectUnderlyingIds(wire: Edge, into: string[], visited: Set<string>):
       if (typeof id === "string") into.push(id);
     }
   }
+}
+
+function referencesAnyUnderlyingId(
+  wire: Edge,
+  edgeIds: ReadonlySet<string>,
+  visited: Set<string>,
+): boolean {
+  if (visited.has(wire.id)) return false;
+  visited.add(wire.id);
+
+  const members = aggregateMembers(wire);
+  if (members.length > 0) {
+    return members.some((member) => referencesAnyUnderlyingId(member, edgeIds, visited));
+  }
+  const ids = (wire.data as { underlyingEdgeIds?: unknown } | undefined)?.underlyingEdgeIds;
+  return Array.isArray(ids) && ids.some((id) => typeof id === "string" && edgeIds.has(id));
 }
 
 function aggregateMembers(wire: Edge): readonly Edge[] {

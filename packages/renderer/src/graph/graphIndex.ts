@@ -14,6 +14,9 @@ export interface GraphIndex {
   roots: GraphNode[];
   parentOf: Map<string, string | null>;
   outEdges: Map<string, GraphEdge[]>;
+  /** Incoming artifact relationships by exact target id. Directional node affordances use this
+   * instead of rescanning the whole graph whenever a socket is hovered or opened. */
+  inEdges: Map<string, GraphEdge[]>;
   edges: GraphEdge[];
   /** Artifact edges by id — the Wire Inspector resolves a wire's `underlyingEdgeIds` through this. */
   edgesById: Map<string, GraphEdge>;
@@ -48,6 +51,7 @@ export function buildGraphIndex(artifact: GraphArtifact): GraphIndex {
     roots: artifact.nodes.filter(isRoot),
     parentOf,
     outEdges: groupOutEdges(artifact.edges),
+    inEdges: groupInEdges(artifact.edges),
     edges: artifact.edges,
     edgesById: new Map(artifact.edges.map((edge) => [edge.id, edge])),
     testIds: collectTestIds(artifact.nodes),
@@ -195,6 +199,14 @@ function groupOutEdges(edges: GraphEdge[]): Map<string, GraphEdge[]> {
     appendTo(bySource, edge.source, edge);
   }
   return bySource;
+}
+
+function groupInEdges(edges: GraphEdge[]): Map<string, GraphEdge[]> {
+  const byTarget = new Map<string, GraphEdge[]>();
+  for (const edge of edges) {
+    appendTo(byTarget, edge.target, edge);
+  }
+  return byTarget;
 }
 
 function appendTo<Value>(map: Map<string, Value[]>, key: string, value: Value): void {
