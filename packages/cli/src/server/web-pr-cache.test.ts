@@ -160,9 +160,9 @@ describe("persistent PR graph artifact paths", () => {
       expect(path).not.toContain(BASE_SHA);
     }
     // Changing canonical TypeScript declaration identity must rotate both pair snapshots and shared
-    // exact-revision objects, so a restart cannot restore artifacts that omitted type aliases or
-    // explicit value-call callback owners.
-    expect(REPOSITORY_ANALYSIS_VERSION).toBe(15);
+    // exact-revision objects, so a restart cannot restore artifacts that omitted type aliases,
+    // explicit value-call callback owners, or transparently wrapped object-literal declarations.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(16);
     const pairMetadata = JSON.parse(readFileSync(currentPrSnapshotMetadataPath(), "utf8"));
     expect(pairMetadata).toMatchObject({
       formatVersion: 12,
