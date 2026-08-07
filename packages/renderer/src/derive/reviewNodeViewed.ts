@@ -17,6 +17,17 @@ import {
 export type ReviewViewedScope = "folder" | "file" | "unit";
 export type ReviewViewedTargetScope = ReviewViewedScope | "source";
 
+export interface ReviewGraphNodeProgress {
+  viewed: number;
+  total: number;
+}
+
+interface ReviewGraphNode {
+  id: string;
+  type?: string;
+  hidden?: boolean;
+}
+
 export interface FolderReviewViewedTarget {
   kind: "folder";
   label: string;
@@ -118,9 +129,74 @@ export function reviewViewedTargetState(
   return unitViewState(target.unit, unitTicks, githubState, coordinates);
 }
 
+/**
+ * Count the reviewable cards in the current PR graph with the same target/state rules as their
+ * node-attached viewed controls. The laid React Flow nodes are already the settings- and
+ * scope-filtered graph frontier. Only node types that render viewed chrome participate: ghosts,
+ * flow steps, service domains, and other structural presentation nodes are context rather than
+ * review progress.
+ */
+export function reviewGraphNodeProgress(
+  nodes: readonly ReviewGraphNode[],
+  files: readonly ReviewFileRow[],
+  folderMembersByNodeId: Readonly<Record<string, readonly string[]>>,
+  graphIndex: GraphIndex,
+  unitTicks: Parameters<typeof fileViewState>[1],
+  fileTicks: Parameters<typeof fileViewState>[2],
+  githubStates: Parameters<typeof fileViewState>[3],
+  coordinates: ReviewUnitCoordinates,
+): ReviewGraphNodeProgress {
+  let viewed = 0;
+  let total = 0;
+  const seen = new Set<string>();
+  for (const node of nodes) {
+    if (node.hidden === true || seen.has(node.id)) {
+      continue;
+    }
+    const scope = graphNodeViewedScope(node.type);
+    if (scope === null) {
+      continue;
+    }
+    seen.add(node.id);
+    const folderMembers = scope === "folder" && Object.hasOwn(folderMembersByNodeId, node.id)
+      ? folderMembersByNodeId[node.id]
+      : undefined;
+    const target = reviewViewedTargetFor(
+      files,
+      scope,
+      node.id,
+      folderMembers,
+      graphIndex.nodesById.get(node.id)?.displayName ?? node.id,
+      graphIndex,
+    );
+    const state = reviewViewedTargetState(
+      target,
+      unitTicks,
+      fileTicks,
+      githubStates,
+      coordinates,
+    );
+    if (state === null) {
+      continue;
+    }
+    total += 1;
+    if (state === "done") {
+      viewed += 1;
+    }
+  }
+  return { viewed, total };
+}
+
 export function reviewViewedTargetScope(target: ReviewViewedTarget): ReviewViewedScope {
   if (target.kind === "folder") return "folder";
   return target.kind === "file" ? "file" : "unit";
+}
+
+function graphNodeViewedScope(type: string | undefined): ReviewViewedScope | null {
+  if (type === "package") return "folder";
+  if (type === "file") return "file";
+  if (type === "unit" || type === "block") return "unit";
+  return null;
 }
 
 function folderTarget(

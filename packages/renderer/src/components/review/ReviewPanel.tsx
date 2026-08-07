@@ -16,6 +16,7 @@ import {
 } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { countViewedFiles, isReviewTestPath } from "../../derive/reviewFiles";
+import { reviewGraphNodeProgress } from "../../derive/reviewNodeViewed";
 import type { ReviewData } from "../../derive/reviewData";
 import { reviewDraftIsVisible } from "../../derive/reviewSubmit";
 import type { PrSummary } from "../../state/prTypes";
@@ -501,6 +502,10 @@ function Header(props: {
   const githubViewedStates = useBlueprint((state) => state.reviewFileViewedStates);
   const viewedViewerId = useBlueprint((state) => state.reviewViewedFilesViewerId);
   const viewedHeadSha = useBlueprint((state) => state.prReviewRevision?.headSha);
+  const graphNodes = useBlueprint((state) => state.minimalRfNodes);
+  const graphFolderMembers = useBlueprint((state) => state.minimalRollups);
+  const graphIndex = useBlueprint((state) => state.index);
+  const minimalView = useBlueprint((state) => state.minimalView);
   const prReviewed = useBlueprint((state) => state.prReviewed);
   const currentPr = useBlueprint((state) => selectedPrSummary(state, state.prReviewed));
   const preparedArtifactCurrent = useBlueprint((state) => state.prPreparedArtifactCurrent);
@@ -517,6 +522,16 @@ function Header(props: {
     viewerId: viewedViewerId,
     headSha: viewedHeadSha,
   });
+  const graphProgress = reviewGraphNodeProgress(
+    graphNodes,
+    files,
+    graphFolderMembers,
+    graphIndex,
+    unitTicks,
+    fileTicks,
+    githubViewedStates,
+    { viewerId: viewedViewerId, headSha: viewedHeadSha },
+  );
   const total = files.length;
   const addedUnmatched = files.filter((file) => file.status === "added" && file.moduleId === null).length;
   const ctx = review.context;
@@ -608,17 +623,78 @@ function Header(props: {
         </div>
       )}
       {prReviewed !== null && <ExtractFailedWarning />}
-      {total > 0 && (
-        <div style={PROGRESS_ROW}>
-          <div style={PROGRESS_TRACK}>
-            <div style={{ ...PROGRESS_FILL, width: `${(viewed / total) * 100}%` }} />
-          </div>
-          <span style={PROGRESS_LABEL}>{viewed}/{total} files viewed</span>
-        </div>
-      )}
+      <ReviewProgressBars
+        viewed={viewed}
+        total={total}
+        graphViewed={graphProgress.viewed}
+        graphTotal={graphProgress.total}
+        showGraphProgress={minimalView === "graph"}
+      />
       {ctx.warnings.map((warning, index) => (
         <div key={index} style={WARNING}>{warning}</div>
       ))}
+    </div>
+  );
+}
+
+export interface ReviewProgressBarsProps {
+  viewed: number;
+  total: number;
+  graphViewed: number;
+  graphTotal: number;
+  showGraphProgress?: boolean;
+}
+
+/** Pair the stable changed-file milestone with progress for the reviewable nodes on this PR graph. */
+export function ReviewProgressBars(props: ReviewProgressBarsProps) {
+  const { viewed, total, graphViewed, graphTotal, showGraphProgress = true } = props;
+  if (total <= 0 && !showGraphProgress) {
+    return null;
+  }
+  return (
+    <div style={PROGRESS_STACK}>
+      {total > 0 && (
+        <ReviewProgressRow
+          viewed={viewed}
+          total={total}
+          label={`${viewed}/${total} files viewed`}
+          ariaLabel={`Overall review progress: ${viewed} of ${total} files viewed`}
+        />
+      )}
+      {showGraphProgress && (graphTotal > 0 ? (
+        <ReviewProgressRow
+          viewed={graphViewed}
+          total={graphTotal}
+          label={`${graphViewed}/${graphTotal} visible nodes viewed`}
+          ariaLabel={`Current PR graph progress: ${graphViewed} of ${graphTotal} reviewable nodes viewed`}
+          graph
+        />
+      ) : <div role="status" aria-live="polite" style={GRAPH_EMPTY}>No reviewable nodes in current PR graph</div>)}
+    </div>
+  );
+}
+
+function ReviewProgressRow(props: {
+  viewed: number;
+  total: number;
+  label: string;
+  ariaLabel: string;
+  graph?: boolean;
+}) {
+  const percentage = Math.max(0, Math.min(100, (props.viewed / props.total) * 100));
+  return (
+    <div style={PROGRESS_ROW}>
+      <div
+        role="progressbar"
+        aria-label={props.ariaLabel}
+        aria-valuemin={0}
+        aria-valuemax={props.total}
+        aria-valuenow={props.viewed}
+        style={props.graph ? GRAPH_PROGRESS_TRACK : PROGRESS_TRACK}
+      >
+        <div style={{ ...PROGRESS_FILL, width: `${percentage}%` }} />
+      </div>
+      <span style={props.graph ? GRAPH_PROGRESS_LABEL : PROGRESS_LABEL}>{props.label}</span>
     </div>
   );
 }
@@ -809,10 +885,14 @@ const REF_BRANCH: React.CSSProperties = { color: "#6BE38A" };
 const REF_ARROW: React.CSSProperties = { color: "#5A6472" };
 const REF_BASE: React.CSSProperties = { color: "#9AA4B2" };
 const ADDED_FILES_NOTE: React.CSSProperties = { fontSize: 11, color: "#7D8695" };
+const PROGRESS_STACK: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 5 };
 const PROGRESS_ROW: React.CSSProperties = { display: "flex", alignItems: "center", gap: 8 };
 const PROGRESS_TRACK: React.CSSProperties = { flex: 1, height: 5, background: "#1B212A", borderRadius: 3, overflow: "hidden" };
+const GRAPH_PROGRESS_TRACK: React.CSSProperties = { ...PROGRESS_TRACK, boxShadow: "inset 0 0 0 1px rgba(88,166,255,0.18)" };
 const PROGRESS_FILL: React.CSSProperties = { height: "100%", background: REVIEW_VIEWED_ACCENT, transition: "width 160ms ease" };
 const PROGRESS_LABEL: React.CSSProperties = { fontSize: 11, color: "#9AA4B2", whiteSpace: "nowrap" };
+const GRAPH_PROGRESS_LABEL: React.CSSProperties = { ...PROGRESS_LABEL, color: "#79B8FF" };
+const GRAPH_EMPTY: React.CSSProperties = { alignSelf: "flex-end", color: "#79B8FF", fontSize: 11 };
 const WARNING: React.CSSProperties = { fontSize: 11, color: "#D29922", background: "rgba(210,153,34,0.1)", borderRadius: 5, padding: "4px 8px" };
 const EXTRACT_WARNING: React.CSSProperties = { ...WARNING, display: "flex", alignItems: "flex-start", gap: 6 };
 const EXTRACT_WARNING_DETAIL: React.CSSProperties = { color: "#9A7B2D" };
