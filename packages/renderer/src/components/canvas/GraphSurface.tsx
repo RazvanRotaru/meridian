@@ -18,8 +18,10 @@
  *     PRECEDES routing so a multi-kind pair rides a frame's rail as ONE striped cable. Ghost cards
  *     were already banded OUTSIDE ELK by the layout (`placeGhostBands`); `emphasize` re-bands the
  *     lit ones selection-relative;
- *   - WIRES BEHIND CARDS on every surface: `zIndexMode="manual"` + the per-wire z the interaction
- *     hook assigns (cross-canvas under everything; intra-frame at its nesting depth);
+ *   - WIRES BEHIND CARDS at rest on every surface: `zIndexMode="manual"` + the per-wire z the
+ *     interaction hook assigns (cross-canvas under everything; intra-frame at its nesting depth).
+ *     Wires represented by the literal node selection move to the foreground rail so they remain
+ *     traceable through dense frames; closing/changing selection restores their ordinary layer;
  *   - wire hover naming (WireTooltip), plus the click-pinned EdgeInspectionDock with relationship
  *     metadata and contextual source highlighting, opt-in via `wireHover` on every active mount;
  *   - repeated semantic-zoom bands (`MapLod`, its legacy component name) — pure CSS visibility over
@@ -724,6 +726,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     props.wireHover === true,
     openWireEvidence,
     closeEdgeEvidence,
+    selected,
     incomingCallSpotlightIds,
   );
   const requestClearInspected = useReviewLineComposerGuard(wire.clearInspected, edgeEvidenceSourcePath);
@@ -836,7 +839,8 @@ export function GraphSurface(props: GraphSurfaceProps) {
         onMoveStart={onMoveStart}
         onMove={onMove}
         onMoveEnd={onMoveEnd}
-        // Manual z: basic mode ADDS a nested endpoint's node-z to the edge — see useWireHover's z rule.
+        // Manual z: basic mode ADDS a nested endpoint's node-z to the edge. The wire hook owns the
+        // resting rails plus the selected-node foreground exception.
         zIndexMode="manual"
         elementsSelectable={!props.readOnly || props.selectionOnly}
         nodesFocusable={!props.readOnly || props.selectionOnly}
