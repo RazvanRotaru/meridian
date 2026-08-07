@@ -368,6 +368,7 @@ describe.skipIf(!chromiumInstalled())("progressive landing PR picker (headless c
       await page.evaluate(() => localStorage.removeItem("meridian.selectedRepository"));
       await page.reload({ waitUntil: "domcontentloaded" });
       await page.locator("#me-login").getByText("fixture-user", { exact: true }).waitFor();
+      await page.locator("#intent-explore").click();
 
       const repo = page.locator("#repo");
       await repo.fill("distributed tracing");
@@ -478,7 +479,7 @@ async function openReviewPicker(target: Page, expectSignedIn = true): Promise<vo
   } else {
     await target.locator("#signin").waitFor();
   }
-  await target.locator("#intent-review").click();
+  expect(await target.locator("#intent-review").getAttribute("aria-pressed")).toBe("true");
 }
 
 function createLandingServer(): Server {

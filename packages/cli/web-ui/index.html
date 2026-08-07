@@ -19,9 +19,9 @@
   Every GitHub-sourced string is written via textContent and every external URL is https-validated
   before use — repo names/descriptions are untrusted.
 
-  Design: hero + auth-card over a live Canvas 2D rendering of a Meridian dependency graph
-  (design_handoff_meridian_landing). The card's segmented toggle maps the design's two auth modes
-  to our two real source kinds: "GitHub repo" | "Local path".
+  Design: a task-first landing surface with browser-local recent-work shortcuts beside a
+  deterministic capture of Meridian's current renderer. GitHub and local-folder entry points
+  reuse the same generation and PR-preparation contracts below.
 -->
 <html lang="en" data-theme="dark">
   <head>
@@ -114,7 +114,7 @@
         }
       }
 
-      /* ---- background layers: canvas graph + three scrims that protect the content ---- */
+      /* ---- background layers: current renderer capture + three content-protection scrims ---- */
       #bg {
         position: fixed;
         inset: 0;
@@ -122,6 +122,9 @@
         height: 100%;
         z-index: 0;
         display: block;
+        object-fit: cover;
+        object-position: center right;
+        pointer-events: none;
         opacity: 0.6;
         filter: blur(0.5px);
       }
@@ -1253,24 +1256,574 @@
           transition: none;
         }
       }
+
+      /* ---- task-first landing direction ---- */
+      body {
+        min-height: 100vh;
+        height: auto;
+        background: #080d12;
+        overflow-x: hidden;
+        overflow-y: auto;
+      }
+      #bg {
+        opacity: 0.72;
+        filter: none;
+      }
+      .scrim-radial {
+        background: radial-gradient(110% 95% at 78% 48%, rgba(8, 11, 14, 0.06) 0%, rgba(8, 11, 14, 0.24) 54%, rgba(8, 11, 14, 0.86) 100%);
+      }
+      .scrim-vertical {
+        background: linear-gradient(180deg, rgba(8, 11, 14, 0.48), rgba(8, 11, 14, 0) 22%, rgba(8, 11, 14, 0.08) 76%, rgba(8, 11, 14, 0.76));
+      }
+      .scrim-left {
+        background: linear-gradient(90deg, #080d12 0%, #080d12 40%, rgba(8, 13, 18, 0.9) 50%, rgba(8, 13, 18, 0.18) 67%, rgba(8, 13, 18, 0) 78%);
+      }
+      nav {
+        position: relative;
+        z-index: 4;
+        width: 100%;
+        max-width: none;
+        min-height: 70px;
+        padding: 20px clamp(28px, 5vw, 76px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(8, 11, 14, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+      }
+      .wordmark {
+        font-size: 20px;
+      }
+      #github-auth,
+      #auth,
+      #signin-area {
+        margin: 0;
+      }
+      #signin-area {
+        position: relative;
+      }
+      #github-auth .divider {
+        display: none;
+      }
+      #github-auth .auth-msg:not(:empty) {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        width: max-content;
+        max-width: 320px;
+        padding: 7px 10px;
+        border: 1px solid var(--hairline);
+        border-radius: 8px;
+        background: rgba(13, 16, 20, 0.98);
+      }
+      #github-auth button.github {
+        width: auto;
+        min-height: 34px;
+        padding: 7px 12px;
+        gap: 7px;
+        border-radius: 8px;
+        color: #cbd5df;
+        background: rgba(255, 255, 255, 0.025);
+        font-family: var(--font-sans);
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      #github-auth .me {
+        min-width: 0;
+      }
+      #github-auth .me-login {
+        max-width: 180px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 12.5px;
+      }
+      main {
+        flex: none;
+        min-height: calc(100vh - 70px);
+        grid-template-columns: minmax(0, 620px) minmax(0, 1fr);
+        grid-template-rows: auto auto;
+        align-content: start;
+        align-items: start;
+        column-gap: clamp(44px, 6vw, 90px);
+        row-gap: 25px;
+        width: 100%;
+        max-width: 1488px;
+        padding: 54px clamp(76px, 6.7vw, 96px) 48px;
+      }
+      .hero {
+        grid-column: 1;
+        grid-row: 1;
+        max-width: 600px;
+      }
+      .hero h1 {
+        max-width: 590px;
+        font-size: clamp(44px, 3.65vw, 52px);
+        line-height: 1.04;
+        letter-spacing: -0.045em;
+        text-wrap: balance;
+      }
+      .hero p {
+        max-width: 530px;
+        margin-top: 18px;
+        color: #8f9baa;
+        font-size: 16.5px;
+        line-height: 1.55;
+      }
+      .card-wrap {
+        grid-column: 1;
+        grid-row: 2;
+        justify-self: stretch;
+        width: 100%;
+        max-width: none;
+      }
+      .card {
+        overflow: visible;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        box-shadow: none;
+        backdrop-filter: none;
+        -webkit-backdrop-filter: none;
+      }
+      .card-accent {
+        display: none;
+      }
+      .card-scroll {
+        max-height: none;
+        overflow: visible;
+        padding: 0;
+      }
+      .card-header {
+        margin-bottom: 15px;
+      }
+      .card h2,
+      .recent-work h2 {
+        font-size: 18px;
+        font-weight: 600;
+        letter-spacing: -0.015em;
+      }
+      .card-subtitle {
+        display: none;
+      }
+      form,
+      .fieldset {
+        gap: 13px;
+      }
+      .intent-toggle {
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+      }
+      .intent-toggle button {
+        position: relative;
+        display: grid;
+        grid-template-columns: 16px 38px minmax(0, 1fr);
+        grid-template-rows: 1fr;
+        align-items: center;
+        min-height: 96px;
+        padding: 15px 14px;
+        border: 1px solid rgba(255, 255, 255, 0.11);
+        border-radius: 10px;
+        color: #bac4cf;
+        background: rgba(255, 255, 255, 0.025);
+        text-align: left;
+        column-gap: 10px;
+        transition: border-color 0.16s, background 0.16s, transform 0.16s;
+      }
+      .intent-toggle button:hover {
+        transform: translateY(-1px);
+        border-color: rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .intent-toggle button:focus-visible {
+        outline: none;
+        border-color: var(--blue);
+        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.14);
+      }
+      .intent-toggle button.active,
+      .intent-toggle button[aria-pressed="true"] {
+        color: var(--text);
+        border-color: rgba(69, 205, 96, 0.72);
+        background: rgba(38, 85, 48, 0.22);
+        box-shadow: inset 0 0 0 1px rgba(69, 205, 96, 0.07);
+      }
+      .intent-radio {
+        position: relative;
+        top: auto;
+        right: auto;
+        width: 14px;
+        height: 14px;
+        border: 1px solid rgba(255, 255, 255, 0.25);
+        border-radius: 50%;
+      }
+      .intent-toggle button[aria-pressed="true"] .intent-radio {
+        border: 4px solid #4bd468;
+      }
+      .intent-icon-shell {
+        display: grid;
+        place-items: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 7px;
+        color: #69aef7;
+        background: rgba(88, 166, 255, 0.1);
+      }
+      .intent-toggle button[aria-pressed="true"] .intent-icon-shell {
+        color: #59d776;
+        background: rgba(63, 185, 80, 0.12);
+      }
+      .intent-icon {
+        width: 20px;
+        height: 20px;
+        fill: currentColor;
+      }
+      .intent-copy {
+        display: flex;
+        min-width: 0;
+        flex-direction: column;
+        gap: 5px;
+        padding-right: 8px;
+      }
+      .intent-copy strong {
+        color: inherit;
+        font-size: 15px;
+        line-height: 1.2;
+      }
+      .intent-copy small {
+        color: #798694;
+        font-size: 11.5px;
+        font-weight: 400;
+        line-height: 1.35;
+      }
+      .field > label {
+        color: #aeb9c4;
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .field {
+        gap: 11px;
+      }
+      input,
+      .menu-trigger,
+      .repository-selection {
+        min-height: 46px;
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.028);
+      }
+      input::placeholder {
+        color: #83909d;
+      }
+      .repo-leading-icon {
+        position: absolute;
+        z-index: 2;
+        top: 50%;
+        left: 13px;
+        width: 16px;
+        height: 16px;
+        color: #a7b2bd;
+        fill: currentColor;
+        pointer-events: none;
+        transform: translateY(-50%);
+      }
+      #repo {
+        padding-left: 40px;
+      }
+      .field-note:empty,
+      .status:empty {
+        display: none;
+      }
+      button.primary {
+        min-height: 46px;
+        margin-top: 1px;
+        border-radius: 8px;
+        color: #07170c;
+        background: linear-gradient(180deg, #65e27b, #47c761);
+        box-shadow: 0 9px 28px -12px rgba(63, 185, 80, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.35);
+        font-size: 14px;
+      }
+      .source-divider {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin: 20px 0 7px;
+        color: #596573;
+        font-family: var(--font-mono);
+        font-size: 9.5px;
+      }
+      .source-divider::before,
+      .source-divider::after {
+        content: "";
+        height: 1px;
+        flex: 1;
+        background: rgba(255, 255, 255, 0.075);
+      }
+      .toggle {
+        display: block;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        text-align: left;
+      }
+      .toggle button {
+        display: inline-flex;
+        align-items: center;
+        width: auto;
+        gap: 8px;
+        padding: 7px 0;
+        color: #76a8e8;
+        background: transparent;
+        font-size: 12.5px;
+        font-weight: 500;
+      }
+      .toggle button:hover,
+      .toggle button:focus-visible {
+        color: #d8e1e9;
+        outline: none;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .trust-note {
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 7px;
+        margin: 11px 0 0;
+        color: #6f7b88;
+        font-size: 11px;
+      }
+      .inline-icon {
+        width: 15px;
+        height: 15px;
+        flex: 0 0 auto;
+        fill: currentColor;
+      }
+      .trust-note .inline-icon {
+        color: #5aae6d;
+      }
+      .recent-work {
+        margin-top: 36px;
+      }
+      .recent-work h2 {
+        margin: 0 0 11px;
+        font-size: 16px;
+      }
+      .recent-list {
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+        border: 1px solid rgba(255, 255, 255, 0.085);
+        border-radius: 9px;
+        background: rgba(255, 255, 255, 0.016);
+        list-style: none;
+      }
+      .recent-item {
+        border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      }
+      .recent-item:last-child {
+        border-bottom: 0;
+      }
+      .recent-item button {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        align-items: center;
+        width: 100%;
+        min-height: 50px;
+        gap: 14px;
+        padding: 7px 13px;
+        border: 0;
+        color: var(--text);
+        background: transparent;
+        font-family: var(--font-sans);
+        text-align: left;
+        cursor: pointer;
+      }
+      .recent-item button:hover {
+        background: rgba(255, 255, 255, 0.045);
+      }
+      .recent-item button:focus-visible {
+        outline: none;
+        background: rgba(88, 166, 255, 0.08);
+        box-shadow: inset 0 0 0 2px #58a6ff;
+      }
+      .recent-copy {
+        display: grid;
+        min-width: 0;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 3px 12px;
+      }
+      .recent-kind,
+      .recent-time {
+        color: #72808e;
+        font-family: var(--font-mono);
+        font-size: 8.5px;
+        letter-spacing: 0.075em;
+        text-transform: uppercase;
+      }
+      .recent-time {
+        text-align: right;
+      }
+      .recent-title,
+      .recent-meta {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .recent-title {
+        color: #dce5ed;
+        font-size: 12.5px;
+        font-weight: 600;
+      }
+      .recent-meta {
+        color: #6f7b88;
+        font-size: 10.5px;
+        text-align: right;
+      }
+      .recent-chevron {
+        width: 15px;
+        height: 15px;
+        color: #72808e;
+        fill: currentColor;
+      }
+      #view-device {
+        max-width: 500px;
+      }
+
+      @media (max-height: 860px) and (min-width: 981px) {
+        nav {
+          min-height: 62px;
+          padding-top: 14px;
+          padding-bottom: 14px;
+        }
+        main {
+          min-height: calc(100vh - 62px);
+          row-gap: 18px;
+          padding-top: 34px;
+          padding-bottom: 34px;
+        }
+        .hero h1 {
+          font-size: 44px;
+        }
+        .hero p {
+          margin-top: 13px;
+        }
+        .intent-toggle button {
+          min-height: 88px;
+        }
+        .recent-work {
+          margin-top: 18px;
+        }
+        .recent-item button {
+          min-height: 53px;
+        }
+      }
+      @media (max-width: 980px) {
+        #bg {
+          opacity: 0.25;
+        }
+        .scrim-left {
+          background: rgba(8, 11, 14, 0.9);
+        }
+        nav {
+          min-height: 64px;
+          padding: 15px 24px;
+        }
+        main {
+          min-height: calc(100vh - 64px);
+          grid-template-columns: 1fr;
+          grid-template-rows: auto auto;
+          gap: 28px;
+          padding: 42px 24px 64px;
+        }
+        .hero,
+        .card-wrap {
+          grid-column: 1;
+          max-width: 620px;
+          margin: 0 auto;
+        }
+        .hero {
+          grid-row: 1;
+        }
+        .card-wrap {
+          grid-row: 2;
+        }
+        .hero h1 {
+          font-size: clamp(39px, 8vw, 50px);
+        }
+      }
+      @media (max-width: 620px) {
+        #github-auth button.github svg,
+        #github-auth .me-login,
+        #github-auth .avatar {
+          display: none;
+        }
+        .intent-toggle {
+          grid-template-columns: 1fr;
+        }
+        .intent-toggle button {
+          min-height: 82px;
+        }
+        .hero h1 br {
+          display: none;
+        }
+        .recent-copy {
+          grid-template-columns: minmax(0, 1fr);
+        }
+        .recent-time,
+        .recent-meta {
+          display: none;
+        }
+      }
     </style>
   </head>
   <body>
-    <canvas id="bg" aria-hidden="true"></canvas>
+    <img
+      id="bg"
+      src="/landing-renderer-background.png"
+      alt=""
+      aria-hidden="true"
+      decoding="async"
+      fetchpriority="high"
+    />
     <div class="scrim scrim-radial"></div>
     <div class="scrim scrim-vertical"></div>
     <div class="scrim scrim-left"></div>
 
     <nav>
       <span class="wordmark">Meridian<span class="dot">.</span></span>
+      <div id="github-auth">
+        <div class="divider" id="auth-divider" hidden><span>OR</span></div>
+        <section id="auth" aria-label="GitHub account">
+          <div id="signin-area">
+            <button type="button" class="github" id="signin">
+              <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <path
+                  d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"
+                />
+              </svg>
+              <span>Sign in<span class="sr-only"> with GitHub</span></span>
+            </button>
+            <div class="auth-msg" id="auth-msg"></div>
+          </div>
+          <div class="me" id="signedin" hidden>
+            <img class="avatar" id="me-avatar" alt="" hidden />
+            <span class="me-login" id="me-login"></span>
+            <button type="button" class="ghost" id="signout">Sign out</button>
+          </div>
+        </section>
+      </div>
     </nav>
 
     <main>
       <section class="hero">
-        <h1>Read your codebase<br />the way it's <span class="grad-word">connected.</span></h1>
+        <h1>Let&rsquo;s make sense of<br /> your <span class="grad-word">codebase.</span></h1>
         <p>
-          Meridian turns files, functions, and dependencies into an explorable graph. Trace a call across the whole
-          repo, spot tangles before they ship, and actually <em>see</em> the structure hiding in your source.
+          Meridian turns your repository into an explorable code graph so you can understand it, not just search it.
         </p>
       </section>
 
@@ -1280,30 +1833,51 @@
           <div class="card-scroll">
           <div id="view-form">
           <div class="card-header">
-            <h2 id="card-title">Map your first repo</h2>
-            <p class="card-subtitle" id="card-subtitle">Point Meridian at a GitHub repository.</p>
-          </div>
-
-          <div class="toggle" id="toggle" role="tablist">
-            <span class="toggle-thumb" aria-hidden="true"></span>
-            <button type="button" role="tab" id="tab-github" class="active" aria-selected="true">GitHub</button>
-            <button type="button" role="tab" id="tab-path" aria-selected="false">Local</button>
+            <h2 id="card-title">What would you like to do?</h2>
+            <p class="card-subtitle" id="card-subtitle">Choose a starting point.</p>
           </div>
 
           <form id="form" autocomplete="off">
             <div class="fieldset" id="github-fields">
               <div class="intent-toggle" role="group" aria-label="GitHub action">
-                <button type="button" id="intent-explore" class="active" aria-pressed="true">Explore repository</button>
-                <button type="button" id="intent-review" aria-pressed="false">Review pull request</button>
+                <button type="button" id="intent-review" class="active" aria-pressed="true">
+                  <span class="intent-radio" aria-hidden="true"></span>
+                  <!-- Radix Icons ChatBubbleIcon. -->
+                  <span class="intent-icon-shell" aria-hidden="true">
+                    <svg class="intent-icon" viewBox="0 0 15 15" focusable="false">
+                      <path d="M12.5 3L2.5 3.00002C1.67157 3.00002 1 3.6716 1 4.50002V9.50003C1 10.3285 1.67157 11 2.5 11H7.50003C7.63264 11 7.75982 11.0527 7.85358 11.1465L10 13.2929V11.5C10 11.2239 10.2239 11 10.5 11H12.5C13.3284 11 14 10.3285 14 9.50003V4.5C14 3.67157 13.3284 3 12.5 3ZM2.49999 2.00002L12.5 2C13.8807 2 15 3.11929 15 4.5V9.50003C15 10.8807 13.8807 12 12.5 12H11V14.5C11 14.7022 10.8782 14.8845 10.6913 14.9619C10.5045 15.0393 10.2894 14.9965 10.1464 14.8536L7.29292 12H2.5C1.11929 12 0 10.8807 0 9.50003V4.50002C0 3.11931 1.11928 2.00003 2.49999 2.00002Z" />
+                    </svg>
+                  </span>
+                  <span class="intent-copy">
+                    <strong>Review a pull request</strong>
+                    <small>Understand changes and their impact.</small>
+                  </span>
+                </button>
+                <button type="button" id="intent-explore" aria-pressed="false">
+                  <span class="intent-radio" aria-hidden="true"></span>
+                  <!-- Radix Icons Share1Icon, reused from the renderer's established icon set. -->
+                  <span class="intent-icon-shell" aria-hidden="true">
+                    <svg class="intent-icon" viewBox="0 0 15 15" focusable="false">
+                      <path d="M5 7.50003C5 8.32845 4.32843 9.00003 3.5 9.00003C2.67157 9.00003 2 8.32845 2 7.50003C2 6.6716 2.67157 6.00003 3.5 6.00003C4.32843 6.00003 5 6.6716 5 7.50003ZM5.71313 8.66388C5.29445 9.45838 4.46048 10 3.5 10C2.11929 10 1 8.88074 1 7.50003C1 6.11931 2.11929 5.00003 3.5 5.00003C4.46048 5.00003 5.29445 5.54167 5.71313 6.33616L9.10424 4.21671C9.03643 3.98968 9 3.74911 9 3.50003C9 2.11932 10.1193 1.00003 11.5 1.00003C12.8807 1.00003 14 2.11932 14 3.50003C14 4.88074 12.8807 6.00003 11.5 6.00003C10.6915 6.00003 9.97264 5.61624 9.51566 5.0209L5.9853 7.22738C5.99502 7.31692 6 7.40789 6 7.50003C6 7.59216 5.99502 7.68312 5.9853 7.77267L9.51567 9.97915C9.97265 9.38382 10.6915 9.00003 11.5 9.00003C12.8807 9.00003 14 10.1193 14 11.5C14 12.8807 12.8807 14 11.5 14C10.1193 14 9 12.8807 9 11.5C9 11.2509 9.03643 11.0104 9.10425 10.7833L5.71313 8.66388ZM11.5 5.00003C12.3284 5.00003 13 4.32846 13 3.50003C13 2.6716 12.3284 2.00003 11.5 2.00003C10.6716 2.00003 10 2.6716 10 3.50003C10 4.32846 10.6716 5.00003 11.5 5.00003ZM13 11.5C13 12.3285 12.3284 13 11.5 13C10.6716 13 10 12.3285 10 11.5C10 10.6716 10.6716 10 11.5 10C12.3284 10 13 10.6716 13 11.5Z" />
+                    </svg>
+                  </span>
+                  <span class="intent-copy">
+                    <strong>Explore a repository</strong>
+                    <small>Map the codebase and trace how things connect.</small>
+                  </span>
+                </button>
               </div>
 
               <div class="field">
-                <label for="repo" id="repo-label">Public GitHub repository</label>
+                <label for="repo" id="repo-label">GitHub repository</label>
                 <div class="search-wrap" id="repo-search-wrap">
+                  <svg class="repo-leading-icon" viewBox="0 0 16 16" aria-hidden="true">
+                    <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
+                  </svg>
                   <input
                     id="repo"
                     name="repo"
-                    placeholder="owner/repo  or  https://github.com/owner/repo"
+                    placeholder="owner/repo or paste a GitHub URL"
                     role="combobox"
                     aria-autocomplete="list"
                     aria-expanded="false"
@@ -1329,7 +1903,7 @@
                 </div>
               </div>
 
-              <div class="fieldset" id="explore-fields">
+              <div class="fieldset" id="explore-fields" hidden>
                 <div class="field">
                   <label for="ref-query">Branch</label>
                   <input type="hidden" id="ref" name="ref" value="" />
@@ -1425,7 +1999,7 @@
               <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
             </div>
 
-            <button type="submit" class="primary" id="submit">Generate blueprint</button>
+            <button type="submit" class="primary" id="submit">Review this pull request</button>
             <section
               class="prepare-progress"
               id="prepare-progress"
@@ -1472,30 +2046,31 @@
             <div class="status" id="status" role="status" aria-live="polite"></div>
           </form>
 
-          <!-- GitHub-only: the whole sign-in block disappears in Local mode. -->
-          <div id="github-auth">
-          <!-- "OR" only makes sense while sign-in is the alternative; it hides once signed in. -->
-          <div class="divider" id="auth-divider"><span>OR</span></div>
-
-          <section id="auth">
-            <div id="signin-area">
-              <button type="button" class="github" id="signin">
-                <svg width="15" height="15" viewBox="0 0 16 16" fill="#e6edf3" aria-hidden="true">
-                  <path
-                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"
-                  />
-                </svg>
-                Sign in with GitHub
-              </button>
-              <div class="auth-msg" id="auth-msg"></div>
-            </div>
-            <div class="me" id="signedin" hidden>
-              <img class="avatar" id="me-avatar" alt="" hidden />
-              <span class="me-login" id="me-login"></span>
-              <button type="button" class="ghost" id="signout">Sign out</button>
-            </div>
-          </section>
+          <div class="source-divider" aria-hidden="true"><span>OR</span></div>
+          <div class="toggle" id="toggle" role="group" aria-label="Repository source">
+            <button type="button" id="tab-github" hidden>
+              <svg class="inline-icon" viewBox="0 0 15 15" aria-hidden="true"><path d="M3.5 2C3.22386 2 3 2.22386 3 2.5V12.5C3 12.7761 3.22386 13 3.5 13H11.5C11.7761 13 12 12.7761 12 12.5V6H8.5C8.22386 6 8 5.77614 8 5.5V2H3.5ZM9 2.70711L11.2929 5H9V2.70711ZM2 2.5C2 1.67157 2.67157 1 3.5 1H8.5C8.63261 1 8.75979 1.05268 8.85355 1.14645L12.8536 5.14645C12.9473 5.24021 13 5.36739 13 5.5V12.5C13 13.3284 12.3284 14 11.5 14H3.5C2.67157 14 2 13.3284 2 12.5V2.5Z" /></svg>
+              Use a GitHub repository instead
+            </button>
+            <button type="button" id="tab-path">
+              <svg class="inline-icon" viewBox="0 0 15 15" aria-hidden="true"><path d="M3.5 2C3.22386 2 3 2.22386 3 2.5V12.5C3 12.7761 3.22386 13 3.5 13H11.5C11.7761 13 12 12.7761 12 12.5V6H8.5C8.22386 6 8 5.77614 8 5.5V2H3.5ZM9 2.70711L11.2929 5H9V2.70711ZM2 2.5C2 1.67157 2.67157 1 3.5 1H8.5C8.63261 1 8.75979 1.05268 8.85355 1.14645L12.8536 5.14645C12.9473 5.24021 13 5.36739 13 5.5V12.5C13 13.3284 12.3284 14 11.5 14H3.5C2.67157 14 2 13.3284 2 12.5V2.5Z" /></svg>
+              Open a local folder instead
+            </button>
           </div>
+          <p class="trust-note">
+            <svg class="inline-icon" viewBox="0 0 15 15" aria-hidden="true"><path d="M5 4.63601C5 3.76031 5.24219 3.1054 5.64323 2.67357C6.03934 2.24705 6.64582 1.9783 7.5014 1.9783C8.35745 1.9783 8.96306 2.24652 9.35823 2.67208C9.75838 3.10299 10 3.75708 10 4.63325V5.99999H5V4.63601ZM4 5.99999V4.63601C4 3.58148 4.29339 2.65754 4.91049 1.99307C5.53252 1.32329 6.42675 0.978302 7.5014 0.978302C8.57583 0.978302 9.46952 1.32233 10.091 1.99162C10.7076 2.65557 11 3.57896 11 4.63325V5.99999H12C12.5523 5.99999 13 6.44771 13 6.99999V13C13 13.5523 12.5523 14 12 14H3C2.44772 14 2 13.5523 2 13V6.99999C2 6.44771 2.44772 5.99999 3 5.99999H4ZM3 6.99999H12V13H3V6.99999Z" /></svg>
+            <span>Read-only analysis. Nothing is pushed to GitHub.</span>
+          </p>
+          <section class="recent-work" id="recent-work" aria-labelledby="recent-work-title" hidden>
+            <h2 id="recent-work-title">Pick up where you left off</h2>
+            <ul class="recent-list" id="recent-work-list"></ul>
+          </section>
+          <template id="recent-chevron-template">
+            <!-- Radix Icons ChevronRightIcon. -->
+            <svg class="recent-chevron" viewBox="0 0 15 15" aria-hidden="true">
+              <path d="M6.1584 3.13508C6.35985 2.94621 6.67627 2.95642 6.86514 3.15788L10.6151 7.15788C10.7954 7.3502 10.7954 7.64949 10.6151 7.84182L6.86514 11.8418C6.67627 12.0433 6.35985 12.0535 6.1584 11.8646C5.95694 11.6757 5.94673 11.3593 6.1356 11.1579L9.565 7.49985L6.1356 3.84182C5.94673 3.64036 5.95694 3.32394 6.1584 3.13508Z" />
+            </svg>
+          </template>
           </div>
 
           <!-- The device sign-in flow replaces the form entirely; Back returns without cancelling. -->
@@ -1559,14 +2134,14 @@
 
       // --- source mode + the nested GitHub intent: explore a repo, or select a PR to review ---
       const MODE_COPY = {
-        path: { title: "Map a local repo", subtitle: "Graph a folder that's already on this machine." },
+        path: { title: "Open a local folder", subtitle: "Graph a folder that's already on this machine." },
       };
       const GITHUB_INTENT_COPY = {
-        explore: { title: "Map your first repo", subtitle: "Point Meridian at a GitHub repository.", submit: "Generate blueprint" },
-        review: { title: "Review a pull request", subtitle: "Choose from the same GitHub review queue available in the app.", submit: "Start PR review" },
+        explore: { title: "What would you like to do?", subtitle: "Choose a starting point.", submit: "Map this codebase" },
+        review: { title: "What would you like to do?", subtitle: "Choose a starting point.", submit: "Review this pull request" },
       };
       let mode = "github";
-      let githubIntent = "explore";
+      let githubIntent = "review";
       let branchTimer = null;
       let branchRequest = 0;
       let branchSearchTimer = null;
@@ -1581,19 +2156,28 @@
       let prRequest = 0;
       let prSearchTimer = null;
       let prSearchRequest = 0;
+      let recentWork = [];
 
       function setHeaderCopy(copy) {
         $("card-title").textContent = copy.title;
         $("card-subtitle").textContent = copy.subtitle;
       }
 
+      function updateGithubDetailsVisibility() {
+        const hasRepository = githubRepoSlug($("repo").value) !== null;
+        $("explore-fields").hidden = githubIntent !== "explore" || !hasRepository;
+        $("review-fields").hidden = githubIntent !== "review" || !hasRepository;
+      }
+
       function setGithubIntent(next) {
-        if (githubIntent === next) return;
+        if (githubIntent === next) {
+          updateGithubDetailsVisibility();
+          return;
+        }
         githubIntent = next;
         const review = next === "review";
         animateCardSwap(() => {
-          $("explore-fields").hidden = review;
-          $("review-fields").hidden = !review;
+          updateGithubDetailsVisibility();
           $("intent-explore").classList.toggle("active", !review);
           $("intent-review").classList.toggle("active", review);
           $("intent-explore").setAttribute("aria-pressed", String(!review));
@@ -1602,32 +2186,51 @@
           $("submit").textContent = GITHUB_INTENT_COPY[next].submit;
           setStatus("", "");
         });
-        reveal(review ? $("review-fields") : $("explore-fields"));
+        const details = review ? $("review-fields") : $("explore-fields");
+        if (!details.hidden) reveal(details);
         hideAllPickerPopovers();
         refreshGithubDataForAuth();
+        renderRecentWork();
       }
 
-      function setMode(next) {
-        if (mode === next) return;
+      function focusModeField(next) {
+        requestAnimationFrame(() => {
+          if (mode !== next) return;
+          if (next === "path") {
+            $("path").focus();
+            return;
+          }
+          const target = selectedRepository && !$("repository-selection").hidden
+            ? $("change-repository")
+            : $("repo");
+          target.focus();
+        });
+      }
+
+      function setMode(next, options) {
+        if (mode === next) {
+          if (options && options.focus) focusModeField(next);
+          return;
+        }
         mode = next;
         const github = next === "github";
         animateCardSwap(() => {
           $("github-fields").hidden = !github;
           $("path-fields").hidden = github;
-          $("github-auth").hidden = !github;
           setHeaderCopy(github ? GITHUB_INTENT_COPY[githubIntent] : MODE_COPY.path);
-          $("submit").textContent = github ? GITHUB_INTENT_COPY[githubIntent].submit : "Generate blueprint";
+          $("submit").textContent = github ? GITHUB_INTENT_COPY[githubIntent].submit : "Map this folder";
           setStatus("", "");
         });
         reveal(github ? $("github-fields") : $("path-fields"));
         $("toggle").classList.toggle("path", !github);
-        $("tab-github").classList.toggle("active", github);
-        $("tab-path").classList.toggle("active", !github);
-        $("tab-github").setAttribute("aria-selected", String(github));
-        $("tab-path").setAttribute("aria-selected", String(!github));
+        $("tab-github").hidden = github;
+        $("tab-path").hidden = !github;
+        if (github) updateGithubDetailsVisibility();
         hideAllPickerPopovers();
         if (github) refreshGithubDataForAuth();
         else cancelGithubDiscovery();
+        renderRecentWork();
+        if (options && options.focus) focusModeField(next);
       }
 
       function cancelGithubDiscovery() {
@@ -1644,8 +2247,8 @@
         resetCacheProbe();
       }
 
-      $("tab-github").addEventListener("click", () => setMode("github"));
-      $("tab-path").addEventListener("click", () => setMode("path"));
+      $("tab-github").addEventListener("click", () => setMode("github", { focus: true }));
+      $("tab-path").addEventListener("click", () => setMode("path", { focus: true }));
       $("intent-explore").addEventListener("click", () => setGithubIntent("explore"));
       $("intent-review").addEventListener("click", () => setGithubIntent("review"));
 
@@ -1709,12 +2312,12 @@
       // Signed out there is no search — the field takes an exact public repo. Signed in it
       // becomes a live search over all repos the token can see, so the label says so.
       function labelRepoField(isSignedIn) {
-        $("repo-label").textContent = selectedRepository
-          ? "GitHub repository"
-          : isSignedIn ? "Search GitHub repositories" : "Public GitHub repository";
+        $("repo-label").textContent = isSignedIn && !selectedRepository
+          ? "Search GitHub repositories"
+          : "GitHub repository";
         $("repo").placeholder = isSignedIn
-          ? "type to search  or  owner/repo"
-          : "owner/repo  or  https://github.com/owner/repo";
+          ? "Search or enter owner/repo"
+          : "owner/repo or paste a GitHub URL";
       }
 
       function showSignedOut() {
@@ -1734,7 +2337,8 @@
         $("signedin").hidden = true;
         $("signin-area").hidden = false;
         $("signin").hidden = false;
-        $("auth-divider").hidden = false;
+        $("github-auth").hidden = false;
+        $("auth-divider").hidden = true;
         labelRepoField(false);
         hideAllPickerPopovers();
         myRepos = [];
@@ -1783,6 +2387,7 @@
           $("view-form").hidden = false;
           $("signin-area").hidden = true;
           $("signedin").hidden = false;
+          $("github-auth").hidden = false;
           $("auth-divider").hidden = true;
           labelRepoField(true);
           $("me-login").textContent = currentUserLogin || "signed in";
@@ -1822,14 +2427,17 @@
         animateCardSwap(() => {
           $("view-device").hidden = true;
           $("view-form").hidden = false;
+          $("github-auth").hidden = false;
         });
         reveal($("view-form"));
+        renderRecentWork();
       }
 
       function showDeviceView() {
         animateCardSwap(() => {
           $("view-form").hidden = true;
           $("view-device").hidden = false;
+          $("github-auth").hidden = true;
         });
         reveal($("view-device"));
       }
@@ -1993,6 +2601,235 @@
         }
       }
 
+      // Recent work is deliberately a list of restart-safe source descriptors, not saved graph
+      // sessions. Graph ids are process-owned and PR view URLs can contain one-time handoff claims;
+      // reopening a row therefore restores the source and reruns the normal validated flow.
+      const RECENT_WORK_STORAGE_KEY = "meridian.recentWork.v1";
+      const RECENT_WORK_VERSION = 1;
+      const MAX_RECENT_WORK_ITEMS = 3;
+      const MAX_RECENT_WORK_STORAGE_BYTES = 32 * 1024;
+      let recentWorkResumePending = false;
+      let recentWorkReloadRepositoryOnFailure = null;
+
+      function recentText(value, maxLength, allowEmpty) {
+        if (typeof value !== "string") return null;
+        const text = value.trim();
+        if ((!allowEmpty && !text) || text.length > maxLength || /[\u0000-\u001f\u007f]/.test(text)) return null;
+        return text;
+      }
+
+      function normalizeRecentWorkItem(value) {
+        if (!value || typeof value !== "object") return null;
+        const repository = githubRepoSlug(value.repository);
+        if (!repository || githubRepoSlug(repository) !== repository || repository.length > 200) return null;
+        if (typeof value.lastUsedAt !== "number") return null;
+        const lastUsedAt = value.lastUsedAt;
+        if (!Number.isSafeInteger(lastUsedAt) || lastUsedAt < 0 || lastUsedAt > Date.now() + 86_400_000) return null;
+        if (value.kind === "repository") {
+          if (value.ref !== null && value.ref !== undefined && typeof value.ref !== "string") return null;
+          const ref = value.ref === null || value.ref === undefined || value.ref === ""
+            ? null
+            : recentText(value.ref, 256, false);
+          if (typeof value.ref === "string" && value.ref !== "" && ref === null) return null;
+          return { kind: "repository", repository, ref, lastUsedAt };
+        }
+        if (value.kind !== "pull-request") return null;
+        if (typeof value.prNumber !== "number") return null;
+        const prNumber = value.prNumber;
+        const title = recentText(value.title, 240, false);
+        const baseRef = recentText(value.baseRef, 256, false);
+        const headRef = recentText(value.headRef, 256, false);
+        if (!Number.isSafeInteger(prNumber) || prNumber < 1 || !title || !baseRef || !headRef) return null;
+        return { kind: "pull-request", repository, prNumber, title, baseRef, headRef, lastUsedAt };
+      }
+
+      function writeRecentWork(items) {
+        recentWork = items.slice(0, MAX_RECENT_WORK_ITEMS);
+        try {
+          window.localStorage.setItem(RECENT_WORK_STORAGE_KEY, JSON.stringify({
+            version: RECENT_WORK_VERSION,
+            items: recentWork,
+          }));
+        } catch {
+          // History is a convenience. Generation and navigation must still work without storage.
+        }
+        renderRecentWork();
+      }
+
+      function readRecentWork() {
+        let raw;
+        try {
+          raw = window.localStorage.getItem(RECENT_WORK_STORAGE_KEY);
+        } catch {
+          return [];
+        }
+        if (raw === null) {
+          writeRecentWork([]);
+          return [];
+        }
+        if (raw.length > MAX_RECENT_WORK_STORAGE_BYTES) {
+          writeRecentWork([]);
+          return [];
+        }
+        try {
+          const parsed = JSON.parse(raw);
+          if (!parsed || parsed.version !== RECENT_WORK_VERSION || !Array.isArray(parsed.items)) {
+            writeRecentWork([]);
+            return [];
+          }
+          const items = [];
+          const seen = new Set();
+          for (const value of parsed.items) {
+            const item = normalizeRecentWorkItem(value);
+            if (!item) continue;
+            const key = recentWorkKey(item);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            items.push(item);
+            if (items.length === MAX_RECENT_WORK_ITEMS) break;
+          }
+          writeRecentWork(items);
+          return items;
+        } catch {
+          writeRecentWork([]);
+          return [];
+        }
+      }
+
+      function recentWorkKey(item) {
+        return item.kind === "pull-request"
+          ? "pr:" + item.repository.toLowerCase() + "#" + item.prNumber
+          : "repo:" + item.repository.toLowerCase() + "@" + (item.ref || "");
+      }
+
+      function rememberRecentWork(item) {
+        const normalized = normalizeRecentWorkItem(item);
+        if (!normalized) return;
+        const key = recentWorkKey(normalized);
+        writeRecentWork([normalized, ...recentWork.filter((entry) => recentWorkKey(entry) !== key)]);
+      }
+
+      function rememberRepositoryWork(request) {
+        const repository = request && request.kind === "github" ? githubRepoSlug(request.value) : null;
+        if (!repository) return;
+        rememberRecentWork({
+          kind: "repository",
+          repository,
+          ref: typeof request.ref === "string" && request.ref.trim() ? request.ref.trim() : null,
+          lastUsedAt: Date.now(),
+        });
+      }
+
+      function rememberPullRequestWork(request, pullRequest) {
+        if (!request || !pullRequest) return;
+        rememberRecentWork({
+          kind: "pull-request",
+          repository: request.repository,
+          prNumber: request.prNumber,
+          title: pullRequest.title || "Pull request #" + request.prNumber,
+          baseRef: request.baseRef,
+          headRef: request.headRef,
+          lastUsedAt: Date.now(),
+        });
+      }
+
+      function recentTimeLabel(lastUsedAt) {
+        const seconds = Math.max(0, Math.round((Date.now() - lastUsedAt) / 1000));
+        if (seconds < 60) return "Just now";
+        const minutes = Math.round(seconds / 60);
+        if (minutes < 60) return minutes + "m ago";
+        const hours = Math.round(minutes / 60);
+        if (hours < 48) return hours + "h ago";
+        return Math.round(hours / 24) + "d ago";
+      }
+
+      function appendRecentText(parent, className, text) {
+        const element = document.createElement("span");
+        element.className = className;
+        element.textContent = text;
+        parent.appendChild(element);
+        return element;
+      }
+
+      function resumeRecentWork(item) {
+        if (recentWorkResumePending || $("submit").disabled) return;
+        recentWorkResumePending = true;
+        setMode("github");
+        setGithubIntent(item.kind === "pull-request" ? "review" : "explore");
+        cancelGithubDiscovery();
+        resetBranches();
+        resetPullRequests(undefined, true);
+        selectRepository(item.repository, { load: false });
+        if (item.kind === "repository") {
+          pickBranch(item.ref || "");
+        } else {
+          pickPullRequest({
+            number: item.prNumber,
+            title: item.title,
+            body: "",
+            author: "Recent work",
+            headRef: item.headRef,
+            headSha: "",
+            baseRef: item.baseRef,
+            updatedAt: new Date(item.lastUsedAt).toISOString(),
+            draft: false,
+            state: "open",
+            viewerStatus: null,
+          });
+        }
+        updateGithubDetailsVisibility();
+        recentWorkReloadRepositoryOnFailure = item.repository;
+        requestAnimationFrame(() => {
+          $("form").requestSubmit();
+          recentWorkResumePending = false;
+        });
+      }
+
+      function renderRecentWork() {
+        const section = $("recent-work");
+        const list = $("recent-work-list");
+        if (!section || !list) return;
+        list.replaceChildren();
+        const visible = mode === "github"
+          && !$("view-form").hidden
+          && !$("submit").disabled
+          && recentWork.length > 0;
+        section.hidden = !visible;
+        if (!visible) return;
+        for (const item of recentWork) {
+          const row = document.createElement("li");
+          row.className = "recent-item";
+          const button = document.createElement("button");
+          button.type = "button";
+          const copy = document.createElement("span");
+          copy.className = "recent-copy";
+          appendRecentText(copy, "recent-kind", item.kind === "pull-request" ? "Pull request" : "Repository");
+          const time = appendRecentText(copy, "recent-time", recentTimeLabel(item.lastUsedAt));
+          time.setAttribute("aria-label", new Date(item.lastUsedAt).toLocaleString());
+          appendRecentText(
+            copy,
+            "recent-title",
+            item.kind === "pull-request" ? "#" + item.prNumber + " " + item.title : item.repository,
+          );
+          appendRecentText(
+            copy,
+            "recent-meta",
+            item.kind === "pull-request" ? item.repository : item.ref || "Default branch",
+          );
+          button.appendChild(copy);
+          button.appendChild($("recent-chevron-template").content.firstElementChild.cloneNode(true));
+          button.setAttribute(
+            "aria-label",
+            item.kind === "pull-request"
+              ? "Reopen pull request #" + item.prNumber + " in " + item.repository
+              : "Reopen repository " + item.repository + " at " + (item.ref || "the default branch"),
+          );
+          button.addEventListener("click", () => resumeRecentWork(item));
+          row.appendChild(button);
+          list.appendChild(row);
+        }
+      }
+
       function showRepositorySelection(repository) {
         selectedRepository = repository;
         changingRepository = false;
@@ -2003,6 +2840,7 @@
         $("repo").setAttribute("aria-busy", "false");
         $("repository-selection").hidden = false;
         labelRepoField(signedIn);
+        updateGithubDetailsVisibility();
       }
 
       function selectRepository(value, options) {
@@ -2886,9 +3724,17 @@
         resetPullRequests(message, false);
       }
 
-      function showPullRequestPaginationError(message) {
+      function showPullRequestPaginationError(message, preserveSelection) {
         if (pullRequests.length === 0) {
-          showPullRequestError(message);
+          if (!preserveSelection) {
+            showPullRequestError(message);
+            return;
+          }
+          pullRequestsLoading = false;
+          pullRequestLoadWarning = message;
+          $("pr-query").setAttribute("aria-busy", "false");
+          renderPullRequestPreview();
+          renderPullRequestStatus(matchingPullRequests());
           return;
         }
         pullRequestsLoading = false;
@@ -2930,7 +3776,7 @@
           $("pr-author").value = "";
           prSearchQuery = "";
         }
-        clearPullRequestSelection(false);
+        if (!options || !options.preserveSelection) clearPullRequestSelection(false);
         $("pr-author-trigger").disabled = true;
         closeMenu("pr-author", false);
         $("pr-query").disabled = false;
@@ -2957,6 +3803,7 @@
                 pullRequests.length === 0
                   ? "Could not load pull requests" + detail + " Sign in for private repositories."
                   : "Could not load more pull requests" + detail,
+                options && options.preserveSelection,
               );
               return;
             }
@@ -2976,6 +3823,7 @@
               pullRequests.length === 0
                 ? "Could not reach GitHub for pull requests."
                 : "Could not reach GitHub for more pull requests.",
+              options && options.preserveSelection,
             );
           }
           return;
@@ -3192,6 +4040,7 @@
         repoSearchRequest++;
         repoSearchWarning = null;
         const query = $("repo").value.trim();
+        updateGithubDetailsVisibility();
         if (!signedIn) {
           hideResults();
           $("repo-status").textContent = query && !githubRepoSlug(query)
@@ -4452,6 +5301,8 @@
 
       $("form").addEventListener("submit", async (event) => {
         event.preventDefault();
+        const reloadRepositoryOnFailure = recentWorkReloadRepositoryOnFailure;
+        recentWorkReloadRepositoryOnFailure = null;
         const reviewing = mode === "github" && githubIntent === "review";
         const selectedReview = reviewing ? selectedPullRequest() : null;
         const pullRequestMissing = reviewing
@@ -4479,6 +5330,7 @@
         hideAllPickerPopovers();
         setStatus("", null);
         $("submit").disabled = true;
+        $("recent-work").hidden = true;
         const selectedCacheKey = !reviewing && request.kind === "github" ? cacheKey(request) : null;
         const cacheAlreadyChecked = selectedCacheKey !== null && checkedCacheKey === selectedCacheKey;
         generateProgressSuppressed = !reviewing
@@ -4497,6 +5349,8 @@
           const data = reviewing
             ? await preparePrReview(request)
             : await generateBlueprint(request);
+          if (reviewing) rememberPullRequestWork(request, selectedReview);
+          else rememberRepositoryWork(request);
           navigating = true;
           await allowFinalStagePaint();
           window.location = reviewing
@@ -4515,6 +5369,17 @@
           if (!navigating) {
             if (!reviewing) hidePrepareProgress();
             $("submit").disabled = false;
+            renderRecentWork();
+            if (reloadRepositoryOnFailure && reloadRepositoryOnFailure === selectedRepository) {
+              if (reviewing) {
+                void loadRepoPullRequests(reloadRepositoryOnFailure, {
+                  clearFilters: false,
+                  preserveSelection: true,
+                });
+              } else {
+                loadGithubRepositoryData(reloadRepositoryOnFailure);
+              }
+            }
           }
           generateProgressSuppressed = false;
         }
@@ -4545,340 +5410,13 @@
         }
       });
 
+      recentWork = readRecentWork();
       const restoredRepository = githubRepoSlug(initialGithubRepository) || readSelectedRepository();
       if (restoredRepository) selectRepository(restoredRepository, { load: false });
+      updateGithubDetailsVisibility();
+      renderRecentWork();
       initAuth();
 
-      // --- the animated graph background (ported from the design handoff; plain Canvas 2D) ---
-      const HEALTH = {
-        good: "#3fb950",
-        warn: "#e3b341",
-        pain: "#f85149",
-      };
-      // A representative Meridian graph (mirrors the orders-service example fixture).
-      const GRAPH = {
-        nodes: [
-          { name: "index.ts", type: "MODULE", health: "good", l1: "members 1 · cohesion 1", l2: "Ce 5 · Ca 0 · I 1 · A 0", d: "0", ax: 0.085, ay: 0.2 },
-          { name: "OrderRoutes", type: "CLASS", health: "warn", l1: "members 5 · cohesion 0.5", l2: "Ce 1 · Ca 1 · I 0.5 · A 0", d: "0.5", ax: 0.3, ay: 0.11 },
-          { name: "orderValidator.ts", type: "MODULE", health: "warn", l1: "members 2 · cohesion 1", l2: "Ce 1 · Ca 1 · I 0.5 · A 0", d: "0.5", ax: 0.585, ay: 0.1 },
-          { name: "OrderService", type: "CLASS", health: "warn", l1: "members 6 · cohesion 0.6", l2: "Ce 4 · Ca 3 · I 0.57 · A 0", d: "0.43", ax: 0.45, ay: 0.35 },
-          { name: "OrderRepository", type: "CLASS", health: "pain", l1: "members 3 · cohesion 0", l2: "Ce 0 · Ca 3 · I 0 · A 0", d: "1", ax: 0.8, ay: 0.3 },
-          { name: "PricingService", type: "CLASS", health: "pain", l1: "members 5 · cohesion 1", l2: "Ce 0 · Ca 4 · I 0 · A 0", d: "1", ax: 0.865, ay: 0.6 },
-          { name: "EmailService", type: "CLASS", health: "pain", l1: "members 3 · cohesion 1", l2: "Ce 0 · Ca 3 · I 0 · A 0", d: "1", ax: 0.7, ay: 0.84 },
-          { name: "orderService.test.ts", type: "MODULE", health: "good", l1: "members 5 · cohesion 1", l2: "Ce 4 · Ca 0 · I 1 · A 0", d: "0", ax: 0.215, ay: 0.78 },
-          { name: "pricingService.test.ts", type: "MODULE", health: "good", l1: "members 4 · cohesion 1", l2: "Ce 1 · Ca 0 · I 1 · A 0", d: "0", ax: 0.45, ay: 0.87 },
-        ],
-        edges: [[0, 1], [0, 3], [1, 3], [1, 2], [3, 2], [3, 4], [3, 5], [3, 6], [7, 3], [7, 4], [8, 5]],
-      };
-      const EDGE_COLOR = "#caa93a";
-      const PULSE_COLOR = "#f2dd93";
-      const CARD_W = 208;
-
-      class GraphBackground {
-        constructor(canvas) {
-          this.canvas = canvas;
-          this.mouse = { x: 0, y: 0, tx: 0, ty: 0 };
-          this.nodes = [];
-          this.edges = [];
-        }
-
-        start() {
-          this.build();
-          if (window.ResizeObserver) {
-            this.resizeObserver = new ResizeObserver(() => this.build());
-            this.resizeObserver.observe(this.canvas);
-          } else {
-            window.addEventListener("resize", () => this.build());
-          }
-          if (reducedMotion) {
-            // A single static frame; re-render once the web fonts land so labels use them.
-            if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => this.renderFrame());
-            return;
-          }
-          window.addEventListener("mousemove", (event) => {
-            this.mouse.tx = (event.clientX - window.innerWidth / 2) / window.innerWidth;
-            this.mouse.ty = (event.clientY - window.innerHeight / 2) / window.innerHeight;
-          });
-          this.loop();
-        }
-
-        // Size the backing store at devicePixelRatio (capped at 2) and render one frame
-        // synchronously: rAF is throttled in background tabs, so it alone can leave a blank canvas.
-        build() {
-          const canvas = this.canvas;
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          const w = canvas.clientWidth || window.innerWidth;
-          const h = canvas.clientHeight || window.innerHeight;
-          if (!w || !h) {
-            requestAnimationFrame(() => this.build());
-            return;
-          }
-          canvas.width = w * dpr;
-          canvas.height = h * dpr;
-          this.ctx = canvas.getContext("2d");
-          this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-          this.w = w;
-          this.h = h;
-          this.nodes = GRAPH.nodes.map((node, i) => ({
-            ...node,
-            w: CARD_W,
-            h: 94 + (node.health === "pain" ? 22 : 0),
-            phase: i * 0.9,
-            ampx: 5 + (i % 3) * 2.5,
-            ampy: 6 + (i % 4) * 2,
-            x: node.ax * w,
-            y: node.ay * h,
-          }));
-          this.edges = GRAPH.edges.map((edge, i) => ({ a: edge[0], b: edge[1], ph: (i * 0.13) % 1 }));
-          this.renderFrame();
-        }
-
-        loop() {
-          requestAnimationFrame(() => this.loop());
-          this.renderFrame();
-        }
-
-        renderFrame() {
-          const ctx = this.ctx;
-          if (!ctx) return;
-          const { w, h, nodes } = this;
-          ctx.clearRect(0, 0, w, h);
-
-          this.mouse.x += (this.mouse.tx - this.mouse.x) * 0.05;
-          this.mouse.y += (this.mouse.ty - this.mouse.y) * 0.05;
-          const ox = this.mouse.x * 24;
-          const oy = this.mouse.y * 24;
-
-          const t = performance.now() / 1000;
-          for (const n of nodes) {
-            n.x = n.ax * w + Math.sin(t * 0.45 + n.phase) * n.ampx;
-            n.y = n.ay * h + Math.cos(t * 0.38 + n.phase) * n.ampy;
-          }
-
-          const segments = this.edgeSegments(ox, oy);
-          this.drawEdges(segments, t);
-          this.drawPorts(segments);
-          this.drawPulses(segments, t);
-          for (const n of nodes) this.drawCard(n, ox, oy);
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1;
-        }
-
-        // Edge geometry: cubic-bezier S-curves between card ports (exit one side, enter the other).
-        edgeSegments(ox, oy) {
-          const segments = [];
-          for (const edge of this.edges) {
-            const a = this.nodes[edge.a];
-            const b = this.nodes[edge.b];
-            if (!a || !b) continue;
-            const right = b.x > a.x;
-            const sx = a.x + ox + (right ? a.w / 2 : -a.w / 2);
-            const ex = b.x + ox + (right ? -b.w / 2 : b.w / 2);
-            const sy = a.y + oy;
-            const ey = b.y + oy;
-            const mx = (sx + ex) / 2;
-            segments.push({ sx, sy, ex, ey, c1x: mx, c1y: sy, c2x: mx, c2y: ey, ph: edge.ph });
-          }
-          return segments;
-        }
-
-        drawEdges(segments, t) {
-          const ctx = this.ctx;
-          ctx.setLineDash([5, 6]);
-          ctx.lineDashOffset = -t * 24;
-          ctx.lineWidth = 1.5;
-          ctx.strokeStyle = EDGE_COLOR;
-          ctx.shadowBlur = 6;
-          ctx.shadowColor = EDGE_COLOR;
-          ctx.globalAlpha = 0.72;
-          for (const s of segments) {
-            ctx.beginPath();
-            ctx.moveTo(s.sx, s.sy);
-            ctx.bezierCurveTo(s.c1x, s.c1y, s.c2x, s.c2y, s.ex, s.ey);
-            ctx.stroke();
-          }
-          ctx.shadowBlur = 0;
-          ctx.setLineDash([]);
-          ctx.globalAlpha = 1;
-        }
-
-        drawPorts(segments) {
-          const ctx = this.ctx;
-          for (const s of segments) {
-            ctx.fillStyle = "#8b949e";
-            ctx.globalAlpha = 0.85;
-            ctx.beginPath();
-            ctx.arc(s.sx, s.sy, 2, 0, Math.PI * 2);
-            ctx.fill();
-            const ang = Math.atan2(s.ey - s.c2y, s.ex - s.c2x);
-            ctx.fillStyle = EDGE_COLOR;
-            ctx.globalAlpha = 0.95;
-            ctx.beginPath();
-            ctx.moveTo(s.ex, s.ey);
-            ctx.lineTo(s.ex - 8 * Math.cos(ang - 0.42), s.ey - 8 * Math.sin(ang - 0.42));
-            ctx.lineTo(s.ex - 8 * Math.cos(ang + 0.42), s.ey - 8 * Math.sin(ang + 0.42));
-            ctx.closePath();
-            ctx.fill();
-          }
-          ctx.globalAlpha = 1;
-        }
-
-        // A bright amber dot travels each bezier on a loop — conveys data flow.
-        drawPulses(segments, t) {
-          const ctx = this.ctx;
-          for (const s of segments) {
-            const p = this.bezierPoint(s, (t * 0.2 + s.ph) % 1);
-            ctx.shadowBlur = 8;
-            ctx.shadowColor = EDGE_COLOR;
-            ctx.fillStyle = PULSE_COLOR;
-            ctx.globalAlpha = 0.95;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, 2.3, 0, Math.PI * 2);
-            ctx.fill();
-          }
-          ctx.shadowBlur = 0;
-          ctx.globalAlpha = 1;
-        }
-
-        bezierPoint(s, t) {
-          const u = 1 - t;
-          return {
-            x: u * u * u * s.sx + 3 * u * u * t * s.c1x + 3 * u * t * t * s.c2x + t * t * t * s.ex,
-            y: u * u * u * s.sy + 3 * u * u * t * s.c1y + 3 * u * t * t * s.c2y + t * t * t * s.ey,
-          };
-        }
-
-        roundRect(x, y, w, h, r) {
-          const ctx = this.ctx;
-          ctx.beginPath();
-          ctx.moveTo(x + r, y);
-          ctx.arcTo(x + w, y, x + w, y + h, r);
-          ctx.arcTo(x + w, y + h, x, y + h, r);
-          ctx.arcTo(x, y + h, x, y, r);
-          ctx.arcTo(x, y, x + w, y, r);
-          ctx.closePath();
-        }
-
-        // One node card: accent bar keyed to health, type icon + badge, name, metrics, D value,
-        // and a red PAIN pill for the worst offenders — a miniature of the real Meridian node UI.
-        drawCard(n, ox, oy) {
-          const ctx = this.ctx;
-          const { w, h } = n;
-          const x0 = n.x + ox - w / 2;
-          const y0 = n.y + oy - h / 2;
-          const health = HEALTH[n.health];
-          this.roundRect(x0, y0, w, h, 10);
-          ctx.globalAlpha = 1;
-          ctx.shadowBlur = 20;
-          ctx.shadowColor = "rgba(0,0,0,0.6)";
-          ctx.fillStyle = "rgba(21,22,28,0.96)";
-          ctx.fill();
-          ctx.shadowBlur = 0;
-          ctx.lineWidth = 1;
-          ctx.strokeStyle = "rgba(255,255,255,0.08)";
-          ctx.stroke();
-          ctx.save();
-          this.roundRect(x0, y0, w, h, 10);
-          ctx.clip();
-          ctx.fillStyle = health;
-          ctx.fillRect(x0, y0, 4, h);
-          ctx.restore();
-          this.drawTypeIcon(n, x0, y0);
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          const badgeLeft = this.drawTypeBadge(n, x0, y0);
-          this.drawTitle(n, x0, y0, badgeLeft);
-          ctx.font = "400 10px 'JetBrains Mono', monospace";
-          ctx.fillStyle = "#8b949e";
-          ctx.fillText(n.l1, x0 + 16, y0 + 42);
-          ctx.fillText(n.l2, x0 + 16, y0 + 57);
-          ctx.font = "700 11px 'JetBrains Mono', monospace";
-          ctx.fillStyle = "#6e7681";
-          ctx.fillText("D", x0 + 16, y0 + 76);
-          ctx.fillStyle = health;
-          ctx.fillText(n.d, x0 + 28, y0 + 76);
-          if (n.health === "pain") this.drawPainPill(x0, y0, h);
-          ctx.globalAlpha = 1;
-        }
-
-        drawTypeIcon(n, x0, y0) {
-          const ctx = this.ctx;
-          const ix = x0 + 15;
-          const iy = y0 + 12;
-          if (n.type === "MODULE") {
-            ctx.strokeStyle = "#58a6ff";
-            ctx.globalAlpha = 0.95;
-            ctx.lineWidth = 1.2;
-            this.roundRect(ix, iy, 11, 11, 2);
-            ctx.stroke();
-            ctx.beginPath();
-            ctx.moveTo(ix + 3, iy + 4);
-            ctx.lineTo(ix + 8, iy + 4);
-            ctx.moveTo(ix + 3, iy + 7);
-            ctx.lineTo(ix + 8, iy + 7);
-            ctx.stroke();
-          } else {
-            ctx.save();
-            ctx.translate(ix + 5.5, iy + 5.5);
-            ctx.rotate(Math.PI / 4);
-            ctx.fillStyle = "#e3b341";
-            ctx.globalAlpha = 0.98;
-            ctx.fillRect(-4, -4, 8, 8);
-            ctx.restore();
-          }
-          ctx.globalAlpha = 1;
-        }
-
-        // Returns the badge's left x so the title knows where to stop.
-        drawTypeBadge(n, x0, y0) {
-          const ctx = this.ctx;
-          ctx.font = "600 8.5px 'JetBrains Mono', monospace";
-          const badgeWidth = ctx.measureText(n.type).width + 10;
-          const bx = x0 + n.w - 12 - badgeWidth;
-          const by = y0 + 11;
-          const color = n.type === "MODULE" ? "#58a6ff" : "#e3b341";
-          this.roundRect(bx, by, badgeWidth, 15, 4);
-          ctx.fillStyle = "rgba(0,0,0,0.3)";
-          ctx.fill();
-          ctx.strokeStyle = color;
-          ctx.globalAlpha = 0.55;
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          ctx.globalAlpha = 1;
-          ctx.fillStyle = color;
-          ctx.fillText(n.type, bx + 5, by + 8);
-          return bx;
-        }
-
-        drawTitle(n, x0, y0, badgeLeft) {
-          const ctx = this.ctx;
-          ctx.font = "700 12.5px 'JetBrains Mono', monospace";
-          ctx.fillStyle = "#e9eef4";
-          let title = n.name;
-          const maxWidth = badgeLeft - (x0 + 34) - 8;
-          if (ctx.measureText(title).width > maxWidth) {
-            while (title.length > 4 && ctx.measureText(title + "…").width > maxWidth) title = title.slice(0, -1);
-            title += "…";
-          }
-          ctx.fillText(title, x0 + 34, y0 + 18);
-        }
-
-        drawPainPill(x0, y0, h) {
-          const ctx = this.ctx;
-          ctx.font = "700 8.5px 'JetBrains Mono', monospace";
-          const pw = ctx.measureText("PAIN").width + 10;
-          this.roundRect(x0 + 16, y0 + h - 21, pw, 15, 4);
-          ctx.fillStyle = "rgba(248,81,73,0.14)";
-          ctx.fill();
-          ctx.strokeStyle = "rgba(248,81,73,0.5)";
-          ctx.lineWidth = 1;
-          ctx.stroke();
-          ctx.fillStyle = "#f85149";
-          ctx.fillText("PAIN", x0 + 21, y0 + h - 21 + 8);
-        }
-      }
-
-      new GraphBackground($("bg")).start();
     </script>
   </body>
 </html>
