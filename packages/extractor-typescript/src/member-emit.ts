@@ -16,6 +16,7 @@ import {
   type InterfaceDeclaration,
   type MethodDeclaration,
   type ModuleDeclaration,
+  type ObjectLiteralExpression,
   type SetAccessorDeclaration,
   type SourceFile,
   type TypeAliasDeclaration,
@@ -168,11 +169,12 @@ function emitVariable(node: VariableDeclaration, parent: NodeDescriptor, enclosi
     emitValueCallback(valueCallback, node.getName(), parent, enclosingNames, context);
     return;
   }
-  const initializer = node.getInitializer();
-  if (Node.isObjectLiteralExpression(initializer)) {
-    emitObjectLiteralConst(node, parent, enclosingNames, context);
+  const objectInitializer = unwrapTransparentExpression(node.getInitializer());
+  if (Node.isObjectLiteralExpression(objectInitializer)) {
+    emitObjectLiteralConst(node, objectInitializer, parent, enclosingNames, context);
     return;
   }
+  const initializer = node.getInitializer();
   if (Node.isNewExpression(initializer)) {
     emitConstructedObject(node, parent, enclosingNames, context);
   }
@@ -274,15 +276,17 @@ function emitConstructedObject(node: VariableDeclaration, parent: NodeDescriptor
   );
 }
 
-function emitObjectLiteralConst(node: VariableDeclaration, parent: NodeDescriptor, enclosingNames: string[], context: EmitContext): void {
+function emitObjectLiteralConst(
+  node: VariableDeclaration,
+  object: ObjectLiteralExpression,
+  parent: NodeDescriptor,
+  enclosingNames: string[],
+  context: EmitContext,
+): void {
   const name = node.getName();
   const self = context.emit(
     memberDescriptor(context, container("object", name, enclosingNames, parent, node)),
   );
-  const object = node.getInitializer();
-  if (!Node.isObjectLiteralExpression(object)) {
-    return;
-  }
   const inner = [...enclosingNames, name];
   for (const property of object.getProperties()) emitObjectMember(property, self, inner, context);
 }

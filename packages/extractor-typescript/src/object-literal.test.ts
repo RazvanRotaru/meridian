@@ -11,7 +11,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ExtractionResult } from "@meridian/core";
 import { createTypeScriptExtractor } from "./index";
 
-const SOURCE = ["export const svc = { async foo() { bar(); } };", "function bar() {}"].join("\n");
+const SOURCE = [
+  "export const svc = { async foo() { bar(); } };",
+  "export const ApprovalMode = {",
+  "  MAXIMUM: 'maximum',",
+  "  RECOMMENDED: 'recommended',",
+  "  UNRESTRICTED: 'unrestricted',",
+  "} as const;",
+  "function bar() {}",
+].join("\n");
 
 let root: string;
 let result: ExtractionResult;
@@ -33,6 +41,17 @@ function nodeByQualname(qualname: string) {
 describe("object-literal method support", () => {
   it("emits the object-literal const as an 'object' container node", () => {
     expect(nodeByQualname("svc")?.kind).toBe("object");
+  });
+
+  it("emits an object-literal const through an `as const` wrapper", () => {
+    expect(nodeByQualname("ApprovalMode")).toMatchObject({
+      id: "ts:src/svc.ts#ApprovalMode",
+      kind: "object",
+      displayName: "ApprovalMode",
+      parentId: "ts:src/svc.ts",
+      location: { file: "src/svc.ts", startLine: 2, endLine: 6 },
+      tags: ["export"],
+    });
   });
 
   it("emits a `method` child whose qualname is svc.foo, parented to the object", () => {

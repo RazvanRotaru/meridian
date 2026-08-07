@@ -26,7 +26,7 @@ describe("syntax-only progressive source index", () => {
           const nested = (): void => {};
           nested();
         }
-        export const api = { __private(): void {}, save(): void {} };
+        export const api = { __private(): void {}, save(): void {} } as const;
         export const service = new Service();
         declare function create<T>(initializer: () => T): T;
         export const store = create(() => {

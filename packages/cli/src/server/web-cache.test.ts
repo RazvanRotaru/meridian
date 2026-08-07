@@ -28,7 +28,7 @@ vi.mock("./git-exec", () => ({
 
 const FIRST_COMMIT = "a".repeat(64);
 const SECOND_COMMIT = "b".repeat(64);
-const LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS = 14;
+const LEGACY_ANALYSIS_VERSION_WITHOUT_TRANSPARENT_OBJECT_LITERALS = 15;
 const REQUEST: GenerateRequest = { kind: "github", value: "owner/repo" };
 
 let cacheRoot: string;
@@ -310,14 +310,14 @@ describe("persistent web graph cache", () => {
     expect(repositories.releasedLeaseCount).toBe(releasedBeforeProbe + 1);
   });
 
-  it("rejects v14 metadata and regenerates after value callback extraction", async () => {
-    expect(ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS);
+  it("rejects v15 metadata and regenerates after transparent object-literal extraction", async () => {
+    expect(ANALYSIS_VERSION).toBeGreaterThan(LEGACY_ANALYSIS_VERSION_WITHOUT_TRANSPARENT_OBJECT_LITERALS);
     const first = await generate(REQUEST);
     const metadataPath = join(dirname(verifiedPath(first)), "metadata.json");
     const previousMetadata = JSON.parse(readFileSync(metadataPath, "utf8")) as {
       analysisVersion: number;
     };
-    previousMetadata.analysisVersion = LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS;
+    previousMetadata.analysisVersion = LEGACY_ANALYSIS_VERSION_WITHOUT_TRANSPARENT_OBJECT_LITERALS;
     writeFileSync(metadataPath, `${JSON.stringify(previousMetadata)}\n`, "utf8");
 
     const probe = await probeRemoteGraph({ cacheRoot, repositories, request: REQUEST, cwd: cacheRoot });
@@ -333,7 +333,7 @@ describe("persistent web graph cache", () => {
     expect(probe).toEqual({ status: "miss", commit: FIRST_COMMIT });
     expect(regenerated.cache).toBe("miss");
     expect(verifiedPath(regenerated)).not.toBe(verifiedPath(first));
-    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_VALUE_CALLBACKS);
+    expect(retainedLegacyMetadata.analysisVersion).toBe(LEGACY_ANALYSIS_VERSION_WITHOUT_TRANSPARENT_OBJECT_LITERALS);
     expect(currentMetadata.analysisVersion).toBe(ANALYSIS_VERSION);
     expect(artifactFromMaterial(first.material)).toEqual(artifactFor("owner/repo", FIRST_COMMIT));
     expect(repositories.acquireWorkspaceCalls).toHaveLength(1);

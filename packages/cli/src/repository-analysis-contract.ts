@@ -13,9 +13,10 @@ import type { GitDiffExecutor } from "./git-diff";
  * durable partial projection replay. Version 13 preserves the detected mixed-language target
  * identity across independently extracted slices. Version 14 emits TypeScript type aliases as
  * graph declarations so type-reference edges and symbol search resolve them consistently. Version
- * 15 includes meaningful module-scope inline callbacks passed to value-producing calls.
+ * 15 includes meaningful module-scope inline callbacks passed to value-producing calls. Version
+ * 16 materializes object-literal declarations through transparent TypeScript expression wrappers.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 15;
+export const REPOSITORY_ANALYSIS_VERSION = 16;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",
