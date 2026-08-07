@@ -76,6 +76,25 @@ describe("SourceDiffBody", () => {
     expect(hoverBody).toContain("L17–L23 can be inline on current code · comments on other current lines attach to the file");
   });
 
+  it("threads the optional selected-symbol callback to the shared code listing", () => {
+    const view: CodeView = {
+      node: NODE,
+      code: "export function reviewTarget() {}",
+      lineCount: 1,
+      loading: false,
+      error: null,
+      mode: "modal",
+      baseLine: 1,
+    };
+
+    const disabled = renderBody(view, 340);
+    const enabled = renderBody(view, 340, {}, () => undefined);
+
+    expect(disabled).not.toContain('data-source-symbol-selection-enabled="true"');
+    expect(enabled).toContain('data-source-symbol-selection-enabled="true"');
+    expect(enabled).toContain('data-source-code-text="true"');
+  });
+
   it("keeps the legacy deletion immediately before the first visible source line", () => {
     const view: CodeView = {
       node: { ...NODE, location: { ...NODE.location, startLine: 10, endLine: 12 } },
@@ -636,6 +655,7 @@ function renderBody(
   view: CodeView,
   maxHeight: number | string,
   overrides: Partial<BlueprintState> = {},
+  onSymbolSelection?: (symbol: string | null) => void,
 ): string {
   const store = createBlueprintStore({
     artifact: ARTIFACT,
@@ -671,7 +691,7 @@ function renderBody(
   Object.assign(store, { getInitialState: () => state });
   return renderToStaticMarkup(
     <StoreProvider store={store}>
-      <BodyHarness view={view} maxHeight={maxHeight} />
+      <BodyHarness view={view} maxHeight={maxHeight} onSymbolSelection={onSymbolSelection} />
     </StoreProvider>,
   );
 }
@@ -685,14 +705,27 @@ function composerWithDraft(
   return composer;
 }
 
-function BodyHarness({ view, maxHeight }: { view: CodeView; maxHeight: number | string }) {
+function BodyHarness({
+  view,
+  maxHeight,
+  onSymbolSelection,
+}: {
+  view: CodeView;
+  maxHeight: number | string;
+  onSymbolSelection?: (symbol: string | null) => void;
+}) {
   const model = useSourceDiffModel(view);
   return (
     <div
       data-source-summary-added={model.summary?.added ?? "none"}
       data-source-summary-deleted={model.summary?.deleted ?? "none"}
     >
-      <SourceDiffBody model={model} maxHeight={maxHeight} showGutter />
+      <SourceDiffBody
+        model={model}
+        maxHeight={maxHeight}
+        showGutter
+        onSymbolSelection={onSymbolSelection}
+      />
     </div>
   );
 }

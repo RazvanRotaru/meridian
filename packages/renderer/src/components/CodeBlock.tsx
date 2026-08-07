@@ -12,6 +12,12 @@ import type { ChangedDiffLine, ChangedLineKind } from "@meridian/core";
 import type { PrGitHubComment, PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewLineComposerDraft } from "../state/reviewLineComposer";
 import type { ReviewComment } from "../state/reviewTicksPref";
+import type { SourceSearchMatch } from "./source/sourceSearch";
+import {
+  publishSourceSymbolSelection,
+  subscribeToSourceSymbolSelection,
+  type SourceSymbolSelectionHandler,
+} from "./source/sourceSymbolSelection";
 import { ExistingCommentList } from "./review/ExistingReviewComments";
 import { CommentList } from "./review/ReviewComments";
 import { ReviewLineCommentComposer } from "./review/ReviewLineCommentComposer";
@@ -77,6 +83,7 @@ const PYTHON_TOKEN_RE =
   /(#[^\n]*)|((?:[rRuUbBfF]{0,2})"""[\s\S]*?""")|((?:[rRuUbBfF]{0,2})'''[\s\S]*?''')|((?:[rRuUbBfF]{0,2})"(?:\\.|[^"\\])*")|((?:[rRuUbBfF]{0,2})'(?:\\.|[^'\\])*')|(\b(?:0[xX][\da-fA-F](?:_?[\da-fA-F])*|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?)\b)|([A-Za-z_][A-Za-z0-9_]*)/g;
 
 type Piece = { text: string; color: string };
+type IndexedSourceSearchMatch = { index: number; match: SourceSearchMatch };
 
 // Walk the regex matches, emitting the untokenized gaps between them as plain pieces so no
 // character is dropped. Group 7 is an identifier — only keyword when it is in the reserved set.
@@ -123,12 +130,15 @@ export function CodeBlock({
   code,
   lineCount,
   maxHeight = 220,
+  fillHeight = false,
   startLine,
   showGutter = false,
   changedLines,
   changedLineKinds,
   evidenceLines,
   focusLines,
+  searchMatches = EMPTY_SEARCH_MATCHES,
+  activeSearchIndex = -1,
   hiddenSourceLines,
   onLineClick,
   commentableLines,
@@ -143,11 +153,14 @@ export function CodeBlock({
   sourceSide = "head",
   language,
   sourceFile,
+  onSymbolSelection,
 }: {
   code: string;
   /** Exact source rows represented by `code`; zero prevents an empty string becoming a fake line 1. */
   lineCount?: number;
   maxHeight?: number | string;
+  /** Fill an editor-style flex host while this listing remains the only scroll owner. */
+  fillHeight?: boolean;
   /** The span's absolute first line. Anchors the diff paint (rows map to `changedLineKinds`) and the
    * scroll-to-first-change; independent of the gutter. Omitted → a plain listing, no diff paint. */
   startLine?: number;
@@ -161,6 +174,10 @@ export function CodeBlock({
   evidenceLines?: ReadonlySet<number>;
   /** Absolute rows for a presentation-only structural focus. Never treated as a PR change. */
   focusLines?: ReadonlySet<number>;
+  /** Literal matches from the dock's in-file search, in document order. */
+  searchMatches?: readonly SourceSearchMatch[];
+  /** Active occurrence in `searchMatches`; -1 means no active result. */
+  activeSearchIndex?: number;
   /** Source-code rows omitted from the listing. Review discussions anchored to those rows remain. */
   hiddenSourceLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
@@ -190,6 +207,8 @@ export function CodeBlock({
   /** Extractor language and file path used to select the small built-in tokenizer. */
   language?: string;
   sourceFile?: string;
+  /** Reports a safe selected identifier after pointer/keyboard selection, or null to clear it. */
+  onSymbolSelection?: SourceSymbolSelectionHandler;
 }) {
   const syntaxLanguage = sourceSyntaxLanguage(language, sourceFile);
   // Reset the shared regex's lastIndex per run (it is stateful with the `g` flag) and never let a
@@ -234,8 +253,24 @@ export function CodeBlock({
   );
   const effectiveRemovedRows = diffLines === undefined ? removedRows : undefined;
   const effectiveRemovedTruncated = diffLines === undefined ? removedTruncated : false;
-  const unchangedFolds = useMemo(() => {
-    if (!foldUnchanged || startLine === undefined) return [];
+  const searchMatchesByLine = useMemo(() => {
+    const byLine = new Map<number, IndexedSourceSearchMatch[]>();
+    searchMatches.forEach((match, index) => {
+      const bucket = byLine.get(match.line);
+      const indexed = { index, match };
+      bucket ? bucket.push(indexed) : byLine.set(match.line, [indexed]);
+    });
+    return byLine;
+  }, [searchMatches]);
+  const activeSearchMatch = activeSearchIndex >= 0 ? searchMatches[activeSearchIndex] : undefined;
+  // Pin only the active result into an unchanged fold. Keeping every hit open turns a broad query
+  // into an accidental full-file render; navigation can reveal the next folded row on demand.
+  const searchMatchLines = useMemo(
+    () => activeSearchMatch === undefined ? new Set<number>() : new Set([activeSearchMatch.line]),
+    [activeSearchMatch?.line],
+  );
+  const foldProjection = useMemo(() => {
+    if (!foldUnchanged || startLine === undefined) return { folds: [], resetSignature: "" };
     const focus = foldFocus({
       changedLines,
       changedLineKinds,
@@ -250,17 +285,31 @@ export function CodeBlock({
       diffLines,
       sourceSide,
     });
-    return unchangedCodeFolds({
+    const stableFolds = unchangedCodeFolds({
       startLine,
       lineCount: highlightedLines.length,
       focusLines: focus.lines,
       focusGaps: focus.gaps,
     });
+    const resetSignature = stableFolds.map(unchangedCodeFoldKey).join(",");
+    if (searchMatchLines.size === 0) return { folds: stableFolds, resetSignature };
+    const searchFocusLines = new Set(focus.lines);
+    searchMatchLines.forEach((line) => searchFocusLines.add(line));
+    return {
+      folds: unchangedCodeFolds({
+        startLine,
+        lineCount: highlightedLines.length,
+        focusLines: searchFocusLines,
+        focusGaps: focus.gaps,
+      }),
+      resetSignature,
+    };
   }, [
     changedLines,
     changedLineKinds,
     evidenceLines,
     focusLines,
+    searchMatchLines,
     existingCommentsByCoordinate,
     foldUnchanged,
     highlightedLines.length,
@@ -272,16 +321,31 @@ export function CodeBlock({
     sourceSide,
     startLine,
   ]);
-  const foldSignature = unchangedFolds.map(unchangedCodeFoldKey).join(",");
+  const unchangedFolds = foldProjection.folds;
   const [expandedFolds, setExpandedFolds] = useState<Set<string>>(new Set());
-  useEffect(() => setExpandedFolds(new Set()), [code, foldSignature]);
+  // Search temporarily splits a stable fold around its active result. Keep manual expansion state
+  // keyed to the non-search fold projection so navigating or closing search never erases it.
+  useEffect(() => setExpandedFolds(new Set()), [code, foldProjection.resetSignature]);
   const foldsByStart = new Map(unchangedFolds.map((fold) => [fold.startLine, fold]));
   const collapsedLines = new Set<number>();
   for (const fold of unchangedFolds) {
     if (expandedFolds.has(unchangedCodeFoldKey(fold))) continue;
     for (let line = fold.startLine; line <= fold.endLine; line += 1) collapsedLines.add(line);
   }
-  const listingRef = useRef<HTMLDivElement>(null);
+  const listingRef = useRef<HTMLDivElement | HTMLPreElement>(null);
+  const publishSelection = () => {
+    const listing = listingRef.current;
+    publishSourceSymbolSelection(
+      listing,
+      listing?.ownerDocument.getSelection() ?? null,
+      onSymbolSelection,
+    );
+  };
+  useEffect(() => {
+    const listing = listingRef.current;
+    if (listing === null || onSymbolSelection === undefined) return;
+    return subscribeToSourceSymbolSelection(listing, listing.ownerDocument, onSymbolSelection);
+  }, [code, onSymbolSelection, startLine]);
   // Structural focus and edge evidence are explicit reader targets, so they win the initial scroll
   // position. A regular source panel still lands on its first diff as before.
   useEffect(() => {
@@ -318,8 +382,27 @@ export function CodeBlock({
     // never appears inert.
     row?.scrollIntoView({ block: "nearest" });
   }, [lineComposer?.confirmDiscard, lineComposer?.line, lineComposer?.side]);
+  useEffect(() => {
+    if (!activeSearchMatch) return;
+    const occurrence = listingRef.current?.querySelector<HTMLElement>(
+      `[data-source-search-match-index="${activeSearchIndex}"]`,
+    );
+    occurrence?.scrollIntoView({ block: "center", inline: "center" });
+  }, [activeSearchIndex, activeSearchMatch?.column, activeSearchMatch?.line]);
   if (startLine === undefined) {
-    return <pre style={{ ...PRE_STYLE, maxHeight }}>{renderHighlightedLines(highlightedLines)}</pre>;
+    return (
+      <pre
+        ref={(node) => { listingRef.current = node; }}
+        data-source-scroll-owner="true"
+        data-source-code-text="true"
+        data-source-symbol-selection-enabled={onSymbolSelection ? "true" : undefined}
+        style={{ ...PRE_STYLE, ...(fillHeight ? FILL_HEIGHT_STYLE : {}), maxHeight }}
+        onPointerUp={publishSelection}
+        onKeyUp={publishSelection}
+      >
+        {renderHighlightedLines(highlightedLines)}
+      </pre>
+    );
   }
   // A known startLine maps the diff kinds onto ROWS (coloured backgrounds + inset bar) regardless of
   // the gutter — so a logic-flow panel with no line numbers still paints its added/deleted lines.
@@ -346,7 +429,14 @@ export function CodeBlock({
     pendingCommentsByCoordinate,
   };
   return (
-    <div ref={listingRef} style={{ ...LISTING_STYLE, maxHeight }}>
+    <div
+      ref={(node) => { listingRef.current = node; }}
+      data-source-scroll-owner="true"
+      data-source-symbol-selection-enabled={onSymbolSelection ? "true" : undefined}
+      style={{ ...LISTING_STYLE, ...(fillHeight ? FILL_HEIGHT_STYLE : {}), maxHeight }}
+      onPointerUp={publishSelection}
+      onKeyUp={publishSelection}
+    >
       <style>{LINE_COMMENT_BUTTON_CSS}</style>
       <table style={CODE_TABLE_STYLE}>
         <tbody>
@@ -379,6 +469,9 @@ export function CodeBlock({
             const changed = diffLines === undefined && (changedLines?.has(lineNo) ?? false);
             const evidence = evidenceLines?.has(lineNo) ?? false;
             const focused = focusLines?.has(lineNo) ?? false;
+            const lineSearchMatches = searchMatchesByLine.get(lineNo) ?? EMPTY_INDEXED_SEARCH_MATCHES;
+            const searchMatched = lineSearchMatches.length > 0;
+            const searchActive = activeSearchMatch?.line === lineNo;
             const sourceHidden = hiddenSourceLines?.has(lineNo) ?? false;
             const reviewSide: PrReviewCommentSide = sourceSide === "base" ? "LEFT" : "RIGHT";
             const commentable = onLineClick !== undefined && (
@@ -415,6 +508,8 @@ export function CodeBlock({
                   aria-label={canonicalDiffAriaLabel(canonicalRow)}
                   data-edge-evidence-line={evidence ? "true" : undefined}
                   data-source-focus-line={focused ? "true" : undefined}
+                  data-source-search-match-count={searchMatched ? lineSearchMatches.length : undefined}
+                  data-source-search-active={searchActive ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
                   data-review-comment-side={commentable ? reviewSide : undefined}
                   data-line-comment-composer-open={composerOpen ? "true" : undefined}
@@ -448,6 +543,7 @@ export function CodeBlock({
                     </td>
                   ) : null}
                   <td
+                    data-source-code-text="true"
                     data-source-code-cell={commentable ? lineNo : undefined}
                     title={commentable ? `Click to comment on ${lineLabel}` : undefined}
                     style={{
@@ -455,6 +551,8 @@ export function CodeBlock({
                       ...(lineRowStyle(kind) ?? {}),
                       ...(evidence ? EVIDENCE_ROW_STYLE : {}),
                       ...(focused ? FOCUS_ROW_STYLE : {}),
+                      ...(searchMatched ? SEARCH_MATCH_ROW_STYLE : {}),
+                      ...(searchActive ? SEARCH_ACTIVE_ROW_STYLE : {}),
                       ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
                     }}
                     onClick={commentable ? (event) => {
@@ -465,7 +563,7 @@ export function CodeBlock({
                       onLineClick(lineNo, reviewSide);
                     } : undefined}
                   >
-                    {line.length > 0 ? line : " "}
+                    {renderHighlightedSearchLine(line, lineSearchMatches, activeSearchIndex)}
                   </td>
                 </tr> : null}
                 {!sourceHidden && canonicalRow?.noNewline ? (
@@ -643,6 +741,7 @@ function GhostRow(props: {
           </td>
         ) : null}
         <td
+          data-source-code-text="true"
           data-deleted-code-cell={commentable ? oldLine : undefined}
           title={commentable ? `Click to comment on deleted line ${oldLine}` : undefined}
           style={{
@@ -817,19 +916,14 @@ export function codeFocusScrollTop(focusRowTop: number, hasStructuralFocus: bool
 }
 
 /** Split tokenized pieces into explicit visual rows so code/gutter never desync on wrapped token streams. */
-function splitHighlightedLines(pieces: Piece[]): React.ReactNode[][] {
-  const lines: React.ReactNode[][] = [[]];
-  let key = 0;
+function splitHighlightedLines(pieces: Piece[]): Piece[][] {
+  const lines: Piece[][] = [[]];
   for (const piece of pieces) {
     const fragments = piece.text.split("\n");
     for (let index = 0; index < fragments.length; index += 1) {
       const text = fragments[index];
       if (text.length > 0) {
-        lines[lines.length - 1].push(
-          <span key={`tok-${key++}`} style={{ color: piece.color }}>
-            {text}
-          </span>,
-        );
+        lines[lines.length - 1].push({ text, color: piece.color });
       }
       if (index < fragments.length - 1) {
         lines.push([]);
@@ -840,7 +934,7 @@ function splitHighlightedLines(pieces: Piece[]): React.ReactNode[][] {
 }
 
 function renderHighlightedLines(
-  lines: React.ReactNode[][],
+  lines: Piece[][],
   startLine?: number,
   changedLineKinds?: ReadonlyMap<number, ChangedLineKind>,
 ): React.ReactNode {
@@ -852,10 +946,77 @@ function renderHighlightedLines(
         ...(lineRowStyle(startLine === undefined ? undefined : changedLineKinds?.get(startLine + index)) ?? {}),
       }}
     >
-      {line.length > 0 ? line : " "}
+      {renderHighlightedSearchLine(line, EMPTY_INDEXED_SEARCH_MATCHES, -1)}
       {index < lines.length - 1 ? "\n" : ""}
     </span>
   ));
+}
+
+/** Preserve syntax colors outside exact literal matches while giving each occurrence its own DOM
+ * target. Navigation can therefore distinguish two hits on one row and center a far-right column. */
+function renderHighlightedSearchLine(
+  pieces: readonly Piece[],
+  matches: readonly IndexedSourceSearchMatch[],
+  activeSearchIndex: number,
+): React.ReactNode {
+  const text = pieces.map((piece) => piece.text).join("");
+  if (text.length === 0) return " ";
+  if (matches.length === 0) return renderColoredPieceRange(pieces, 0, text.length, "plain");
+
+  const rendered: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const { index, match } of matches) {
+    const start = Math.max(cursor, Math.min(text.length, match.column - 1));
+    const end = Math.max(start, Math.min(text.length, (match.column - 1) + match.length));
+    if (start > cursor) {
+      rendered.push(...renderColoredPieceRange(pieces, cursor, start, `before-${index}`));
+    }
+    if (end > start) {
+      const active = index === activeSearchIndex;
+      rendered.push(
+        <mark
+          key={`match-${index}`}
+          data-source-search-match-index={index}
+          data-source-search-match-active={active ? "true" : undefined}
+          aria-current={active ? "true" : undefined}
+          style={active ? SEARCH_ACTIVE_MARK_STYLE : SEARCH_MATCH_MARK_STYLE}
+        >
+          {text.slice(start, end)}
+        </mark>,
+      );
+    }
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < text.length) {
+    rendered.push(...renderColoredPieceRange(pieces, cursor, text.length, "after"));
+  }
+  return rendered.length > 0 ? rendered : " ";
+}
+
+function renderColoredPieceRange(
+  pieces: readonly Piece[],
+  start: number,
+  end: number,
+  keyPrefix: string,
+): React.ReactNode[] {
+  const rendered: React.ReactNode[] = [];
+  let pieceStart = 0;
+  for (let index = 0; index < pieces.length; index += 1) {
+    const piece = pieces[index]!;
+    const pieceEnd = pieceStart + piece.text.length;
+    const from = Math.max(start, pieceStart);
+    const to = Math.min(end, pieceEnd);
+    if (to > from) {
+      rendered.push(
+        <span key={`${keyPrefix}-${index}-${from}`} style={{ color: piece.color }}>
+          {piece.text.slice(from - pieceStart, to - pieceStart)}
+        </span>,
+      );
+    }
+    pieceStart = pieceEnd;
+    if (pieceStart >= end) break;
+  }
+  return rendered;
 }
 
 // GitHub's diff has no third "modified" colour: a replaced line shows GREEN on the head side, with
@@ -891,6 +1052,8 @@ function kindGutterStyle(kind: ChangedLineKind): React.CSSProperties {
 const LINE_HEIGHT_PX = 17;
 const EMPTY_EXISTING_COMMENTS: readonly PrGitHubComment[] = [];
 const EMPTY_PENDING_COMMENTS: readonly ReviewComment[] = [];
+const EMPTY_SEARCH_MATCHES: readonly SourceSearchMatch[] = [];
+const EMPTY_INDEXED_SEARCH_MATCHES: readonly IndexedSourceSearchMatch[] = [];
 
 const PRE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -910,6 +1073,7 @@ const LISTING_STYLE: React.CSSProperties = {
   lineHeight: `${LINE_HEIGHT_PX}px`,
   tabSize: 2,
 };
+const FILL_HEIGHT_STYLE: React.CSSProperties = { flex: "1 1 auto", minHeight: 0 };
 const CODE_TABLE_STYLE: React.CSSProperties = {
   // Keep wrappable colspan content (comments/composers) from becoming the table's intrinsic width
   // and distributing that excess into the gutter. Preformatted code still grows an auto-layout
@@ -985,6 +1149,27 @@ const FOCUS_ROW_STYLE: React.CSSProperties = {
   backgroundImage: "linear-gradient(rgba(125,211,252,0.08), rgba(125,211,252,0.08))",
   outline: "1px solid rgba(125,211,252,0.18)",
   outlineOffset: -1,
+};
+const SEARCH_MATCH_ROW_STYLE: React.CSSProperties = {
+  backgroundImage: "linear-gradient(rgba(210,153,34,0.14), rgba(210,153,34,0.14))",
+  boxShadow: "inset 2px 0 0 rgba(210,153,34,0.68)",
+};
+const SEARCH_ACTIVE_ROW_STYLE: React.CSSProperties = {
+  backgroundImage: "linear-gradient(rgba(245,196,81,0.25), rgba(245,196,81,0.25))",
+  boxShadow: "inset 3px 0 0 #F5C451, inset 0 0 0 1px rgba(245,196,81,0.42)",
+};
+const SEARCH_MATCH_MARK_STYLE: React.CSSProperties = {
+  padding: 0,
+  borderRadius: 2,
+  background: "rgba(245,196,81,0.42)",
+  color: "inherit",
+};
+const SEARCH_ACTIVE_MARK_STYLE: React.CSSProperties = {
+  ...SEARCH_MATCH_MARK_STYLE,
+  background: "#F5C451",
+  color: "#171D26",
+  outline: "1px solid #FFE39A",
+  outlineOffset: 1,
 };
 const CODE_CELL_STYLE: React.CSSProperties = {
   height: LINE_HEIGHT_PX,

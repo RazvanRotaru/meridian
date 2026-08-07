@@ -6,7 +6,7 @@
  */
 
 import { CheckIcon, CircleIcon, ReloadIcon } from "@radix-ui/react-icons";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { CheckState } from "../../derive/reviewFiles";
 import {
   reviewViewedTargetFor,
@@ -137,6 +137,38 @@ export function ReviewPreviewViewedControl({
   );
 }
 
+/** File-level viewed control for source surfaces outside the graph. Resolving by review path is
+ * deliberate: a source dock may be showing a declaration node, a renamed-file alias, or an
+ * unmatched synthetic file, but the gesture must remain GitHub's atomic whole-file transition. */
+export function ReviewFileViewedControl({ path }: { path: string }) {
+  const control = useReviewFileViewedControl(path);
+  if (control === null) {
+    return null;
+  }
+  return (
+    <button
+      type="button"
+      className="review-source-file-viewed-button"
+      title={control.label}
+      aria-label={control.label}
+      aria-pressed={control.state === "done"}
+      disabled={control.blocked}
+      data-review-source-viewed="true"
+      data-review-viewed-scope="file"
+      data-review-view-state={control.state}
+      style={{
+        ...SOURCE_FILE_BUTTON,
+        color: control.color,
+        ...(control.blocked ? SOURCE_FILE_BUTTON_BLOCKED : {}),
+      }}
+      onClick={control.onToggle}
+    >
+      <ViewedIcon state={control.state} />
+      <span>{sourceFileViewedText(control.state)}</span>
+    </button>
+  );
+}
+
 /** Transparent semantic hit target layered over the icon, kept pure for gesture-contract tests. */
 export function ReviewViewedButton({
   nodeId,
@@ -193,6 +225,19 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
     state.index.nodesById.get(nodeId)?.displayName ?? nodeId,
     state.index,
   ));
+  return useReviewViewedTargetControl(target);
+}
+
+function useReviewFileViewedControl(path: string): ReviewViewedControl | null {
+  const file = useBlueprint((state) => state.reviewFiles.find((candidate) => candidate.path === path));
+  const target = useMemo<ReviewViewedTarget | null>(
+    () => file === undefined ? null : { kind: "file", file },
+    [file],
+  );
+  return useReviewViewedTargetControl(target);
+}
+
+function useReviewViewedTargetControl(target: ReviewViewedTarget | null): ReviewViewedControl | null {
   const state = useBlueprint((blueprint) => reviewViewedTargetState(
     target,
     blueprint.reviewUnitTicks,
@@ -231,6 +276,11 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
       }
     },
   };
+}
+
+function sourceFileViewedText(state: CheckState): string {
+  if (state === "done") return "Viewed";
+  return state === "stale" ? "Mark again" : "Mark viewed";
 }
 
 function ViewedIcon({ state }: { state: CheckState }) {
@@ -315,6 +365,27 @@ const BUTTON_HIT_TARGET: React.CSSProperties = {
   cursor: "pointer",
 };
 const BLOCKED_HIT_TARGET: React.CSSProperties = { cursor: "wait" };
+const SOURCE_FILE_BUTTON: React.CSSProperties = {
+  minHeight: 28,
+  display: "inline-flex",
+  alignItems: "center",
+  gap: 6,
+  flexShrink: 0,
+  boxSizing: "border-box",
+  border: "1px solid #3A4554",
+  borderRadius: 6,
+  padding: "4px 8px",
+  background: "#1D2530",
+  fontSize: 12,
+  fontWeight: 600,
+  lineHeight: 1,
+  whiteSpace: "nowrap",
+  cursor: "pointer",
+};
+const SOURCE_FILE_BUTTON_BLOCKED: React.CSSProperties = {
+  opacity: 0.62,
+  cursor: "wait",
+};
 
 /** One stylesheet for hover/focus emphasis; every state remains discoverable and interactive. */
 export const REVIEW_NODE_VIEWED_CSS = `

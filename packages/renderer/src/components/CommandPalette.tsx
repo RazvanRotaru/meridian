@@ -16,7 +16,15 @@
  * BlueprintCanvas so the shortcut works everywhere; a pure overlay that only calls store actions.
  */
 
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+} from "react";
 import { CheckIcon, ChevronDownIcon, MagnifyingGlassIcon } from "@radix-ui/react-icons";
 import type { CompactGraphSymbolEntry, GraphArtifact, GraphNode, NodeId } from "@meridian/core";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
@@ -131,7 +139,144 @@ export async function runPaletteAction(
   return "acted";
 }
 
-export function CommandPalette() {
+export interface CommandPaletteLookupRequest {
+  id: number;
+  query: string;
+  scope: SearchScope;
+}
+
+/** Return only a fresh embedding request. The parent acknowledgement normally clears a handled
+ * request immediately, but identity still belongs here so a delayed/replayed prop cannot reopen or
+ * reset the palette. A new monotonic id deliberately reseeds an already-open palette. */
+export function commandPaletteLookupRequestToHandle(
+  handledId: number | null,
+  request: CommandPaletteLookupRequest | null | undefined,
+): CommandPaletteLookupRequest | null {
+  return request === null
+    || request === undefined
+    || (handledId !== null && request.id <= handledId)
+    ? null
+    : request;
+}
+
+/** A backdrop owns only a click on its own painted surface. This explicit target check is safer than
+ * relying on every future dialog descendant to remember to stop propagation. */
+export function shouldCloseCommandPaletteFromBackdrop(
+  event: Pick<ReactMouseEvent<HTMLDivElement>, "currentTarget" | "target">,
+): boolean {
+  return event.currentTarget === event.target;
+}
+
+interface InertAttributeSnapshot {
+  hadAttribute: boolean;
+  value: string | null;
+}
+
+/** Make every shell sibling genuinely inert while the modal palette is mounted, including siblings
+ * inserted later. Cleanup restores each element's exact pre-palette attribute representation rather
+ * than assuming that every sibling started interactive. */
+export function inertCommandPaletteSiblings(root: HTMLElement): () => void {
+  const parent = root.parentElement;
+  if (parent === null) return () => undefined;
+  const snapshots = new Map<Element, InertAttributeSnapshot>();
+  const apply = () => {
+    for (const sibling of Array.from(parent.children)) {
+      if (sibling === root || snapshots.has(sibling)) continue;
+      snapshots.set(sibling, {
+        hadAttribute: sibling.hasAttribute("inert"),
+        value: sibling.getAttribute("inert"),
+      });
+      sibling.setAttribute("inert", "");
+    }
+  };
+  apply();
+  const observer = typeof MutationObserver === "undefined"
+    || typeof Node === "undefined"
+    || !(parent instanceof Node)
+    ? null
+    : new MutationObserver(apply);
+  observer?.observe(parent, { childList: true });
+  let restored = false;
+  return () => {
+    if (restored) return;
+    restored = true;
+    observer?.disconnect();
+    for (const [sibling, snapshot] of snapshots) {
+      if (snapshot.hadAttribute) sibling.setAttribute("inert", snapshot.value ?? "");
+      else sibling.removeAttribute("inert");
+    }
+  };
+}
+
+/** React calls a callback ref with null before removing its node. Keeping the inert lifecycle inside
+ * the ref itself guarantees that shell siblings are restored in the removal commit (and also when
+ * Strict Mode temporarily detaches/re-attaches the ref), rather than waiting for a passive effect. */
+export function createCommandPaletteBackdropRef(): (node: HTMLDivElement | null) => void {
+  let current: HTMLDivElement | null = null;
+  let restore: (() => void) | null = null;
+  return (node) => {
+    if (current === node) return;
+    restore?.();
+    restore = null;
+    current = node;
+    if (node !== null) restore = inertCommandPaletteSiblings(node);
+  };
+}
+
+/** Focus returns to the invoking control only when the close action did not hand focus somewhere
+ * more specific. In particular, a dirty-composer confirmation prompt must keep the focus it claims. */
+export function shouldRestoreCommandPaletteOpener(
+  active: HTMLElement | null,
+  body: HTMLElement | null,
+  opener: HTMLElement | null,
+): boolean {
+  const focusIsUnclaimed = active === null || active === body || !active.isConnected;
+  return focusIsUnclaimed
+    && opener !== null
+    && opener.isConnected
+    && opener.closest("[inert]") === null;
+}
+
+export function commandPaletteOpenSeed(request: CommandPaletteLookupRequest | null): {
+  query: string;
+  scope: SearchScope;
+  lookupMode: boolean;
+} {
+  return request === null
+    ? { query: "", scope: "public", lookupMode: false }
+    : { query: request.query, scope: request.scope, lookupMode: true };
+}
+
+export function commandPaletteResultStatus(options: {
+  query: string;
+  resultCount: number;
+  workerSearchPending: boolean;
+  indexing: { indexed: number; total: number } | null;
+  indexError: boolean;
+}): string {
+  if (options.workerSearchPending) return "Searching repository symbols.";
+  const count = options.resultCount;
+  const query = options.query.trim();
+  if (count === 0) {
+    if (options.indexError) return "Repository symbol index unavailable. No loaded graph symbols match.";
+    return query.length === 0 ? "No repository symbols available." : `No symbols match ${query}.`;
+  }
+  const available = `${count} repository ${count === 1 ? "symbol" : "symbols"} available.`;
+  if (options.indexing !== null) {
+    const total = options.indexing.total > 0 ? String(options.indexing.total) : "unknown";
+    return `Indexing repository symbols, ${options.indexing.indexed} of ${total}. ${available}`;
+  }
+  if (options.indexError) return `Repository symbol index unavailable. ${available}`;
+  return available;
+}
+
+export function CommandPalette({
+  lookupRequest,
+  onLookupRequestHandled,
+}: {
+  lookupRequest?: CommandPaletteLookupRequest | null;
+  onLookupRequestHandled?: (id: number) => void;
+} = {}) {
   const artifact = useBlueprint((state) => state.artifact);
   const index = useBlueprint((state) => state.index);
   const progressiveSymbols = useBlueprint((state) => state.progressiveSymbols);
@@ -154,6 +299,7 @@ export function CommandPalette() {
   const isMap = MAP_VIEWS.has(viewMode);
 
   const [open, setOpen] = useState(false);
+  const [lookupMode, setLookupMode] = useState(false);
   const [query, setQuery] = useState("");
   const [highlightedId, setHighlightedId] = useState<NodeId | null>(null);
   const [scope, setScope] = useState<SearchScope>("public");
@@ -163,13 +309,67 @@ export function CommandPalette() {
   const [workerCounts, setWorkerCounts] = useState<SearchScopeCounts | null>(null);
   const [workerResults, setWorkerResults] = useState<SymbolEntry[] | null>(null);
   const [workerSyncRevision, setWorkerSyncRevision] = useState(0);
+  const [openRevision, setOpenRevision] = useState(0);
+  const listboxId = useId();
+  const statusId = useId();
   const inputRef = useRef<HTMLInputElement | null>(null);
   const activeRowRef = useRef<HTMLDivElement | null>(null);
+  const backdropRef = useRef<ReturnType<typeof createCommandPaletteBackdropRef> | null>(null);
+  backdropRef.current ??= createCommandPaletteBackdropRef();
   const workerSyncSequence = useRef(0);
   const workerQuerySequence = useRef(0);
+  const handledLookupRequest = useRef<number | null>(null);
+  const openerRef = useRef<HTMLElement | null>(null);
   const actionGateRef = useRef<PaletteActionGate | null>(null);
   actionGateRef.current ??= createPaletteActionGate();
   const actionGate = actionGateRef.current;
+
+  const restoreOpener = useCallback(() => {
+    if (typeof window === "undefined") return;
+    // Capture and release ownership before yielding. If a fresh request reopens the palette in the
+    // same frame, this close must neither restore nor clear that newer session's opener.
+    const opener = openerRef.current;
+    openerRef.current = null;
+    window.requestAnimationFrame(() => {
+      const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      if (opener !== null && shouldRestoreCommandPaletteOpener(active, document.body, opener)) {
+        opener.focus({ preventScroll: true });
+      }
+    });
+  }, []);
+  const closePalette = useCallback(() => {
+    actionGate.invalidate();
+    workerSyncSequence.current += 1;
+    workerQuerySequence.current += 1;
+    setOpen(false);
+    restoreOpener();
+  }, [actionGate, restoreOpener]);
+  const openPalette = useCallback((nextQuery: string, nextScope: SearchScope, fromLookup: boolean) => {
+    actionGate.invalidate();
+    workerSyncSequence.current += 1;
+    workerQuerySequence.current += 1;
+    if (!open && typeof document !== "undefined") {
+      openerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    }
+    setQuery(nextQuery);
+    setHighlightedId(null);
+    setScope(nextScope);
+    setScopeMenuOpen(false);
+    setActionError(null);
+    setFailedNodeIds(new Set());
+    setWorkerCounts(null);
+    setWorkerResults(null);
+    setWorkerSyncRevision(0);
+    setOpenRevision((current) => current + 1);
+    setLookupMode(fromLookup);
+    setOpen(true);
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        inputRef.current?.focus();
+        inputRef.current?.select();
+      });
+    }
+  }, [actionGate, open]);
 
   // The global shortcut. Cmd/Ctrl+P is the browser's Print dialog, so preventDefault is CRITICAL —
   // without it the print window steals the keystroke and the palette never opens. Pressing it again
@@ -180,33 +380,37 @@ export function CommandPalette() {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "p") {
         event.preventDefault();
-        actionGate.invalidate();
-        setOpen((wasOpen) => !wasOpen);
+        if (open) closePalette();
+        else {
+          const seed = commandPaletteOpenSeed(null);
+          openPalette(seed.query, seed.scope, seed.lookupMode);
+        }
       } else if (shouldClosePaletteFromWindow(event, open)) {
         event.preventDefault();
-        actionGate.invalidate();
-        setOpen(false);
+        closePalette();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [actionGate, open]);
+  }, [closePalette, open, openPalette]);
 
   // An embedding can unmount the canvas while hydration is in flight. Fence that completion just as
   // strictly as Escape/backdrop close so it cannot call a stale store action or set local error state.
   useEffect(() => () => actionGate.invalidate(), [actionGate]);
 
-  // A fresh open starts empty with the top row primed, so the reader never inherits a stale query.
+  // Source lookup is an explicit open request, not a synthetic Cmd/Ctrl+P toggle. Its monotonic id
+  // lets a second selection replace the query while the palette is already open without closing it.
   useEffect(() => {
-    if (open) {
-      setQuery("");
-      setHighlightedId(null);
-      setScope("public");
-      setScopeMenuOpen(false);
-      setActionError(null);
-      setFailedNodeIds(new Set());
-      void startProgressiveSymbolIndex();
-    }
+    const request = commandPaletteLookupRequestToHandle(handledLookupRequest.current, lookupRequest);
+    if (request === null) return;
+    handledLookupRequest.current = request.id;
+    const seed = commandPaletteOpenSeed(request);
+    openPalette(seed.query, seed.scope, seed.lookupMode);
+    onLookupRequestHandled?.(request.id);
+  }, [lookupRequest, onLookupRequestHandled, openPalette]);
+
+  useEffect(() => {
+    if (open) void startProgressiveSymbolIndex();
   }, [open, startProgressiveSymbolIndex]);
 
   // Rank the currently loaded bounded slice on the UI thread. A repository-wide progressive index
@@ -258,7 +462,7 @@ export function CommandPalette() {
       setWorkerCounts(counts);
       setWorkerSyncRevision(sequence);
     });
-  }, [isMap, open, repositoryWorkerBacked, symbols, synchronizeProgressiveSymbolSearch]);
+  }, [isMap, open, openRevision, repositoryWorkerBacked, symbols, synchronizeProgressiveSymbolSearch]);
 
   // Each keystroke sends only its tiny query tuple. Results are capped inside the worker; sequence
   // ownership prevents a slow no-match scan from replacing a newer query's rows.
@@ -275,6 +479,17 @@ export function CommandPalette() {
   // Identity, not row number, owns keyboard selection. Background index completion can insert and
   // reorder rows while the palette is open; retaining the ID prevents Enter opening a different node.
   const highlighted = Math.max(0, results.findIndex((entry) => entry.id === highlightedId));
+  const repositorySearchBusy = workerSearchPending || progressiveSymbols.status === "indexing";
+  const activeOptionId = results.length === 0 ? undefined : `${listboxId}-option-${highlighted}`;
+  const assistiveStatus = commandPaletteResultStatus({
+    query,
+    resultCount: results.length,
+    workerSearchPending,
+    indexing: progressiveSymbols.status === "indexing"
+      ? { indexed: progressiveSymbols.indexed, total: progressiveSymbols.total }
+      : null,
+    indexError: progressiveSymbols.status === "error",
+  });
 
   // Typing or changing the search scope shifts the result set, so re-prime the highlight.
   useEffect(() => {
@@ -291,10 +506,6 @@ export function CommandPalette() {
     return null;
   }
 
-  const close = () => {
-    actionGate.invalidate();
-    setOpen(false);
-  };
   const settlePick = async (entry: SymbolEntry, action: () => void): Promise<PaletteActionOutcome> => {
     setActionError(null);
     const outcome = await runPaletteAction(
@@ -328,7 +539,7 @@ export function CommandPalette() {
       if (isMap) revealInView(entry.id);
       else openLogicFlow(entry.id);
     });
-    if (outcome === "acted") close();
+    if (outcome === "acted") closePalette();
   };
   // The "+" (map lenses only): add the node to the visible graph WITHOUT navigating. Stay open so a
   // reader can add several nodes before dismissing to see the result on the canvas.
@@ -339,7 +550,7 @@ export function CommandPalette() {
   // its active React Flow surface to select + fit an exact node which that surface already published.
   const focusPick = (entry: SymbolEntry) => {
     if (!paletteCanvasNodeIds.has(entry.id)) return;
-    if (focusNodeInView(entry.id)) close();
+    if (focusNodeInView(entry.id)) closePalette();
   };
 
   // Arrow keys move the highlight (clamped to the list). Enter loads a nonresident row or opens a
@@ -379,20 +590,67 @@ export function CommandPalette() {
       }
     } else if (event.key === "Escape") {
       event.preventDefault();
-      close();
+      closePalette();
+    }
+  };
+
+  const keepTabFocusInPalette = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "Tab" || event.defaultPrevented) return;
+    const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+    )).filter((element) => element.getAttribute("aria-hidden") !== "true");
+    if (focusable.length === 0) {
+      event.preventDefault();
+      inputRef.current?.focus();
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+    if (event.shiftKey && (active === first || !event.currentTarget.contains(active))) {
+      event.preventDefault();
+      last?.focus();
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first?.focus();
     }
   };
 
   // Backdrop click closes; clicks inside the dialog are swallowed so they don't reach it.
   return (
-    <div style={BACKDROP_STYLE} onClick={close}>
-      <div style={DIALOG_STYLE} role="dialog" aria-modal aria-label={isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"} onClick={(e) => e.stopPropagation()}>
+    <div
+      ref={backdropRef.current}
+      style={BACKDROP_STYLE}
+      onClick={(event: ReactMouseEvent<HTMLDivElement>) => {
+        if (shouldCloseCommandPaletteFromBackdrop(event)) closePalette();
+      }}
+    >
+      <style>{COMMAND_PALETTE_CONTROL_CSS}</style>
+      <div
+        style={DIALOG_STYLE}
+        role="dialog"
+        aria-modal
+        aria-label={lookupMode ? "Lookup repository symbol" : isMap ? "Reveal or add a node in the current view" : "Open a symbol's logic flow"}
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={keepTabFocusInPalette}
+      >
         <div style={SEARCH_HEADER_STYLE}>
           <input
             ref={inputRef}
+            className="command-palette-input"
             style={INPUT_STYLE}
             autoFocus
-            placeholder={isMap
+            role="combobox"
+            aria-autocomplete="list"
+            aria-expanded="true"
+            aria-controls={listboxId}
+            aria-activedescendant={activeOptionId}
+            aria-describedby={statusId}
+            aria-busy={repositorySearchBusy || undefined}
+            aria-label={lookupMode ? "Lookup repository symbols" : isMap ? "Search nodes" : "Search logic symbols"}
+            placeholder={lookupMode
+              ? "Lookup repository symbols…"
+              : isMap
               ? progressiveReadyFileIds === null
                 ? "Reveal a node — Enter to go there, + to add it here…"
                 : "Search a node — load its context, then reveal or add it…"
@@ -410,7 +668,31 @@ export function CommandPalette() {
             onReturnToInput={() => inputRef.current?.focus()}
           />
         </div>
-        <div style={LIST_STYLE}>
+        <div
+          id={listboxId}
+          role="listbox"
+          aria-label="Repository symbols"
+          aria-busy={repositorySearchBusy || undefined}
+          style={SCREEN_READER_ONLY_STYLE}
+        >
+          {results.map((entry, row) => (
+            <CommandPaletteOption
+              key={entry.id}
+              optionId={`${listboxId}-option-${row}`}
+              entry={entry}
+              active={row === highlighted}
+              readiness={symbolRowReadiness(
+                entry,
+                progressiveReadyFileIds !== null,
+                progressivePendingNodeIds.has(entry.id),
+                failedNodeIds.has(entry.id),
+              )}
+            />
+          ))}
+        </div>
+        <div
+          style={LIST_STYLE}
+        >
           {results.length > 0 ? (
             results.map((entry, row) => (
               <ResultRow
@@ -432,7 +714,7 @@ export function CommandPalette() {
               />
             ))
           ) : (
-            <div style={EMPTY_STYLE}>
+            <div role="presentation" aria-hidden="true" style={EMPTY_STYLE}>
               {progressiveSymbols.status === "indexing"
                 ? "Indexing repository symbols…"
                 : workerSearchPending
@@ -442,6 +724,9 @@ export function CommandPalette() {
                 : `No node matches “${query.trim()}”.`}
             </div>
           )}
+        </div>
+        <div id={statusId} role="status" aria-live="polite" aria-atomic="true" style={SCREEN_READER_ONLY_STYLE}>
+          {assistiveStatus}
         </div>
         {actionError !== null ? <div role="alert" style={ERROR_STYLE}>{actionError}</div> : null}
         <div style={FOOTER_STYLE}>
@@ -453,11 +738,11 @@ export function CommandPalette() {
               ? "↑↓ navigate · ↵ open · esc close"
               : "↑↓ navigate · ↵ load/open · esc close"}</span>
           {progressiveSymbols.status === "indexing" ? (
-            <span role="status">Indexing {progressiveSymbols.indexed}/{progressiveSymbols.total || "…"}</span>
+            <span>Indexing {progressiveSymbols.indexed}/{progressiveSymbols.total || "…"}</span>
           ) : progressiveSymbols.status === "ready" ? (
             <span>{progressiveSymbols.total.toLocaleString()} symbols</span>
           ) : progressiveSymbols.status === "error" ? (
-            <span role="alert" title={progressiveSymbols.error ?? undefined}>Repository index unavailable</span>
+            <span title={progressiveSymbols.error ?? undefined}>Repository index unavailable</span>
           ) : null}
         </div>
       </div>
@@ -545,6 +830,7 @@ export function SearchScopeControl(props: {
     <div ref={wrapRef} style={SCOPE_CONTROL_STYLE}>
       <button
         type="button"
+        className="command-palette-control"
         style={SCOPE_BUTTON_STYLE}
         aria-label={`Search scope: ${activeLabel}`}
         aria-haspopup="menu"
@@ -567,6 +853,7 @@ export function SearchScopeControl(props: {
                 key={option.id}
                 ref={(node) => { optionRefs.current[index] = node; }}
                 type="button"
+                className="command-palette-control"
                 role="menuitemradio"
                 aria-checked={selected}
                 tabIndex={activeIndex === index ? 0 : -1}
@@ -605,6 +892,34 @@ export function symbolRowReadiness(
   return entry.isLoaded ? "ready" : "loadable";
 }
 
+/** The combobox owns a control-free listbox. Visible rows have several independent actions, which
+ * cannot be nested in role=option because option descendants are flattened by accessibility APIs. */
+export function CommandPaletteOption(props: {
+  optionId: string;
+  entry: SymbolEntry;
+  active: boolean;
+  readiness: SymbolRowReadiness;
+}) {
+  const detail = props.entry.qualifiedName || props.entry.file;
+  const readiness = props.readiness === "hydrating"
+    ? "loading nearby graph"
+    : props.readiness === "loadable"
+      ? "load nearby graph"
+      : props.readiness === "retry"
+        ? "retry loading nearby graph"
+        : props.readiness === "ready"
+          ? "ready"
+          : "available";
+  return (
+    <div
+      id={props.optionId}
+      role="option"
+      aria-selected={props.active}
+      aria-label={`${props.entry.displayName}, ${detail}, ${props.entry.kind}, ${readiness}`}
+    />
+  );
+}
+
 export function ResultRow(props: {
   entry: SymbolEntry;
   active: boolean;
@@ -640,6 +955,7 @@ export function ResultRow(props: {
     >
       <button
         type="button"
+        className="command-palette-control"
         style={ROW_MAIN_BUTTON_STYLE}
         title={entry.id}
         aria-label={mainLabel}
@@ -660,6 +976,7 @@ export function ResultRow(props: {
       {props.canFocus ? (
         <button
           type="button"
+          className="command-palette-control"
           style={FOCUS_BUTTON_STYLE}
           title="Focus this node in the current graph"
           aria-label={`Focus ${entry.displayName} in the current graph`}
@@ -674,6 +991,7 @@ export function ResultRow(props: {
       {props.canAdd ? (
         <button
           type="button"
+          className="command-palette-control"
           style={actionable ? ADD_BUTTON_STYLE : ADD_BUTTON_DISABLED_STYLE}
           title={actionable ? "Add this node to the current view" : "Load nearby graph before adding this node"}
           aria-label={`Add ${entry.displayName} to the current view`}
@@ -810,7 +1128,7 @@ export function paletteVisibleResults(
   return repositoryWorkerBacked ? [...(workerResults ?? [])] : [...localResults];
 }
 
-// The palette floats above every view (and the code modal at zIndex 30), pinned near the top-center
+// The palette floats above every view (and the source dock at zIndex 30), pinned near the top-center
 // like VS Code's quick-open. Mounted in BlueprintCanvas's relative wrapper, so it's absolute-anchored.
 const BACKDROP_STYLE: React.CSSProperties = {
   position: "absolute",
@@ -834,6 +1152,16 @@ const DIALOG_STYLE: React.CSSProperties = {
   overflow: "visible",
   boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
 };
+const COMMAND_PALETTE_CONTROL_CSS = `
+.command-palette-input:focus-visible {
+  outline: 2px solid #58A6FF;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 1px rgba(88, 166, 255, 0.32);
+}
+.command-palette-control:focus-visible {
+  outline: 2px solid #58A6FF;
+  outline-offset: 2px;
+}`;
 const SEARCH_HEADER_STYLE: React.CSSProperties = {
   position: "relative",
   zIndex: 3,
@@ -856,7 +1184,6 @@ const INPUT_STYLE: React.CSSProperties = {
   background: "transparent",
   border: "none",
   color: "#E6EDF3",
-  outline: "none",
 };
 const SCOPE_CONTROL_STYLE: React.CSSProperties = {
   position: "relative",
@@ -938,6 +1265,17 @@ const LIST_STYLE: React.CSSProperties = {
   overflowY: "auto",
 };
 const EMPTY_STYLE: React.CSSProperties = { fontSize: 12, color: "#6C7683", padding: "10px 8px" };
+const SCREEN_READER_ONLY_STYLE: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
 const FOOTER_STYLE: React.CSSProperties = {
   flexShrink: 0,
   display: "flex",

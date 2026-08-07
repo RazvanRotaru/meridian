@@ -439,6 +439,272 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const loyaltySourceDialog = page.getByRole("dialog", { name: "Source code" });
     await loyaltySourceDialog.waitFor();
     await loyaltySourceDialog.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
+    const sourceSearchTrigger = loyaltySourceDialog.getByRole("button", { name: "Open source search" });
+    await expect.poll(() => sourceSearchTrigger.evaluate((element) => element === document.activeElement)).toBe(true);
+
+    // A code-only text selection seeds the existing repository symbol palette. Lookup includes all
+    // scopes, preserves ambiguity instead of auto-picking, and returns focus to its dock action.
+    const sourceLookupTrigger = loyaltySourceDialog.getByRole("button", { name: "Search repository symbols" });
+    const loyaltyDefinitionCell = loyaltySourceDialog.locator('tr[data-source-line="1"] [data-source-code-text="true"]');
+    await selectSourceText(loyaltyDefinitionCell, "loyaltyTierFor");
+    const selectedLookupTrigger = loyaltySourceDialog.getByRole("button", {
+      name: "Look up “loyaltyTierFor” in repository symbols",
+    });
+    await selectedLookupTrigger.waitFor();
+    expect(await loyaltySourceDialog.locator('[data-line-comment-composer-open="true"]').count()).toBe(0);
+    await selectedLookupTrigger.click();
+    const lookupPalette = page.getByRole("dialog", { name: "Lookup repository symbol" });
+    await lookupPalette.waitFor();
+    expect(await lookupPalette.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
+    const lookupInput = lookupPalette.getByRole("combobox", { name: "Lookup repository symbols" });
+    expect(await lookupInput.inputValue()).toBe("loyaltyTierFor");
+    await lookupInput.press("Shift+Tab");
+    expect(await lookupPalette.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    await lookupInput.click();
+    const lookupResult = lookupPalette.locator(`[data-symbol-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
+    await lookupResult.waitFor();
+    expect(await lookupResult.getAttribute("data-symbol-readiness")).toBe("ready");
+    await lookupResult.getByRole("button", { name: "Open loyaltyTierFor", exact: true }).waitFor();
+    await lookupInput.press("Escape");
+    await lookupPalette.waitFor({ state: "detached" });
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await sourceLookupTrigger.waitFor();
+    await expect.poll(() => sourceLookupTrigger.evaluate((element) => element === document.activeElement)).toBe(true);
+    await selectSourceText(loyaltyDefinitionCell, "loyaltyTierFor");
+    await selectedLookupTrigger.waitFor();
+    await loyaltyDefinitionCell.evaluate((element) => element.ownerDocument.getSelection()?.removeAllRanges());
+    await sourceLookupTrigger.waitFor();
+    expect(await selectedLookupTrigger.count()).toBe(0);
+
+    // The source dock is a shell-level modal side-sheet. It covers the PR sidebar without changing
+    // that sidebar's remembered split, while one shell-owned boundary removes the whole obscured
+    // workspace from pointer, keyboard, and accessibility navigation.
+    const sourceDockLayer = page.locator('[data-source-code-dock-layer="true"]');
+    const sourceDockHost = page.locator('[data-source-code-dock-host="true"]');
+    const sourceDockHandle = page.getByRole("separator", { name: "Resize source dock" });
+    const workspaceUnderlay = page.locator('[data-source-workspace-underlay="true"]');
+    const reviewPane = page.locator("#meridian-pr-review-pane");
+    const [layerBox, dockBox, reviewPaneBox] = await Promise.all([
+      sourceDockLayer.boundingBox(),
+      sourceDockHost.boundingBox(),
+      reviewPane.boundingBox(),
+    ]);
+    if (layerBox === null || dockBox === null || reviewPaneBox === null) {
+      throw new Error("source dock and PR review overlap are not measurable");
+    }
+    expect(Math.abs((dockBox.x + dockBox.width) - (layerBox.x + layerBox.width))).toBeLessThanOrEqual(1);
+    expect(reviewPaneBox.x + reviewPaneBox.width).toBeLessThanOrEqual(layerBox.x + layerBox.width + 1);
+    expect(dockBox.x).toBeLessThan(reviewPaneBox.x + reviewPaneBox.width);
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('[data-source-code-dock-host="true"]') !== null
+    ), {
+      x: Math.max(dockBox.x, reviewPaneBox.x) + 8,
+      y: reviewPaneBox.y + 24,
+    })).toBe(true);
+    expect(await workspaceUnderlay.getAttribute("inert")).not.toBeNull();
+    expect(await workspaceUnderlay.getAttribute("aria-hidden")).toBe("true");
+    expect(await sourceDockHost.getAttribute("aria-modal")).toBe("true");
+    expect(await sourceDockLayer.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
+    expect(await sourceDockHost.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
+    const closeSourceButton = loyaltySourceDialog.getByRole("button", { name: "Close source" });
+    await closeSourceButton.focus();
+    await closeSourceButton.press("Tab");
+    expect(await loyaltySourceDialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    await sourceSearchTrigger.focus();
+
+    // Only the code listing owns scroll. The shell and adapter fill the dock without producing a
+    // second vertical track around the same source content.
+    const sourceDockBody = loyaltySourceDialog.locator('[data-source-code-body="dock"]');
+    const sourceScrollOwner = loyaltySourceDialog.locator('[data-source-scroll-owner="true"]');
+    expect(await sourceScrollOwner.count()).toBe(1);
+    const scrollLayout = await sourceDockBody.evaluate((body) => {
+      const owner = body.querySelector<HTMLElement>('[data-source-scroll-owner="true"]');
+      if (owner === null) throw new Error("source scroll owner missing from dock body");
+      return {
+        bodyClientHeight: body.clientHeight,
+        bodyScrollHeight: body.scrollHeight,
+        bodyOverflowY: getComputedStyle(body).overflowY,
+        ownerOverflowY: getComputedStyle(owner).overflowY,
+      };
+    });
+    expect(scrollLayout.bodyScrollHeight).toBeLessThanOrEqual(scrollLayout.bodyClientHeight + 1);
+    expect(scrollLayout.bodyOverflowY).toBe("hidden");
+    expect(scrollLayout.ownerOverflowY).toBe("auto");
+
+    // The dock is a complete review surface: its path-based action changes the whole file (not
+    // merely the declaration node), while its editor-style find stays above the one scroll owner.
+    const dockViewedControl = loyaltySourceDialog.getByRole("button", {
+      name: "Mark src/pricing/loyaltyTiers.ts as viewed",
+    });
+    await dockViewedControl.click();
+    await loyaltySourceDialog.getByRole("button", {
+      name: "Viewed src/pricing/loyaltyTiers.ts — click to unmark",
+    }).waitFor();
+    await loyaltySourceDialog.getByRole("button", {
+      name: "Viewed src/pricing/loyaltyTiers.ts — click to unmark",
+    }).click();
+    await dockViewedControl.waitFor();
+    await expect.poll(() => [...viewedFileMutations]).toEqual([
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+    ]);
+
+    const sourceSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
+    await page.keyboard.press("Control+Shift+f");
+    expect(await sourceSearch.count()).toBe(0);
+    await page.keyboard.press("Control+f");
+    const sourceSearchInput = sourceSearch.getByRole("searchbox", { name: "Search source" });
+    const sourceSearchStatus = sourceSearch.locator('[data-source-search-status="true"]');
+    await sourceSearchInput.fill("orderCount");
+    await sourceSearchStatus.getByText(/^1 of 2 · L\d+:\d+$/).waitFor();
+    expect(await loyaltySourceDialog.locator('[data-source-search-active="true"]').count()).toBe(1);
+    expect(await loyaltySourceDialog.locator('[data-source-search-match-index]').count()).toBe(2);
+    expect(await loyaltySourceDialog.locator('[data-source-search-match-index="0"][data-source-search-match-active="true"]').count()).toBe(1);
+    await sourceSearchInput.press("Enter");
+    await sourceSearchStatus.getByText(/^2 of 2 · L3:\d+$/).waitFor();
+    expect(await loyaltySourceDialog.locator('tr[data-source-line="3"][data-source-search-active="true"]').count()).toBe(1);
+    expect(await loyaltySourceDialog.locator('[data-source-search-match-index="1"][data-source-search-match-active="true"]').count()).toBe(1);
+    await sourceSearchInput.press("Shift+Enter");
+    await sourceSearchStatus.getByText(/^1 of 2 · L1:\d+$/).waitFor();
+    await sourceSearchInput.press("Escape");
+    await sourceSearch.waitFor({ state: "detached" });
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    expect(await loyaltySourceDialog.locator('[data-source-search-match-count]').count()).toBe(0);
+    expect(await sourceScrollOwner.count()).toBe(1);
+
+    // Search chrome and the whole-file action remain usable at the live minimum width; neither
+    // toolbar silently introduces a horizontal scroll surface of its own. The separator's dynamic
+    // bounds, value, and rendered width must all describe that same constrained geometry.
+    await sourceDockHandle.focus();
+    await sourceDockHandle.press("End");
+    await expect.poll(async () => {
+      const metrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+      return Math.abs(metrics.valueNow - metrics.valueMin);
+    }).toBeLessThanOrEqual(0.001);
+    const minimumDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(minimumDockMetrics);
+    await sourceSearchTrigger.click();
+    const minimumSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
+    const minimumChrome = await minimumSearch.evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(minimumChrome.scrollWidth).toBeLessThanOrEqual(minimumChrome.clientWidth + 1);
+    const minimumHeaderActions = await loyaltySourceDialog.locator('[data-source-header-actions="true"]').evaluate((element) => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(minimumHeaderActions.scrollWidth).toBeLessThanOrEqual(minimumHeaderActions.clientWidth + 1);
+    expect(await loyaltySourceDialog.locator('[data-review-source-viewed="true"]').count()).toBe(1);
+
+    // The global command palette remains the top modal layer. Escape from one of its ordinary
+    // buttons closes only the palette; it must not fall through to the source search or dock.
+    await page.keyboard.press("Control+P");
+    await palette.waitFor();
+    const paletteNonEditableControl = palette.locator("button").first();
+    await paletteNonEditableControl.waitFor();
+    await paletteNonEditableControl.focus();
+    await page.keyboard.press("Escape");
+    await palette.waitFor({ state: "detached" });
+    expect(await minimumSearch.isVisible()).toBe(true);
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+
+    await minimumSearch.getByRole("button", { name: "Close source search" }).click();
+    await sourceDockHandle.focus();
+    await sourceDockHandle.press("Enter");
+
+    // Pointer resizing owns the same geometry and ARIA contract as the keyboard. Its preferred
+    // ratio survives a clean close/reopen, a narrow viewport applies only temporary live bounds,
+    // and restoring the viewport recovers that wider preference instead of persisting the clamp.
+    await expect.poll(async () => (
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).valueNow).toBeCloseTo(60, 3);
+    const pointerStart = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    const pointerHandleBox = await sourceDockHandle.boundingBox();
+    if (pointerHandleBox === null) throw new Error("source dock pointer handle is not measurable");
+    const pointerStartX = pointerHandleBox.x + pointerHandleBox.width / 2;
+    const pointerY = pointerHandleBox.y + pointerHandleBox.height / 2;
+    await page.mouse.move(pointerStartX, pointerY);
+    await page.mouse.down();
+    await page.mouse.move(pointerStartX - 140, pointerY, { steps: 6 });
+    await page.mouse.up();
+    await expect.poll(async () => (
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).hostWidth).toBeGreaterThan(pointerStart.hostWidth + 100);
+    const pointerResized = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(pointerResized);
+    expect(pointerResized.valueNow).toBeGreaterThan(pointerStart.valueNow);
+
+    await loyaltySourceDialog.getByRole("button", { name: "Close source" }).click();
+    await loyaltySourceDialog.waitFor({ state: "detached" });
+    expect(await workspaceUnderlay.getAttribute("inert")).toBeNull();
+    expect(await workspaceUnderlay.getAttribute("aria-hidden")).toBeNull();
+    await expect.poll(() => loyaltyCodeButton.evaluate((element) => element === document.activeElement)).toBe(true);
+    await loyaltyCodeButton.click();
+    await loyaltySourceDialog.waitFor();
+    await sourceDockHandle.waitFor();
+    expect(await workspaceUnderlay.getAttribute("inert")).not.toBeNull();
+    await expect.poll(async () => Math.abs((
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).valueNow - pointerResized.valueNow)).toBeLessThanOrEqual(0.001);
+    const reopenedMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(reopenedMetrics);
+
+    await page.setViewportSize({ width: 700, height: 900 });
+    await expect.poll(async () => {
+      const metrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+      return Math.max(
+        Math.abs(metrics.valueMin - metrics.valueMax),
+        Math.abs(metrics.valueNow - metrics.valueMin),
+        metrics.pixelError,
+      );
+    }).toBeLessThanOrEqual(2);
+    const narrowDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(narrowDockMetrics);
+    expect(Math.abs(narrowDockMetrics.valueMin - narrowDockMetrics.valueMax)).toBeLessThanOrEqual(0.001);
+    expect(Math.abs(narrowDockMetrics.valueNow - narrowDockMetrics.valueMin)).toBeLessThanOrEqual(0.001);
+
+    await page.setViewportSize({ width: 1_400, height: 900 });
+    await expect.poll(async () => Math.abs((
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).valueNow - pointerResized.valueNow)).toBeLessThanOrEqual(0.001);
+    const restoredPreferredMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(restoredPreferredMetrics);
+    await sourceDockHandle.focus();
+    await sourceDockHandle.press("Enter");
+    await expect.poll(async () => (
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).valueNow).toBeCloseTo(60, 3);
+    const stableDefaultMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expectSourceDockMetricsToAgree(stableDefaultMetrics);
+
+    // Keyboard resizing and maximize/restore retain parity after responsive constraints recover.
+    const initialDockWidth = stableDefaultMetrics.hostWidth;
+    await sourceDockHandle.focus();
+    await sourceDockHandle.press("ArrowLeft");
+    await expect.poll(async () => (await sourceDockHost.boundingBox())?.width ?? 0).toBeGreaterThan(initialDockWidth);
+    const widerDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
+    expect(widerDockMetrics.hostWidth).toBeGreaterThan(initialDockWidth);
+    expectSourceDockMetricsToAgree(widerDockMetrics);
+    await sourceDockHandle.press("Enter");
+    await expect.poll(async () => (
+      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
+    ).valueNow).toBeCloseTo(60, 3);
+    expectSourceDockMetricsToAgree(await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle));
+    await loyaltySourceDialog.getByRole("button", { name: "Maximize source dock" }).click();
+    await expect.poll(async () => {
+      const [host, layer] = await Promise.all([sourceDockHost.boundingBox(), sourceDockLayer.boundingBox()]);
+      return Math.abs((host?.width ?? 0) - (layer?.width ?? 0));
+    }).toBeLessThanOrEqual(1);
+    const [maximizedDockBox, maximizedLayerBox] = await Promise.all([
+      sourceDockHost.boundingBox(),
+      sourceDockLayer.boundingBox(),
+    ]);
+    expect(Math.abs((maximizedDockBox?.width ?? 0) - (maximizedLayerBox?.width ?? 0))).toBeLessThanOrEqual(1);
+    await loyaltySourceDialog.getByRole("button", { name: "Restore source dock" }).click();
+    await sourceDockHandle.waitFor();
 
     // A wide colspan comment must wrap inside the source viewport without becoming a table sizing
     // constraint. Otherwise auto table layout assigns part of its max-content width to the sticky
@@ -458,9 +724,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     }
     expect(commentBox.x + commentBox.width).toBeLessThanOrEqual(listingBox.x + listingBox.width + 1);
 
-    // The modal intentionally covers the control panel, so dispatch the preference toggle without
+    // The dock intentionally covers the control panel, so dispatch the preference toggle without
     // pointer actionability; this keeps the same mounted source table available for comparison.
-    await hideComments.dispatchEvent("click");
+    await page.locator('button[aria-label="Hide comments on canvas"]').dispatchEvent("click");
     await existingCommentCard.waitFor({ state: "detached" });
     const gutterWithoutComment = await gutter.boundingBox();
     const numberWithoutComment = await lineNumber.boundingBox();
@@ -469,7 +735,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     }
     expect(Math.abs(gutterWithComment.width - gutterWithoutComment.width)).toBeLessThanOrEqual(1);
     expect(Math.abs(numberWithComment.x - numberWithoutComment.x)).toBeLessThanOrEqual(1);
-    await viewComments.dispatchEvent("click");
+    await page.locator('button[aria-label="Show comments on canvas"]').dispatchEvent("click");
     await existingCommentCard.waitFor();
 
     // Submitted comments use GitHub's real edit/reply endpoints and refresh the thread in place.
@@ -485,7 +751,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
     expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
 
-    // Add the second distinct line draft through the full-source gutter. An attempted modal close
+    // Add the second distinct line draft through the full-source gutter. An attempted dock close
     // first exposes the shared Keep/Discard choice; keeping resumes the exact text before Add.
     const secondSourceRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondInlineLine}"]`);
     await secondSourceRow.scrollIntoViewIfNeeded();
@@ -514,12 +780,15 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await firstPendingDraft.getByText(EDITED_DRAFT_TEXT, { exact: true }).waitFor();
     await page.keyboard.press("Escape");
     await loyaltySourceDialog.waitFor({ state: "detached" });
+    await expect.poll(() => loyaltyCodeButton.evaluate((element) => element === document.activeElement)).toBe(true);
 
     // 4e — a file gesture marks the file Viewed through GitHub and advances the header.
     await page.getByText("0/3 files viewed", { exact: true }).waitFor();
     await addedViewedControl.click();
     await page.getByText("1/3 files viewed", { exact: true }).waitFor();
     await expect.poll(() => [...viewedFileMutations]).toEqual([
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
       { path: "src/pricing/loyaltyTiers.ts", viewed: false },
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
@@ -587,9 +856,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
       { path: "src/pricing/loyaltyTiers.ts", viewed: false },
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: false },
+      { path: "src/pricing/loyaltyTiers.ts", viewed: true },
     ]);
 
-    // 4h — Escape closes the source modal only; repeated Escape and outward zoom leave the review
+    // 4h — Escape closes the source dock only; repeated Escape and outward zoom leave the review
     // overlay in place, while explicit Close parks it for the text-only Resume chip. The source
     // graph stays mounted beneath Minimal Graph, but an active PR review is its own navigation root.
     // Scope this raw CSS locator to the extracted surface rather than matching the intentionally
@@ -673,6 +944,86 @@ async function teardown(): Promise<void> {
 
 function reviewFileButton(page: Page, path: string): Locator {
   return page.locator(`button[title^="${path}"]`);
+}
+
+async function selectSourceText(cell: Locator, text: string): Promise<void> {
+  await cell.evaluate((element, selectedText) => {
+    const walker = element.ownerDocument.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    let textNode: Text | null = null;
+    for (let candidate = walker.nextNode(); candidate !== null; candidate = walker.nextNode()) {
+      if ((candidate.textContent ?? "").includes(selectedText)) {
+        textNode = candidate as Text;
+        break;
+      }
+    }
+    if (textNode === null) throw new Error(`source text not found: ${selectedText}`);
+    const start = textNode.data.indexOf(selectedText);
+    const range = element.ownerDocument.createRange();
+    range.setStart(textNode, start);
+    range.setEnd(textNode, start + selectedText.length);
+    const selection = element.ownerDocument.getSelection();
+    if (selection === null) throw new Error("source selection unavailable");
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }, text);
+  await cell.dispatchEvent("pointerup", { pointerType: "mouse", button: 0 });
+}
+
+interface SourceDockBrowserMetrics {
+  hostWidth: number;
+  layerWidth: number;
+  pixelError: number;
+  valueMin: number;
+  valueMax: number;
+  valueNow: number;
+  valueText: string;
+}
+
+async function sourceDockBrowserMetrics(
+  layer: Locator,
+  host: Locator,
+  handle: Locator,
+): Promise<SourceDockBrowserMetrics> {
+  const [layerBox, hostBox, valueMinRaw, valueMaxRaw, valueNowRaw, valueText] = await Promise.all([
+    layer.boundingBox(),
+    host.boundingBox(),
+    handle.getAttribute("aria-valuemin"),
+    handle.getAttribute("aria-valuemax"),
+    handle.getAttribute("aria-valuenow"),
+    handle.getAttribute("aria-valuetext"),
+  ]);
+  if (
+    layerBox === null
+    || hostBox === null
+    || valueMinRaw === null
+    || valueMaxRaw === null
+    || valueNowRaw === null
+    || valueText === null
+  ) {
+    throw new Error("source dock geometry or separator semantics are not measurable");
+  }
+  const valueMin = Number(valueMinRaw);
+  const valueMax = Number(valueMaxRaw);
+  const valueNow = Number(valueNowRaw);
+  if (![valueMin, valueMax, valueNow].every(Number.isFinite)) {
+    throw new Error("source dock separator exposes a non-finite ARIA value");
+  }
+  return {
+    hostWidth: hostBox.width,
+    layerWidth: layerBox.width,
+    pixelError: Math.abs(hostBox.width - (layerBox.width * valueNow / 100)),
+    valueMin,
+    valueMax,
+    valueNow,
+    valueText,
+  };
+}
+
+function expectSourceDockMetricsToAgree(metrics: SourceDockBrowserMetrics): void {
+  expect(metrics.valueMin).toBeLessThanOrEqual(metrics.valueNow);
+  expect(metrics.valueNow).toBeLessThanOrEqual(metrics.valueMax);
+  expect(metrics.pixelError).toBeLessThanOrEqual(2);
+  expect(metrics.valueText).toContain(`Source dock ${metrics.valueNow}% of workspace width`);
 }
 
 async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {

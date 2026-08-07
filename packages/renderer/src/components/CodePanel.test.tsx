@@ -76,6 +76,7 @@ function sourceModal(options: {
   reviewPathAlias?: string;
   stale?: boolean;
   reviewedHeadSha?: string | null;
+  lookup?: boolean;
 }) {
   const status = options.status ?? "modified";
   const store = createBlueprintStore({
@@ -157,7 +158,10 @@ function sourceModal(options: {
   });
   const state = store.getState();
   Object.assign(store, { getInitialState: () => state });
-  return renderToStaticMarkup(<StoreProvider store={store}><CodePanel /></StoreProvider>);
+  const onLookupSymbol = options.lookup === false ? undefined : () => {};
+  return renderToStaticMarkup(
+    <StoreProvider store={store}><CodePanel onLookupSymbol={onLookupSymbol} /></StoreProvider>,
+  );
 }
 
 describe("CodePanel review comments", () => {
@@ -171,11 +175,56 @@ describe("CodePanel review comments", () => {
     expect(wholeFileMarkup).toContain("src/order.ts · empty");
   });
 
-  it("keeps code-button source in the shared centered popup during an active graph review", () => {
+  it("renders source as a shell-level resizable dock with one diff scroll owner", () => {
     const markup = sourceModal({ live: true });
 
-    expect(markup).toContain('style="width:70vw;max-width:900px;height:75vh');
-    expect(markup).not.toContain('style="width:100%;max-width:none;height:100%');
+    expect(markup).toContain('data-source-code-dock-layer="true"');
+    expect(markup).toContain('pointer-events:auto');
+    expect(markup).toContain('background:transparent');
+    expect(markup).toContain('data-source-code-dock-host="true"');
+    expect(markup).toContain('width:60%');
+    expect(markup).toContain('data-source-code-resize-handle="true"');
+    expect(markup).toContain('role="separator"');
+    expect(markup).toContain('aria-label="Resize source dock"');
+    expect(markup).toContain('aria-valuemin="40"');
+    expect(markup).toContain('aria-valuemax="90"');
+    expect(markup).toContain('aria-valuenow="60"');
+    expect(markup).toContain('data-source-code-dock="true"');
+    expect(markup.match(/role="dialog"/g)).toHaveLength(1);
+    expect(markup).toContain('aria-modal="true"');
+    expect(markup).toContain('data-source-code-body="dock"');
+    expect(markup).toContain('data-source-diff-fill="true"');
+    expect(markup).toContain('data-source-scroll-owner="true"');
+    expect(markup).toContain('max-height:none');
+    expect(markup).not.toContain('max-height:70vh');
+  });
+
+  it("offers functional dock maximize and close controls", () => {
+    const markup = sourceModal({ live: true });
+
+    expect(markup).toContain('aria-label="Search repository symbols"');
+    expect(markup).toContain('data-source-symbol-lookup-trigger="true"');
+    expect(markup).toContain('data-source-symbol-selection-enabled="true"');
+    expect(markup).toContain('aria-label="Open source search"');
+    expect(markup).toContain('aria-keyshortcuts="Control+F Meta+F"');
+    expect(markup).toContain('aria-label="Maximize source dock"');
+    expect(markup).toContain('aria-label="Close source"');
+  });
+
+  it("omits symbol lookup and selection when no lookup action is provided", () => {
+    const markup = sourceModal({ live: true, lookup: false });
+
+    expect(markup).not.toContain('data-source-symbol-lookup-trigger="true"');
+    expect(markup).not.toContain('data-source-symbol-selection-enabled="true"');
+  });
+
+  it("offers the canonical whole-file viewed action for the shown review path", () => {
+    const markup = sourceModal({ live: true, reviewPathAlias: FILE });
+
+    expect(markup).toContain('data-review-source-viewed="true"');
+    expect(markup).toContain('data-review-viewed-scope="file"');
+    expect(markup).toContain('aria-label="Mark src/order.ts as viewed"');
+    expect(markup).toContain("Mark viewed</span>");
   });
 
   it("offers drafts on every visible HEAD row and explains the inline subset", () => {

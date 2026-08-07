@@ -2,8 +2,8 @@
  * The compact inline source panel shared by the Call-flow and Logic-flow views: an
  * absolutely-positioned box hanging just below a node (`top:100%`, a SIBLING of the node's clipped
  * body so `overflow:hidden` can't cut it off). It overlays neighbours without changing the node's
- * laid-out box (no relayout). Its header shows the source range plus a ⤢ that blows the same code
- * up into the centered modal (CodePanel) and a × that closes it; the body is the code (via the
+ * laid-out box (no relayout). Its header shows the source range plus controls that move the same
+ * code into the source dock (CodePanel) or close it; the body is the code (via the
  * shared CodeBlock) with its loading/error/truncated states. All pointer events are swallowed so
  * interacting with the box never pans the canvas, drags the node, or triggers select/dive.
  *
@@ -12,6 +12,7 @@
  * own show/hide gating — this component is just the opened panel.
  */
 
+import { Cross2Icon, EnterFullScreenIcon } from "@radix-ui/react-icons";
 import type { CodeView } from "../state/store";
 import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
@@ -50,14 +51,14 @@ export function CodeInlinePanel({
         <button
           type="button"
           style={ICON_STYLE}
-          aria-label="Open in modal"
-          title="Open in modal"
+          aria-label="Open in source dock"
+          title="Open in source dock"
           onClick={(event) => {
             stop(event);
             onExpand();
           }}
         >
-          ⤢
+          <EnterFullScreenIcon />
         </button>
         <button
           type="button"
@@ -69,7 +70,7 @@ export function CodeInlinePanel({
             requestClose();
           }}
         >
-          ×
+          <Cross2Icon />
         </button>
       </div>
       <div style={BODY_STYLE}>
@@ -124,6 +125,9 @@ const SUMMARY_STYLE: React.CSSProperties = {
 };
 const ICON_STYLE: React.CSSProperties = {
   flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
   background: "#1A1F27",
   color: "#9AA4B2",
   border: "1px solid #2A2F37",
