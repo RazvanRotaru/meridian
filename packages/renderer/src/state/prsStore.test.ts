@@ -3744,6 +3744,57 @@ describe("PR store slice", () => {
     expect(store.getState().reviewAffectedIds).toEqual(new Set([TEST_METHOD_ID]));
   });
 
+  it("shows graph-node progress after a settings-only filter without requiring a path scope", async () => {
+    const store = freshStoreForArtifact(REVIEW_WITH_TESTS_ARTIFACT);
+    store.setState({
+      showTests: true,
+      viewMode: "prs",
+      prSelected: 7,
+      prsList: { open: [pr(7)], closed: null },
+      prFiles: [
+        { path: "src/a.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 10, end: 10 }] },
+        { path: "src/a.test.ts", status: "modified", additions: 1, deletions: 0, hunks: [{ start: 5, end: 5 }] },
+      ],
+    });
+    await store.getState().reviewPrInGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    store.setState({
+      reviewFileViewedStates: {
+        "src/a.ts": "UNVIEWED",
+        "src/a.test.ts": "VIEWED",
+      },
+    });
+    const renderPanel = () => {
+      store.getInitialState = store.getState;
+      return renderToStaticMarkup(
+        createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+      );
+    };
+
+    expect(store.getState()).toMatchObject({
+      reviewActiveGroupId: null,
+      reviewPathScope: null,
+      reviewFocusedSubgraph: null,
+    });
+    const allChanges = renderPanel();
+    expect(allChanges).toContain("1/2 files viewed");
+    expect(allChanges).toContain("2/4 visible nodes viewed");
+    expect(allChanges).toContain('aria-label="Current PR graph progress: 2 of 4 reviewable nodes viewed"');
+
+    store.setState({ minimalView: "codebase" });
+    const codebaseContext = renderPanel();
+    expect(codebaseContext).toContain("1/2 files viewed");
+    expect(codebaseContext).not.toContain("visible nodes viewed");
+    store.setState({ minimalView: "graph" });
+
+    store.getState().toggleShowTests();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+    const testsHidden = renderPanel();
+    expect(testsHidden).toContain("0/1 files viewed");
+    expect(testsHidden).toContain("0/2 visible nodes viewed");
+    expect(testsHidden).toContain('aria-label="Current PR graph progress: 0 of 2 reviewable nodes viewed"');
+  });
+
   it("shows the reviewed pull request title and description in the review panel", async () => {
     const store = freshStore();
     const summary = {

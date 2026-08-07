@@ -5,6 +5,7 @@ import { reviewViewedGestureBlockReason } from "../../state/store";
 import {
   progressiveReviewFileCounts,
   reviewEmptyFilterNotice,
+  ReviewProgressBars,
   ReviewPanelResizableLayout,
 } from "./ReviewPanel";
 
@@ -95,6 +96,46 @@ describe("reviewEmptyFilterNotice", () => {
       excludeTestChanges: false,
       hideSourceCommentDiffs: false,
     })).toBeNull();
+  });
+});
+
+describe("ReviewProgressBars", () => {
+  it("keeps file progress and always adds accessible progress for the current PR graph", () => {
+    const markup = renderToStaticMarkup(
+      <ReviewProgressBars viewed={14} total={60} graphViewed={5} graphTotal={8} />,
+    );
+
+    expect(markup).toContain("14/60 files viewed");
+    expect(markup).toContain("5/8 visible nodes viewed");
+    expect(markup.match(/role="progressbar"/g)).toHaveLength(2);
+    expect(markup).toMatch(/aria-label="Overall review progress: 14 of 60 files viewed"[^>]*aria-valuemax="60"[^>]*aria-valuenow="14"/);
+    expect(markup).toMatch(/aria-label="Current PR graph progress: 5 of 8 reviewable nodes viewed"[^>]*aria-valuemax="8"[^>]*aria-valuenow="5"/);
+  });
+
+  it("announces an empty graph even when settings hide every changed file", () => {
+    const empty = renderToStaticMarkup(
+      <ReviewProgressBars viewed={0} total={0} graphViewed={0} graphTotal={0} />,
+    );
+    expect(empty).not.toContain('role="progressbar"');
+    expect(empty).toContain('role="status"');
+    expect(empty).toContain('aria-live="polite"');
+    expect(empty).toContain("No reviewable nodes in current PR graph");
+    expect(empty).not.toContain('aria-valuemax="0"');
+  });
+
+  it("keeps file progress but omits graph progress in the codebase context presentation", () => {
+    const codebase = renderToStaticMarkup(
+      <ReviewProgressBars
+        viewed={2}
+        total={4}
+        graphViewed={3}
+        graphTotal={7}
+        showGraphProgress={false}
+      />,
+    );
+    expect(codebase).toContain("2/4 files viewed");
+    expect(codebase).not.toContain("visible nodes viewed");
+    expect(codebase).not.toContain("Current PR graph progress");
   });
 });
 
