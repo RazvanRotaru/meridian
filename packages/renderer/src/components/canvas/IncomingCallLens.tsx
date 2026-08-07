@@ -687,6 +687,10 @@ const OPEN_ALL_BUTTON: React.CSSProperties = {
 };
 
 export const INCOMING_CALL_LENS_CSS = `
+/* Preview hides ordinary layer buttons. The lens follows its layer so inactive depths stay hidden. */
+.react-flow.semantic-composite[data-map-semantic-stage="preview"] .semantic-layer button.incoming-call-socket {
+  visibility: inherit !important;
+}
 .incoming-call-socket::after {
   content: "";
   position: absolute;
