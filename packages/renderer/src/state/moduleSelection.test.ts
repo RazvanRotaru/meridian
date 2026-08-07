@@ -1465,6 +1465,59 @@ describe("minimal-graph overlay (extract selection)", () => {
     expect(state.minimalMemberIds).toEqual(["ts:src"]);
   });
 
+  it("opens a review rollup outside the covered Map's retained focus", async () => {
+    const store = freshStore(NESTED_ROLLUP_ARTIFACT);
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/nested/c.ts", status: "modified" }],
+          baseRef: null,
+          baseSha: null,
+          headRef: null,
+          reviewKey: "rollup-outside-retained-focus",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      reviewFiles: [{
+        path: "src/nested/c.ts",
+        status: "modified",
+        moduleId: NESTED_FILE,
+        isTest: false,
+        units: [],
+        fingerprint: "nested-file-fingerprint",
+        address: "file:v1\0src/nested/c.ts",
+        blastRadius: 0,
+        deletedImpact: null,
+      }],
+      reviewDiffOnly: true,
+      reviewAffectedIds: new Set([NESTED_FILE]),
+      moduleFocus: OUTSIDE_PACKAGE,
+      minimalSeedIds: [NESTED_PACKAGE],
+      minimalMemberIds: [NESTED_PACKAGE],
+      minimalRollups: { [NESTED_PACKAGE]: [NESTED_FILE] },
+      moduleExpanded: new Set([NESTED_PACKAGE]),
+    });
+
+    await store.getState().minimalRelayout();
+
+    const state = store.getState();
+    expect(state.moduleFocus).toBe(OUTSIDE_PACKAGE);
+    expect(state.moduleExpanded).toEqual(new Set([NESTED_PACKAGE]));
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: NESTED_PACKAGE,
+      type: "package",
+      data: expect.objectContaining({ isExpanded: true, tier: "seed" }),
+    }));
+    expect(state.minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: NESTED_FILE,
+      type: "file",
+      parentId: NESTED_PACKAGE,
+      extent: "parent",
+    }));
+  });
+
   it("routes canvas-wide expand and collapse through the shared rollup expansion set", () => {
     const store = freshStore(NESTED_ROLLUP_ARTIFACT);
     const relayout = vi.fn().mockResolvedValue(undefined);
