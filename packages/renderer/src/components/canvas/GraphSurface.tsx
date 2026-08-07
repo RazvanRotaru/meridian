@@ -61,7 +61,7 @@ import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
 import { ReadonlyGraphCanvas } from "./ReadonlyGraphCanvas";
 import { MapLod } from "./MapLod";
 import type { ModuleNodeHandlers } from "./useModuleNodeInteractions";
-import { useWireHover } from "./useWireHover";
+import { requestWireInspectionEnd, retainedInspectedEdge, useWireHover } from "./useWireHover";
 import type { HighwayFlags } from "./surfaceSpec";
 import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { BundledEdge } from "../edges/BundledEdge";
@@ -69,7 +69,7 @@ import { ROUTED_EDGE_TYPE } from "../../layout/edgeRouting";
 import { RoutedEdge } from "../edges/RoutedEdge";
 import { SPOOL_EDGE_TYPE } from "../../layout/edgeSpooling";
 import { SpoolEdge } from "../edges/SpoolEdge";
-import { RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
+import { pairOf, RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
 import { RibbonEdge } from "../edges/RibbonEdge";
 import { CYCLE_EDGE_TYPE } from "../../layout/cycleFusion";
 import { CycleEdge } from "../edges/CycleEdge";
@@ -351,11 +351,16 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const relationVisibilityOverrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const showHighways = useBlueprint(selectShowHighways);
   const groupGhostsByParent = useBlueprint((state) => state.groupGhostsByParent);
-  const edgeEvidenceOpen = useBlueprint((state) => state.codeView?.edgeEvidence !== undefined);
-  const edgeEvidenceSourcePath = useBlueprint((state) => state.codeView?.edgeEvidence === undefined
-    ? null
-    : state.codeView.node.location.file);
-  const { showEdgeEvidence, closeEdgeEvidence, toggleModuleExpand } = useBlueprintActions();
+  const inspectionTransitionPath = useBlueprint((state) =>
+    state.reviewLineComposer?.path ?? state.codeView?.node.location.file ?? null);
+  const ordinarySourceOpen = useBlueprint((state) => state.codeView !== null
+    && state.codeView.edgeEvidence === undefined);
+  const {
+    showEdgeEvidence,
+    closeEdgeEvidence,
+    requestReviewLineComposerTransition,
+    toggleModuleExpand,
+  } = useBlueprintActions();
   const emphasisMode = props.emphasisMode ?? highlightMode;
   const groupGhosts = props.groupGhosts ?? groupGhostsByParent;
   const activeTrace = useMemo(
@@ -392,7 +397,10 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // Local wire state and global source state still need one owner boundary. This ref distinguishes
   // a source-backed inspection (whose source disappearing ends the whole dock) from an intentional
   // metadata-only wire, which remains useful without a source pane.
-  const inspectionOwnsSource = useRef(false);
+  const pendingWireInspection = useRef<{
+    subject: Edge;
+    commit: (resolvedSubject?: Edge) => void;
+  } | null>(null);
   const incomingCallLens = useIncomingCallLensController(props.wireHover === true);
 
   // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
@@ -713,30 +721,52 @@ export function GraphSurface(props: GraphSurfaceProps) {
       incomingCallLens.close();
     }
   }, [incomingCallLens.activeTargetId, incomingCallLens.close, index, requestPaintedNodes]);
-  const openWireEvidence = useCallback((pair: Edge[]) => {
-    const contexts = edgeEvidenceForPair(pair, index.edgesById);
-    inspectionOwnsSource.current = contexts.length > 0;
-    // The action also clears prior source when the new wire has no attributable site, while the
-    // inspector itself remains useful as relationship metadata.
-    void showEdgeEvidence(contexts);
-  }, [index.edgesById, showEdgeEvidence]);
+  const commitWireInspection = useCallback(() => {
+    const pending = pendingWireInspection.current;
+    if (pending === null) return;
+    pendingWireInspection.current = null;
+    const resolvedSubject = retainedInspectedEdge(pending.subject, requestPaintedEdges);
+    if (resolvedSubject === null) return;
+    const currentPair = pairOf(resolvedSubject, requestPaintedEdges);
+    pending.commit(resolvedSubject);
+    // The action replaces any ordinary source even when this wire has metadata only, enforcing one
+    // floating-window owner while the local pin remains useful without attributable source.
+    void showEdgeEvidence(edgeEvidenceForPair(currentPair, index.edgesById));
+  }, [index.edgesById, requestPaintedEdges, showEdgeEvidence]);
+  // A wire can replace source owned by any review surface, including a graph composer with no
+  // current codeView. Guard the active composer itself so local pair identity and global source
+  // admission always commit together after Discard rather than temporarily describing two wires.
+  const requestWireInspection = useReviewLineComposerGuard(commitWireInspection, inspectionTransitionPath);
+  const openWireEvidence = useCallback((
+    _pair: Edge[],
+    subject: Edge,
+    commit: (resolvedSubject?: Edge) => void,
+  ) => {
+    pendingWireInspection.current = { subject, commit };
+    requestWireInspection();
+  }, [requestWireInspection]);
+  const endWireInspection = useCallback((clearLocalInspection: () => void) => {
+    requestWireInspectionEnd(
+      requestReviewLineComposerTransition,
+      clearLocalInspection,
+      () => { void closeEdgeEvidence(); },
+    );
+  }, [closeEdgeEvidence, requestReviewLineComposerTransition]);
   const wire = useWireHover(
     requestPaintedEdges,
     requestPaintedNodes,
     props.wireHover === true,
     openWireEvidence,
-    closeEdgeEvidence,
+    endWireInspection,
     selected,
     incomingCallSpotlightIds,
   );
-  const requestClearInspected = useReviewLineComposerGuard(wire.clearInspected, edgeEvidenceSourcePath);
   useEffect(() => {
-    if (edgeEvidenceOpen || !inspectionOwnsSource.current) return;
-    // Another source gesture/state reset replaced a source-backed edge inspection. End its local
-    // pin too; the guarded close callback cannot disturb the replacement node/PR source view.
-    inspectionOwnsSource.current = false;
+    if (!ordinarySourceOpen) return;
+    // An explicit ordinary source gesture replaces the edge inspector; never allow two floating
+    // hosts (and their global search/resize ownership) to coexist.
     wire.clearInspected();
-  }, [edgeEvidenceOpen, wire.clearInspected]);
+  }, [ordinarySourceOpen, wire.clearInspected]);
   // Append hierarchy spokes AFTER interaction dressing too: their exact objects never acquire a
   // pulse, label, hit width, tooltip, inspector subject, or semantic z-order.
   const renderedEdges = useMemo(
@@ -822,9 +852,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
           if (codePreviewEnabled) {
             nodeDiff.onPaneClick();
           }
-          // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
+          // The floating source inspector is sticky: blank-canvas interaction must not dismiss it.
+          // It closes explicitly, on focus-owned Escape, or when its underlying wire disappears.
           incomingCallLens.close();
-          requestClearInspected();
           if (!props.readOnly || props.selectionOnly) {
             props.interactions.onPaneClick();
           }
@@ -873,7 +903,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         <IncomingCallLensOverlay />
       </ReadonlyGraphCanvas>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
-      {wire.inspectedPair ? (
+      {wire.inspectedPair && !ordinarySourceOpen ? (
         <EdgeInspectionDock pair={wire.inspectedPair} labelOf={wire.labelOf} onClose={wire.clearInspected} onDrill={wire.inspect} />
       ) : null}
       {nodeDiff.layer}

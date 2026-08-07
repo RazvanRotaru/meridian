@@ -138,9 +138,15 @@ export function ReviewPreviewViewedControl({
 }
 
 /** File-level viewed control for source surfaces outside the graph. Resolving by review path is
- * deliberate: a source dock may be showing a declaration node, a renamed-file alias, or an
+ * deliberate: a full source view may be showing a declaration node, a renamed-file alias, or an
  * unmatched synthetic file, but the gesture must remain GitHub's atomic whole-file transition. */
-export function ReviewFileViewedControl({ path }: { path: string }) {
+export function ReviewFileViewedControl({
+  path,
+  compact = false,
+}: {
+  path: string;
+  compact?: boolean;
+}) {
   const control = useReviewFileViewedControl(path);
   if (control === null) {
     return null;
@@ -154,17 +160,19 @@ export function ReviewFileViewedControl({ path }: { path: string }) {
       aria-pressed={control.state === "done"}
       disabled={control.blocked}
       data-review-source-viewed="true"
+      data-review-source-viewed-compact={compact || undefined}
       data-review-viewed-scope="file"
       data-review-view-state={control.state}
       style={{
         ...SOURCE_FILE_BUTTON,
+        ...(compact ? SOURCE_FILE_BUTTON_COMPACT : {}),
         color: control.color,
         ...(control.blocked ? SOURCE_FILE_BUTTON_BLOCKED : {}),
       }}
       onClick={control.onToggle}
     >
       <ViewedIcon state={control.state} />
-      <span>{sourceFileViewedText(control.state)}</span>
+      <span style={compact ? VISUALLY_HIDDEN_TEXT : undefined}>{sourceFileViewedText(control.state)}</span>
     </button>
   );
 }
@@ -385,6 +393,22 @@ const SOURCE_FILE_BUTTON: React.CSSProperties = {
 const SOURCE_FILE_BUTTON_BLOCKED: React.CSSProperties = {
   opacity: 0.62,
   cursor: "wait",
+};
+const SOURCE_FILE_BUTTON_COMPACT: React.CSSProperties = {
+  width: 28,
+  padding: 4,
+  justifyContent: "center",
+};
+const VISUALLY_HIDDEN_TEXT: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
 };
 
 /** One stylesheet for hover/focus emphasis; every state remains discoverable and interactive. */

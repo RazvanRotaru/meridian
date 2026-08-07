@@ -93,22 +93,35 @@ function storeWithCode(edge = true) {
 }
 
 describe("EdgeInspectionDock", () => {
-  it("puts highlighted source beside wire evidence in one non-modal, one-close dock", () => {
+  it("uses the shared modeless floating host for highlighted source and edge evidence", () => {
     const markup = renderToStaticMarkup(
       <StoreProvider store={storeWithCode()}>
         <EdgeInspectionDock pair={[WIRE]} labelOf={(id) => id === SOURCE.id ? "run" : "go"} onClose={() => {}} onDrill={() => {}} />
       </StoreProvider>,
     );
 
-    expect(markup).toContain("data-edge-inspection-dock=\"true\"");
+    expect(markup).toContain('data-floating-source-window-host="true"');
+    expect(markup).toContain('role="dialog"');
     expect(markup).toContain("aria-label=\"Edge inspection\"");
+    expect(markup).toContain('role="complementary" aria-label="Related edge evidence"');
+    expect(markup).toContain('data-source-window-rail-count="1"');
+    expect(markup.match(/role="complementary"/g)).toHaveLength(1);
+    expect(markup).toContain("data-edge-inspection-dock=\"true\"");
     expect(markup).toContain("aria-label=\"Highlighted edge source\"");
     expect(markup).toContain("data-edge-evidence-line=\"true\"");
     expect(markup).toContain("Evidence 1 of 1");
     expect(markup).toContain("src/a.ts:26:43–78");
-    expect(markup.match(/aria-label="Close edge inspection"/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-window-drag-handle="true"');
+    expect(markup).toContain('data-source-window-move-control="true"');
+    expect(markup).toContain('aria-label="Move source window"');
+    expect(markup).toContain('data-source-window-reset="true"');
+    expect(markup).toContain('aria-label="Reset source window position and size"');
+    expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
+    expect(markup.match(/role="separator"/g)).toHaveLength(4);
+    expect(markup.match(/aria-label="Close source"/g)).toHaveLength(1);
+    expect(markup).not.toContain('aria-label="Close edge inspection"');
     expect(markup).not.toContain("aria-modal");
-    expect(markup.indexOf("Highlighted edge source")).toBeLessThan(markup.indexOf("Close edge inspection"));
+    expect(markup.indexOf("Highlighted edge source")).toBeLessThan(markup.indexOf("Close source"));
   });
 
   it("keeps the global source dock out of edge inspection", () => {
@@ -134,17 +147,34 @@ describe("EdgeInspectionDock", () => {
     expect(markup).toContain("run");
     expect(markup).toContain("go");
     expect(markup).toContain("a.ts:26:43–78");
+    expect(markup).toContain('data-edge-metadata-only="true"');
+    expect(markup).toContain('aria-label="Move source window"');
+    expect(markup).toContain('data-source-window-reset="true"');
+    expect(markup).toContain('aria-label="Close edge inspection"');
+    expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
+    expect(markup).not.toContain('role="complementary"');
+    expect(markup).not.toContain('data-source-window-related-toggle="true"');
     expect(markup).not.toContain("aria-label=\"Highlighted edge source\"");
   });
 
-  it("leaves ordinary node source in the global modal side-sheet", () => {
+  it("uses the same floating host and one related-code rail for ordinary node source", () => {
     const markup = renderToStaticMarkup(
       <StoreProvider store={storeWithCode(false)}><CodePanel /></StoreProvider>,
     );
+    expect(markup).toContain('data-floating-source-window-host="true"');
+    expect(markup).toContain('role="dialog"');
     expect(markup).toContain("aria-label=\"Source code\"");
     expect(markup).toContain("data-source-code-dock=\"true\"");
-    expect(markup).toContain('role="dialog"');
-    expect(markup).toContain('aria-modal="true"');
+    expect(markup).toContain('role="complementary" aria-label="Related code blocks"');
+    expect(markup.match(/role="complementary"/g)).toHaveLength(1);
+    expect(markup.match(/<aside/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-window-rail-count="1"');
+    expect(markup).toContain('data-related-code-rail="true"');
+    expect(markup).toContain("Related in loaded graph");
+    expect(markup).toContain('data-source-window-move-control="true"');
+    expect(markup).toContain('data-source-window-reset="true"');
+    expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
+    expect(markup).not.toContain("aria-modal");
     expect(markup).not.toContain("data-edge-inspection-dock");
   });
 });

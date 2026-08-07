@@ -4,7 +4,7 @@ import { freshStore } from "../parity/surfaceFixture";
 import { StoreProvider } from "../state/StoreContext";
 
 vi.mock("./CodePanel", () => ({
-  CodePanel: () => <div data-source-code-dock-layer="true">source dock</div>,
+  CodePanel: () => <div data-floating-source-window-layer="true">source window</div>,
 }));
 
 vi.mock("./CommandPalette", () => ({
@@ -32,7 +32,7 @@ vi.mock("./flowexplorer/FlowSplitView", () => ({
 
 import { BlueprintCanvas } from "./BlueprintCanvas";
 
-describe("BlueprintCanvas source dock host", () => {
+describe("BlueprintCanvas floating source host", () => {
   it("keeps global overlays after and outside every resizable pane", () => {
     const markup = renderToStaticMarkup(
       <StoreProvider store={freshStore()}>
@@ -42,13 +42,13 @@ describe("BlueprintCanvas source dock host", () => {
 
     const splitEndsAt = markup.indexOf("</main>");
     const commandPaletteStartsAt = markup.indexOf('data-command-palette-host="true"');
-    const sourceDockStartsAt = markup.indexOf('data-source-code-dock-layer="true"');
+    const sourceWindowStartsAt = markup.indexOf('data-floating-source-window-layer="true"');
     expect(splitEndsAt).toBeGreaterThan(-1);
     expect(commandPaletteStartsAt).toBeGreaterThan(splitEndsAt);
-    expect(sourceDockStartsAt).toBeGreaterThan(splitEndsAt);
+    expect(sourceWindowStartsAt).toBeGreaterThan(splitEndsAt);
   });
 
-  it("owns the whole workspace as one inert underlay only while the modal source side-sheet is open", () => {
+  it("keeps the workspace interactive while an open source window remains a shell sibling", () => {
     const closedMarkup = renderToStaticMarkup(
       <StoreProvider store={freshStore()}>
         <BlueprintCanvas preselectedEnv={null} />
@@ -72,20 +72,19 @@ describe("BlueprintCanvas source dock host", () => {
         <BlueprintCanvas preselectedEnv={null} />
       </StoreProvider>,
     );
-
     const closedUnderlay = elementWithDataAttribute(closedMarkup, "data-source-workspace-underlay");
     const openUnderlay = elementWithDataAttribute(openMarkup, "data-source-workspace-underlay");
     expect(closedUnderlay).not.toContain(" inert");
     expect(closedUnderlay).not.toContain("aria-hidden");
-    expect(openUnderlay).toContain(" inert");
-    expect(openUnderlay).toContain('aria-hidden="true"');
+    expect(openUnderlay).not.toContain(" inert");
+    expect(openUnderlay).not.toContain("aria-hidden");
 
     const openUnderlayStartsAt = openMarkup.indexOf('data-source-workspace-underlay="true"');
     const openUnderlayEndsAt = openMarkup.indexOf("</main>", openUnderlayStartsAt);
     expect(openMarkup.indexOf('data-flow-explorer-panel="true"')).toBeGreaterThan(openUnderlayStartsAt);
     expect(openUnderlayEndsAt).toBeGreaterThan(openUnderlayStartsAt);
     expect(openMarkup.indexOf('data-command-palette-host="true"')).toBeGreaterThan(openUnderlayEndsAt);
-    expect(openMarkup.indexOf('data-source-code-dock-layer="true"')).toBeGreaterThan(openUnderlayEndsAt);
+    expect(openMarkup.indexOf('data-floating-source-window-layer="true"')).toBeGreaterThan(openUnderlayEndsAt);
   });
 });
 
