@@ -24,6 +24,7 @@ import {
   shouldCloseCommandPaletteFromBackdrop,
   shouldRestoreCommandPaletteOpener,
   symbolRowReadiness,
+  symbolEntryDetail,
   shouldClosePaletteFromWindow,
   type SearchScope,
   type SymbolEntry,
@@ -568,12 +569,42 @@ describe("progressive symbol row readiness", () => {
     expect(option).toContain('id="palette-option-search-target"');
     expect(option).toContain('role="option"');
     expect(option).toContain('aria-selected="true"');
-    expect(option).toContain('aria-label="searchTarget, Other.searchTarget, function, load nearby graph"');
+    expect(option).toContain('aria-label="searchTarget, Other.searchTarget · other.ts, function, load nearby graph"');
     expect(option).not.toContain("<button");
     expect(row).not.toContain('role="option"');
     expect(row).toContain('aria-label="Open searchTarget"');
     expect(row).toContain('aria-label="Focus searchTarget in the current graph"');
     expect(row).toContain('aria-label="Add searchTarget to the current view"');
+  });
+
+  it("shows source paths for same-named definitions", () => {
+    const packageClient = {
+      ...entry,
+      id: "ts:packages/delegate/DelegateClient.ts#DelegateClient",
+      fileId: "ts:packages/delegate/DelegateClient.ts",
+      displayName: "DelegateClient",
+      qualifiedName: "DelegateClient",
+      kind: "class" as const,
+      file: "packages/delegate/DelegateClient.ts",
+    };
+    const appClient = {
+      ...packageClient,
+      id: "ts:app/sdk/DelegateClient.ts#DelegateClient",
+      fileId: "ts:app/sdk/DelegateClient.ts",
+      file: "app/sdk/DelegateClient.ts",
+    };
+
+    expect(symbolEntryDetail(packageClient)).toBe("packages/delegate/DelegateClient.ts");
+    expect(symbolEntryDetail(appClient)).toBe("app/sdk/DelegateClient.ts");
+    const option = renderToStaticMarkup(createElement(CommandPaletteOption, {
+      optionId: "palette-option-delegate-client",
+      entry: packageClient,
+      active: false,
+      readiness: "loadable",
+    }));
+    expect(option).toContain(
+      'aria-label="DelegateClient, packages/delegate/DelegateClient.ts, class, load nearby graph"',
+    );
   });
 
   it("reports graph residency independently from progressive readiness", () => {

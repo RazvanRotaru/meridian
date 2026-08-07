@@ -147,6 +147,27 @@ describe("semantic parents across module-family lenses", () => {
     expect(parent.moduleRfNodes.every((entry) => Number(entry.data.semanticDepth) >= 1)).toBe(true);
   });
 
+  it("keeps the UI composition edge when extracting expanded component files", async () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "ui",
+      moduleSelected: new Set([APP_FILE, BUTTON_FILE]),
+      moduleExpanded: new Set([APP_FILE, BUTTON_FILE]),
+    });
+
+    store.getState().buildMinimalGraph();
+    await vi.waitFor(() => expect(store.getState().minimalLayoutStatus).toBe("ready"));
+
+    expect(store.getState().minimalRfEdges).toContainEqual(expect.objectContaining({
+      source: APP_COMPONENT,
+      target: BUTTON_COMPONENT,
+      data: expect.objectContaining({
+        relationKind: "renders",
+        underlyingEdgeIds: ["render"],
+      }),
+    }));
+  });
+
   it("clears the outgoing mounted scene synchronously when switching lenses", async () => {
     const store = freshStore();
     store.setState({ viewMode: "modules", moduleFocus: UI, moduleSelected: new Set([ALPHA]) });

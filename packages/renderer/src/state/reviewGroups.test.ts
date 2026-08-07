@@ -66,6 +66,7 @@ const ARTIFACT: GraphArtifact = {
   ],
   edges: [
     { id: `imports@${FILE_A}|${FILE_B}`, source: FILE_A, target: FILE_B, kind: "imports", resolution: "resolved", weight: 1 },
+    { id: `calls@${FN_A}|${FN_B}`, source: FN_A, target: FN_B, kind: "calls", resolution: "resolved", weight: 1 },
   ],
   extensions: {
     logicFlow: {
@@ -511,7 +512,7 @@ describe("change groups in PR review", () => {
     const groups = store.getState().reviewGroups;
     store.setState({
       moduleSelected: new Set([FILE_A]),
-      minimalShowGhostNodes: true,
+      minimalShowGhostNodes: false,
     });
 
     store.getState().buildMinimalGraph();
@@ -519,7 +520,15 @@ describe("change groups in PR review", () => {
 
     expect(store.getState().minimalSeedIds).toEqual([FILE_A]);
     expect(store.getState().minimalGraphHistory).toHaveLength(1);
-    expect(store.getState().minimalShowGhostNodes).toBe(false);
+    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(store.getState().minimalRfNodes).toContainEqual(expect.objectContaining({
+      id: FN_B,
+      type: "ghost",
+    }));
+    expect(store.getState().minimalRfEdges).toContainEqual(expect.objectContaining({
+      target: FN_B,
+      data: expect.objectContaining({ ghost: true, relationKind: "calls" }),
+    }));
     expect(store.getState().prReviewed).toBe(5);
     expect(store.getState().review).toBe(review);
     expect(store.getState().reviewGroups).toBe(groups);
@@ -530,6 +539,6 @@ describe("change groups in PR review", () => {
     store.getState().backMinimalGraph();
     expect(store.getState().minimalSeedIds).toEqual(outerSeeds);
     expect(store.getState().minimalGraphHistory).toHaveLength(0);
-    expect(store.getState().minimalShowGhostNodes).toBe(true);
+    expect(store.getState().minimalShowGhostNodes).toBe(false);
   });
 });

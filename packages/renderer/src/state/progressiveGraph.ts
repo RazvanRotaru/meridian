@@ -1376,6 +1376,10 @@ const LOGIC_FLOW_RESOLUTION_RANK: Readonly<Record<string, number>> = {
   resolved: 2,
 };
 
+/** Resolver-backed call evidence can disappear when the same source file is re-extracted at a
+ * narrower dependency horizon. Its presence is an enrichment; the call-site/source shape is not. */
+const OPTIONAL_CALL_EVIDENCE_KEYS: ReadonlySet<string> = new Set(["async", "detached"]);
+
 /** Merge the same source flow observed under two bounded TypeScript resolver horizons. */
 function mergePartialLogicFlowValue(left: JsonValue, right: JsonValue): JsonValue {
   if (jsonEqual(left, right)) return left;
@@ -1389,17 +1393,25 @@ function mergePartialLogicFlowValue(left: JsonValue, right: JsonValue): JsonValu
 
   const leftKeys = Object.keys(left).sort();
   const rightKeys = Object.keys(right).sort();
-  if (leftKeys.length !== rightKeys.length || leftKeys.some((key, index) => key !== rightKeys[index])) {
-    throw new Error("logic-flow object shape differs");
-  }
+  const keys = [...new Set([...leftKeys, ...rightKeys])].sort();
+  const callPair = left.kind === "call" && right.kind === "call";
 
   const hasResolutionPair = Object.hasOwn(left, "resolution")
     && Object.hasOwn(left, "target")
     && Object.hasOwn(right, "resolution")
     && Object.hasOwn(right, "target");
   const merged = Object.create(null) as Record<string, JsonValue>;
-  for (const key of leftKeys) {
+  for (const key of keys) {
     if (hasResolutionPair && (key === "resolution" || key === "target")) continue;
+    const leftHasKey = Object.hasOwn(left, key);
+    const rightHasKey = Object.hasOwn(right, key);
+    if (!leftHasKey || !rightHasKey) {
+      if (!callPair || !OPTIONAL_CALL_EVIDENCE_KEYS.has(key)) {
+        throw new Error("logic-flow object shape differs");
+      }
+      merged[key] = (leftHasKey ? left[key] : right[key]) as JsonValue;
+      continue;
+    }
     merged[key] = mergePartialLogicFlowValue(left[key] as JsonValue, right[key] as JsonValue);
   }
   if (!hasResolutionPair) return merged;
@@ -1421,7 +1433,7 @@ function mergePartialLogicFlowValue(left: JsonValue, right: JsonValue): JsonValu
   if (leftRank === undefined || rightRank === undefined) {
     throw new Error("logic-flow resolutions conflict");
   }
-  if (leftRank === rightRank && leftResolution === "resolved") {
+  if (leftRank === rightRank && leftResolution === "resolved" && leftTarget !== rightTarget) {
     // Two internal targets at one exact revision cannot both be authoritative.
     throw new Error("resolved logic-flow targets conflict");
   }

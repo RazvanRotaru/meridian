@@ -95,7 +95,7 @@ import type {
   TelemetrySourceDescriptor,
   TelemetrySourceRegistration,
 } from "../telemetry/provider";
-import type { ViewMode } from "../derive/edgeSelection";
+import { UI_EDGE_KIND, type ViewMode } from "../derive/edgeSelection";
 import { relatedNodeIds, type FlowSelectionRef } from "../derive/flowBlocks";
 import { idsToExpand, idsToCollapse, type ExpandableNode } from "../derive/scopedExpansion";
 import {
@@ -2139,6 +2139,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set<string>();
   // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
+  // The UI source surface derives `renders` separately from code dependencies. Its extracted graph
+  // has only the shared minimal-subgraph input, so cache that composition-enriched variant too.
+  let uiMinimalDeps: BlockDeps | null = null;
   // Request bulk-reveal and one-node clicks both install the same canonical Map projection. Keep
   // artifact/cached-graph plumbing in one seam so those entry points cannot drift in disclosure.
   const requestCodebaseContextFor = (
@@ -2373,6 +2376,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewProjectionFrameBaseline = null;
     moduleGraph = null;
     blockDeps = null;
+    uiMinimalDeps = null;
     unitIndex = null;
     unitIndexSource = null;
     codePayloadCache.clear();
@@ -8058,7 +8062,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         minimalLayoutActivity: { label: "Extracting selection…" },
         minimalGraphHistory: history,
         minimalView: "graph",
-        minimalShowGhostNodes: state.review === null,
+        // Extract is an explicit request for the selected members' surrounding relationships.
+        // Keep the broad review landing page quiet, but do not carry that declutter choice into a
+        // child graph where every off-member relationship necessarily terminates at a ghost.
+        minimalShowGhostNodes: true,
         minimalShowNonDiffGhostNodes: true,
         minimalCodebaseExpansionOverrides: new Map<string, boolean>(),
         reviewDiffOnly: childEscapesReviewDiff ? false : state.reviewDiffOnly,
@@ -8395,6 +8402,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const explicitRootIds = state.minimalMemberIds.filter((id) => !seedIds.has(id));
         moduleGraph ??= buildModuleGraph(index);
         const deps = (blockDeps ??= buildBlockDeps(index));
+        const minimalDeps = state.viewMode !== "ui"
+          ? deps
+          : (uiMinimalDeps ??= {
+              edges: [
+                ...deps.edges,
+                ...index.edges.filter((edge) => edge.kind === UI_EDGE_KIND),
+              ],
+            });
         const flows = (artifact.extensions?.logicFlow ?? {}) as unknown as LogicFlows;
         const hidden = new Set(reviewProjectionHiddenIds(state));
         // The review overlay stores explicit additions as members beyond its immutable seed tier.
@@ -8455,7 +8470,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           : minimalRollupExpansions(rollupSourceTree, index, requestedGroupExpansions);
         const layout = await deriveMinimalGraphLayout(index, moduleGraph, derivedMembers, new Set(minimalSeedIds), minimalBasePositions, {
           moduleExpanded,
-          blockDeps: deps,
+          blockDeps: minimalDeps,
           flows,
           expandableGroupIds,
           rollupExpansions,
