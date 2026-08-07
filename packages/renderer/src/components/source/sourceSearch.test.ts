@@ -96,6 +96,7 @@ describe("source search shortcut", () => {
 
   it("opens only for the exact unconsumed find chord with no higher modal", () => {
     expect(shouldOpenSourceSearchFromShortcut(shortcut, false)).toBe(true);
+    expect(shouldOpenSourceSearchFromShortcut(shortcut, false, false)).toBe(false);
     expect(shouldOpenSourceSearchFromShortcut({ ...shortcut, defaultPrevented: true }, false)).toBe(false);
     expect(shouldOpenSourceSearchFromShortcut(shortcut, true)).toBe(false);
     expect(shouldOpenSourceSearchFromShortcut({ ...shortcut, ctrlKey: false }, false)).toBe(false);

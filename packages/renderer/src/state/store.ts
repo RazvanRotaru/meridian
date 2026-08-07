@@ -1268,6 +1268,9 @@ export interface BlueprintState {
   ): void;
   openReviewLineComposer(path: string, line: number, side?: PrReviewCommentSide): void;
   setReviewLineComposerBody(body: string): void;
+  /** Admit one host/navigation transition through the single dirty-composer replay queue. The
+   * latest request replaces any older pending intent; callers execute immediately when true. */
+  requestReviewLineComposerTransition(transition: () => void): boolean;
   /** True means the caller may dismiss immediately. False leaves a dirty composer open on its
    * inline Keep/Discard confirmation; the requesting host closes only after a later discard. */
   requestReviewLineComposerDismiss(): boolean;
@@ -1320,6 +1323,8 @@ export interface BlueprintState {
   refreshTelemetry(): Promise<void>;
   /** Load one node's review diff for the hover preview without taking over the global code modal. */
   loadCodePreview(node: GraphNode, opts?: CodePreviewOptions): Promise<CodeView | null>;
+  /** Exact source-route capability used by navigation surfaces before exposing an enabled action. */
+  canShowCode(node: GraphNode, opts?: { wholeFile?: boolean; mode?: CodeView["mode"] }): boolean;
   showCode(node: GraphNode, opts?: { wholeFile?: boolean; mode?: CodeView["mode"] }): Promise<void>;
   /** Open a changed file's full source even when the extractor produced no graph node for it. */
   showReviewFile(path: string): Promise<void>;
@@ -1475,7 +1480,7 @@ function activeSyntheticExecutionUrl(state: BlueprintState): string | null {
 
 /** `/api/source` URL for a node slice (or the whole file). */
 function baseSourceUrl(sourceUrl: string, location: NonNullable<GraphNode["location"]>, wholeFile: boolean): URL {
-  const url = new URL(sourceUrl, window.location.origin);
+  const url = new URL(sourceUrl, requestOrigin());
   url.searchParams.set("file", location.file);
   // Omitting start/end makes the server return the whole file (missing bounds default to 1..EOF).
   if (!wholeFile) {
@@ -9115,6 +9120,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       }
     },
 
+    requestReviewLineComposerTransition(transition) {
+      return guardReviewLineComposerTransition(transition);
+    },
+
     requestReviewLineComposerDismiss() {
       // An explicit Cancel/host-close supersedes a queued source switch. The host-level guard owns
       // its own replay callback and will close only after Discard.
@@ -9768,6 +9777,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         get().setViewMode("prs");
         return;
       }
+      if (!guardReviewLineComposerTransition(() => get().togglePrsView())) {
+        return;
+      }
       get().cancelPrReviewPreparation();
       const back = lensBeforePrs ?? "modules";
       lensBeforePrs = null;
@@ -10047,6 +10059,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         : withCodePreviewFocus(view, node, opts.focus, request, state);
     },
 
+    canShowCode(node, opts) {
+      return codeLoadRequest(node, opts, get(), sourceUrl, prFileUrl) !== null;
+    },
+
     // Fetch and reveal a callable's source in the requested host (inline by default). Inert when
     // the server ships no source access or the node has no location. A race guard drops the result
     // if a newer click has since taken over; the host is preserved across the fetch so a mid-flight
@@ -10114,7 +10130,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     async showEdgeEvidence(contexts, activeIndex = 0) {
       if (contexts.length === 0) {
-        get().closeEdgeEvidence();
+        if (!guardReviewLineComposerTransition(
+          () => { void get().showEdgeEvidence(contexts, activeIndex); },
+        )) {
+          return;
+        }
+        edgeEvidenceSeq += 1;
+        codeViewSeq += 1;
+        set({ codeView: null });
         return;
       }
       const selectedIndex = Math.min(Math.max(Math.trunc(activeIndex), 0), contexts.length - 1);
@@ -10134,7 +10157,14 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prFileUrl,
       );
       if (!request) {
-        get().closeEdgeEvidence();
+        if (!guardReviewLineComposerTransition(
+          () => { void get().showEdgeEvidence(contexts, activeIndex); },
+        )) {
+          return;
+        }
+        edgeEvidenceSeq += 1;
+        codeViewSeq += 1;
+        set({ codeView: null });
         return; // The pinned inspector remains visible and truthfully reports attribution only.
       }
       if (!guardReviewLineComposerTransition(
@@ -10199,7 +10229,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return true;
     },
 
-    // Expand the current inline panel into the shell-level source dock. A no-op when nothing is shown.
+    // Expand the current inline panel into the configured full source view. A no-op when nothing is shown.
     expandCode() {
       const state = get();
       const { codeView } = state;

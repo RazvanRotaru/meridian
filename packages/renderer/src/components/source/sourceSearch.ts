@@ -63,9 +63,11 @@ export function sourceSearchNavigationIndex(
 export function shouldOpenSourceSearchFromShortcut(
   event: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey" | "altKey" | "shiftKey" | "defaultPrevented">,
   blockingModalOpen: boolean,
+  sourceOwnsShortcut = true,
 ): boolean {
   return !event.defaultPrevented
     && !blockingModalOpen
+    && sourceOwnsShortcut
     && event.key.toLowerCase() === "f"
     && (event.metaKey || event.ctrlKey)
     && !event.altKey

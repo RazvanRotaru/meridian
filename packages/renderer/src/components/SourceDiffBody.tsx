@@ -1,6 +1,6 @@
 /**
  * One source-diff adapter and body shared by every source host. Hover cards, inline node panels, and
- * the large source dock own only their surrounding chrome and height; this module owns the source slice,
+ * the full source view own only their surrounding chrome and height; this module owns the source slice,
  * diff rows, folding, comments, loading/error states, and deletion fallback. Keeping that projection
  * here prevents a new review affordance from silently inventing a fourth interpretation of the diff.
  */
@@ -288,7 +288,7 @@ export function SourceDiffBody({
   evidenceLines?: ReadonlySet<number>;
   /** Presentation-only rows for a hovered structural control. They affect focus/folding, not diffs. */
   focusLines?: ReadonlySet<number>;
-  /** Literal source-search results owned by an editor-style host such as the right dock. */
+  /** Literal source-search results owned by an editor-style full source host. */
   searchMatches?: readonly SourceSearchMatch[];
   activeSearchIndex?: number;
   /** Ordinary Logic source may remain gutterless; every active review diff gets the shared gutter. */

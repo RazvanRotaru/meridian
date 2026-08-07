@@ -3,7 +3,7 @@
  * absolutely-positioned box hanging just below a node (`top:100%`, a SIBLING of the node's clipped
  * body so `overflow:hidden` can't cut it off). It overlays neighbours without changing the node's
  * laid-out box (no relayout). Its header shows the source range plus controls that move the same
- * code into the source dock (CodePanel) or close it; the body is the code (via the
+ * code into the configured full source view (CodePanel) or close it; the body is the code (via the
  * shared CodeBlock) with its loading/error/truncated states. All pointer events are swallowed so
  * interacting with the box never pans the canvas, drags the node, or triggers select/dive.
  *
@@ -51,8 +51,8 @@ export function CodeInlinePanel({
         <button
           type="button"
           style={ICON_STYLE}
-          aria-label="Open in source dock"
-          title="Open in source dock"
+          aria-label="Open full source view"
+          title="Open full source view"
           onClick={(event) => {
             stop(event);
             onExpand();

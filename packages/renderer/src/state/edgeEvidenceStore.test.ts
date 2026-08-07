@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GraphArtifact, GraphNode } from "@meridian/core";
 import type { EdgeEvidenceContext } from "../graph/edgeEvidence";
 import { buildGraphIndex } from "../graph/graphIndex";
+import { requestWireInspectionEnd } from "../components/canvas/useWireHover";
 import { createBlueprintStore, EDGE_EVIDENCE_CONTEXT_LINES, type StoreDependencies } from "./store";
 
 const SOURCE_ID = "ts:src/a.ts#A.run";
@@ -173,6 +174,88 @@ describe("edge source evidence store", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("replaces ordinary source with metadata-only inspection instead of creating two windows", async () => {
+    const store = freshStore({ sourceUrl: null });
+    store.setState({
+      codeView: {
+        node: ARTIFACT.nodes[0]!,
+        code: "ordinary source",
+        loading: false,
+        error: null,
+        mode: "modal",
+      },
+    });
+
+    await store.getState().showEdgeEvidence([context()]);
+
+    expect(store.getState().codeView).toBeNull();
+  });
+
+  it("guards metadata-only replacement until a dirty ordinary-source draft is discarded", async () => {
+    const store = freshStore({ sourceUrl: null });
+    const ordinary = {
+      node: ARTIFACT.nodes[0]!,
+      code: "ordinary source",
+      loading: false,
+      error: null,
+      mode: "modal" as const,
+    };
+    store.setState({
+      codeView: ordinary,
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 3 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "metadata-only-transition",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 1);
+    store.getState().setReviewLineComposerBody("Keep this draft");
+
+    await store.getState().showEdgeEvidence([]);
+    expect(store.getState().codeView).toBe(ordinary);
+    expect(store.getState().reviewLineComposer).toMatchObject({ confirmDiscard: true });
+
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().codeView).toBeNull();
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
+  it("replays only the latest host transition after a dirty composer is discarded", () => {
+    const store = freshStore();
+    store.setState({
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 1, end: 3 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "latest-host-intent",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().openReviewLineComposer("src/a.ts", 1);
+    store.getState().setReviewLineComposerBody("Keep this draft");
+    const replayed: string[] = [];
+
+    expect(store.getState().requestReviewLineComposerTransition(() => replayed.push("edge B")))
+      .toBe(false);
+    expect(store.getState().requestReviewLineComposerTransition(() => replayed.push("close")))
+      .toBe(false);
+
+    store.getState().discardReviewLineComposer();
+    expect(replayed).toEqual(["close"]);
+  });
+
   it("closes edge evidence without dismissing an unrelated source panel", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", truncated: false })));
     const store = freshStore();
@@ -193,7 +276,7 @@ describe("edge source evidence store", () => {
     expect(store.getState().codeView).toBe(ordinary);
   });
 
-  it("vetoes dock unmount until its dirty line composer is discarded", async () => {
+  it("clears local inspection and global evidence together after automatic dismissal is discarded", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(Response.json({ code: "one", startLine: 100, truncated: false })));
     const store = freshStore();
     store.setState({
@@ -213,12 +296,19 @@ describe("edge source evidence store", () => {
     await store.getState().showEdgeEvidence([context()]);
     store.getState().openReviewLineComposer("src/a.ts", 100);
     store.getState().setReviewLineComposerBody("Keep this beside the wire");
+    let locallyInspected = true;
 
-    expect(store.getState().closeEdgeEvidence()).toBe(false);
+    requestWireInspectionEnd(
+      store.getState().requestReviewLineComposerTransition,
+      () => { locallyInspected = false; },
+      () => { void store.getState().closeEdgeEvidence(); },
+    );
+    expect(locallyInspected).toBe(true);
     expect(store.getState().codeView?.edgeEvidence).toBeDefined();
     expect(store.getState().reviewLineComposer).toMatchObject({ confirmDiscard: true });
 
     store.getState().discardReviewLineComposer();
+    expect(locallyInspected).toBe(false);
     expect(store.getState().codeView).toBeNull();
     expect(store.getState().reviewLineComposer).toBeNull();
   });

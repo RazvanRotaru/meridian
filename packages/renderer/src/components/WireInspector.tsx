@@ -35,25 +35,27 @@ interface WireInspectorProps {
   onClose: () => void;
   /** A bundle's constituent row drills the inspector into that single wire. */
   onDrill: (edge: Edge) => void;
+  /** The shared floating source header owns the only visible close action when false. */
+  showClose?: boolean;
 }
 
 const ROW_CAP = 12;
 const SITE_CAP = 6;
 
-export function WireInspector({ pair, labelOf, onClose, onDrill }: WireInspectorProps) {
+export function WireInspector({ pair, labelOf, onClose, onDrill, showClose = true }: WireInspectorProps) {
   return (
     <div style={PANEL}>
       {pair[0].type === BUNDLE_EDGE_TYPE ? (
-        <BundleBody edge={pair[0]} labelOf={labelOf} onClose={onClose} onDrill={onDrill} />
+        <BundleBody edge={pair[0]} labelOf={labelOf} onClose={onClose} onDrill={onDrill} showClose={showClose} />
       ) : (
-        <PairBody pair={pair} labelOf={labelOf} onClose={onClose} />
+        <PairBody pair={pair} labelOf={labelOf} onClose={onClose} showClose={showClose} />
       )}
     </div>
   );
 }
 
 /** The pair's story: endpoints once in the header, then one evidence section per strand (kind). */
-function PairBody({ pair, labelOf, onClose }: Omit<WireInspectorProps, "onDrill">) {
+function PairBody({ pair, labelOf, onClose, showClose }: Omit<WireInspectorProps, "onDrill">) {
   const index = useBlueprint((state) => state.index);
   const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
   const first = pair[0];
@@ -65,7 +67,7 @@ function PairBody({ pair, labelOf, onClose }: Omit<WireInspectorProps, "onDrill"
           <span style={ARROW}> → </span>
           <RevealName id={first.target} label={name(first.target)} onRevealed={onClose} />
         </span>
-        <CloseButton onClose={onClose} />
+        {showClose ? <CloseButton onClose={onClose} /> : null}
       </div>
       {pair.map((edge) => (
         <KindSection key={edge.id} edge={edge} name={name} onRevealed={onClose} />
@@ -108,13 +110,17 @@ function KindSection({ edge, name, onRevealed }: { edge: Edge; name: (id: string
 }
 
 /** A bundle highway's inspector: the member wires, each drillable into its own evidence. */
-function BundleBody({ edge, labelOf, onClose, onDrill }: Omit<WireInspectorProps, "pair"> & { edge: Edge }) {
+function BundleBody({ edge, labelOf, onClose, onDrill, showClose }: Omit<WireInspectorProps, "pair"> & { edge: Edge }) {
   const index = useBlueprint((state) => state.index);
   const bundle = edge.data as unknown as BundleEdgeData;
   const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
   return (
     <>
-      <Header kind={`highway · ${bundleLabel(bundle.breakdown)}`} weight={bundle.count} onClose={onClose} />
+      <Header
+        kind={`highway · ${bundleLabel(bundle.breakdown)}`}
+        weight={bundle.count}
+        onClose={showClose ? onClose : undefined}
+      />
       <div style={ENDS}>
         {name(bundle.sourceParent)} <span style={ARROW}>→</span> {name(bundle.targetParent)}
       </div>
@@ -205,14 +211,14 @@ function RevealName({ id, label, onRevealed }: { id: string; label: string; onRe
   );
 }
 
-function Header({ kind, weight, onClose }: { kind: string; weight: number; onClose: () => void }) {
+function Header({ kind, weight, onClose }: { kind: string; weight: number; onClose?: () => void }) {
   return (
     <div style={HEADER}>
       <span style={HEADER_KIND}>
         {kind}
         {weight > 1 ? <span style={HEADER_WEIGHT}> ×{weight}</span> : null}
       </span>
-      <CloseButton onClose={onClose} />
+      {onClose ? <CloseButton onClose={onClose} /> : null}
     </div>
   );
 }
@@ -242,9 +248,10 @@ function CappedRows({ count, render }: { count: number; render: (shown: number) 
 }
 
 const PANEL: React.CSSProperties = {
-  width: "min(360px, 36vw)",
-  minWidth: 260,
-  maxHeight: "min(72vh, 700px)",
+  width: "100%",
+  minWidth: 0,
+  height: "100%",
+  boxSizing: "border-box",
   overflowY: "auto",
   background: "rgba(22, 27, 34, 0.97)",
   padding: "8px 10px",

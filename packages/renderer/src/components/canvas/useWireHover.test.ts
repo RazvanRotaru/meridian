@@ -2,12 +2,15 @@ import type { Edge } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
 import { GHOST_HIERARCHY_EDGE_TYPE } from "../edges/GhostHierarchyEdge";
 import { RIBBON_EDGE_TYPE } from "../../layout/parallelWires";
+import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { GHOST_HIERARCHY_EDGE_ROLE } from "./presentationEdges";
 import {
   INCOMING_CALL_SPOTLIGHT_Z,
   SELECTED_NODE_EDGE_Z,
   applyIncomingCallSpotlight,
   raiseSelectedNodeEdges,
+  requestWireInspectionEnd,
+  retainedInspectedEdge,
 } from "./useWireHover";
 
 const CALL_ID = "calls:a->target";
@@ -124,5 +127,49 @@ describe("applyIncomingCallSpotlight", () => {
     const input = [call, unrelated];
     expect(applyIncomingCallSpotlight(input, new Set())).toBe(input);
     expect(applyIncomingCallSpotlight(input, new Set(["calls:missing"]))).toBe(input);
+  });
+});
+
+describe("retainedInspectedEdge", () => {
+  it("keeps an inspection across edge-object re-derivation and releases a removed strand", () => {
+    const refreshed = { ...call, data: { ...call.data, refreshed: true } };
+
+    expect(retainedInspectedEdge(call, [unrelated, refreshed])).toBe(refreshed);
+    expect(retainedInspectedEdge(call, [unrelated])).toBeNull();
+    expect(retainedInspectedEdge(null, [call])).toBeNull();
+  });
+
+  it("retains a drilled constituent through its freshly derived owning bundle", () => {
+    const refreshed = { ...call, data: { ...call.data, refreshed: true } };
+    const bundle: Edge = {
+      id: "bundle",
+      source: "source-parent",
+      target: "target-parent",
+      type: BUNDLE_EDGE_TYPE,
+      data: { constituents: [unrelated, refreshed] },
+    };
+
+    expect(retainedInspectedEdge(call, [bundle])).toBe(refreshed);
+  });
+});
+
+describe("requestWireInspectionEnd", () => {
+  it("replays local unpin and global evidence dismissal together after admission", () => {
+    const calls: string[] = [];
+    const pending: Array<() => void> = [];
+
+    requestWireInspectionEnd(
+      (transition) => {
+        pending.push(transition);
+        return false;
+      },
+      () => calls.push("local"),
+      () => calls.push("global"),
+    );
+
+    expect(calls).toEqual([]);
+    expect(pending).toHaveLength(1);
+    pending[0]!();
+    expect(calls).toEqual(["local", "global"]);
   });
 });

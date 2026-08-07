@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SOURCE_DOCK_ID } from "./SourceDock";
+import {
+  FLOATING_SOURCE_WINDOW_ID,
+  FLOATING_SOURCE_WINDOW_LAYER_ID,
+} from "./FloatingSourceWindow";
 import {
   shouldOpenSourceSearchFromShortcut,
   sourceSearchMatches,
@@ -28,6 +31,10 @@ export function useSourceSearch(args: {
   enabled: boolean;
   hiddenLines: ReadonlySet<number>;
   lineCount: number;
+  /** A compact related overlay temporarily owns the floating window's focus and shortcut layer. */
+  shortcutBlocked?: boolean;
+  /** Sticky source views share the workspace, so their find shortcut is focus-owned. */
+  shortcutScope: "source" | "document";
   sourceIdentity: object;
   startLine: number;
 }): SourceSearchController {
@@ -89,25 +96,29 @@ export function useSourceSearch(args: {
   useEffect(() => {
     if (!args.enabled || typeof window === "undefined") return;
     const handleSearchShortcut = (event: KeyboardEvent) => {
+      if (args.shortcutBlocked) return;
+      const sourceLayer = document.getElementById(FLOATING_SOURCE_WINDOW_LAYER_ID);
+      const sourceOwnsShortcut = args.shortcutScope === "document"
+        || (event.target instanceof Node && sourceLayer?.contains(event.target) === true);
       const blockingModalOpen = Array.from(document.querySelectorAll<HTMLElement>('[aria-modal="true"]'))
-        .some((modal) => modal.id !== SOURCE_DOCK_ID);
-      if (!shouldOpenSourceSearchFromShortcut(event, blockingModalOpen)) return;
+        .some((modal) => modal.id !== FLOATING_SOURCE_WINDOW_ID);
+      if (!shouldOpenSourceSearchFromShortcut(event, blockingModalOpen, sourceOwnsShortcut)) return;
       event.preventDefault();
       event.stopPropagation();
       openSearch();
     };
     window.addEventListener("keydown", handleSearchShortcut);
     return () => window.removeEventListener("keydown", handleSearchShortcut);
-  }, [args.enabled, openSearch]);
+  }, [args.enabled, args.shortcutBlocked, args.shortcutScope, openSearch]);
 
-  // Search is a child layer of the modal dock. Capture Escape so it closes before the dock's bubble
+  // Search is a child layer of the persistent dock. Capture Escape so it closes before the dock's
   // listener, including when focus is on a search navigation button rather than the input.
   useEffect(() => {
     if (!args.enabled || !open || typeof window === "undefined") return;
     const closeSearchFromEscape = (event: KeyboardEvent) => {
       if (event.key !== "Escape" || event.defaultPrevented) return;
-      const dock = document.getElementById(SOURCE_DOCK_ID);
-      if (event.target instanceof Node && dock !== null && !dock.contains(event.target)) return;
+      const sourceLayer = document.getElementById(FLOATING_SOURCE_WINDOW_LAYER_ID);
+      if (event.target instanceof Node && sourceLayer !== null && !sourceLayer.contains(event.target)) return;
       event.preventDefault();
       event.stopPropagation();
       close();

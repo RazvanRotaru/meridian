@@ -1,5 +1,5 @@
 /**
- * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), source side-sheet,
+ * The canvas shell. It hosts the always-mounted Toolbar (tab toggle + sidebar), floating source window,
  * and global Cmd/Ctrl+P CommandPalette, and swaps its main surface by view mode:
  * "modules" (folder Map), "call" (Service clusters), and "ui" (the renders-rooted composition —
  * unified in phase C) all mount the SAME module surface (ModuleMapView) — each lens differs only
@@ -21,9 +21,10 @@ import { FlowPane, flowPaneShouldRender } from "./flowexplorer/FlowPane";
 import { FlowSplitView } from "./flowexplorer/FlowSplitView";
 import { PrsView } from "./prs/PrsView";
 import { PaletteCanvasNodeProvider } from "./canvas/PaletteCanvasNodes";
+import { FLOATING_SOURCE_WINDOW_PORTAL_HOST_ID } from "./source/FloatingSourceWindow";
 
 // The Logic-flow view is a plain nested-div render, not a React Flow surface, so it swaps in for
-// the module surface whole. Toolbar (the tab toggle + sidebar) and the source side-sheet stay
+// the module surface whole. Toolbar (the tab toggle + sidebar) and the full source view stay
 // mounted in every mode; both anchor to this relatively-positioned shell.
 export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const lookupRequestSequence = useRef(0);
@@ -39,8 +40,6 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
     setLookupRequest((current) => current?.id === id ? null : current);
   }, []);
   const viewMode = useBlueprint((state) => state.viewMode);
-  const sourceDockOpen = useBlueprint((state) => state.codeView?.mode === "modal"
-    && state.codeView.edgeEvidence === undefined);
   const flowPaneOpen = useBlueprint((state) => state.flowPaneOrigin === "request"
     ? state.telemetryMode && state.requestFlowTraceId !== null
     : state.flowSelection !== null
@@ -55,15 +54,12 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
   const syntheticFlowOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic" && state.flowSelection !== null);
   return (
     <PaletteCanvasNodeProvider>
-      <div style={SHELL_STYLE}>
-        {/* The dock is a modal side-sheet over the whole workspace. Keep every underlying pane in
-            one ownership boundary so pointer, keyboard, and accessibility navigation cannot reach
-            controls hidden by the sheet. Palette and dock remain shell siblings outside it. */}
+      <div id={FLOATING_SOURCE_WINDOW_PORTAL_HOST_ID} style={SHELL_STYLE}>
+        {/* The floating source inspector is always modeless. Keep the workspace in one stable
+            ownership boundary while the shell-level window moves above it. */}
         <div
           style={WORKSPACE_UNDERLAY_STYLE}
           data-source-workspace-underlay="true"
-          inert={sourceDockOpen || undefined}
-          aria-hidden={sourceDockOpen || undefined}
         >
           <FlowExplorerPanel />
           <FlowSplitView
@@ -85,14 +81,14 @@ export function BlueprintCanvas(props: { preselectedEnv: string | null }) {
             flow={<FlowPane />}
           />
         </div>
-        {/* The global palette must stay outside the inert workspace so source lookup can layer over
-            the side-sheet and remain available when an underlying splitter minimizes a pane. */}
+        {/* The global palette stays a shell sibling so source lookup can layer over the dock and
+            remain available when an underlying splitter minimizes a pane. */}
         <CommandPalette
           lookupRequest={lookupRequest}
           onLookupRequestHandled={acknowledgeLookupRequest}
         />
-        {/* Source is opened from both split panes. Its shell-level host covers every workspace
-            sidebar without being clipped by, or inheriting inertness from, their splitters. */}
+        {/* Source can open from either split pane. Its shell-level floating host is never clipped by
+            their splitters and leaves every uncovered workspace control interactive. */}
         <CodePanel onLookupSymbol={lookupSourceSymbol} />
       </div>
     </PaletteCanvasNodeProvider>

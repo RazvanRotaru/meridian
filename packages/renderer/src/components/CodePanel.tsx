@@ -1,15 +1,15 @@
 /**
- * Shared source rendering with two hosts. `CodePanel` is the resizable right dock that expands an
- * ordinary node/PR source view; `EdgeSourcePane` is the left half of the graph-local
- * edge inspection dock. The latter deliberately owns no close gesture—the dock closes source and
- * wire evidence together. CodeBlock escapes source as plain text children.
+ * Shared source rendering for the floating full-source window and its edge-evidence variant.
+ * `SourcePanel` owns the code/review tools; the floating frame owns movement, resize, persistence,
+ * and responsive related-code presentation. CodeBlock escapes source as plain text children.
  */
 
 import {
   Cross2Icon,
-  EnterFullScreenIcon,
-  ExitFullScreenIcon,
   MagnifyingGlassIcon,
+  MoveIcon,
+  ResetIcon,
+  RowsIcon,
   SymbolIcon,
 } from "@radix-ui/react-icons";
 import { useEffect, useMemo, useState } from "react";
@@ -20,7 +20,12 @@ import { relationColor } from "../theme/relationTheme";
 import { ReviewFileViewedControl } from "./review/ReviewFileNodeViewedControls";
 import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
-import { SourceDock } from "./source/SourceDock";
+import {
+  FLOATING_SOURCE_WINDOW_RAIL_ID,
+  FloatingSourceWindow,
+  type FloatingSourceWindowControls,
+} from "./source/FloatingSourceWindow";
+import { deriveRelatedCodeGroups, RelatedCodeRail } from "./source/RelatedCodeRail";
 import { SOURCE_SEARCH_ID, SourceSearchBar } from "./source/SourceSearchBar";
 import { useSourceSearch } from "./source/useSourceSearch";
 
@@ -30,7 +35,8 @@ export function CodePanel({
   onLookupSymbol?: (symbol: string | null) => void;
 } = {}) {
   const codeView = useBlueprint((state) => state.codeView);
-  const { closeCode } = useBlueprintActions();
+  const index = useBlueprint((state) => state.index);
+  const { canShowCode, closeCode } = useBlueprintActions();
   const open = codeView?.mode === "modal" && codeView.edgeEvidence === undefined;
   const requestClose = useReviewLineComposerGuard(
     closeCode,
@@ -42,50 +48,77 @@ export function CodePanel({
   if (!codeView || !open) {
     return null;
   }
+  const relatedCount = deriveRelatedCodeGroups(index, codeView.node, canShowCode)
+    .reduce((total, group) => total + group.neighbors.length, 0);
 
   return (
-    <SourceDock ariaLabel="Source code" onClose={requestClose}>
-      {({ expanded, initialFocusRef, toggleExpanded }) => (
+    <FloatingSourceWindow
+      ariaLabel="Source code"
+      onClose={requestClose}
+      defaultRegionElementId="meridian-review-graph-pane"
+      railLabel="Related code blocks"
+      railCount={relatedCount}
+      rail={<RelatedCodeRail currentNode={codeView.node} />}
+      main={(windowControls) => (
         <SourcePanel
           codeView={codeView}
           presentation="dock"
           onClose={requestClose}
-          expanded={expanded}
-          onToggleExpanded={toggleExpanded}
-          initialFocusRef={initialFocusRef}
+          windowControls={windowControls}
+          relatedCodeCount={relatedCount}
+          relatedRailLabel="Related code blocks"
           onLookupSymbol={onLookupSymbol}
         />
       )}
-    </SourceDock>
+    />
   );
 }
 
-/** Contextual source hosted inside the graph-local edge inspection dock. It has no backdrop,
- * close control, or Escape layer: the dock owns that one lifecycle for both of its panes. */
-export function EdgeSourcePane() {
+/** Contextual source hosted inside the graph-local edge inspection window. The shared frame owns
+ * movement, resize, persistence, and Escape; this pane contributes its visible source controls. */
+export function EdgeSourcePane({
+  windowControls,
+  relatedCodeCount = 0,
+  relatedRailLabel = "Related code blocks",
+  onClose,
+}: {
+  windowControls?: FloatingSourceWindowControls;
+  relatedCodeCount?: number;
+  relatedRailLabel?: string;
+  onClose?: () => void;
+} = {}) {
   const codeView = useBlueprint((state) => state.codeView);
   if (!codeView || codeView.mode !== "modal" || codeView.edgeEvidence === undefined) {
     return null;
   }
-  return <SourcePanel codeView={codeView} presentation="edge" />;
+  return (
+    <SourcePanel
+      codeView={codeView}
+      presentation="edge"
+      windowControls={windowControls}
+      relatedCodeCount={relatedCodeCount}
+      relatedRailLabel={relatedRailLabel}
+      onClose={onClose}
+    />
+  );
 }
 
 function SourcePanel({
   codeView,
   presentation,
   onClose,
-  expanded = false,
-  onToggleExpanded,
-  initialFocusRef,
   onLookupSymbol,
+  windowControls,
+  relatedCodeCount = 0,
+  relatedRailLabel = "Related code blocks",
 }: {
   codeView: CodeView;
   presentation: "dock" | "edge";
   onClose?: () => void;
-  expanded?: boolean;
-  onToggleExpanded?: () => void;
-  initialFocusRef?: { current: HTMLElement | null };
   onLookupSymbol?: (symbol: string | null) => void;
+  windowControls?: FloatingSourceWindowControls;
+  relatedCodeCount?: number;
+  relatedRailLabel?: string;
 }) {
   const index = useBlueprint((state) => state.index);
   const { selectEdgeEvidence } = useBlueprintActions();
@@ -100,9 +133,11 @@ function SourcePanel({
   }), [model.baseLine, model.file, model.sourceSide, model.view.code, model.view.node.id]);
   const search = useSourceSearch({
     code: model.view.code ?? "",
-    enabled: presentation === "dock",
+    enabled: windowControls !== undefined,
     hiddenLines: model.hiddenSourceLines,
     lineCount: model.sourceLineCount,
+    shortcutBlocked: windowControls?.railOpen ?? false,
+    shortcutScope: "source",
     sourceIdentity,
     startLine: model.baseLine,
   });
@@ -142,6 +177,9 @@ function SourcePanel({
   useEffect(() => {
     setSelectedSymbol(null);
   }, [sourceIdentity]);
+  useEffect(() => {
+    if (windowControls?.railOpen && search.open) search.close(false);
+  }, [search.close, search.open, windowControls?.railOpen]);
 
   return (
     <div
@@ -151,9 +189,16 @@ function SourcePanel({
       data-source-code-dock={presentation === "dock" ? "true" : undefined}
       onClick={(event) => event.stopPropagation()}
     >
-        <header style={HEADER_STYLE}>
+        <header style={HEADER_STYLE} {...windowControls?.headerDragProps}>
           <div style={HEADER_TEXT_STYLE}>
-            <div style={TITLE_STYLE} title={node.qualifiedName}>{title}</div>
+            <h2
+              style={TITLE_STYLE}
+              title={node.qualifiedName}
+              tabIndex={-1}
+              data-source-window-title="true"
+            >
+              {title}
+            </h2>
             <div style={LOCATION_STYLE} title={file}>{location}</div>
             {activeEvidence && edgeEvidence ? (
               <div style={EVIDENCE_ROW_STYLE}>
@@ -193,9 +238,47 @@ function SourcePanel({
               </div>
             ) : null}
           </div>
-          {onClose ? (
+          {onClose || windowControls ? (
             <div style={HEADER_ACTIONS_STYLE} data-source-header-actions="true">
-              <ReviewFileViewedControl path={model.reviewPath} />
+              {windowControls ? (
+                <>
+                  <button
+                    {...windowControls.moveHandleProps}
+                    style={HEADER_ACTION_STYLE}
+                  >
+                    <MoveIcon />
+                  </button>
+                  <button
+                    type="button"
+                    style={HEADER_ACTION_STYLE}
+                    aria-label="Reset source window position and size"
+                    title="Reset source window position and size"
+                    data-source-window-reset="true"
+                    onClick={windowControls.resetGeometry}
+                  >
+                    <ResetIcon />
+                  </button>
+                  {windowControls.railCollapsed ? (
+                    <button
+                      ref={windowControls.railToggleRef}
+                      type="button"
+                      style={{
+                        ...HEADER_ACTION_STYLE,
+                        ...(windowControls.railOpen ? HEADER_ACTION_ACTIVE_STYLE : {}),
+                      }}
+                      aria-label={`${relatedRailLabel} (${relatedCodeCount})`}
+                      aria-expanded={windowControls.railOpen}
+                      aria-controls={FLOATING_SOURCE_WINDOW_RAIL_ID}
+                      title={`${relatedRailLabel} (${relatedCodeCount})`}
+                      data-source-window-related-toggle="true"
+                      onClick={windowControls.toggleRail}
+                    >
+                      <RowsIcon />
+                    </button>
+                  ) : null}
+                </>
+              ) : null}
+              {presentation === "dock" ? <ReviewFileViewedControl path={model.reviewPath} compact /> : null}
               {onLookupSymbol ? (
                 <button
                   type="button"
@@ -215,7 +298,6 @@ function SourcePanel({
               <button
                 ref={(node) => {
                   search.triggerRef.current = node;
-                  if (initialFocusRef) initialFocusRef.current = node;
                 }}
                 type="button"
                 style={{ ...HEADER_ACTION_STYLE, ...(search.open ? HEADER_ACTION_ACTIVE_STYLE : {}) }}
@@ -228,30 +310,21 @@ function SourcePanel({
               >
                 <MagnifyingGlassIcon />
               </button>
-              {onToggleExpanded ? (
+              {onClose ? (
                 <button
                   type="button"
                   style={HEADER_ACTION_STYLE}
-                  onClick={onToggleExpanded}
-                  aria-label={expanded ? "Restore source dock" : "Maximize source dock"}
-                  title={expanded ? "Restore source dock" : "Maximize source dock"}
+                  onClick={onClose}
+                  aria-label="Close source"
+                  title="Close source"
                 >
-                  {expanded ? <ExitFullScreenIcon /> : <EnterFullScreenIcon />}
+                  <Cross2Icon />
                 </button>
               ) : null}
-              <button
-                type="button"
-                style={HEADER_ACTION_STYLE}
-                onClick={onClose}
-                aria-label="Close source"
-                title="Close source"
-              >
-                <Cross2Icon />
-              </button>
             </div>
           ) : null}
         </header>
-        {presentation === "dock" && search.open ? <SourceSearchBar search={search} /> : null}
+        {search.open ? <SourceSearchBar search={search} /> : null}
         <div
           style={presentation === "dock" ? DOCK_BODY_STYLE : EDGE_BODY_STYLE}
           data-source-code-body={presentation}
@@ -273,7 +346,6 @@ function SourcePanel({
 
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_SEARCH_MATCHES: readonly [] = [];
-
 function displayedEvidenceLocation(
   site: { file: string; line: number; col?: number; endLine?: number; endCol?: number },
   shownStart: number,
@@ -295,26 +367,36 @@ const DOCK_PANEL_STYLE: React.CSSProperties = {
   overflow: "hidden",
 };
 const EDGE_PANEL_STYLE: React.CSSProperties = {
-  width: "min(58vw, 820px)",
+  flex: 1,
   minWidth: 0,
-  height: "min(72vh, 700px)",
+  height: "100%",
   display: "flex",
   flexDirection: "column",
   background: "#0E1116",
-  borderRight: "1px solid #30363d",
   overflow: "hidden",
 };
 const HEADER_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "flex-start",
+  flexWrap: "wrap",
   gap: 12,
   padding: "12px 14px",
   borderBottom: "1px solid #2A2F37",
   background: "#161B22",
 };
-const HEADER_ACTIONS_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
+const HEADER_ACTIONS_STYLE: React.CSSProperties = {
+  minWidth: 0,
+  maxWidth: "100%",
+  marginLeft: "auto",
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "flex-end",
+  flexWrap: "wrap",
+  gap: 6,
+};
 const HEADER_TEXT_STYLE: React.CSSProperties = { flex: 1, minWidth: 0 };
 const TITLE_STYLE: React.CSSProperties = {
+  margin: 0,
   fontSize: 14,
   fontWeight: 600,
   color: "#E6EDF3",

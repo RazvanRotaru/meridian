@@ -6,12 +6,16 @@
  */
 
 import type { Edge } from "@xyflow/react";
-import { useEffect, useRef } from "react";
+import { Cross2Icon, MoveIcon, ResetIcon } from "@radix-ui/react-icons";
 import { EdgeSourcePane } from "./CodePanel";
 import { WireInspector } from "./WireInspector";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
 import { useBlueprint } from "../state/StoreContext";
 import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
+import {
+  FLOATING_SOURCE_WINDOW_PORTAL_HOST_ID,
+  FloatingSourceWindow,
+  type FloatingSourceWindowControls,
+} from "./source/FloatingSourceWindow";
 
 interface EdgeInspectionDockProps {
   pair: Edge[];
@@ -21,49 +25,164 @@ interface EdgeInspectionDockProps {
 }
 
 export function EdgeInspectionDock({ pair, labelOf, onClose, onDrill }: EdgeInspectionDockProps) {
-  const dockRef = useRef<HTMLDivElement>(null);
   const sourcePath = useBlueprint((state) => state.codeView?.edgeEvidence === undefined
     ? null
     : state.codeView.node.location.file);
   const requestClose = useReviewLineComposerGuard(onClose, sourcePath);
-  useClearOnEscape(requestClose, true);
-  useEffect(() => {
-    const previous = document.activeElement;
-    dockRef.current?.focus({ preventScroll: true });
-    return () => {
-      if (previous instanceof HTMLElement && previous.isConnected) {
-        previous.focus({ preventScroll: true });
-      }
-    };
-  }, []);
   return (
-    <div
-      ref={dockRef}
-      tabIndex={-1}
-      data-edge-inspection-dock="true"
-      role="dialog"
-      aria-label="Edge inspection"
-      style={DOCK_STYLE}
-      onClick={(event) => event.stopPropagation()}
-    >
-      <EdgeSourcePane />
-      <WireInspector pair={pair} labelOf={labelOf} onClose={requestClose} onDrill={onDrill} />
+    <FloatingSourceWindow
+      ariaLabel="Edge inspection"
+      onClose={requestClose}
+      defaultRegionElementId="meridian-review-graph-pane"
+      portalElementId={FLOATING_SOURCE_WINDOW_PORTAL_HOST_ID}
+      railLabel="Related edge evidence"
+      railCount={sourcePath === null ? undefined : pair.length}
+      main={(windowControls) => (
+        <div data-edge-inspection-dock="true" style={SOURCE_HOST_STYLE}>
+          {sourcePath === null ? (
+            <EdgeMetadataPane
+              pair={pair}
+              labelOf={labelOf}
+              onClose={requestClose}
+              onDrill={onDrill}
+              windowControls={windowControls}
+            />
+          ) : (
+            <EdgeSourcePane
+              windowControls={windowControls}
+              relatedCodeCount={pair.length}
+              relatedRailLabel="Related edge evidence"
+              onClose={requestClose}
+            />
+          )}
+        </div>
+      )}
+      rail={sourcePath === null ? undefined : (
+        <WireInspector
+          pair={pair}
+          labelOf={labelOf}
+          onClose={requestClose}
+          onDrill={onDrill}
+          showClose={false}
+        />
+      )}
+    />
+  );
+}
+
+function EdgeMetadataPane(props: {
+  pair: Edge[];
+  labelOf: (id: string) => string | undefined;
+  onClose: () => void;
+  onDrill: (edge: Edge) => void;
+  windowControls: FloatingSourceWindowControls;
+}) {
+  return (
+    <div style={METADATA_PANEL_STYLE} data-edge-metadata-only="true">
+      <header style={METADATA_HEADER_STYLE} {...props.windowControls.headerDragProps}>
+        <h2 style={METADATA_TITLE_STYLE}>Edge inspection</h2>
+        <div style={METADATA_ACTIONS_STYLE} data-source-header-actions="true">
+          <button {...props.windowControls.moveHandleProps} style={METADATA_ACTION_STYLE}>
+            <MoveIcon />
+          </button>
+          <button
+            type="button"
+            style={METADATA_ACTION_STYLE}
+            aria-label="Reset source window position and size"
+            title="Reset source window position and size"
+            data-source-window-reset="true"
+            onClick={props.windowControls.resetGeometry}
+          >
+            <ResetIcon />
+          </button>
+          <button
+            type="button"
+            style={METADATA_ACTION_STYLE}
+            aria-label="Close edge inspection"
+            title="Close edge inspection"
+            onClick={props.onClose}
+          >
+            <Cross2Icon />
+          </button>
+        </div>
+      </header>
+      <div style={METADATA_BODY_STYLE}>
+        <WireInspector
+          pair={props.pair}
+          labelOf={props.labelOf}
+          onClose={props.onClose}
+          onDrill={props.onDrill}
+          showClose={false}
+        />
+      </div>
     </div>
   );
 }
 
-const DOCK_STYLE: React.CSSProperties = {
-  position: "absolute",
-  top: 12,
-  right: 12,
-  zIndex: 30,
+const SOURCE_HOST_STYLE: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
   display: "flex",
-  alignItems: "stretch",
-  maxWidth: "calc(100% - 24px)",
-  maxHeight: "min(72vh, 700px)",
   overflow: "hidden",
-  background: "rgba(22, 27, 34, 0.98)",
-  border: "1px solid #30363d",
-  borderRadius: 10,
-  boxShadow: "0 18px 48px rgba(0,0,0,0.48)",
+};
+
+const METADATA_PANEL_STYLE: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  minHeight: 0,
+  display: "flex",
+  flexDirection: "column",
+  background: "#0E1116",
+  overflow: "hidden",
+};
+
+const METADATA_HEADER_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  padding: "10px 12px",
+  borderBottom: "1px solid #2A2F37",
+  background: "#161B22",
+};
+
+const METADATA_TITLE_STYLE: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  margin: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  color: "#E6EDF3",
+  fontSize: 14,
+  fontWeight: 600,
+};
+
+const METADATA_ACTIONS_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  display: "flex",
+  alignItems: "center",
+  gap: 6,
+};
+
+const METADATA_ACTION_STYLE: React.CSSProperties = {
+  width: 26,
+  height: 26,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  background: "#1A1F27",
+  color: "#9AA4B2",
+  cursor: "pointer",
+};
+
+const METADATA_BODY_STYLE: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "hidden",
 };

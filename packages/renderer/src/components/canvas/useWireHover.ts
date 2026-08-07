@@ -8,14 +8,14 @@
  *     their own breakdown tooltip, so they opt out; a fused CYCLE names both directions at once and
  *     a RIBBON names its whole cable (the per-kind breakdown IS the tooltip text).
  *   - INSPECTOR: clicking a strand PINS its evidence panel (`WireInspector` — the aggregate's real
- *     links + call sites). The pinned wire stays force-lit like a hover; pane click / Esc unpin —
- *     and so does any change that can remove or reshape the wire. The input `edges` are re-derived
- *     by pure passes over every such change (relayout, focus, a filter/highways toggle, the
- *     SELECTION moving), so unpinning on the array's identity covers them all: a panel attributing
- *     a strand no longer drawn would be a claim the canvas contradicts.
- *   - WIRES GO BEHIND CARDS AT REST (every surface): React Flow's default z-mode elevates any edge
- *     touching a NESTED node above every top-level card (basic mode ADDS the child node's z to the
- *     edge's own) — a lit fan into a frame member covered unrelated cards' text. The canvas runs
+ *     links + call sites). The pinned wire stays force-lit like a hover; explicit close / focused
+ *     Esc unpin, as does any change that removes the wire. The input `edges` are re-derived
+ *     by pure passes over every such change. Preserve an inspected strand by stable id while it is
+ *     still drawn; clear only when that subject truly disappears so ordinary graph interaction can
+ *     coexist with the sticky floating inspector without leaving stale attribution behind.
+ *   - WIRES GO BEHIND CARDS AT REST (every surface): React Flow's default z-mode elevates any edge touching
+ *     a NESTED node above every top-level card (basic mode ADDS the child node's z to the edge's
+ *     own) — a lit fan into a frame member covered unrelated cards' text. The canvas runs
  *     zIndexMode="manual" (GraphSurface) and this hook sets the resting rule the eye expects: a wire
  *     CROSSING the canvas travels under everything (z 0); a wire living INSIDE one frame sits at
  *     its nesting depth — above its frame's translucent background, below that frame's own cards.
@@ -71,9 +71,12 @@ export function useWireHover(
   edges: Edge[],
   nodes: Node[],
   enabled: boolean,
-  onInspectPair?: (pair: Edge[]) => void,
-  /** Return false to keep the local dock mounted while its source host asks Keep/Discard. */
-  onInspectionEnd?: () => boolean | void,
+  /** The caller owns transition admission. Calling `commit` pins the pair; retaining it lets a
+   * dirty-composer guard replay the exact same local + source transition after Discard. */
+  onInspectPair?: (pair: Edge[], subject: Edge, commit: (resolvedSubject?: Edge) => void) => void,
+  /** The caller owns the complete local + source dismissal transition. It must invoke the supplied
+   * local clear only when dismissal is admitted (immediately or after a dirty-draft Discard). */
+  onInspectionEnd?: (clearLocalInspection: () => void) => void,
   /** Literal selected node ids whose represented semantic wires should paint above the cards. */
   selectedNodeIds: ReadonlySet<string> = EMPTY_SELECTED_NODE_IDS,
   /** Exact artifact call edges temporarily raised by a directional node-socket lens. */
@@ -82,20 +85,36 @@ export function useWireHover(
   const [hover, setHover] = useState<WireHover | null>(null);
   const [inspected, setInspected] = useState<Edge | null>(null);
   const inspectedRef = useRef<Edge | null>(null);
+  const mountedRef = useRef(true);
   const onInspectionEndRef = useRef(onInspectionEnd);
   onInspectionEndRef.current = onInspectionEnd;
   const clearInspected = useCallback(() => {
     if (inspectedRef.current === null) return;
-    // The source lifecycle owns dismissal permission. Clear local wire identity only after it says
-    // the dock may actually go; doing this in the opposite order orphaned dirty edge comments on
-    // every edge-array refresh before the store guard had a chance to render its confirmation.
-    if (onInspectionEndRef.current?.() === false) return;
-    inspectedRef.current = null;
-    setInspected(null);
+    const clearLocalInspection = () => {
+      inspectedRef.current = null;
+      if (mountedRef.current) setInspected(null);
+    };
+    // The source lifecycle owns dismissal permission and the replay callback. Giving it the local
+    // clear keeps automatic edge disappearance atomic with global evidence dismissal after Discard.
+    const endInspection = onInspectionEndRef.current;
+    if (endInspection) {
+      endInspection(clearLocalInspection);
+    } else {
+      clearLocalInspection();
+    }
   }, []);
-  // Unpin whenever the wires re-derive (see the header): the pinned strand may no longer be drawn.
+  // Painted edges are routinely recreated by selection and layout passes. Retain the current
+  // subject by stable id and refresh its object; close only if the strand actually disappeared.
   useEffect(() => {
-    clearInspected();
+    const current = inspectedRef.current;
+    if (current === null) return;
+    const next = retainedInspectedEdge(current, edges);
+    if (next === null) {
+      clearInspected();
+    } else if (next !== current) {
+      inspectedRef.current = next;
+      setInspected(next);
+    }
   }, [edges, clearInspected]);
   // A retained graph can stay mounted behind another surface. Disabling inspection must release
   // both its local pin and the edge-only source state it owns.
@@ -103,12 +122,22 @@ export function useWireHover(
     if (!enabled) clearInspected();
   }, [enabled, clearInspected]);
   // Unmount cannot set hook state, but it still owes the shared edge-evidence lifecycle its end.
-  useEffect(() => () => {
-    if (inspectedRef.current !== null) {
-      if (onInspectionEndRef.current?.() !== false) {
-        inspectedRef.current = null;
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      if (inspectedRef.current !== null) {
+        const clearLocalInspection = () => {
+          inspectedRef.current = null;
+        };
+        const endInspection = onInspectionEndRef.current;
+        if (endInspection) {
+          endInspection(clearLocalInspection);
+        } else {
+          clearLocalInspection();
+        }
       }
-    }
+    };
   }, []);
 
   // Endpoint labels come from the painted nodes so panels name cards as the reader sees them.
@@ -127,9 +156,15 @@ export function useWireHover(
   const interactiveEdges = useMemo(() => edges.filter(isInteractiveSemanticEdge), [edges]);
   const inspect = useCallback((edge: Edge) => {
     if (!isInteractiveSemanticEdge(edge)) return;
-    inspectedRef.current = edge;
-    setInspected(edge);
-    onInspectPair?.(pairOf(edge, interactiveEdges));
+    const commit = (resolvedSubject = edge) => {
+      inspectedRef.current = resolvedSubject;
+      setInspected(resolvedSubject);
+    };
+    if (onInspectPair) {
+      onInspectPair(pairOf(edge, interactiveEdges), edge, commit);
+    } else {
+      commit();
+    }
   }, [interactiveEdges, onInspectPair]);
   const inspectedIds = useMemo(
     () => new Set(inspectedPair === null || inspected === null ? [] : [inspected.id, ...inspectedPair.map((edge) => edge.id)]),
@@ -243,6 +278,32 @@ export function useWireHover(
       inspect(edge);
     },
   };
+}
+
+/** Resolve a freshly-painted object for the same pinned strand, or null once it is truly gone. */
+export function retainedInspectedEdge(current: Edge | null, edges: readonly Edge[]): Edge | null {
+  if (current === null) return null;
+  for (const edge of edges) {
+    if (edge.id === current.id) return edge;
+    if (edge.type !== BUNDLE_EDGE_TYPE) continue;
+    const member = (edge.data as { constituents?: Edge[] } | undefined)?.constituents
+      ?.find((candidate) => candidate.id === current.id);
+    if (member) return member;
+  }
+  return null;
+}
+
+/** Admit local unpin and global evidence dismissal as one replayable transition. */
+export function requestWireInspectionEnd(
+  requestTransition: (transition: () => void) => boolean,
+  clearLocalInspection: () => void,
+  closeGlobalEvidence: () => void,
+): void {
+  const transition = () => {
+    clearLocalInspection();
+    closeGlobalEvidence();
+  };
+  if (requestTransition(transition)) transition();
 }
 
 /**

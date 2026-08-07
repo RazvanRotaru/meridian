@@ -3,9 +3,9 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { prReviewRevisionKey } from "../../state/prReviewFreshness";
 
 /**
- * Guard one source-host transition without putting callbacks in Zustand. A dirty line composer
- * stays mounted on its inline Keep/Discard prompt; only the host which requested the transition
- * observes the later discard and completes its own close/navigation callback.
+ * Guard one source-host transition through the store's single replay queue. A dirty line composer
+ * stays mounted on its inline Keep/Discard prompt; later host/navigation requests replace earlier
+ * pending intent so Discard can never replay two contradictory transitions.
  */
 export function useReviewLineComposerGuard(
   transition: () => void,
@@ -14,9 +14,9 @@ export function useReviewLineComposerGuard(
   const composer = useBlueprint((state) => state.reviewLineComposer);
   const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
   const lineRevision = useBlueprint((state) => prReviewRevisionKey(state.prReviewRevision));
-  const { requestReviewLineComposerDismiss } = useBlueprintActions();
+  const { requestReviewLineComposerTransition } = useBlueprintActions();
   const transitionRef = useRef(transition);
-  const pendingRef = useRef(false);
+  const mountedRef = useRef(true);
   transitionRef.current = transition;
 
   const ownsComposer = composer != null
@@ -26,35 +26,25 @@ export function useReviewLineComposerGuard(
     && composer.path === sourcePath;
 
   const requestTransition = useCallback(() => {
+    const run = () => {
+      if (mountedRef.current) transitionRef.current();
+    };
     if (!ownsComposer) {
-      pendingRef.current = false;
-      transitionRef.current();
+      run();
       return true;
     }
-    if (requestReviewLineComposerDismiss()) {
-      pendingRef.current = false;
-      transitionRef.current();
+    if (requestReviewLineComposerTransition(run)) {
+      run();
       return true;
     }
-    pendingRef.current = true;
     return false;
-  }, [ownsComposer, requestReviewLineComposerDismiss]);
+  }, [ownsComposer, requestReviewLineComposerTransition]);
 
   useEffect(() => {
-    if (!pendingRef.current) return;
-    if (composer === null) {
-      pendingRef.current = false;
-      transitionRef.current();
-      return;
-    }
-    // Keep editing cancels this host's pending transition. A later discard must not resurrect it.
-    if (!composer.confirmDiscard) {
-      pendingRef.current = false;
-    }
-  }, [composer]);
-
-  useEffect(() => () => {
-    pendingRef.current = false;
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
   }, []);
 
   return requestTransition;

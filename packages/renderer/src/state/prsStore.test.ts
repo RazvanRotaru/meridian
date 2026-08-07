@@ -4842,6 +4842,39 @@ describe("PR store slice", () => {
     expect(store.getState().viewMode).toBe("logic");
   });
 
+  it("does not leave the PR page until its dirty line composer transition is admitted", () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "modules",
+      prsList: { open: [], closed: null },
+      moduleRfNodes: [{ id: "x", position: { x: 0, y: 0 }, data: {} }],
+      review: {
+        context: {
+          changedFiles: [{ path: "src/a.ts", status: "modified", hunks: [{ start: 10, end: 12 }] }],
+          baseRef: "main",
+          baseSha: "base",
+          headRef: "feature",
+          reviewKey: "guard-pr-return",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+    });
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("prs");
+    store.getState().openReviewLineComposer("src/a.ts", 10);
+    store.getState().setReviewLineComposerBody("Do not unmount this draft");
+
+    store.getState().togglePrsView();
+    expect(store.getState().viewMode).toBe("prs");
+    expect(store.getState().reviewLineComposer).toMatchObject({ confirmDiscard: true });
+
+    store.getState().discardReviewLineComposer();
+    expect(store.getState().viewMode).toBe("modules");
+    expect(store.getState().reviewLineComposer).toBeNull();
+  });
+
   it("guards and replays a dirty line-composer target switch", () => {
     const store = freshStore();
     store.setState({

@@ -64,7 +64,7 @@ function pendingComment(
   };
 }
 
-function sourceModal(options: {
+function sourceWindow(options: {
   live: boolean;
   status?: ChangeStatus;
   code?: string;
@@ -160,14 +160,16 @@ function sourceModal(options: {
   Object.assign(store, { getInitialState: () => state });
   const onLookupSymbol = options.lookup === false ? undefined : () => {};
   return renderToStaticMarkup(
-    <StoreProvider store={store}><CodePanel onLookupSymbol={onLookupSymbol} /></StoreProvider>,
+    <StoreProvider store={store}>
+      <CodePanel onLookupSymbol={onLookupSymbol} />
+    </StoreProvider>,
   );
 }
 
 describe("CodePanel review comments", () => {
   it("labels a loaded zero-row source as empty instead of showing an inverted range", () => {
-    const markup = sourceModal({ live: true, code: "", lineCount: 0 });
-    const wholeFileMarkup = sourceModal({ live: true, code: "", lineCount: 0, wholeFile: true });
+    const markup = sourceWindow({ live: true, code: "", lineCount: 0 });
+    const wholeFileMarkup = sourceWindow({ live: true, code: "", lineCount: 0, wholeFile: true });
 
     expect(markup).toContain("src/order.ts:empty");
     expect(markup).not.toContain("src/order.ts:17-16");
@@ -175,60 +177,69 @@ describe("CodePanel review comments", () => {
     expect(wholeFileMarkup).toContain("src/order.ts · empty");
   });
 
-  it("renders source as a shell-level resizable dock with one diff scroll owner", () => {
-    const markup = sourceModal({ live: true });
+  it("renders one shell-level modeless floating window with related code and one diff scroll owner", () => {
+    const markup = sourceWindow({ live: true });
 
-    expect(markup).toContain('data-source-code-dock-layer="true"');
-    expect(markup).toContain('pointer-events:auto');
+    expect(markup).toContain('data-floating-source-window-layer="true"');
+    expect(markup).toContain('pointer-events:none');
     expect(markup).toContain('background:transparent');
-    expect(markup).toContain('data-source-code-dock-host="true"');
-    expect(markup).toContain('width:60%');
-    expect(markup).toContain('data-source-code-resize-handle="true"');
-    expect(markup).toContain('role="separator"');
-    expect(markup).toContain('aria-label="Resize source dock"');
-    expect(markup).toContain('aria-valuemin="40"');
-    expect(markup).toContain('aria-valuemax="90"');
-    expect(markup).toContain('aria-valuenow="60"');
-    expect(markup).toContain('data-source-code-dock="true"');
+    expect(markup).toContain('data-floating-source-window-host="true"');
     expect(markup.match(/role="dialog"/g)).toHaveLength(1);
-    expect(markup).toContain('aria-modal="true"');
+    expect(markup).toContain('aria-label="Source code"');
+    expect(markup).not.toContain('aria-modal');
+    expect(markup).toContain('pointer-events:auto');
+    expect(markup).toContain('overflow:hidden');
+    expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
+    expect(markup.match(/role="separator"/g)).toHaveLength(4);
+    expect(markup).toContain('data-source-code-dock="true"');
+    expect(markup).toContain('data-source-window-rail="true"');
+    expect(markup).toContain('role="complementary"');
+    expect(markup).toContain('aria-label="Related code blocks"');
+    expect(markup).toContain('data-related-code-rail="true"');
     expect(markup).toContain('data-source-code-body="dock"');
+    expect(markup).toContain('flex-wrap:wrap');
     expect(markup).toContain('data-source-diff-fill="true"');
-    expect(markup).toContain('data-source-scroll-owner="true"');
+    expect(markup.match(/data-source-scroll-owner="true"/g)).toHaveLength(1);
     expect(markup).toContain('max-height:none');
     expect(markup).not.toContain('max-height:70vh');
   });
 
-  it("offers functional dock maximize and close controls", () => {
-    const markup = sourceModal({ live: true });
+  it("offers move, reset, lookup, search, and close controls", () => {
+    const markup = sourceWindow({ live: true });
 
+    expect(markup).toContain('data-source-window-drag-handle="true"');
+    expect(markup).toContain('aria-label="Move source window"');
+    expect(markup).toContain('aria-keyshortcuts="ArrowLeft ArrowRight ArrowUp ArrowDown"');
+    expect(markup).toContain('data-source-window-move-control="true"');
+    expect(markup).toContain('aria-label="Reset source window position and size"');
+    expect(markup).toContain('data-source-window-reset="true"');
     expect(markup).toContain('aria-label="Search repository symbols"');
     expect(markup).toContain('data-source-symbol-lookup-trigger="true"');
     expect(markup).toContain('data-source-symbol-selection-enabled="true"');
     expect(markup).toContain('aria-label="Open source search"');
     expect(markup).toContain('aria-keyshortcuts="Control+F Meta+F"');
-    expect(markup).toContain('aria-label="Maximize source dock"');
     expect(markup).toContain('aria-label="Close source"');
   });
 
   it("omits symbol lookup and selection when no lookup action is provided", () => {
-    const markup = sourceModal({ live: true, lookup: false });
+    const markup = sourceWindow({ live: true, lookup: false });
 
     expect(markup).not.toContain('data-source-symbol-lookup-trigger="true"');
     expect(markup).not.toContain('data-source-symbol-selection-enabled="true"');
   });
 
   it("offers the canonical whole-file viewed action for the shown review path", () => {
-    const markup = sourceModal({ live: true, reviewPathAlias: FILE });
+    const markup = sourceWindow({ live: true, reviewPathAlias: FILE });
 
     expect(markup).toContain('data-review-source-viewed="true"');
+    expect(markup).toContain('data-review-source-viewed-compact="true"');
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup).toContain('aria-label="Mark src/order.ts as viewed"');
     expect(markup).toContain("Mark viewed</span>");
   });
 
   it("offers drafts on every visible HEAD row and explains the inline subset", () => {
-    const markup = sourceModal({ live: true });
+    const markup = sourceWindow({ live: true });
 
     expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
     for (const line of [17, 18, 19, 20]) {
@@ -239,14 +250,14 @@ describe("CodePanel review comments", () => {
   });
 
   it("does not add a scope note when every visible line is in the PR diff", () => {
-    const markup = sourceModal({ live: true, code: "first\nsecond\nthird", lineCount: 3 });
+    const markup = sourceWindow({ live: true, code: "first\nsecond\nthird", lineCount: 3 });
 
     expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(3);
     expect(markup).not.toContain("data-review-comment-scope");
   });
 
   it("keeps every artifact-only HEAD row draftable as a durable local note", () => {
-    const markup = sourceModal({ live: false });
+    const markup = sourceWindow({ live: false });
 
     expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
     for (const line of [17, 18, 19, 20]) {
@@ -255,13 +266,13 @@ describe("CodePanel review comments", () => {
   });
 
   it("does not offer HEAD-line drafts for a file removed by the PR", () => {
-    const markup = sourceModal({ live: true, status: "deleted" });
+    const markup = sourceWindow({ live: true, status: "deleted" });
 
     expect(markup).not.toContain('aria-label="Comment on line ');
   });
 
   it("labels a restored draft outside GitHub's diff context as a file-level review comment", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       pendingComments: [pendingComment("Keep this exact line", 20)],
     });
@@ -274,7 +285,7 @@ describe("CodePanel review comments", () => {
   });
 
   it("labels an otherwise-inline draft as a file comment when a stale review has no SHA", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       stale: true,
       reviewedHeadSha: null,
@@ -286,40 +297,40 @@ describe("CodePanel review comments", () => {
     expect(markup).toContain("File comment");
   });
 
-  it("renders only visible RIGHT-side GitHub comments in the source modal", () => {
-    const markup = sourceModal({
+  it("renders only visible RIGHT-side GitHub comments in the source window", () => {
+    const markup = sourceWindow({
       live: true,
       comments: [
-        existingComment("Visible modal comment", 19),
+        existingComment("Visible window comment", 19),
         existingComment("Base-side comment", 19, { side: "LEFT" }),
         existingComment("Other file comment", 19, { path: "src/other.ts" }),
-        existingComment("Outside modal range", 21),
+        existingComment("Outside window range", 21),
         existingComment("Outdated comment", null, { side: null }),
       ],
     });
 
     expect(markup).toContain('data-existing-review-comments-line="19"');
-    expect(markup).toContain("Visible modal comment");
+    expect(markup).toContain("Visible window comment");
     expect(markup).not.toContain("Base-side comment");
     expect(markup).not.toContain("Other file comment");
-    expect(markup).not.toContain("Outside modal range");
+    expect(markup).not.toContain("Outside window range");
     expect(markup).not.toContain("Outdated comment");
   });
 
   it("hides existing comments without disabling line drafting", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       commentsVisible: false,
-      comments: [existingComment("Hidden modal comment", 19)],
+      comments: [existingComment("Hidden window comment", 19)],
     });
 
     expect(markup).not.toContain("data-existing-review-comments-line");
-    expect(markup).not.toContain("Hidden modal comment");
+    expect(markup).not.toContain("Hidden window comment");
     expect(markup.match(/aria-label="Comment on line /g)).toHaveLength(4);
   });
 
   it("renders only fresh local line drafts in the visible source slice", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       comments: [existingComment("Already on GitHub", 19)],
       pendingComments: [
@@ -345,7 +356,7 @@ describe("CodePanel review comments", () => {
   });
 
   it("keeps local pending drafts visible while existing GitHub comments are hidden", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       commentsVisible: false,
       comments: [existingComment("Hidden GitHub comment", 19)],
@@ -359,7 +370,7 @@ describe("CodePanel review comments", () => {
   });
 
   it("does not leak a previously selected PR's discussion into non-PR source", () => {
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: false,
       comments: [existingComment("Stale PR comment", 19)],
     });
@@ -369,7 +380,7 @@ describe("CodePanel review comments", () => {
 
   it("maps a PR path alias onto the matching canvas file", () => {
     const alias = "repo/src/order.ts";
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       reviewPathAlias: alias,
       comments: [existingComment("Aliased path comment", 19, { path: alias })],
@@ -380,7 +391,7 @@ describe("CodePanel review comments", () => {
 
   it("maps a pending draft's PR path alias onto the matching canvas file", () => {
     const alias = "repo/src/order.ts";
-    const markup = sourceModal({
+    const markup = sourceWindow({
       live: true,
       reviewPathAlias: alias,
       pendingComments: [pendingComment("Aliased pending draft", 19, { path: alias })],

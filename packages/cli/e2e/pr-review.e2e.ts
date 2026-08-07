@@ -37,6 +37,8 @@ const SOURCE_COMMENT_TEXT = "// Keep the loyalty threshold explicit before choos
 const SOURCE_COMMENT_LINE = 2;
 const LOYALTY_RETURN_LINE = 3;
 const EXISTING_COMMENT_LINE = LOYALTY_RETURN_LINE;
+const SOURCE_SEARCH_SHORTCUT = process.platform === "darwin" ? "Meta+f" : "Control+f";
+const MODIFIED_SOURCE_SEARCH_SHORTCUT = process.platform === "darwin" ? "Meta+Shift+f" : "Control+Shift+f";
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
 const PRICING_PACKAGE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing" });
 const PRICING_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/pricing/pricingService.ts" });
@@ -216,6 +218,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const pythonSourceDialog = page.getByRole("dialog", { name: "Source code" });
     await pythonSourceDialog.waitFor();
     await pythonSourceDialog.getByText(PYTHON_RISK_SIGNATURE, { exact: true }).waitFor();
+    await pythonSourceDialog.getByRole("button", { name: "Open source search" }).focus();
     await page.keyboard.press("Escape");
     await pythonSourceDialog.waitFor({ state: "detached" });
 
@@ -440,7 +443,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.waitFor();
     await loyaltySourceDialog.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
     const sourceSearchTrigger = loyaltySourceDialog.getByRole("button", { name: "Open source search" });
-    await expect.poll(() => sourceSearchTrigger.evaluate((element) => element === document.activeElement)).toBe(true);
+    const sourceSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
+    await expect.poll(() => loyaltyCodeButton.evaluate((element) => element === document.activeElement)).toBe(true);
 
     // A code-only text selection seeds the existing repository symbol palette. Lookup includes all
     // scopes, preserves ambiguity instead of auto-picking, and returns focus to its dock action.
@@ -476,62 +480,109 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await sourceLookupTrigger.waitFor();
     expect(await selectedLookupTrigger.count()).toBe(0);
 
-    // The source dock is a shell-level modal side-sheet. It covers the PR sidebar without changing
-    // that sidebar's remembered split, while one shell-owned boundary removes the whole obscured
-    // workspace from pointer, keyboard, and accessibility navigation.
-    const sourceDockLayer = page.locator('[data-source-code-dock-layer="true"]');
-    const sourceDockHost = page.locator('[data-source-code-dock-host="true"]');
-    const sourceDockHandle = page.getByRole("separator", { name: "Resize source dock" });
+    // The source reader is one modeless floating tool window. Its default stays inside the review
+    // graph, aligned to the top-right product margin, so the PR sidebar remains fully available.
+    const sourceWindowLayer = page.locator('[data-floating-source-window-layer="true"]');
+    const sourceWindowHost = page.locator('[data-floating-source-window-host="true"]');
     const workspaceUnderlay = page.locator('[data-source-workspace-underlay="true"]');
+    const reviewGraphPane = page.locator("#meridian-review-graph-pane");
     const reviewPane = page.locator("#meridian-pr-review-pane");
-    const [layerBox, dockBox, reviewPaneBox] = await Promise.all([
-      sourceDockLayer.boundingBox(),
-      sourceDockHost.boundingBox(),
+    const [initialWindowRect, graphBox, reviewPaneBox] = await Promise.all([
+      floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost),
+      reviewGraphPane.boundingBox(),
       reviewPane.boundingBox(),
     ]);
-    if (layerBox === null || dockBox === null || reviewPaneBox === null) {
-      throw new Error("source dock and PR review overlap are not measurable");
+    if (graphBox === null || reviewPaneBox === null) {
+      throw new Error("floating source default region is not measurable");
     }
-    expect(Math.abs((dockBox.x + dockBox.width) - (layerBox.x + layerBox.width))).toBeLessThanOrEqual(1);
-    expect(reviewPaneBox.x + reviewPaneBox.width).toBeLessThanOrEqual(layerBox.x + layerBox.width + 1);
-    expect(dockBox.x).toBeLessThan(reviewPaneBox.x + reviewPaneBox.width);
-    expect(await page.evaluate(({ x, y }) => (
-      document.elementFromPoint(x, y)?.closest('[data-source-code-dock-host="true"]') !== null
-    ), {
-      x: Math.max(dockBox.x, reviewPaneBox.x) + 8,
-      y: reviewPaneBox.y + 24,
-    })).toBe(true);
-    expect(await workspaceUnderlay.getAttribute("inert")).not.toBeNull();
-    expect(await workspaceUnderlay.getAttribute("aria-hidden")).toBe("true");
-    expect(await sourceDockHost.getAttribute("aria-modal")).toBe("true");
-    expect(await sourceDockLayer.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
-    expect(await sourceDockHost.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
-    const closeSourceButton = loyaltySourceDialog.getByRole("button", { name: "Close source" });
-    await closeSourceButton.focus();
-    await closeSourceButton.press("Tab");
-    expect(await loyaltySourceDialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
-    await sourceSearchTrigger.focus();
+    expect(initialWindowRect.width).toBeCloseTo(Math.min(1_200, graphBox.width - 24), 0);
+    expect(initialWindowRect.height).toBeCloseTo(Math.min(700, graphBox.height - 24), 0);
+    expect(Math.abs(initialWindowRect.top - (graphBox.y + 12))).toBeLessThanOrEqual(1);
+    expect(Math.abs(initialWindowRect.right - (graphBox.x + graphBox.width - 12))).toBeLessThanOrEqual(1);
+    expect(initialWindowRect.right).toBeLessThanOrEqual(reviewPaneBox.x + 1);
+    expect(await loyaltySourceDialog.getAttribute("aria-modal")).toBeNull();
+    expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("side");
 
-    // Only the code listing owns scroll. The shell and adapter fill the dock without producing a
-    // second vertical track around the same source content.
+    // The shell itself never catches input. Only the window and its resize hit zones do, leaving
+    // uncovered graph pixels reachable by the real pointer stack.
+    expect(await sourceWindowLayer.evaluate((element) => getComputedStyle(element).pointerEvents)).toBe("none");
+    expect(await sourceWindowHost.evaluate((element) => getComputedStyle(element).pointerEvents)).toBe("auto");
+    expect(await sourceWindowHost.evaluate((element) => getComputedStyle(element).overflow)).toBe("hidden");
+    expect(await workspaceUnderlay.getAttribute("inert")).toBeNull();
+    expect(await workspaceUnderlay.getAttribute("aria-hidden")).toBeNull();
+    expect(await sourceWindowLayer.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
+    expect(await sourceWindowHost.evaluate((element) => element.closest("[inert]") === null)).toBe(true);
+    const pointerThroughPoint = {
+      x: graphBox.x + 3,
+      y: graphBox.y + graphBox.height / 2,
+    };
+    expect(await page.evaluate(({ x, y }) => (
+      document.elementFromPoint(x, y)?.closest('[data-floating-source-window-host="true"]') === null
+    ), pointerThroughPoint)).toBe(true);
+
+    // A real pane click reaches the graph through the shell, clears its selected-node state, and
+    // deliberately does not dismiss the floating window. Keyboard activation of graph chrome then
+    // changes the camera while focus and Escape remain owned by the graph rather than the window.
+    await relatedOnly.waitFor();
+    await clickBareCanvas(page, extractedReviewSurface);
+    await relatedOnly.waitFor({ state: "detached" });
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    const sourceOpenGraphViewport = extractedReviewSurface.locator(".react-flow__viewport");
+    const sourceOpenTransform = await sourceOpenGraphViewport.getAttribute("style");
+    const sourceOpenZoomOut = extractedReviewSurface.getByRole("button", { name: "Zoom Out" });
+    await sourceOpenZoomOut.focus();
+    expect(await sourceOpenZoomOut.evaluate((element) => element === document.activeElement)).toBe(true);
+    expect(await loyaltySourceDialog.evaluate((element) => !element.contains(document.activeElement))).toBe(true);
+    await sourceOpenZoomOut.press("Enter");
+    await expect.poll(() => sourceOpenGraphViewport.getAttribute("style")).not.toBe(sourceOpenTransform);
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await sourceOpenZoomOut.press("Escape");
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+
+    // Modeless source shortcuts are focus-scoped: graph-owned focus keeps Ctrl/Cmd+F available to
+    // the workspace/browser, while focus returned to the window lets its search own the same chord.
+    await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
+    expect(await sourceSearch.count()).toBe(0);
+    expect(await sourceOpenZoomOut.evaluate((element) => element === document.activeElement)).toBe(true);
+    await sourceSearchTrigger.focus();
+    await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
+    await sourceSearch.waitFor();
+    await sourceSearch.getByRole("button", { name: "Close source search" }).click();
+    await sourceSearch.waitFor({ state: "detached" });
+
+    // The code listing is the only main-pane scroll owner. The related rail has its own independent
+    // vertical scroller; neither the frame, main adapter, nor rail frame adds a duplicate track.
     const sourceDockBody = loyaltySourceDialog.locator('[data-source-code-body="dock"]');
     const sourceScrollOwner = loyaltySourceDialog.locator('[data-source-scroll-owner="true"]');
+    const relatedRailFrame = loyaltySourceDialog.getByRole("complementary", { name: "Related code blocks" });
+    const relatedRailScroller = relatedRailFrame.locator('[data-related-code-rail="true"]');
     expect(await sourceScrollOwner.count()).toBe(1);
+    expect(await relatedRailScroller.count()).toBe(1);
     const scrollLayout = await sourceDockBody.evaluate((body) => {
       const owner = body.querySelector<HTMLElement>('[data-source-scroll-owner="true"]');
-      if (owner === null) throw new Error("source scroll owner missing from dock body");
+      const main = body.closest<HTMLElement>('[data-source-window-main="true"]');
+      const host = body.closest<HTMLElement>('[data-floating-source-window-host="true"]');
+      if (owner === null || main === null || host === null) {
+        throw new Error("floating source scroll ownership is not measurable");
+      }
       return {
         bodyClientHeight: body.clientHeight,
         bodyScrollHeight: body.scrollHeight,
         bodyOverflowY: getComputedStyle(body).overflowY,
         ownerOverflowY: getComputedStyle(owner).overflowY,
+        mainOverflowY: getComputedStyle(main).overflowY,
+        hostOverflowY: getComputedStyle(host).overflowY,
       };
     });
     expect(scrollLayout.bodyScrollHeight).toBeLessThanOrEqual(scrollLayout.bodyClientHeight + 1);
     expect(scrollLayout.bodyOverflowY).toBe("hidden");
     expect(scrollLayout.ownerOverflowY).toBe("auto");
+    expect(scrollLayout.mainOverflowY).toBe("hidden");
+    expect(scrollLayout.hostOverflowY).toBe("hidden");
+    expect(await relatedRailFrame.evaluate((element) => getComputedStyle(element).overflowY)).toBe("hidden");
+    expect(await relatedRailScroller.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
 
-    // The dock is a complete review surface: its path-based action changes the whole file (not
+    // The window is a complete review surface: its path-based action changes the whole file (not
     // merely the declaration node), while its editor-style find stays above the one scroll owner.
     const dockViewedControl = loyaltySourceDialog.getByRole("button", {
       name: "Mark src/pricing/loyaltyTiers.ts as viewed",
@@ -551,10 +602,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: false },
     ]);
 
-    const sourceSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
-    await page.keyboard.press("Control+Shift+f");
+    await page.keyboard.press(MODIFIED_SOURCE_SEARCH_SHORTCUT);
     expect(await sourceSearch.count()).toBe(0);
-    await page.keyboard.press("Control+f");
+    await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
     const sourceSearchInput = sourceSearch.getByRole("searchbox", { name: "Search source" });
     const sourceSearchStatus = sourceSearch.locator('[data-source-search-status="true"]');
     await sourceSearchInput.fill("orderCount");
@@ -574,33 +624,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await loyaltySourceDialog.locator('[data-source-search-match-count]').count()).toBe(0);
     expect(await sourceScrollOwner.count()).toBe(1);
 
-    // Search chrome and the whole-file action remain usable at the live minimum width; neither
-    // toolbar silently introduces a horizontal scroll surface of its own. The separator's dynamic
-    // bounds, value, and rendered width must all describe that same constrained geometry.
-    await sourceDockHandle.focus();
-    await sourceDockHandle.press("End");
-    await expect.poll(async () => {
-      const metrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-      return Math.abs(metrics.valueNow - metrics.valueMin);
-    }).toBeLessThanOrEqual(0.001);
-    const minimumDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(minimumDockMetrics);
-    await sourceSearchTrigger.click();
-    const minimumSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
-    const minimumChrome = await minimumSearch.evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-    }));
-    expect(minimumChrome.scrollWidth).toBeLessThanOrEqual(minimumChrome.clientWidth + 1);
-    const minimumHeaderActions = await loyaltySourceDialog.locator('[data-source-header-actions="true"]').evaluate((element) => ({
-      clientWidth: element.clientWidth,
-      scrollWidth: element.scrollWidth,
-    }));
-    expect(minimumHeaderActions.scrollWidth).toBeLessThanOrEqual(minimumHeaderActions.clientWidth + 1);
-    expect(await loyaltySourceDialog.locator('[data-review-source-viewed="true"]').count()).toBe(1);
-
     // The global command palette remains the top modal layer. Escape from one of its ordinary
-    // buttons closes only the palette; it must not fall through to the source search or dock.
+    // buttons closes only the palette; it must not fall through to the source search or window.
+    await sourceSearchTrigger.click();
+    const layeredSourceSearch = loyaltySourceDialog.getByRole("search", { name: "Find in current source" });
     await page.keyboard.press("Control+P");
     await palette.waitFor();
     const paletteNonEditableControl = palette.locator("button").first();
@@ -608,35 +635,99 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await paletteNonEditableControl.focus();
     await page.keyboard.press("Escape");
     await palette.waitFor({ state: "detached" });
-    expect(await minimumSearch.isVisible()).toBe(true);
+    expect(await layeredSourceSearch.isVisible()).toBe(true);
     expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await layeredSourceSearch.getByRole("button", { name: "Close source search" }).click();
 
-    await minimumSearch.getByRole("button", { name: "Close source search" }).click();
-    await sourceDockHandle.focus();
-    await sourceDockHandle.press("Enter");
-
-    // Pointer resizing owns the same geometry and ARIA contract as the keyboard. Its preferred
-    // ratio survives a clean close/reopen, a narrow viewport applies only temporary live bounds,
-    // and restoring the viewport recovers that wider preference instead of persisting the clamp.
-    await expect.poll(async () => (
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).valueNow).toBeCloseTo(60, 3);
-    const pointerStart = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    const pointerHandleBox = await sourceDockHandle.boundingBox();
-    if (pointerHandleBox === null) throw new Error("source dock pointer handle is not measurable");
-    const pointerStartX = pointerHandleBox.x + pointerHandleBox.width / 2;
-    const pointerY = pointerHandleBox.y + pointerHandleBox.height / 2;
-    await page.mouse.move(pointerStartX, pointerY);
+    // Moving and resizing update the same mounted source reader. Dragging its header commits both
+    // axes; the dedicated move control offers the same operation to keyboard users.
+    const liveSourceHost = await sourceWindowHost.elementHandle();
+    const stableSourceScrollOwner = sourceWindowHost.locator('[data-source-scroll-owner="true"]');
+    const liveSourceScrollOwner = await stableSourceScrollOwner.elementHandle();
+    if (liveSourceHost === null || liveSourceScrollOwner === null) {
+      throw new Error("floating source identity is not measurable");
+    }
+    const expectLiveSourceIdentity = async (): Promise<void> => {
+      expect(await sourceWindowHost.evaluate(
+        (element, original) => element === original,
+        liveSourceHost,
+      )).toBe(true);
+      expect(await stableSourceScrollOwner.evaluate(
+        (element, original) => element === original,
+        liveSourceScrollOwner,
+      )).toBe(true);
+      expect(await stableSourceScrollOwner.count()).toBe(1);
+    };
+    const sourceWindowHeader = loyaltySourceDialog.locator('[data-source-window-drag-handle="true"]');
+    const sourceWindowMoveControl = loyaltySourceDialog.getByRole("button", { name: "Move source window" });
+    const beforeHeaderDrag = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    const headerBox = await sourceWindowHeader.boundingBox();
+    if (headerBox === null) throw new Error("floating source drag header is not measurable");
+    const headerDragStart = {
+      x: headerBox.x + Math.min(80, headerBox.width / 3),
+      y: headerBox.y + headerBox.height / 2,
+    };
+    await page.mouse.move(headerDragStart.x, headerDragStart.y);
     await page.mouse.down();
-    await page.mouse.move(pointerStartX - 140, pointerY, { steps: 6 });
+    await page.mouse.move(headerDragStart.x + 96, headerDragStart.y + 64, { steps: 6 });
     await page.mouse.up();
     await expect.poll(async () => (
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).hostWidth).toBeGreaterThan(pointerStart.hostWidth + 100);
-    const pointerResized = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(pointerResized);
-    expect(pointerResized.valueNow).toBeGreaterThan(pointerStart.valueNow);
+      await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost)
+    ).x).toBeGreaterThan(beforeHeaderDrag.x + 70);
+    const afterHeaderDrag = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(afterHeaderDrag.y).toBeGreaterThan(beforeHeaderDrag.y + 45);
+    expect(Math.abs(afterHeaderDrag.width - beforeHeaderDrag.width)).toBeLessThanOrEqual(1);
+    expect(Math.abs(afterHeaderDrag.height - beforeHeaderDrag.height)).toBeLessThanOrEqual(1);
+    await expectLiveSourceIdentity();
 
+    await sourceWindowMoveControl.focus();
+    await sourceWindowMoveControl.press("Shift+ArrowLeft");
+    await expect.poll(async () => (
+      await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost)
+    ).x).toBeLessThan(afterHeaderDrag.x - 50);
+    const afterHorizontalKeyMove = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(Math.abs((afterHeaderDrag.x - afterHorizontalKeyMove.x) - 64)).toBeLessThanOrEqual(1);
+    await sourceWindowMoveControl.press("ArrowDown");
+    const afterKeyboardMove = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(Math.abs((afterKeyboardMove.y - afterHorizontalKeyMove.y) - 16)).toBeLessThanOrEqual(1);
+    await expectLiveSourceIdentity();
+
+    const storedAfterMove = await readStoredSourceWindowPreference(page);
+    expect(storedAfterMove.version).toBe(2);
+    if (storedAfterMove.rect === null) throw new Error("floating source move was not persisted");
+    expectSourceWindowRectsToAgree(storedAfterMove.rect, afterKeyboardMove);
+
+    // All eight pointer zones surround the unclipped host; the four edges are keyboard-accessible.
+    // A south-east drag proves two-dimensional resize, then the right edge changes only width.
+    expect(await sourceWindowLayer.locator('[data-source-window-resize-zone]').count()).toBe(8);
+    expect(await page.getByRole("separator", { name: /^Resize source window from .+ edge$/ }).count()).toBe(4);
+    const southeastResizeZone = sourceWindowLayer.locator('[data-source-window-resize-zone="se"]');
+    const beforeCornerResize = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    const southeastBox = await southeastResizeZone.boundingBox();
+    if (southeastBox === null) throw new Error("floating source corner resize zone is not measurable");
+    const southeastStart = {
+      x: southeastBox.x + southeastBox.width / 2,
+      y: southeastBox.y + southeastBox.height / 2,
+    };
+    await page.mouse.move(southeastStart.x, southeastStart.y);
+    await page.mouse.down();
+    await page.mouse.move(southeastStart.x - 144, southeastStart.y - 96, { steps: 6 });
+    await page.mouse.up();
+    const afterCornerResize = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(beforeCornerResize.width - afterCornerResize.width).toBeGreaterThan(120);
+    expect(beforeCornerResize.height - afterCornerResize.height).toBeGreaterThan(70);
+    expect(Math.abs(beforeCornerResize.x - afterCornerResize.x)).toBeLessThanOrEqual(1);
+    expect(Math.abs(beforeCornerResize.y - afterCornerResize.y)).toBeLessThanOrEqual(1);
+    const rightResizeEdge = page.getByRole("separator", { name: "Resize source window from right edge" });
+    await rightResizeEdge.focus();
+    await rightResizeEdge.press("ArrowRight");
+    const afterEdgeResize = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(Math.abs((afterEdgeResize.width - afterCornerResize.width) - 16)).toBeLessThanOrEqual(1);
+    expect(Math.abs(afterEdgeResize.height - afterCornerResize.height)).toBeLessThanOrEqual(1);
+    await expectLiveSourceIdentity();
+
+    // Geometry is durable across close/reopen, and focus returns to the control that opened source.
+    const persistedWindowRect = afterEdgeResize;
     await loyaltySourceDialog.getByRole("button", { name: "Close source" }).click();
     await loyaltySourceDialog.waitFor({ state: "detached" });
     expect(await workspaceUnderlay.getAttribute("inert")).toBeNull();
@@ -644,67 +735,61 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await expect.poll(() => loyaltyCodeButton.evaluate((element) => element === document.activeElement)).toBe(true);
     await loyaltyCodeButton.click();
     await loyaltySourceDialog.waitFor();
-    await sourceDockHandle.waitFor();
-    expect(await workspaceUnderlay.getAttribute("inert")).not.toBeNull();
-    await expect.poll(async () => Math.abs((
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).valueNow - pointerResized.valueNow)).toBeLessThanOrEqual(0.001);
-    const reopenedMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(reopenedMetrics);
+    const reopenedWindowRect = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expectSourceWindowRectsToAgree(reopenedWindowRect, persistedWindowRect);
 
-    await page.setViewportSize({ width: 700, height: 900 });
-    await expect.poll(async () => {
-      const metrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-      return Math.max(
-        Math.abs(metrics.valueMin - metrics.valueMax),
-        Math.abs(metrics.valueNow - metrics.valueMin),
-        metrics.pixelError,
-      );
-    }).toBeLessThanOrEqual(2);
-    const narrowDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(narrowDockMetrics);
-    expect(Math.abs(narrowDockMetrics.valueMin - narrowDockMetrics.valueMax)).toBeLessThanOrEqual(0.001);
-    expect(Math.abs(narrowDockMetrics.valueNow - narrowDockMetrics.valueMin)).toBeLessThanOrEqual(0.001);
-
-    await page.setViewportSize({ width: 1_400, height: 900 });
-    await expect.poll(async () => Math.abs((
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).valueNow - pointerResized.valueNow)).toBeLessThanOrEqual(0.001);
-    const restoredPreferredMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(restoredPreferredMetrics);
-    await sourceDockHandle.focus();
-    await sourceDockHandle.press("Enter");
-    await expect.poll(async () => (
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).valueNow).toBeCloseTo(60, 3);
-    const stableDefaultMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expectSourceDockMetricsToAgree(stableDefaultMetrics);
-
-    // Keyboard resizing and maximize/restore retain parity after responsive constraints recover.
-    const initialDockWidth = stableDefaultMetrics.hostWidth;
-    await sourceDockHandle.focus();
-    await sourceDockHandle.press("ArrowLeft");
-    await expect.poll(async () => (await sourceDockHost.boundingBox())?.width ?? 0).toBeGreaterThan(initialDockWidth);
-    const widerDockMetrics = await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle);
-    expect(widerDockMetrics.hostWidth).toBeGreaterThan(initialDockWidth);
-    expectSourceDockMetricsToAgree(widerDockMetrics);
-    await sourceDockHandle.press("Enter");
-    await expect.poll(async () => (
-      await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle)
-    ).valueNow).toBeCloseTo(60, 3);
-    expectSourceDockMetricsToAgree(await sourceDockBrowserMetrics(sourceDockLayer, sourceDockHost, sourceDockHandle));
-    await loyaltySourceDialog.getByRole("button", { name: "Maximize source dock" }).click();
-    await expect.poll(async () => {
-      const [host, layer] = await Promise.all([sourceDockHost.boundingBox(), sourceDockLayer.boundingBox()]);
-      return Math.abs((host?.width ?? 0) - (layer?.width ?? 0));
-    }).toBeLessThanOrEqual(1);
-    const [maximizedDockBox, maximizedLayerBox] = await Promise.all([
-      sourceDockHost.boundingBox(),
-      sourceDockLayer.boundingBox(),
+    // Reset forgets the stored rectangle and recomputes the responsive top-right graph default.
+    await loyaltySourceDialog.getByRole("button", {
+      name: "Reset source window position and size",
+    }).click();
+    await expect.poll(async () => (await readStoredSourceWindowPreference(page)).rect).toBeNull();
+    const [resetWindowRect, resetGraphBox] = await Promise.all([
+      floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost),
+      reviewGraphPane.boundingBox(),
     ]);
-    expect(Math.abs((maximizedDockBox?.width ?? 0) - (maximizedLayerBox?.width ?? 0))).toBeLessThanOrEqual(1);
-    await loyaltySourceDialog.getByRole("button", { name: "Restore source dock" }).click();
-    await sourceDockHandle.waitFor();
+    if (resetGraphBox === null) throw new Error("source reset region is not measurable");
+    expect(resetWindowRect.width).toBeCloseTo(Math.min(1_200, resetGraphBox.width - 24), 0);
+    expect(resetWindowRect.height).toBeCloseTo(Math.min(700, resetGraphBox.height - 24), 0);
+    expect(Math.abs(resetWindowRect.top - (resetGraphBox.y + 12))).toBeLessThanOrEqual(1);
+    expect(Math.abs(resetWindowRect.right - (resetGraphBox.x + resetGraphBox.width - 12))).toBeLessThanOrEqual(1);
+
+    // Below 620px the related rail becomes an explicit overlay toggle. Escape closes that overlay
+    // first and leaves the modeless source window open; reset returns to the deterministic default.
+    await rightResizeEdge.focus();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const current = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+      if (current.width < 620) break;
+      await rightResizeEdge.press("Shift+ArrowLeft");
+    }
+    const compactWindowRect = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
+    expect(compactWindowRect.width).toBeLessThan(620);
+    expect(compactWindowRect.width).toBeGreaterThanOrEqual(320);
+    expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("hidden");
+    // Keep a DOM-stable handle while the overlay makes the underlying main pane inert. A role
+    // locator correctly disappears from the accessibility tree for that interval.
+    const relatedRailToggle = loyaltySourceDialog.locator('[data-source-window-related-toggle="true"]');
+    await relatedRailToggle.waitFor();
+    expect(await relatedRailToggle.getAttribute("aria-label")).toMatch(/^Related code blocks \(\d+\)$/);
+    expect(await relatedRailToggle.getAttribute("aria-expanded")).toBe("false");
+    await relatedRailToggle.click();
+    expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("overlay");
+    await relatedRailFrame.waitFor();
+    const compactRailClose = relatedRailFrame.getByRole("button", { name: "Hide Related code blocks" });
+    expect(await relatedRailScroller.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
+    expect(await relatedRailToggle.getAttribute("aria-expanded")).toBe("true");
+    expect(await sourceWindowHost.locator('[data-source-window-main="true"]').getAttribute("inert")).not.toBeNull();
+    await expect.poll(() => compactRailClose.evaluate((element) => element === document.activeElement)).toBe(true);
+    await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
+    expect(await sourceSearch.count()).toBe(0);
+    await compactRailClose.press("Escape");
+    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("hidden");
+    await expect.poll(() => relatedRailToggle.evaluate((element) => element === document.activeElement)).toBe(true);
+    await loyaltySourceDialog.getByRole("button", {
+      name: "Reset source window position and size",
+    }).click();
+    await expect.poll(() => sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("side");
+    await expect.poll(async () => (await readStoredSourceWindowPreference(page)).rect).toBeNull();
 
     // A wide colspan comment must wrap inside the source viewport without becoming a table sizing
     // constraint. Otherwise auto table layout assigns part of its max-content width to the sticky
@@ -724,7 +809,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     }
     expect(commentBox.x + commentBox.width).toBeLessThanOrEqual(listingBox.x + listingBox.width + 1);
 
-    // The dock intentionally covers the control panel, so dispatch the preference toggle without
+    // The floating window can overlap graph chrome, so dispatch the preference toggle without
     // pointer actionability; this keeps the same mounted source table available for comparison.
     await page.locator('button[aria-label="Hide comments on canvas"]').dispatchEvent("click");
     await existingCommentCard.waitFor({ state: "detached" });
@@ -751,7 +836,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
     expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
 
-    // Add the second distinct line draft through the full-source gutter. An attempted dock close
+    // Add the second distinct line draft through the full-source gutter. An attempted window close
     // first exposes the shared Keep/Discard choice; keeping resumes the exact text before Add.
     const secondSourceRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondInlineLine}"]`);
     await secondSourceRow.scrollIntoViewIfNeeded();
@@ -778,6 +863,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await firstPendingDraft.getByPlaceholder("Edit comment…").fill(EDITED_DRAFT_TEXT);
     await firstPendingDraft.getByRole("button", { name: "Save changes", exact: true }).click();
     await firstPendingDraft.getByText(EDITED_DRAFT_TEXT, { exact: true }).waitFor();
+    await sourceSearchTrigger.focus();
     await page.keyboard.press("Escape");
     await loyaltySourceDialog.waitFor({ state: "detached" });
     await expect.poll(() => loyaltyCodeButton.evaluate((element) => element === document.activeElement)).toBe(true);
@@ -860,9 +946,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
     ]);
 
-    // 4h — Escape closes the source dock only; repeated Escape and outward zoom leave the review
-    // overlay in place, while explicit Close parks it for the text-only Resume chip. The source
-    // graph stays mounted beneath Minimal Graph, but an active PR review is its own navigation root.
+    // 4h — Escape from the graph leaves its floating source window open; Escape closes the window only
+    // after focus enters it. Repeated graph Escape and outward zoom leave the review overlay in place,
+    // while explicit Close parks it for the text-only Resume chip. The source graph stays mounted
+    // beneath Minimal Graph, but an active PR review is its own navigation root.
     // Scope this raw CSS locator to the extracted surface rather than matching the intentionally
     // retained source copy of the same file card.
     const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
@@ -873,8 +960,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await codeButton.click();
     const sourceDialog = page.getByRole("dialog", { name: "Source code" });
     await sourceDialog.waitFor();
+    await codeButton.focus();
+    await page.keyboard.press("Escape");
+    expect(await sourceDialog.isVisible()).toBe(true);
+    await sourceDialog.getByRole("button", { name: "Open source search" }).focus();
     await page.keyboard.press("Escape");
     await sourceDialog.waitFor({ state: "detached" });
+    await expect.poll(() => codeButton.evaluate((element) => element === document.activeElement)).toBe(true);
     expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
     expect(await syncProvenance.count()).toBe(1);
     await page.keyboard.press("Escape");
@@ -969,61 +1061,64 @@ async function selectSourceText(cell: Locator, text: string): Promise<void> {
   await cell.dispatchEvent("pointerup", { pointerType: "mouse", button: 0 });
 }
 
-interface SourceDockBrowserMetrics {
-  hostWidth: number;
-  layerWidth: number;
-  pixelError: number;
-  valueMin: number;
-  valueMax: number;
-  valueNow: number;
-  valueText: string;
+interface FloatingSourceWindowRectSnapshot {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
 }
 
-async function sourceDockBrowserMetrics(
+interface StoredSourceWindowPreference {
+  version: number;
+  rect: Pick<FloatingSourceWindowRectSnapshot, "x" | "y" | "width" | "height"> | null;
+}
+
+async function floatingSourceWindowRect(
   layer: Locator,
   host: Locator,
-  handle: Locator,
-): Promise<SourceDockBrowserMetrics> {
-  const [layerBox, hostBox, valueMinRaw, valueMaxRaw, valueNowRaw, valueText] = await Promise.all([
+): Promise<FloatingSourceWindowRectSnapshot> {
+  const [layerBox, hostBox] = await Promise.all([
     layer.boundingBox(),
     host.boundingBox(),
-    handle.getAttribute("aria-valuemin"),
-    handle.getAttribute("aria-valuemax"),
-    handle.getAttribute("aria-valuenow"),
-    handle.getAttribute("aria-valuetext"),
   ]);
-  if (
-    layerBox === null
-    || hostBox === null
-    || valueMinRaw === null
-    || valueMaxRaw === null
-    || valueNowRaw === null
-    || valueText === null
-  ) {
-    throw new Error("source dock geometry or separator semantics are not measurable");
-  }
-  const valueMin = Number(valueMinRaw);
-  const valueMax = Number(valueMaxRaw);
-  const valueNow = Number(valueNowRaw);
-  if (![valueMin, valueMax, valueNow].every(Number.isFinite)) {
-    throw new Error("source dock separator exposes a non-finite ARIA value");
+  if (layerBox === null || hostBox === null) {
+    throw new Error("floating source geometry is not measurable");
   }
   return {
-    hostWidth: hostBox.width,
-    layerWidth: layerBox.width,
-    pixelError: Math.abs(hostBox.width - (layerBox.width * valueNow / 100)),
-    valueMin,
-    valueMax,
-    valueNow,
-    valueText,
+    x: hostBox.x - layerBox.x,
+    y: hostBox.y - layerBox.y,
+    width: hostBox.width,
+    height: hostBox.height,
+    left: hostBox.x,
+    top: hostBox.y,
+    right: hostBox.x + hostBox.width,
+    bottom: hostBox.y + hostBox.height,
   };
 }
 
-function expectSourceDockMetricsToAgree(metrics: SourceDockBrowserMetrics): void {
-  expect(metrics.valueMin).toBeLessThanOrEqual(metrics.valueNow);
-  expect(metrics.valueNow).toBeLessThanOrEqual(metrics.valueMax);
-  expect(metrics.pixelError).toBeLessThanOrEqual(2);
-  expect(metrics.valueText).toContain(`Source dock ${metrics.valueNow}% of workspace width`);
+async function readStoredSourceWindowPreference(page: Page): Promise<StoredSourceWindowPreference> {
+  const preference = await page.evaluate(() => {
+    const raw = localStorage.getItem("meridian.sourceDockPreference");
+    return raw === null ? null : JSON.parse(raw) as StoredSourceWindowPreference;
+  });
+  if (preference === null) throw new Error("floating source preference is not stored");
+  return preference;
+}
+
+function expectSourceWindowRectsToAgree(
+  actual: Pick<FloatingSourceWindowRectSnapshot, "x" | "y" | "width" | "height">,
+  expected: Pick<FloatingSourceWindowRectSnapshot, "x" | "y" | "width" | "height">,
+): void {
+  expect(Math.max(
+    Math.abs(actual.x - expected.x),
+    Math.abs(actual.y - expected.y),
+    Math.abs(actual.width - expected.width),
+    Math.abs(actual.height - expected.height),
+  )).toBeLessThanOrEqual(2);
 }
 
 async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
@@ -1110,20 +1205,31 @@ async function clickBareCanvas(target: Page, surface: Locator): Promise<void> {
   const pane = surface.locator(".react-flow__pane");
   const bounds = await pane.boundingBox();
   if (bounds === null) throw new Error("review graph pane has no clickable bounds");
+  const candidates: Array<{ x: number; y: number }> = [];
   for (let row = 1; row <= 7; row += 1) {
     for (let column = 1; column <= 7; column += 1) {
-      const point = {
+      candidates.push({
         x: bounds.x + (bounds.width * column) / 8,
         y: bounds.y + (bounds.height * row) / 8,
-      };
-      const isBare = await pane.evaluate(
-        (element, candidate) => document.elementFromPoint(candidate.x, candidate.y) === element,
-        point,
-      );
-      if (isBare) {
-        await target.mouse.click(point.x, point.y);
-        return;
-      }
+      });
+    }
+  }
+  // A floating source window can cover every coarse grid point while intentionally preserving a
+  // narrow graph margin. Include those margin pixels so the helper still issues a genuine pane click.
+  candidates.push(
+    { x: bounds.x + 3, y: bounds.y + bounds.height / 2 },
+    { x: bounds.x + bounds.width - 3, y: bounds.y + bounds.height / 2 },
+    { x: bounds.x + bounds.width / 2, y: bounds.y + 3 },
+    { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height - 3 },
+  );
+  for (const point of candidates) {
+    const isBare = await pane.evaluate(
+      (element, candidate) => document.elementFromPoint(candidate.x, candidate.y) === element,
+      point,
+    );
+    if (isBare) {
+      await target.mouse.click(point.x, point.y);
+      return;
     }
   }
   throw new Error("review graph has no bare canvas point for the dismissal gesture");

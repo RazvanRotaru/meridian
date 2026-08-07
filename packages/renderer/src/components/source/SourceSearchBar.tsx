@@ -100,6 +100,7 @@ const SEARCH_BAR_STYLE: React.CSSProperties = {
   minHeight: 38,
   display: "flex",
   alignItems: "center",
+  flexWrap: "wrap",
   gap: 6,
   boxSizing: "border-box",
   padding: "5px 10px",
@@ -113,8 +114,8 @@ const SEARCH_ICON_STYLE: React.CSSProperties = {
 };
 
 const SEARCH_INPUT_STYLE: React.CSSProperties = {
-  flex: "1 1 180px",
-  minWidth: 110,
+  flex: "1 1 140px",
+  minWidth: 100,
   height: 27,
   boxSizing: "border-box",
   padding: "4px 8px",
@@ -128,7 +129,7 @@ const SEARCH_INPUT_STYLE: React.CSSProperties = {
 
 const SEARCH_STATUS_STYLE: React.CSSProperties = {
   flex: "0 0 auto",
-  minWidth: 92,
+  minWidth: 72,
   color: "#91A5BC",
   fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
   fontSize: 10.5,
