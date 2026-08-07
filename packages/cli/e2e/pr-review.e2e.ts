@@ -765,10 +765,11 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(compactWindowRect.width).toBeLessThan(620);
     expect(compactWindowRect.width).toBeGreaterThanOrEqual(320);
     expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("hidden");
-    const relatedRailToggle = loyaltySourceDialog.getByRole("button", {
-      name: /^Related code blocks \(\d+\)$/,
-    });
+    // Keep a DOM-stable handle while the overlay makes the underlying main pane inert. A role
+    // locator correctly disappears from the accessibility tree for that interval.
+    const relatedRailToggle = loyaltySourceDialog.locator('[data-source-window-related-toggle="true"]');
     await relatedRailToggle.waitFor();
+    expect(await relatedRailToggle.getAttribute("aria-label")).toMatch(/^Related code blocks \(\d+\)$/);
     expect(await relatedRailToggle.getAttribute("aria-expanded")).toBe("false");
     await relatedRailToggle.click();
     expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("overlay");
