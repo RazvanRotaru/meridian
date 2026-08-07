@@ -25,6 +25,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../../web-ui/index.html", import.meta.url));
 const TS_EXAMPLE = join(REPO_ROOT, "examples", "orders-service");
 const PY_EXAMPLE = join(REPO_ROOT, "examples", "orders-service-py");
+const FAKE_LANDING_BACKGROUND = "fake-current-renderer-png";
 
 interface GenerateResult {
   id: string;
@@ -59,7 +60,12 @@ afterAll(async () => {
 describe("createWebService landing + errors", () => {
   it("serves the landing page with the injected CLI prefill", async () => {
     const html = await (await fetch(`${base}/`)).text();
-    expect(html).toContain("Read your codebase");
+    expect(html).toContain("Let&rsquo;s make sense");
+    expect(html).toContain("What would you like to do?");
+    expect(html).toContain("Explore a repository");
+    expect(html).toContain("Read-only analysis. Nothing is pushed to GitHub.");
+    expect(html).toContain('id="recent-work"');
+    expect(html).toContain('id="recent-work-list"');
     expect(html).toContain("window.__MERIDIAN_PREFILL__=");
     const injectedModel = injectedPrReviewProgressModel(html);
     expect(injectedModel).toEqual(PR_REVIEW_PROGRESS_MODEL);
@@ -69,7 +75,15 @@ describe("createWebService landing + errors", () => {
     expect(html).toContain("/api/repos/branches?repo=");
     expect(html).toContain('"&q=" + encodeURIComponent(query)');
     expect(html).not.toContain('id="custom-ref"');
-    expect(html).toContain('id="intent-review"');
+    expect(html).toContain('id="intent-explore" aria-pressed="false"');
+    expect(html).toContain('id="intent-review" class="active" aria-pressed="true"');
+    expect(html.indexOf('id="intent-review"')).toBeLessThan(html.indexOf('id="intent-explore"'));
+    expect(html).toContain('id="explore-fields" hidden');
+    expect(html).toContain('id="review-fields" hidden');
+    expect(html).toContain('<button type="submit" class="primary" id="submit">Review this pull request</button>');
+    expect(html).toContain('let githubIntent = "review";');
+    expect(html).toContain('src="/landing-renderer-background.png"');
+    expect(html).not.toContain('class GraphBackground');
     expect(html).toContain('id="pr-author-trigger"');
     expect(html).toContain('id="pr-author-options"');
     expect(html).toContain('id="pr-query"');
@@ -85,6 +99,7 @@ describe("createWebService landing + errors", () => {
     expect(html).toContain('id="change-repository"');
     expect(html).toContain("Change repository");
     expect(html).toContain('SELECTED_REPOSITORY_STORAGE_KEY = "meridian.selectedRepository"');
+    expect(html).toContain('RECENT_WORK_STORAGE_KEY = "meridian.recentWork.v1"');
     expect(html).toContain("window.localStorage.getItem(SELECTED_REPOSITORY_STORAGE_KEY)");
     expect(html).toContain("window.localStorage.setItem(SELECTED_REPOSITORY_STORAGE_KEY, repository)");
     expect(html).not.toContain("<select");
@@ -92,6 +107,11 @@ describe("createWebService landing + errors", () => {
     expect(html).not.toContain('id="subdir"');
     expect(html).not.toContain("Source subfolder");
     expect(html).not.toContain('$("repo").addEventListener("change"');
+
+    const background = await fetch(`${base}/landing-renderer-background.png`);
+    expect(background.status).toBe(200);
+    expect(background.headers.get("content-type")).toBe("image/png");
+    expect(await background.text()).toBe(FAKE_LANDING_BACKGROUND);
   });
 
   it("ships the staged, accessible blueprint preparation indicator", async () => {
@@ -755,6 +775,7 @@ function writeFakeRenderer(): string {
   mkdirSync(join(dir, "assets"));
   writeFileSync(join(dir, "index.html"), "<!doctype html><html><head></head><body></body></html>");
   writeFileSync(join(dir, "assets", "app.js"), "export const ready = true;");
+  writeFileSync(join(dir, "landing-renderer-background.png"), FAKE_LANDING_BACKGROUND);
   return dir;
 }
 

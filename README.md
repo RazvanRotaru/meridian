@@ -24,7 +24,7 @@ Unreal-Blueprints-style (calls, branches, loops, drill-in, ⌘P symbol search).
 
 ```bash
 pnpm install && pnpm build     # build all packages and stage the web renderer
-pnpm start -- sindresorhus/ky  # the supported app launcher; omit the repo for the landing page
+pnpm start -- sindresorhus/ky  # the supported app launcher; omit it for the guided landing page
 
 # The installed CLI uses the same launcher (self-hosted; nothing is uploaded)
 node packages/cli/dist/bin.js web sindresorhus/ky        # any GitHub owner/repo, URL, or local path
@@ -38,15 +38,19 @@ node packages/cli/dist/bin.js generate ./my-service --test-coverage coverage/cov
 ```
 
 Private repos: click **Sign in with GitHub** on the landing page (device flow — no password, no
-client secret; after approving you also get a **"Your repositories"** picker), or set
-`GITHUB_TOKEN` / paste a token into the local-only field. Tokens stay on your machine and are
-never uploaded, logged, or stored. Sign-in ships preconfigured with the project's OAuth app;
-forks can point at their own via `MERIDIAN_GITHUB_CLIENT_ID` or `--github-client-id`.
+client secret; after approving you also get a **"Your repositories"** picker), use an existing
+`gh` CLI login, or set `GITHUB_TOKEN` / `GH_TOKEN` before launching Meridian. Tokens stay on your
+machine; Meridian never uploads, logs, or stores them. Sign-in ships preconfigured with the project's
+OAuth app; forks can point at their own via `MERIDIAN_GITHUB_CLIENT_ID` or `--github-client-id`.
+
+Successful GitHub repository and pull-request analyses become up to three browser-local shortcuts
+under **Pick up where you left off**. Reopening reruns the current repository or pull request; these
+are shortcuts—not saved sessions or synced history—and local filesystem paths are never recorded.
 
 ## Gallery
 
-Captured headless on the `shopfront` fixture (a deliberately-tangled TS + React app) and the
-small examples.
+The renderer views were captured headlessly on the `shopfront` fixture (a deliberately-tangled
+TS + React app) and the small examples. The landing page is a verified browser capture.
 
 **Call flow + live telemetry** — the whole system with a mock overlay painted on. Red high-error
 wires converge on the `Utils` god-module (fan-in made visible):
@@ -75,10 +79,11 @@ summaries):
 
 ![Python blueprint](docs/media/05-python.png)
 
-**`meridian web`** — paste a GitHub repo (or a local path); it clones + extracts + renders in your
-browser. Nothing uploaded; private repos use a local token:
+**`meridian web`** — review a pull request by default, or switch to exploring a repository. Open a
+GitHub repo or local folder, then return to recent GitHub work without re-entering it. Source analysis
+is read-only and runs on your machine:
 
-![The meridian web front door](docs/media/06-web-landing.png)
+![Meridian web landing page with pull-request review selected, a current renderer preview, GitHub repository input, local-folder access, and three recent-work shortcuts](docs/media/06-web-landing.png)
 
 ## How it works
 

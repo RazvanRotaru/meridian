@@ -28,7 +28,7 @@ describe.skipIf(!chromiumInstalled())("personal pull request queue (headless chr
     await page.evaluate(({ key, repository }) => localStorage.setItem(key, repository), { key: STORAGE_KEY, repository: REPOSITORY });
     await page.reload({ waitUntil: "domcontentloaded" });
     await page.locator("#me-login").getByText("astrid", { exact: true }).waitFor();
-    await page.getByRole("button", { name: "Review pull request" }).click();
+    expect(await page.locator("#intent-review").getAttribute("aria-pressed")).toBe("true");
     await page.locator("#pr-query:not([disabled])").waitFor();
   });
 

@@ -121,6 +121,10 @@ function createLandingServer(): Server {
       sendJson(response, 200, { branches: ["main"] });
       return;
     }
+    if (request.method === "GET" && url.pathname === "/api/repos/pulls") {
+      sendJson(response, 200, { prs: [], hasMore: false });
+      return;
+    }
     if (request.method === "GET" && url.pathname === "/api/cache/status") {
       sendJson(response, 200, { status: "miss" });
       return;
