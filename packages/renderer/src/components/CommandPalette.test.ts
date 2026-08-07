@@ -5,9 +5,15 @@ import type { CompactGraphSymbolEntry, GraphArtifact, GraphNode } from "@meridia
 import {
   awaitLatestPaletteReadiness,
   collectSymbols,
+  CommandPaletteOption,
+  commandPaletteLookupRequestToHandle,
   countSearchScopes,
+  createCommandPaletteBackdropRef,
   createPaletteActionGate,
+  commandPaletteOpenSeed,
+  commandPaletteResultStatus,
   derivePaletteSymbols,
+  inertCommandPaletteSiblings,
   mergeSearchSymbols,
   paletteKeyboardActivation,
   paletteVisibleResults,
@@ -15,11 +21,146 @@ import {
   runPaletteAction,
   SearchScopeControl,
   selectResults,
+  shouldCloseCommandPaletteFromBackdrop,
+  shouldRestoreCommandPaletteOpener,
   symbolRowReadiness,
   shouldClosePaletteFromWindow,
   type SearchScope,
   type SymbolEntry,
 } from "./CommandPalette";
+
+describe("command palette open seed", () => {
+  it("keeps the shortcut empty/public and seeds source lookup exactly in its requested scope", () => {
+    expect(commandPaletteOpenSeed(null)).toEqual({ query: "", scope: "public", lookupMode: false });
+    expect(commandPaletteOpenSeed({ id: 7, query: "$selected.symbol", scope: "all" })).toEqual({
+      query: "$selected.symbol",
+      scope: "all",
+      lookupMode: true,
+    });
+  });
+
+  it("ignores a replayed acknowledgement but accepts a new id as an in-place reseed", () => {
+    const first = { id: 7, query: "first", scope: "all" } as const;
+    const reseed = { id: 8, query: "second", scope: "public" } as const;
+
+    expect(commandPaletteLookupRequestToHandle(null, first)).toBe(first);
+    expect(commandPaletteLookupRequestToHandle(7, first)).toBeNull();
+    expect(commandPaletteLookupRequestToHandle(7, { ...first, id: 6 })).toBeNull();
+    expect(commandPaletteLookupRequestToHandle(7, reseed)).toBe(reseed);
+    expect(commandPaletteLookupRequestToHandle(8, null)).toBeNull();
+    expect(commandPaletteLookupRequestToHandle(8, undefined)).toBeNull();
+  });
+});
+
+describe("command palette modal shell", () => {
+  it("closes only for the backdrop's own click target", () => {
+    const backdrop = {} as HTMLDivElement;
+    const child = {} as EventTarget;
+
+    expect(shouldCloseCommandPaletteFromBackdrop({ currentTarget: backdrop, target: backdrop })).toBe(true);
+    expect(shouldCloseCommandPaletteFromBackdrop({ currentTarget: backdrop, target: child })).toBe(false);
+  });
+
+  it("inerts every sibling and restores each exact prior inert attribute", () => {
+    const root = fakeAttributeElement();
+    const interactive = fakeAttributeElement();
+    const alreadyInert = fakeAttributeElement({ inert: "preserved-value" });
+    const parent = { children: [interactive, root, alreadyInert] };
+    root.parentElement = parent;
+
+    const restore = inertCommandPaletteSiblings(root as unknown as HTMLElement);
+
+    expect(interactive.getAttribute("inert")).toBe("");
+    expect(alreadyInert.getAttribute("inert")).toBe("");
+    expect(root.hasAttribute("inert")).toBe(false);
+
+    restore();
+    restore();
+    expect(interactive.hasAttribute("inert")).toBe(false);
+    expect(alreadyInert.getAttribute("inert")).toBe("preserved-value");
+  });
+
+  it("restores inert siblings when React detaches the backdrop callback ref", () => {
+    const root = fakeAttributeElement();
+    const shell = fakeAttributeElement();
+    const parent = { children: [shell, root] };
+    root.parentElement = parent;
+    const backdropRef = createCommandPaletteBackdropRef();
+
+    backdropRef(root as unknown as HTMLDivElement);
+    expect(shell.getAttribute("inert")).toBe("");
+
+    backdropRef(null);
+    expect(shell.hasAttribute("inert")).toBe(false);
+  });
+
+  it("restores the opener only while focus is unclaimed and never steals prompt focus", () => {
+    const body = fakeFocusElement();
+    const opener = fakeFocusElement();
+    const prompt = fakeFocusElement();
+
+    expect(shouldRestoreCommandPaletteOpener(body, body, opener)).toBe(true);
+    expect(shouldRestoreCommandPaletteOpener(null, body, opener)).toBe(true);
+    expect(shouldRestoreCommandPaletteOpener(prompt, body, opener)).toBe(false);
+    expect(shouldRestoreCommandPaletteOpener({ ...prompt, isConnected: false }, body, opener)).toBe(true);
+    expect(shouldRestoreCommandPaletteOpener(body, body, { ...opener, closest: () => opener })).toBe(false);
+  });
+});
+
+describe("command palette assistive result status", () => {
+  it("announces asynchronous repository states and empty results politely", () => {
+    expect(commandPaletteResultStatus({
+      query: "alpha",
+      resultCount: 0,
+      workerSearchPending: true,
+      indexing: null,
+      indexError: false,
+    })).toBe("Searching repository symbols.");
+    expect(commandPaletteResultStatus({
+      query: "missing",
+      resultCount: 0,
+      workerSearchPending: false,
+      indexing: null,
+      indexError: false,
+    })).toBe("No symbols match missing.");
+  });
+
+  it("announces indexing progress without duplicating active-option speech", () => {
+    expect(commandPaletteResultStatus({
+      query: "",
+      resultCount: 2,
+      workerSearchPending: false,
+      indexing: { indexed: 12, total: 40 },
+      indexError: false,
+    })).toBe("Indexing repository symbols, 12 of 40. 2 repository symbols available.");
+  });
+});
+
+interface FakeAttributeElement {
+  parentElement: { children: FakeAttributeElement[] } | null;
+  hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+}
+
+function fakeAttributeElement(initial: Record<string, string> = {}): FakeAttributeElement {
+  const attributes = new Map(Object.entries(initial));
+  return {
+    parentElement: null,
+    hasAttribute: (name) => attributes.has(name),
+    getAttribute: (name) => attributes.get(name) ?? null,
+    setAttribute: (name, value) => { attributes.set(name, value); },
+    removeAttribute: (name) => { attributes.delete(name); },
+  };
+}
+
+function fakeFocusElement(): HTMLElement {
+  return {
+    isConnected: true,
+    closest: () => null,
+  } as unknown as HTMLElement;
+}
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -386,9 +527,10 @@ describe("progressive symbol row readiness", () => {
     focusable?: boolean;
     busy?: boolean;
     failed?: boolean;
+    active?: boolean;
   } = {}) => renderToStaticMarkup(createElement(ResultRow, {
     entry: { ...entry, isLoaded: options.loaded ?? false },
-    active: false,
+    active: options.active ?? false,
     canAdd: true,
     canFocus: options.focusable ?? false,
     progressive: options.progressive ?? true,
@@ -412,6 +554,26 @@ describe("progressive symbol row readiness", () => {
     expect(markup).toContain("Load nearby graph");
     expect(markup.match(/disabled=""/g)).toHaveLength(1);
     expect(markup).not.toContain(" ready</span>");
+  });
+
+  it("keeps listbox options control-free while exposing every visible row action as a button", () => {
+    const option = renderToStaticMarkup(createElement(CommandPaletteOption, {
+      optionId: "palette-option-search-target",
+      entry,
+      active: true,
+      readiness: "loadable",
+    }));
+    const row = renderRow({ loaded: true, resident: true, focusable: true, active: true });
+
+    expect(option).toContain('id="palette-option-search-target"');
+    expect(option).toContain('role="option"');
+    expect(option).toContain('aria-selected="true"');
+    expect(option).toContain('aria-label="searchTarget, Other.searchTarget, function, load nearby graph"');
+    expect(option).not.toContain("<button");
+    expect(row).not.toContain('role="option"');
+    expect(row).toContain('aria-label="Open searchTarget"');
+    expect(row).toContain('aria-label="Focus searchTarget in the current graph"');
+    expect(row).toContain('aria-label="Add searchTarget to the current view"');
   });
 
   it("reports graph residency independently from progressive readiness", () => {

@@ -5,9 +5,12 @@ import {
   useState,
   type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from "react";
+import {
+  ResizeHandle,
+  type ResizeHandleOrientation,
+} from "../layout/ResizeHandle";
 
 export const FLOW_SPLIT_HANDLE_PX = 10;
 export const FLOW_SPLIT_EDGE_SNAP_PX = 72;
@@ -16,7 +19,7 @@ export const DEFAULT_GRAPH_RATIOS = { standard: 0.6, review: 0.7, synthetic: 0.4
 export type SplitVariant = keyof typeof DEFAULT_GRAPH_RATIOS;
 export type GraphRatios = Record<SplitVariant, number>;
 /** The separator's ARIA orientation: horizontal separates top/bottom; vertical separates left/right. */
-export type SplitOrientation = "horizontal" | "vertical";
+export type SplitOrientation = ResizeHandleOrientation;
 
 export interface ResizableSplitViewProps {
   open: boolean;
@@ -57,14 +60,8 @@ export interface ResizableSplitViewProps {
 /** Shared accessible splitter for both top/bottom and left/right application panes. */
 export function ResizableSplitView(props: ResizableSplitViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const activePointer = useRef<number | null>(null);
-  const pointerGrabOffset = useRef(FLOW_SPLIT_HANDLE_PX / 2);
   const appliedDefaultSizeKey = useRef<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [handleFocused, setHandleFocused] = useState(false);
-  const [handleHovered, setHandleHovered] = useState(false);
   const [observedContainerSize, setObservedContainerSize] = useState<number | null>(null);
-  const handleActive = dragging || handleFocused || handleHovered;
   const axisIsVertical = props.orientation === "horizontal";
   const primaryVisible = props.primaryVisible !== false;
   const secondaryVisible = props.secondaryVisible !== false;
@@ -196,33 +193,7 @@ export function ResizableSplitView(props: ResizableSplitViewProps) {
     splitActive,
   ]);
 
-  useEffect(() => {
-    if (!dragging || typeof document === "undefined") {
-      return;
-    }
-    const previousCursor = document.body.style.cursor;
-    const previousUserSelect = document.body.style.userSelect;
-    document.body.style.cursor = axisIsVertical ? "row-resize" : "col-resize";
-    document.body.style.userSelect = "none";
-    return () => {
-      document.body.style.cursor = previousCursor;
-      document.body.style.userSelect = previousUserSelect;
-    };
-  }, [axisIsVertical, dragging]);
-
-  // An external close can remove the captured separator mid-gesture. Clear drag state explicitly
-  // so the body cursor and selection lock are always restored while a collapsed rail stays usable.
-  useEffect(() => {
-    if (splitActive) {
-      return;
-    }
-    activePointer.current = null;
-    setDragging(false);
-    setHandleFocused(false);
-    setHandleHovered(false);
-  }, [splitActive]);
-
-  const updateFromPointer = (clientPosition: number) => {
+  const updateFromPointer = (clientPosition: number, grabOffset: number) => {
     const container = containerRef.current;
     if (!container) {
       return;
@@ -232,24 +203,13 @@ export function ResizableSplitView(props: ResizableSplitViewProps) {
       clientPosition,
       containerStart: axisIsVertical ? rect.top : rect.left,
       containerSize: axisIsVertical ? rect.height : rect.width,
-      grabOffset: pointerGrabOffset.current,
+      grabOffset,
       handleSize,
     });
     props.onPrimaryRatioChange(constrainForContainer(
       next,
       axisIsVertical ? rect.height : rect.width,
     ));
-  };
-
-  const finishPointerDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (activePointer.current !== event.pointerId) {
-      return;
-    }
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-    activePointer.current = null;
-    setDragging(false);
   };
 
   const onHandleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
@@ -286,77 +246,30 @@ export function ResizableSplitView(props: ResizableSplitViewProps) {
         {props.primary}
       </div>
       {splitActive ? (
-        <div
-          role="separator"
-          aria-label={props.separatorLabel}
-          aria-controls={`${props.primaryPaneId} ${props.secondaryPaneId}`}
-          aria-orientation={props.orientation}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-valuenow={Math.round(effectivePrimaryRatio * 100)}
-          aria-valuetext={splitValueText(
+        <ResizeHandle
+          orientation={props.orientation}
+          label={props.separatorLabel}
+          controls={`${props.primaryPaneId} ${props.secondaryPaneId}`}
+          valueMin={0}
+          valueMax={100}
+          valueNow={Math.round(effectivePrimaryRatio * 100)}
+          valueText={splitValueText(
             effectivePrimaryRatio,
             props.primaryLabel,
             props.secondaryLabel,
             axisIsVertical ? "height" : "width",
           )}
-          aria-keyshortcuts={axisIsVertical
+          keyShortcuts={axisIsVertical
             ? "ArrowUp ArrowDown Home End Enter"
             : "ArrowLeft ArrowRight Home End Enter"}
-          data-split-state={splitState(effectivePrimaryRatio)}
-          tabIndex={0}
           title="Drag to resize. Move to an edge to minimize a pane. Double-click or press Enter to reset."
-          style={handleStyle(handleActive, props.orientation, handleSize)}
-          onFocus={() => setHandleFocused(true)}
-          onBlur={() => setHandleFocused(false)}
-          onPointerEnter={() => setHandleHovered(true)}
-          onPointerLeave={() => setHandleHovered(false)}
-          onPointerDown={(event) => {
-            if (event.pointerType === "mouse" && event.button !== 0) {
-              return;
-            }
-            event.preventDefault();
-            event.stopPropagation();
-            event.currentTarget.focus();
-            const handleRect = event.currentTarget.getBoundingClientRect();
-            const handleStart = axisIsVertical ? handleRect.top : handleRect.left;
-            const handleSize = axisIsVertical ? handleRect.height : handleRect.width;
-            const pointerPosition = axisIsVertical ? event.clientY : event.clientX;
-            pointerGrabOffset.current = Math.max(0, Math.min(handleSize, pointerPosition - handleStart));
-            activePointer.current = event.pointerId;
-            event.currentTarget.setPointerCapture(event.pointerId);
-            setDragging(true);
-          }}
-          onPointerMove={(event) => {
-            if (activePointer.current !== event.pointerId) {
-              return;
-            }
-            event.preventDefault();
-            event.stopPropagation();
-            updateFromPointer(axisIsVertical ? event.clientY : event.clientX);
-          }}
-          onPointerUp={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            finishPointerDrag(event);
-          }}
-          onPointerCancel={finishPointerDrag}
-          onLostPointerCapture={(event) => {
-            if (activePointer.current === event.pointerId) {
-              activePointer.current = null;
-              setDragging(false);
-            }
-          }}
+          dataAttributes={{ "data-split-state": splitState(effectivePrimaryRatio) }}
+          style={(active) => handleStyle(active, props.orientation, handleSize)}
+          renderGrip={(active) => <span aria-hidden style={gripStyle(active, props.orientation)} />}
+          onDrag={updateFromPointer}
           onKeyDown={onHandleKeyDown}
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            props.onPrimaryRatioChange(defaultRatioForCurrentSize());
-          }}
-        >
-          <span aria-hidden style={gripStyle(handleActive, props.orientation)} />
-        </div>
+          onReset={() => props.onPrimaryRatioChange(defaultRatioForCurrentSize())}
+        />
       ) : null}
       {renderSecondary ? (
         <div

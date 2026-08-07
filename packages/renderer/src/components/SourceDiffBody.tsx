@@ -1,6 +1,6 @@
 /**
  * One source-diff adapter and body shared by every source host. Hover cards, inline node panels, and
- * the large modal own only their surrounding chrome and height; this module owns the source slice,
+ * the large source dock own only their surrounding chrome and height; this module owns the source slice,
  * diff rows, folding, comments, loading/error states, and deletion fallback. Keeping that projection
  * here prevents a new review affordance from silently inventing a fourth interpretation of the diff.
  */
@@ -14,7 +14,13 @@ import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { prReviewRevisionKey } from "../state/prReviewFreshness";
 import { matchesReviewLineComposerTarget } from "../state/reviewLineComposer";
 import type { CodeView } from "../state/store";
-import { CodeBlock, type CodeDiffLine, type CodeSourceSide } from "./CodeBlock";
+import {
+  CodeBlock,
+  type CodeDiffLine,
+  type CodeSourceSide,
+} from "./CodeBlock";
+import type { SourceSearchMatch } from "./source/sourceSearch";
+import type { SourceSymbolSelectionHandler } from "./source/sourceSymbolSelection";
 import {
   currentReviewCommentPath,
   useCodeReviewComments,
@@ -270,18 +276,29 @@ export function SourceDiffBody({
   maxHeight,
   evidenceLines = EMPTY_EVIDENCE_LINES,
   focusLines = EMPTY_FOCUS_LINES,
+  searchMatches = EMPTY_SEARCH_MATCHES,
+  activeSearchIndex = -1,
   showGutter,
+  fillHeight = false,
   onComposerEngage,
+  onSymbolSelection,
 }: {
   model: SourceDiffModel;
   maxHeight: number | string;
   evidenceLines?: ReadonlySet<number>;
   /** Presentation-only rows for a hovered structural control. They affect focus/folding, not diffs. */
   focusLines?: ReadonlySet<number>;
+  /** Literal source-search results owned by an editor-style host such as the right dock. */
+  searchMatches?: readonly SourceSearchMatch[];
+  activeSearchIndex?: number;
   /** Ordinary Logic source may remain gutterless; every active review diff gets the shared gutter. */
   showGutter?: boolean;
+  /** Let an editor-style host allocate the remaining height while CodeBlock owns both scroll axes. */
+  fillHeight?: boolean;
   /** Promote a transient host before inserting/focusing the composer can change card geometry. */
   onComposerEngage?: () => void;
+  /** Reports a safe identifier selected from source code, or null when selection becomes invalid. */
+  onSymbolSelection?: SourceSymbolSelectionHandler;
 }) {
   const reviewKey = useBlueprint((state) => state.review?.context.reviewKey ?? null);
   const lineRevision = useBlueprint((state) => prReviewRevisionKey(state.prReviewRevision));
@@ -313,7 +330,11 @@ export function SourceDiffBody({
   }, [activeComposer, onComposerEngage]);
   const { code, error, loading, truncated } = model.view;
   return (
-    <div data-source-diff-body="true">
+    <div
+      data-source-diff-body="true"
+      data-source-diff-fill={fillHeight ? "true" : undefined}
+      style={fillHeight ? FILL_HEIGHT_STYLE : undefined}
+    >
       {loading ? <div style={STATUS_STYLE}>Loading source…</div> : null}
       {error ? <div style={ERROR_STYLE}>{error}</div> : null}
       {model.textualDiffNotice ? (
@@ -337,12 +358,15 @@ export function SourceDiffBody({
           code={code}
           lineCount={model.sourceLineCount}
           maxHeight={maxHeight}
+          fillHeight={fillHeight}
           startLine={model.baseLine}
           showGutter={model.foldUnchanged || showGutter}
           changedLines={model.changedLines}
           changedLineKinds={model.changedLineKinds}
           evidenceLines={evidenceLines}
           focusLines={focusLines}
+          searchMatches={searchMatches}
+          activeSearchIndex={activeSearchIndex}
           hiddenSourceLines={model.hiddenSourceLines}
           commentableLines={model.commentableLines}
           commentableDeletedLines={model.deletedCommentableLines}
@@ -378,6 +402,7 @@ export function SourceDiffBody({
           sourceSide={model.sourceSide}
           language={model.view.node.language}
           sourceFile={model.file}
+          onSymbolSelection={onSymbolSelection}
         />
       ) : null}
       {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
@@ -505,8 +530,16 @@ const EMPTY_COMMENTABLE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_HIDDEN_SOURCE_LINES: ReadonlySet<number> = new Set<number>();
 const EMPTY_FOCUS_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_SEARCH_MATCHES: readonly SourceSearchMatch[] = [];
 const EMPTY_REMOVED: readonly { afterNewLine: number; lines: string[] }[] = [];
 const EMPTY_REMOVED_ROWS: ReadonlyMap<number, string[]> = new Map<number, string[]>();
+const FILL_HEIGHT_STYLE: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
+};
 const STATUS_STYLE: React.CSSProperties = { padding: 16, color: "#8B949E", fontSize: 12 };
 const ERROR_STYLE: React.CSSProperties = { ...STATUS_STYLE, color: "#FCA5A5" };
 const NON_TEXTUAL_DIFF_STYLE: React.CSSProperties = {

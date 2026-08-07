@@ -1087,7 +1087,7 @@ export interface BlueprintState {
   progressiveSymbols: ProgressiveSymbolIndexState;
   /** IDs whose depth-1 neighbourhood is loading for search or a progressive ghost promotion. */
   progressivePendingNodeIds: Set<string>;
-  /** The open source view (inline panel or modal); null when nothing is being shown. */
+  /** The open source view (inline panel or dock); null when nothing is being shown. */
   codeView: CodeView | null;
   /** Reveal one more containment level within the current selection (or the whole view / root
    * container when nothing is selected). Surface-aware: module surfaces and the Logic graph each. */
@@ -10169,7 +10169,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       return true;
     },
 
-    // Blow the current inline panel up into the centered modal. A no-op when nothing is shown.
+    // Expand the current inline panel into the shell-level source dock. A no-op when nothing is shown.
     expandCode() {
       const state = get();
       const { codeView } = state;

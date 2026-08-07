@@ -111,7 +111,7 @@ describe("EdgeInspectionDock", () => {
     expect(markup.indexOf("Highlighted edge source")).toBeLessThan(markup.indexOf("Close edge inspection"));
   });
 
-  it("keeps the global centered code modal out of edge inspection", () => {
+  it("keeps the global source dock out of edge inspection", () => {
     const markup = renderToStaticMarkup(
       <StoreProvider store={storeWithCode()}><CodePanel /></StoreProvider>,
     );
@@ -137,12 +137,14 @@ describe("EdgeInspectionDock", () => {
     expect(markup).not.toContain("aria-label=\"Highlighted edge source\"");
   });
 
-  it("leaves ordinary node source in the existing centered modal", () => {
+  it("leaves ordinary node source in the global modal side-sheet", () => {
     const markup = renderToStaticMarkup(
       <StoreProvider store={storeWithCode(false)}><CodePanel /></StoreProvider>,
     );
     expect(markup).toContain("aria-label=\"Source code\"");
-    expect(markup).toContain("aria-modal=\"true\"");
+    expect(markup).toContain("data-source-code-dock=\"true\"");
+    expect(markup).toContain('role="dialog"');
+    expect(markup).toContain('aria-modal="true"');
     expect(markup).not.toContain("data-edge-inspection-dock");
   });
 });

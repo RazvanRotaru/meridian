@@ -8,7 +8,10 @@ import { createReviewLineComposerDraft } from "../state/reviewLineComposer";
 import type { ReviewComment } from "../state/reviewTicksPref";
 import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
-import { CodeBlock, codeFocusScrollTop } from "./CodeBlock";
+import {
+  CodeBlock,
+  codeFocusScrollTop,
+} from "./CodeBlock";
 import type { CodeDiffLine } from "./CodeBlock";
 
 const ARTIFACT: GraphArtifact = {
@@ -77,6 +80,32 @@ function renderWithStore(element: React.ReactElement): string {
   Object.assign(store, { getInitialState: () => state });
   return renderToStaticMarkup(createElement(StoreProvider, { store, children: element }));
 }
+
+describe("CodeBlock symbol selection", () => {
+  it("marks every source text cell without widening the conditional review-click target", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "first\nsecond\nthird",
+      startLine: 40,
+      showGutter: true,
+      commentableLines: new Set([41]),
+      onLineClick: () => undefined,
+      diffLines: [{
+        kind: "deleted" as const,
+        oldLine: 9,
+        newLine: null,
+        beforeNewLine: 41,
+        text: "removedSymbol",
+      }],
+      onSymbolSelection: () => undefined,
+    }));
+
+    expect(html).toContain('data-source-symbol-selection-enabled="true"');
+    expect(html.match(/data-source-code-text="true"/g)).toHaveLength(4);
+    expect(html.match(/data-source-code-cell=/g)).toHaveLength(1);
+    expect(html).toContain('data-source-code-cell="41"');
+    expect(html.match(/data-diff-origin="delete"/g)).toHaveLength(1);
+  });
+});
 
 describe("CodeBlock edge evidence", () => {
   it("marks the exact evidence rows with styling distinct from, and composable with, a PR diff", () => {
@@ -155,6 +184,37 @@ describe("CodeBlock structural focus", () => {
     expect(html).toContain('data-source-line="11" data-source-focus-line="true"');
     expect(html).not.toContain('data-diff-origin="add"');
     expect(html).not.toMatch(/<tr[^>]*data-review-comment-line/);
+  });
+});
+
+describe("CodeBlock source search", () => {
+  it("reveals only the active folded match row and distinguishes its exact occurrence", () => {
+    const code = Array.from({ length: 40 }, (_value, index) => `line ${index + 1}`).join("\n");
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code,
+      startLine: 1,
+      showGutter: true,
+      foldUnchanged: true,
+      changedLineKinds: new Map([[20, "modified" as const]]),
+      searchMatches: [
+        { line: 5, column: 1, length: 4 },
+        { line: 35, column: 1, length: 4 },
+        { line: 35, column: 6, length: 2 },
+      ],
+      activeSearchIndex: 2,
+    }));
+
+    expect(html).not.toContain('data-source-line="5"');
+    expect(html).toContain('data-source-line="35"');
+    expect(html).toContain('data-source-search-match-count="2"');
+    expect(html.match(/data-source-search-active="true"/g)).toHaveLength(1);
+    expect(html.match(/data-source-search-match-index=/g)).toHaveLength(2);
+    expect(html.match(/data-source-search-match-active="true"/g)).toHaveLength(1);
+    expect(html).toContain('data-source-search-match-index="2" data-source-search-match-active="true" aria-current="true"');
+    expect(html).toContain(">35</mark>");
+    const activeRow = html.match(/<tr(?=[^>]*data-source-line="35")[^>]*>/)?.[0] ?? "";
+    expect(activeRow).toContain('data-source-search-active="true"');
+    expect(html).toContain("#F5C451");
   });
 });
 

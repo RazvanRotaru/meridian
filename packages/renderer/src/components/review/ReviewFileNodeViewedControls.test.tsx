@@ -7,6 +7,7 @@ import { StoreProvider } from "../../state/StoreContext";
 import { SurfaceInteractionScope } from "../canvas/SurfaceInteractionContext";
 import {
   REVIEW_NODE_VIEWED_CSS,
+  ReviewFileViewedControl,
   ReviewNodeViewedChrome,
   ReviewPreviewViewedControl,
   ReviewViewedButton,
@@ -291,6 +292,71 @@ describe("ReviewPreviewViewedControl", () => {
     expect(markup).not.toContain('class="review-node-viewed-outline"');
     expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:hover");
     expect(REVIEW_NODE_VIEWED_CSS).toContain(".review-node-diff-preview:focus-within");
+  });
+});
+
+describe("ReviewFileViewedControl", () => {
+  it("resolves the dock action by path to the atomic file state", () => {
+    const store = reviewStore({ fingerprint: "file-fingerprint", folderMembers: [FILE_ID] });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+      </StoreProvider>,
+    );
+
+    expect(markup).toContain('data-review-source-viewed="true"');
+    expect(markup).toContain('data-review-viewed-scope="file"');
+    expect(markup).toContain('data-review-view-state="done"');
+    expect(markup).toContain('aria-pressed="true"');
+    expect(markup).toContain('aria-label="Viewed src/ServiceContainerFactory.ts — click to unmark"');
+    expect(markup).toContain("Viewed</span>");
+  });
+
+  it("keeps file semantics when only one declaration in the file is viewed", () => {
+    const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
+    store.getState().toggleReviewUnitTick(UNIT_ID);
+    const snapshot = store.getState();
+    Object.assign(store, { getInitialState: () => snapshot });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+      </StoreProvider>,
+    );
+
+    expect(markup).toContain('data-review-view-state="todo"');
+    expect(markup).toContain('aria-pressed="false"');
+    expect(markup).toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
+    expect(markup).toContain("Mark viewed</span>");
+  });
+
+  it("self-hides when the source path is not part of the active review", () => {
+    const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewFileViewedControl path="src/not-in-review.ts" />
+      </StoreProvider>,
+    );
+
+    expect(markup).toBe("");
+  });
+
+  it("uses the shared GitHub viewed-state blocker", () => {
+    const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
+    store.setState({
+      prReviewed: 7,
+      reviewViewedFilesSyncEnabled: true,
+      reviewViewedFilesLoading: true,
+    });
+    const snapshot = store.getState();
+    Object.assign(store, { getInitialState: () => snapshot });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+      </StoreProvider>,
+    );
+
+    expect(markup).toContain("disabled");
+    expect(markup).toContain("Wait for GitHub viewed-file status to finish loading");
   });
 });
 

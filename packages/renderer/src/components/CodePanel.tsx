@@ -1,20 +1,34 @@
 /**
- * Shared source rendering with two hosts. `CodePanel` is the centered overlay that expands an
- * ordinary node/PR source view; `EdgeSourcePane` is the backdrop-free left half of the graph-local
+ * Shared source rendering with two hosts. `CodePanel` is the resizable right dock that expands an
+ * ordinary node/PR source view; `EdgeSourcePane` is the left half of the graph-local
  * edge inspection dock. The latter deliberately owns no close gesture—the dock closes source and
  * wire evidence together. CodeBlock escapes source as plain text children.
  */
 
-import { useMemo } from "react";
+import {
+  Cross2Icon,
+  EnterFullScreenIcon,
+  ExitFullScreenIcon,
+  MagnifyingGlassIcon,
+  SymbolIcon,
+} from "@radix-ui/react-icons";
+import { useEffect, useMemo, useState } from "react";
 import { formatCallSite } from "../graph/edgeEvidence";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
-import { useClearOnEscape } from "./canvas/useClearOnEscape";
+import { ReviewFileViewedControl } from "./review/ReviewFileNodeViewedControls";
 import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
+import { SourceDock } from "./source/SourceDock";
+import { SOURCE_SEARCH_ID, SourceSearchBar } from "./source/SourceSearchBar";
+import { useSourceSearch } from "./source/useSourceSearch";
 
-export function CodePanel() {
+export function CodePanel({
+  onLookupSymbol,
+}: {
+  onLookupSymbol?: (symbol: string | null) => void;
+} = {}) {
   const codeView = useBlueprint((state) => state.codeView);
   const { closeCode } = useBlueprintActions();
   const open = codeView?.mode === "modal" && codeView.edgeEvidence === undefined;
@@ -24,15 +38,25 @@ export function CodePanel() {
   );
 
   // Edge evidence has a graph-local host beside its wire inspector. Keeping the global panel
-  // deliberately empty prevents the old second modal (and its independent close lifecycle).
-  useClearOnEscape(requestClose, open);
+  // deliberately empty prevents a second source host (and its independent close lifecycle).
   if (!codeView || !open) {
     return null;
   }
+
   return (
-    <div style={BACKDROP_STYLE} data-source-code-backdrop="true" onClick={requestClose}>
-      <SourcePanel codeView={codeView} presentation="modal" onClose={requestClose} />
-    </div>
+    <SourceDock ariaLabel="Source code" onClose={requestClose}>
+      {({ expanded, initialFocusRef, toggleExpanded }) => (
+        <SourcePanel
+          codeView={codeView}
+          presentation="dock"
+          onClose={requestClose}
+          expanded={expanded}
+          onToggleExpanded={toggleExpanded}
+          initialFocusRef={initialFocusRef}
+          onLookupSymbol={onLookupSymbol}
+        />
+      )}
+    </SourceDock>
   );
 }
 
@@ -50,14 +74,38 @@ function SourcePanel({
   codeView,
   presentation,
   onClose,
+  expanded = false,
+  onToggleExpanded,
+  initialFocusRef,
+  onLookupSymbol,
 }: {
   codeView: CodeView;
-  presentation: "modal" | "edge";
+  presentation: "dock" | "edge";
   onClose?: () => void;
+  expanded?: boolean;
+  onToggleExpanded?: () => void;
+  initialFocusRef?: { current: HTMLElement | null };
+  onLookupSymbol?: (symbol: string | null) => void;
 }) {
   const index = useBlueprint((state) => state.index);
   const { selectEdgeEvidence } = useBlueprintActions();
   const model = useSourceDiffModel(codeView);
+  const [selectedSymbol, setSelectedSymbol] = useState<string | null>(null);
+  const sourceIdentity = useMemo(() => ({
+    nodeId: model.view.node.id,
+    file: model.file,
+    baseLine: model.baseLine,
+    sourceSide: model.sourceSide,
+    code: model.view.code,
+  }), [model.baseLine, model.file, model.sourceSide, model.view.code, model.view.node.id]);
+  const search = useSourceSearch({
+    code: model.view.code ?? "",
+    enabled: presentation === "dock",
+    hiddenLines: model.hiddenSourceLines,
+    lineCount: model.sourceLineCount,
+    sourceIdentity,
+    startLine: model.baseLine,
+  });
   const wholeFile = codeView.wholeFile ?? false;
   const edgeEvidence = codeView.edgeEvidence;
   const activeEvidence = edgeEvidence?.contexts[edgeEvidence.activeIndex];
@@ -91,13 +139,16 @@ function SourcePanel({
     : wholeFile
       ? `${file}${emptySource ? " · empty" : ""}`
       : `${file}:${range}`;
+  useEffect(() => {
+    setSelectedSymbol(null);
+  }, [sourceIdentity]);
 
   return (
     <div
-      style={presentation === "edge" ? EDGE_PANEL_STYLE : PANEL_STYLE}
-      role={presentation === "edge" ? "region" : "dialog"}
-      aria-modal={presentation === "modal" ? true : undefined}
-      aria-label={presentation === "edge" ? "Highlighted edge source" : "Source code"}
+      style={presentation === "edge" ? EDGE_PANEL_STYLE : DOCK_PANEL_STYLE}
+      role={presentation === "edge" ? "region" : undefined}
+      aria-label={presentation === "edge" ? "Highlighted edge source" : undefined}
+      data-source-code-dock={presentation === "dock" ? "true" : undefined}
       onClick={(event) => event.stopPropagation()}
     >
         <header style={HEADER_STYLE}>
@@ -143,17 +194,77 @@ function SourcePanel({
             ) : null}
           </div>
           {onClose ? (
-            <button type="button" style={CLOSE_STYLE} onClick={onClose} aria-label="Close source">
-              ×
-            </button>
+            <div style={HEADER_ACTIONS_STYLE} data-source-header-actions="true">
+              <ReviewFileViewedControl path={model.reviewPath} />
+              {onLookupSymbol ? (
+                <button
+                  type="button"
+                  style={{ ...HEADER_ACTION_STYLE, ...(selectedSymbol !== null ? HEADER_ACTION_ACTIVE_STYLE : {}) }}
+                  onClick={() => onLookupSymbol(selectedSymbol)}
+                  aria-label={selectedSymbol === null
+                    ? "Search repository symbols"
+                    : `Look up “${selectedSymbol}” in repository symbols`}
+                  title={selectedSymbol === null
+                    ? "Search repository symbols"
+                    : `Look up “${selectedSymbol}” in repository symbols`}
+                  data-source-symbol-lookup-trigger="true"
+                >
+                  <SymbolIcon />
+                </button>
+              ) : null}
+              <button
+                ref={(node) => {
+                  search.triggerRef.current = node;
+                  if (initialFocusRef) initialFocusRef.current = node;
+                }}
+                type="button"
+                style={{ ...HEADER_ACTION_STYLE, ...(search.open ? HEADER_ACTION_ACTIVE_STYLE : {}) }}
+                onClick={search.openSearch}
+                aria-label="Open source search"
+                aria-expanded={search.open}
+                aria-controls={SOURCE_SEARCH_ID}
+                aria-keyshortcuts="Control+F Meta+F"
+                title="Find in current source (Ctrl/⌘F)"
+              >
+                <MagnifyingGlassIcon />
+              </button>
+              {onToggleExpanded ? (
+                <button
+                  type="button"
+                  style={HEADER_ACTION_STYLE}
+                  onClick={onToggleExpanded}
+                  aria-label={expanded ? "Restore source dock" : "Maximize source dock"}
+                  title={expanded ? "Restore source dock" : "Maximize source dock"}
+                >
+                  {expanded ? <ExitFullScreenIcon /> : <EnterFullScreenIcon />}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                style={HEADER_ACTION_STYLE}
+                onClick={onClose}
+                aria-label="Close source"
+                title="Close source"
+              >
+                <Cross2Icon />
+              </button>
+            </div>
           ) : null}
         </header>
-        <div style={BODY_STYLE}>
+        {presentation === "dock" && search.open ? <SourceSearchBar search={search} /> : null}
+        <div
+          style={presentation === "dock" ? DOCK_BODY_STYLE : EDGE_BODY_STYLE}
+          data-source-code-body={presentation}
+        >
           <SourceDiffBody
             model={model}
-            maxHeight={presentation === "edge" ? "62vh" : "70vh"}
+            maxHeight="none"
             evidenceLines={evidenceLines}
+            searchMatches={search.open ? search.matches : EMPTY_SEARCH_MATCHES}
+            activeSearchIndex={search.open ? search.activeIndex : -1}
+            onSymbolSelection={presentation === "dock" && onLookupSymbol ? setSelectedSymbol : undefined}
             showGutter
+            fillHeight
           />
         </div>
     </div>
@@ -161,6 +272,7 @@ function SourcePanel({
 }
 
 const EMPTY_EVIDENCE_LINES: ReadonlySet<number> = new Set<number>();
+const EMPTY_SEARCH_MATCHES: readonly [] = [];
 
 function displayedEvidenceLocation(
   site: { file: string; line: number; col?: number; endLine?: number; endCol?: number },
@@ -173,26 +285,14 @@ function displayedEvidenceLocation(
   return shownStart === shownEnd ? `${site.file}:${shownStart}` : `${site.file}:${shownStart}–${shownEnd}`;
 }
 
-const BACKDROP_STYLE: React.CSSProperties = {
-  position: "absolute",
-  inset: 0,
-  background: "rgba(8,10,14,0.6)",
-  zIndex: 30,
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-};
-const PANEL_STYLE: React.CSSProperties = {
-  width: "70vw",
-  maxWidth: 900,
-  height: "75vh",
+const DOCK_PANEL_STYLE: React.CSSProperties = {
+  minWidth: 0,
+  height: "100%",
+  flex: 1,
   display: "flex",
   flexDirection: "column",
   background: "#0E1116",
-  border: "1px solid #2A2F37",
-  borderRadius: 12,
   overflow: "hidden",
-  boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
 };
 const EDGE_PANEL_STYLE: React.CSSProperties = {
   width: "min(58vw, 820px)",
@@ -212,6 +312,7 @@ const HEADER_STYLE: React.CSSProperties = {
   borderBottom: "1px solid #2A2F37",
   background: "#161B22",
 };
+const HEADER_ACTIONS_STYLE: React.CSSProperties = { display: "flex", alignItems: "center", gap: 6 };
 const HEADER_TEXT_STYLE: React.CSSProperties = { flex: 1, minWidth: 0 };
 const TITLE_STYLE: React.CSSProperties = {
   fontSize: 14,
@@ -282,8 +383,11 @@ const DELETED_STYLE: React.CSSProperties = {
   padding: "1px 6px",
   background: "rgba(240,120,124,0.1)",
 };
-const CLOSE_STYLE: React.CSSProperties = {
+const HEADER_ACTION_STYLE: React.CSSProperties = {
   flexShrink: 0,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
   background: "#1A1F27",
   color: "#9AA4B2",
   border: "1px solid #2A2F37",
@@ -294,9 +398,23 @@ const CLOSE_STYLE: React.CSSProperties = {
   lineHeight: 1,
   cursor: "pointer",
 };
-const BODY_STYLE: React.CSSProperties = {
+const HEADER_ACTION_ACTIVE_STYLE: React.CSSProperties = {
+  borderColor: "#4F6B8A",
+  background: "rgba(56,139,253,0.16)",
+  color: "#B9D9F5",
+};
+const DOCK_BODY_STYLE: React.CSSProperties = {
   flex: 1,
   minHeight: 0,
-  overflow: "auto",
+  overflow: "hidden",
+  display: "flex",
+  flexDirection: "column",
+};
+const EDGE_BODY_STYLE: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflow: "hidden",
+  display: "flex",
+  flexDirection: "column",
   padding: 12,
 };
