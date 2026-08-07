@@ -6,6 +6,7 @@ import { buildGraphIndex } from "../../graph/graphIndex";
 import { ALPHA_RUN, WIDGET_FN, freshStore } from "../../parity/surfaceFixture";
 import { StoreProvider } from "../../state/StoreContext";
 import {
+  INCOMING_CALL_LENS_CSS,
   IncomingCallLensScope,
   IncomingCallTargetPort,
   incomingCallSocketTransform,
@@ -103,6 +104,12 @@ describe("incomingCallSummary", () => {
 });
 
 describe("IncomingCallTargetPort", () => {
+  it("inherits the active Minimal Graph layer visibility during preview", () => {
+    expect(INCOMING_CALL_LENS_CSS).toMatch(
+      /\.react-flow\.semantic-composite\[data-map-semantic-stage="preview"\] \.semantic-layer button\.incoming-call-socket\s*\{\s*visibility: inherit !important;\s*\}/,
+    );
+  });
+
   it("keeps the visual handle and adds a named 24px button when callers exist", () => {
     const markup = renderPort(ALPHA_RUN, "run", ALPHA_RUN);
 
