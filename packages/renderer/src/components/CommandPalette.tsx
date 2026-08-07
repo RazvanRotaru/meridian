@@ -892,6 +892,18 @@ export function symbolRowReadiness(
   return entry.isLoaded ? "ready" : "loadable";
 }
 
+/** A source-backed label which keeps same-named repository definitions distinguishable. */
+export function symbolEntryDetail(
+  entry: Pick<SymbolEntry, "displayName" | "qualifiedName" | "file" | "id">,
+): string {
+  const details = [entry.qualifiedName, entry.file].filter(
+    (value, index, values) => value.length > 0
+      && value !== entry.displayName
+      && values.indexOf(value) === index,
+  );
+  return details.join(" · ") || entry.file || entry.qualifiedName || entry.id;
+}
+
 /** The combobox owns a control-free listbox. Visible rows have several independent actions, which
  * cannot be nested in role=option because option descendants are flattened by accessibility APIs. */
 export function CommandPaletteOption(props: {
@@ -900,7 +912,7 @@ export function CommandPaletteOption(props: {
   active: boolean;
   readiness: SymbolRowReadiness;
 }) {
-  const detail = props.entry.qualifiedName || props.entry.file;
+  const detail = symbolEntryDetail(props.entry);
   const readiness = props.readiness === "hydrating"
     ? "loading nearby graph"
     : props.readiness === "loadable"
@@ -964,7 +976,7 @@ export function ResultRow(props: {
       >
         <span style={ROW_MAIN_STYLE}>
           <span style={ROW_NAME_STYLE}>{entry.displayName}</span>
-          <span style={ROW_SECONDARY_STYLE}>{entry.qualifiedName || entry.file}</span>
+          <span style={ROW_SECONDARY_STYLE}>{symbolEntryDetail(entry)}</span>
         </span>
       </button>
       {entry.stepCount !== null ? <span style={STEP_CHIP_STYLE}>{entry.stepCount} steps</span> : null}

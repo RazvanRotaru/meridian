@@ -593,7 +593,7 @@ describe("progressive graph protocol client", () => {
     expect(mergeGraphProjections(merged, disconnected)).toEqual(merged);
   });
 
-  it("monotonically enriches partial-slice logic-flow targets without accepting source conflicts", () => {
+  it("monotonically enriches partial-slice logic-flow targets and optional call evidence", () => {
     const lineage = {
       version: 1 as const,
       graphId: "graph-head",
@@ -624,6 +624,8 @@ describe("progressive graph protocol client", () => {
             label: "help",
             target: FN_B.id,
             resolution: "resolved",
+            detached: true,
+            async: { kind: "launch", taskId: "task:help" },
             source,
           }],
         },
@@ -637,6 +639,25 @@ describe("progressive graph protocol client", () => {
     expect(merged.extensions?.logicFlow).toEqual(resolved.extensions?.logicFlow);
     expect(reversed.extensions?.logicFlow).toEqual(merged.extensions?.logicFlow);
     expect(mergeGraphProjections(merged, external)).toEqual(merged);
+
+    const resolvedWithoutOptionalEvidence = parseGraphProjection(projection({
+      generatedAt: "2026-07-31T08:00:02.500Z",
+      extensions: {
+        logicFlow: {
+          [FN_A.id]: [{
+            kind: "call",
+            label: "help",
+            target: FN_B.id,
+            resolution: "resolved",
+            source,
+          }],
+        },
+        stable: true,
+        prPartialGraph: lineage,
+      },
+    }));
+    expect(mergeGraphProjections(resolvedWithoutOptionalEvidence, resolved).extensions?.logicFlow)
+      .toEqual(resolved.extensions?.logicFlow);
 
     const conflictingResolved = parseGraphProjection(projection({
       generatedAt: "2026-07-31T08:00:03.000Z",

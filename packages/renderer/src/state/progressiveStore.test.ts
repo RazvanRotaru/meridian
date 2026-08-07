@@ -113,6 +113,7 @@ function storeWithInitialProjection(
   loadCanonicalBootArtifact?: (signal: AbortSignal) => Promise<GraphArtifact>,
   inlineSymbolLoader: typeof fetchGraphSymbols | null = fetchGraphSymbols,
   initialGraphProvisional = false,
+  initialProjection: GraphProjectionV1 = INITIAL,
 ) {
   return createBlueprintStore({
     artifact,
@@ -131,7 +132,7 @@ function storeWithInitialProjection(
     graphProjectUrl: "/api/graph/project",
     graphSymbolsUrl: "/api/graph/symbols",
     ...(inlineSymbolLoader === null ? {} : { loadGraphSymbolsInlineForTest: inlineSymbolLoader }),
-    initialGraphProjection: INITIAL,
+    initialGraphProjection: initialProjection,
     initialGraphProvisional,
     loadCanonicalBootArtifact,
   });
@@ -238,6 +239,70 @@ describe("progressive graph store", () => {
     expect(store.getState().index.nodesById.has(DELETED)).toBe(true);
     expect(store.getState().progressivePendingNodeIds.size).toBe(0);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("admits a symbol when an overlapping boundary flow omits optional resolver evidence", async () => {
+    const lineage = {
+      version: 1 as const,
+      graphId: "head-graph",
+      generation: "immutable-head-generation",
+    };
+    const source = { file: "src/a.ts", line: 4, col: 8, endLine: 4, endCol: 22 };
+    const initial = {
+      ...INITIAL,
+      extensions: {
+        prPartialGraph: lineage,
+        logicFlow: {
+          [METHOD_A]: [{
+            kind: "call" as const,
+            label: "searchTarget",
+            target: METHOD_B,
+            resolution: "resolved" as const,
+            detached: true,
+            async: { kind: "launch" as const, taskId: "task:search" },
+            source,
+          }],
+        },
+      },
+    } satisfies GraphProjectionV1;
+    const fragment = {
+      ...projection({
+        nodes: [packageNode, fileA, methodA, fileB, methodB],
+        roots: [FILE_B],
+        loadedFiles: [FILE_A, FILE_B],
+        ready: [FILE_B],
+        prefetchDepth: 1,
+      }),
+      generatedAt: "2026-07-31T00:00:01.000Z",
+      extensions: {
+        prPartialGraph: lineage,
+        logicFlow: {
+          [METHOD_A]: [{
+            kind: "call" as const,
+            label: "searchTarget",
+            target: "unresolved:npm/?",
+            resolution: "unresolved" as const,
+            source,
+          }],
+        },
+      },
+    } satisfies GraphProjectionV1;
+    vi.stubGlobal("fetch", vi.fn(async () => Response.json(fragment)));
+    const store = storeWithInitialProjection(
+      projectionToArtifact(initial),
+      undefined,
+      fetchGraphSymbols,
+      false,
+      initial,
+    );
+
+    await expect(store.getState().ensureNodeReady(METHOD_B, FILE_B)).resolves.toBe(true);
+
+    expect(store.getState().index.nodesById.has(METHOD_B)).toBe(true);
+    expect(store.getState().progressiveGraph).toMatchObject({ status: "ready", error: null });
+    expect(store.getState().progressiveGraph?.head.extensions?.logicFlow).toEqual(
+      initial.extensions.logicFlow,
+    );
   });
 
   it("keeps a disconnected symbol nonready after a 503 and admits it only after an explicit retry", async () => {
