@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { frameTitleBarStyle, TITLE_BAR } from "./frameChrome";
+import { cardSelectedStyle, frameTitleBarStyle, TITLE_BAR } from "./frameChrome";
 
 describe("Map container title", () => {
   it.each([
@@ -16,5 +16,16 @@ describe("Map container title", () => {
 
   it("keeps an unchanged container title on the resting style", () => {
     expect(frameTitleBarStyle(undefined)).toBe(TITLE_BAR);
+  });
+});
+
+describe("Map card selection", () => {
+  it("preserves the resting border style while recolouring it", () => {
+    expect(cardSelectedStyle({ border: "1px dashed #4B535F" }, "#A78BFA")).toMatchObject({
+      border: "1px dashed #A78BFA",
+    });
+    expect(cardSelectedStyle({ border: "2px solid rgba(42, 49, 64, 0.8)" }, "#60A5FA")).toMatchObject({
+      border: "2px solid #60A5FA",
+    });
   });
 });

@@ -103,7 +103,18 @@ export function frameSelectedStyle(accent: string): React.CSSProperties {
 
 /** The same neutral-ring selection treatment for a COLLAPSED card (given its base style). */
 export function cardSelectedStyle(base: React.CSSProperties, accent: string): React.CSSProperties {
-  return { ...base, borderColor: accent, boxShadow: `0 0 0 2px ${SELECTION_RING}` };
+  // Keep the selected/resting transition on the same shorthand. Mixing `borderColor` here with
+  // each card's resting `border` makes React warn during transient graph repaint (including the
+  // incoming-call lens) and can leave stale border sides behind. Preserve the resting border's
+  // width and style: a ghost's dashed outline is semantic, not incidental decoration.
+  const border = typeof base.border === "string" ? base.border : "";
+  const width = border.match(/(?:^|\s)(thin|medium|thick|\d*\.?\d+(?:px|em|rem|pt|pc|in|cm|mm|q|vh|vw|vmin|vmax|%))(?=\s|$)/)?.[1]
+    ?? base.borderWidth
+    ?? "1px";
+  const style = border.match(/(?:^|\s)(none|hidden|dotted|dashed|solid|double|groove|ridge|inset|outset)(?=\s|$)/)?.[1]
+    ?? base.borderStyle
+    ?? "solid";
+  return { ...base, border: `${width} ${style} ${accent}`, boxShadow: `0 0 0 2px ${SELECTION_RING}` };
 }
 
 export const TITLE_BAR: React.CSSProperties = {

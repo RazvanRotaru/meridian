@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { Edge, Node } from "@xyflow/react";
 import { BUNDLE_EDGE_TYPE, type BundleEdgeData } from "../../layout/edgeBundling";
 import { CYCLE_EDGE_TYPE, type CycleEdgeData } from "../../layout/cycleFusion";
-import { resolveSurfacePaintOwnership } from "./GraphSurface";
+import {
+  incomingCallLensTargetAvailable,
+  resolveSurfacePaintOwnership,
+  withIncomingCallPaintTarget,
+} from "./GraphSurface";
 import { prepareCanvasEdges } from "./presentationEdgePipeline";
 
 describe("GraphSurface paint ownership", () => {
@@ -77,6 +81,36 @@ describe("GraphSurface paint ownership", () => {
 
     expect(ownership.paintSeeds).toBe(contextTargets);
     expect(ownership.highwaySeeds).toEqual(new Set(["changed", "selected"]));
+  });
+
+  it("adds an incoming-call target to paint and highway seeds without changing selection identity", () => {
+    const selected = new Set(["already-selected"]);
+    const ownership = resolveSurfacePaintOwnership(selected, null, false, null);
+
+    const active = withIncomingCallPaintTarget(ownership, "call-target");
+
+    expect(active.protectedSelection).toBe(selected);
+    expect(active.paintSeeds).toEqual(new Set(["already-selected", "call-target"]));
+    expect(active.highwaySeeds).toEqual(new Set(["already-selected", "call-target"]));
+    expect(withIncomingCallPaintTarget(ownership, null)).toBe(ownership);
+  });
+
+  it("retires a pinned incoming-call target when its socket or calls disappear", () => {
+    const callable: Node = {
+      id: "call-target",
+      type: "block",
+      position: { x: 0, y: 0 },
+      data: { callable: true },
+    };
+
+    expect(incomingCallLensTargetAvailable("call-target", [callable], [{ kind: "calls" }])).toBe(true);
+    expect(incomingCallLensTargetAvailable("call-target", [callable], [])).toBe(false);
+    expect(incomingCallLensTargetAvailable(
+      "call-target",
+      [{ ...callable, data: { callable: false } }],
+      [{ kind: "calls" }],
+    )).toBe(false);
+    expect(incomingCallLensTargetAvailable("call-target", [], [{ kind: "calls" }])).toBe(false);
   });
 
   it("extracts only strands represented by the literal selection while retaining its paint owner's highway strand", () => {

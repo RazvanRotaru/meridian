@@ -122,6 +122,12 @@ import { ReviewCommentNodeIndicators } from "../review/ReviewCommentNodeIndicato
 import { REVIEW_NODE_VIEWED_CSS } from "../review/ReviewFileNodeViewedControls";
 import { SurfaceSelectionGraphProvider } from "./SurfaceSelectionGraphContext";
 import { usePaletteCanvasNodeRegistry } from "./PaletteCanvasNodes";
+import {
+  INCOMING_CALL_LENS_CSS,
+  IncomingCallLensOverlay,
+  IncomingCallLensScope,
+  useIncomingCallLensController,
+} from "./IncomingCallLens";
 
 /** Custom edge types: "bundle" renders container-pair highways; "routed" rides a frame's gutter
  * rail (the bus) into member cards; "ribbon" is the striped multi-kind pair cable; "cycle" the
@@ -139,10 +145,24 @@ export const moduleEdgeTypes: EdgeTypes = {
   [GHOST_HIERARCHY_EDGE_TYPE]: GhostHierarchyEdge,
 };
 
+const EMPTY_EDGE_IDS: ReadonlySet<string> = new Set<string>();
+
 // React Flow gives a node wrapper `pointer-events: none` when it is neither selectable/draggable nor
 // subscribed to mouse handlers. A read-only context with local chevrons needs pointer delivery to
 // those nested buttons, while the wrapper click itself must remain inert.
 const LOCAL_DISCLOSURE_NODE_CLICK = () => undefined;
+
+/** A pinned lens remains valid only while the exact callable socket and incoming calls still exist. */
+export function incomingCallLensTargetAvailable(
+  targetId: string,
+  nodes: readonly Node[],
+  incomingEdges: readonly { kind?: string }[],
+): boolean {
+  const target = nodes.find((node) => node.id === targetId);
+  return target?.type === "block"
+    && target.data.callable === true
+    && incomingEdges.some((edge) => edge.kind === "calls");
+}
 
 /** Provider boundary for one isolated shared-canvas instance. Mounts import it from this module so
  * React Flow runtime ownership stays behind the same seam as GraphSurface itself. */
@@ -213,6 +233,20 @@ export function resolveSurfacePaintOwnership(
     ? selected
     : mergeHighwaySeeds(selected, paintSeeds);
   return { protectedSelection: selected, paintSeeds, focusSeeds, highwaySeeds };
+}
+
+/** Add the pinned call target to transient paint/highway seeds without changing literal selection. */
+export function withIncomingCallPaintTarget(
+  ownership: SurfacePaintOwnership,
+  targetId: string | null,
+): SurfacePaintOwnership {
+  if (targetId === null) return ownership;
+  const target = new Set([targetId]);
+  return {
+    ...ownership,
+    paintSeeds: mergeHighwaySeeds(target, ownership.paintSeeds),
+    highwaySeeds: mergeHighwaySeeds(target, ownership.highwaySeeds),
+  };
 }
 
 export interface GraphSurfaceProps {
@@ -357,6 +391,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   // a source-backed inspection (whose source disappearing ends the whole dock) from an intentional
   // metadata-only wire, which remains useful without a source pane.
   const inspectionOwnsSource = useRef(false);
+  const incomingCallLens = useIncomingCallLensController(props.wireHover === true);
 
   // The ONE paint chain, isolated per semantic population. Main's ghost grouping can mint parent
   // cards and hierarchy spokes at paint time; stamping those outputs back onto their source depth
@@ -371,22 +406,26 @@ export function GraphSurface(props: GraphSurfaceProps) {
     ),
     [selected, reviewLit, props.reviewEmphasis, props.interactions.paintSelectionOverride, props.paintSelectionOverride],
   );
+  const activePaintOwnership = useMemo(
+    () => withIncomingCallPaintTarget(paintOwnership, incomingCallLens.activeTargetId),
+    [incomingCallLens.activeTargetId, paintOwnership],
+  );
   const candidatePaintedScene = useMemo<PaintedScene>(
     () => {
       // Filter before emphasis/grouping so hidden exact ghosts cannot be reminted as synthetic parent
       // anchors, and semantic ancestor populations obey the same mount-local visibility choice.
       const ghostFiltered = filterGhostNodes(props.nodes, props.edges, props.showGhostNodes ?? true);
-      const painted = paintSemanticLayers(ghostFiltered.nodes, ghostFiltered.edges, paintOwnership.protectedSelection, radius, emphasisMode, {
+      const painted = paintSemanticLayers(ghostFiltered.nodes, ghostFiltered.edges, activePaintOwnership.protectedSelection, radius, emphasisMode, {
         policy: props.relations,
         overrides: relationVisibilityOverrides,
       }, {
         index,
         groupByParent: groupGhosts,
         expandedGroupIds: props.interactions.expandedGhostGroupIds,
-      }, paintOwnership.paintSeeds, paintOwnership.focusSeeds);
-      return { ...painted, highwaySeeds: paintOwnership.highwaySeeds };
+      }, activePaintOwnership.paintSeeds, activePaintOwnership.focusSeeds);
+      return { ...painted, highwaySeeds: activePaintOwnership.highwaySeeds };
     },
-    [props.nodes, props.edges, props.showGhostNodes, paintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
+    [props.nodes, props.edges, props.showGhostNodes, activePaintOwnership, radius, emphasisMode, props.relations, relationVisibilityOverrides, index, groupGhosts, props.interactions.expandedGhostGroupIds],
   );
   // Inspection is an append-only read of the graph. Its intentional pre-layout busy paint still
   // carries the old raw graph with the new selection; keep that provisional population out of both
@@ -653,6 +692,25 @@ export function GraphSurface(props: GraphSurfaceProps) {
       : decorateRequestEdges(preparedEdges.semanticEdges, requestPaintOverlay, selected),
     [preparedEdges.semanticEdges, requestPaintOverlay, selected],
   );
+  const incomingCallSpotlightIds = useMemo(() => {
+    const targetId = incomingCallLens.activeTargetId;
+    if (targetId === null) return EMPTY_EDGE_IDS;
+    return new Set(
+      (index.inEdges.get(targetId) ?? [])
+        .filter((edge) => edge.kind === "calls")
+        .map((edge) => edge.id),
+    );
+  }, [incomingCallLens.activeTargetId, index]);
+  useEffect(() => {
+    const targetId = incomingCallLens.activeTargetId;
+    if (targetId !== null && !incomingCallLensTargetAvailable(
+      targetId,
+      requestPaintedNodes,
+      index.inEdges.get(targetId) ?? [],
+    )) {
+      incomingCallLens.close();
+    }
+  }, [incomingCallLens.activeTargetId, incomingCallLens.close, index, requestPaintedNodes]);
   const openWireEvidence = useCallback((pair: Edge[]) => {
     const contexts = edgeEvidenceForPair(pair, index.edgesById);
     inspectionOwnsSource.current = contexts.length > 0;
@@ -666,6 +724,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     props.wireHover === true,
     openWireEvidence,
     closeEdgeEvidence,
+    incomingCallSpotlightIds,
   );
   const requestClearInspected = useReviewLineComposerGuard(wire.clearInspected, edgeEvidenceSourcePath);
   useEffect(() => {
@@ -703,6 +762,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const baseCanExpand = props.onToggleExpand !== undefined || !props.readOnly;
 
   return (
+    <IncomingCallLensScope value={incomingCallLens}>
     <BaseNodeActionScope
       toggleExpand={baseCanExpand ? baseToggleExpand : null}
       navigateInto={props.readOnly ? null : props.interactions.navigateBaseNode ?? null}
@@ -760,6 +820,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
             nodeDiff.onPaneClick();
           }
           // A pane click always unpins the inspector. Frozen context views keep their fixed target set.
+          incomingCallLens.close();
           requestClearInspected();
           if (!props.readOnly || props.selectionOnly) {
             props.interactions.onPaneClick();
@@ -785,6 +846,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         minimap={!virtualizeCanvas}
       >
         <style>{REVIEW_NODE_VIEWED_CSS}</style>
+        <style>{INCOMING_CALL_LENS_CSS}</style>
         <MapLod
           nodes={reactFlowNodes}
           semanticLayers={props.semanticLayers}
@@ -804,6 +866,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
           />
         )}
         {props.flowExtras?.({ nodes: requestPaintedNodes, beacons })}
+        <IncomingCallLensOverlay />
       </ReadonlyGraphCanvas>
       {wire.hover ? <WireTooltip hover={wire.hover} /> : null}
       {wire.inspectedPair ? (
@@ -817,6 +880,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     </div>
     </SurfaceInteractionScope>
     </BaseNodeActionScope>
+    </IncomingCallLensScope>
   );
 }
 

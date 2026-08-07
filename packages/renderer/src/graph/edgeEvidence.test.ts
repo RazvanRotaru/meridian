@@ -8,6 +8,7 @@ import {
   artifactLinksForWire,
   edgeEvidenceForPair,
   formatCallSite,
+  wireReferencesAnyArtifactEdge,
 } from "./edgeEvidence";
 
 const CALL: GraphEdge = {
@@ -91,6 +92,27 @@ describe("wire source evidence", () => {
   it("deduplicates repeated aggregate members and ignores unattributed presentation wires", () => {
     expect(edgeEvidenceForPair([callWire, callWire], EDGES)).toHaveLength(1);
     expect(edgeEvidenceForPair([{ id: "x", source: "a", target: "b" }], EDGES)).toEqual([]);
+  });
+
+  it("finds exact artifact relationships through plain and nested aggregate wires", () => {
+    const ribbon: Edge = {
+      id: "ribbon",
+      source: "card:a",
+      target: "card:b",
+      type: RIBBON_EDGE_TYPE,
+      data: { members: [registersWire, callWire] },
+    };
+    const highway: Edge = {
+      id: "highway",
+      source: "frame:a",
+      target: "frame:b",
+      type: BUNDLE_EDGE_TYPE,
+      data: { constituents: [ribbon] },
+    };
+
+    expect(wireReferencesAnyArtifactEdge(callWire, new Set([CALL.id]))).toBe(true);
+    expect(wireReferencesAnyArtifactEdge(highway, new Set([CALL.id]))).toBe(true);
+    expect(wireReferencesAnyArtifactEdge(highway, new Set(["missing"]))).toBe(false);
   });
 
   it("formats point, same-line, and multi-line evidence precisely", () => {
