@@ -8431,13 +8431,28 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const requestedGroupExpansions = new Set(
           [...expandableGroupIds].filter((id) => derivedMembers.has(id) && moduleExpanded.has(id)),
         );
-        const rollupExpansions = requestedGroupExpansions.size === 0
+        // A PR review is a repository-wide overlay over the covered Map. Its source focus is kept
+        // only so closing the review can restore the reader's prior location; it must not scope the
+        // canonical subtree used to disclose a review rollup. Open every requested rollup's
+        // containment path in a derive-only root view so a rollup on a sibling branch can expand
+        // without changing the preserved Map focus or the shared URL expansion set.
+        const rollupSourceState = state.review === null
+          ? state
+          : {
+              ...state,
+              moduleFocus: null,
+              moduleExpanded: new Set([
+                ...moduleExpanded,
+                ...[...requestedGroupExpansions].flatMap((id) =>
+                  index.ancestorsOf(id).map((ancestor) => ancestor.id)),
+              ]),
+            };
+        const rollupSourceTree = requestedGroupExpansions.size === 0
+          ? null
+          : surface.deriveTree(rollupSourceState, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden });
+        const rollupExpansions = rollupSourceTree === null
           ? []
-          : minimalRollupExpansions(
-              surface.deriveTree(state, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden }),
-              index,
-              requestedGroupExpansions,
-            );
+          : minimalRollupExpansions(rollupSourceTree, index, requestedGroupExpansions);
         const layout = await deriveMinimalGraphLayout(index, moduleGraph, derivedMembers, new Set(minimalSeedIds), minimalBasePositions, {
           moduleExpanded,
           blockDeps: deps,
