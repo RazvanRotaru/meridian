@@ -34,7 +34,9 @@ export function LogicActionBar(props: LogicActionBarProps) {
     "base",
     surfaceSize?.height ?? null,
     45,
-    surfaceSize ?? undefined,
+    surfaceSize === null
+      ? undefined
+      : { bottomChromeLeft: surfaceSize.bottomChromeLeft, shiftIntoBottomLane: true },
   );
   const hasSelection = props.selectedCount > 0;
 

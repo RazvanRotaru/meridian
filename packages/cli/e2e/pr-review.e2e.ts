@@ -116,9 +116,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await initialReviewGraph.waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
-    // A wide review bar shares the bottom lane with the legend and MiniMap instead of floating one
-    // full MiniMap-height above them. It remains contained by the graph side of the review split.
-    await page.setViewportSize({ width: 1800, height: 900 });
+    // A review bar always owns the bottom lane instead of floating one full MiniMap-height above
+    // it. Wide panes show the complete bar; narrower panes compact secondary controls behind More.
+    // Both presentations remain contained by the graph side of the review split and clear chrome.
+    await page.setViewportSize({ width: 2000, height: 900 });
     const initialActionBar = initialReviewGraph.getByRole("group", { name: "Canvas actions" });
     await expect.poll(async () => {
       const [surface, bar, legend, minimap, reviewPane] = await Promise.all([
@@ -130,17 +131,153 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       ]);
       if (surface === null || bar === null || legend === null || minimap === null || reviewPane === null) return null;
       return {
+        surfaceWideEnoughForLegend: surface.width >= 1400,
         bottomInset: Math.round(surface.y + surface.height - bar.y - bar.height),
         insideGraph: bar.x >= surface.x && bar.x + bar.width <= surface.x + surface.width,
         clearsChrome: bar.x + bar.width <= Math.min(legend.x, minimap.x) - 15,
         clearsReviewPane: bar.x + bar.width <= reviewPane.x,
       };
     }, { timeout: 5_000 }).toEqual({
+      surfaceWideEnoughForLegend: true,
       bottomInset: 16,
       insideGraph: true,
       clearsChrome: true,
       clearsReviewPane: true,
     });
+    const legendButton = initialReviewGraph.getByRole("button", { name: /Legend/ });
+    await legendButton.focus();
+    await page.keyboard.press("Enter");
+    const openLegend = initialReviewGraph.getByRole("region", { name: "Map legend" });
+    await openLegend.waitFor();
+    const closeLegend = openLegend.getByTitle("Close");
+    await expect.poll(() => closeLegend.evaluate((element) => element === document.activeElement)).toBe(true);
+    await page.keyboard.press("Enter");
+    await openLegend.waitFor({ state: "detached" });
+    await expect.poll(() => legendButton.evaluate((element) => element === document.activeElement)).toBe(true);
+    await page.keyboard.press("Enter");
+    await openLegend.waitFor();
+    await expect.poll(() => closeLegend.evaluate((element) => element === document.activeElement)).toBe(true);
+    await expect.poll(async () => {
+      const [surface, bar, legend, minimap] = await Promise.all([
+        initialReviewGraph.boundingBox(),
+        initialActionBar.boundingBox(),
+        openLegend.boundingBox(),
+        initialReviewGraph.locator(".react-flow__minimap").boundingBox(),
+      ]);
+      if (surface === null || bar === null || legend === null || minimap === null) return null;
+      return {
+        bottomInset: Math.round(surface.y + surface.height - bar.y - bar.height),
+        clearsOpenLegend: bar.x + bar.width <= Math.min(legend.x, minimap.x) - 15,
+        noHorizontalOverflow: await initialActionBar.evaluate(
+          (element) => element.scrollWidth <= element.clientWidth + 1,
+        ),
+      };
+    }, { timeout: 5_000 }).toEqual({
+      bottomInset: 16,
+      clearsOpenLegend: true,
+      noHorizontalOverflow: true,
+    });
+    await closeLegend.focus();
+    await page.setViewportSize({ width: 1800, height: 900 });
+    await openLegend.waitFor({ state: "detached" });
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("Recenter view");
+    await page.setViewportSize({ width: 2000, height: 900 });
+    await legendButton.waitFor();
+    await page.setViewportSize({ width: 900, height: 900 });
+    const compactActionBar = initialReviewGraph.getByRole("group", { name: "Canvas actions" });
+    const moreCanvasActions = compactActionBar.getByRole("button", { name: "More canvas actions" });
+    await moreCanvasActions.waitFor();
+    await expect.poll(async () => {
+      const [surface, bar, legendCount, minimapHidden, controls, reviewPane] = await Promise.all([
+        initialReviewGraph.boundingBox(),
+        compactActionBar.boundingBox(),
+        initialReviewGraph.getByRole("button", { name: /Legend/ }).count(),
+        initialReviewGraph.locator(".react-flow__minimap").isHidden(),
+        initialReviewGraph.locator(".react-flow__controls").boundingBox(),
+        page.locator("#meridian-pr-review-pane").boundingBox(),
+      ]);
+      if (surface === null || bar === null || controls === null || reviewPane === null) return null;
+      return {
+        bottomInset: Math.round(surface.y + surface.height - bar.y - bar.height),
+        insideGraph: bar.x >= surface.x && bar.x + bar.width <= surface.x + surface.width,
+        retiredPassiveChrome: legendCount === 0 && minimapHidden,
+        clearsControls: bar.x + bar.width <= controls.x - 15,
+        clearsReviewPane: bar.x + bar.width <= reviewPane.x,
+      };
+    }, { timeout: 5_000 }).toEqual({
+      bottomInset: 16,
+      insideGraph: true,
+      retiredPassiveChrome: true,
+      clearsControls: true,
+      clearsReviewPane: true,
+    });
+    expect(await compactActionBar.getByRole("button", { name: "Code previews", exact: true }).count()).toBe(0);
+    for (const directAction of [
+      "Recenter view",
+      "Remove added nodes in selection",
+      "Back to previous graph",
+      "Filter edge types",
+      "Highlight code in codebase",
+      "Close extracted graph",
+    ]) {
+      await compactActionBar.getByRole("button", { name: directAction, exact: true }).waitFor();
+    }
+    expect(await moreCanvasActions.getAttribute("aria-haspopup")).toBe("dialog");
+    expect(await moreCanvasActions.getAttribute("aria-expanded")).toBe("false");
+    const controlledDialogId = await moreCanvasActions.getAttribute("aria-controls");
+    expect(controlledDialogId).toBeTruthy();
+    await moreCanvasActions.focus();
+    await page.keyboard.press("Enter");
+    const moreActionsDialog = page.getByRole("dialog", { name: "More canvas actions" });
+    expect(await moreActionsDialog.getAttribute("id")).toBe(controlledDialogId);
+    await expect.poll(() => moreCanvasActions.getAttribute("aria-expanded")).toBe("true");
+    await expect.poll(() => moreActionsDialog.evaluate((element) => element === document.activeElement)).toBe(true);
+    for (const overflowAction of [
+      "Expand selection by one level",
+      "Expand one level",
+      "Collapse all",
+      "Collapse all viewed nodes",
+      "Show ghost nodes",
+      "Filter unrelated ghost nodes",
+      "Code previews",
+      "Highways",
+      "Rearrange extracted graph",
+      "Reset extracted graph",
+    ]) {
+      await moreActionsDialog.getByRole("button", { name: overflowAction, exact: true }).waitFor();
+    }
+    await page.keyboard.press("Tab");
+    await expect.poll(() => moreActionsDialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+    const compactCodePreviewToggle = moreActionsDialog.getByRole("button", { name: "Code previews", exact: true });
+    await expect.poll(() => compactCodePreviewToggle.getAttribute("aria-pressed")).toBe("true");
+    await compactCodePreviewToggle.click();
+    await expect.poll(() => compactCodePreviewToggle.getAttribute("aria-pressed")).toBe("false");
+    await compactCodePreviewToggle.click();
+    await expect.poll(() => compactCodePreviewToggle.getAttribute("aria-pressed")).toBe("true");
+    await page.keyboard.press("Escape");
+    await moreActionsDialog.waitFor({ state: "detached" });
+    await expect.poll(() => moreCanvasActions.getAttribute("aria-expanded")).toBe("false");
+    await expect.poll(() => moreCanvasActions.evaluate((element) => element === document.activeElement)).toBe(true);
+    await page.keyboard.press("Enter");
+    await moreActionsDialog.waitFor();
+    await page.setViewportSize({ width: 2000, height: 900 });
+    await moreActionsDialog.waitFor({ state: "detached" });
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("Recenter view");
+    const directCodePreview = initialActionBar.getByRole("button", { name: "Code previews", exact: true });
+    await directCodePreview.focus();
+    await page.setViewportSize({ width: 900, height: 900 });
+    await moreCanvasActions.waitFor();
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("More canvas actions");
+    await page.setViewportSize({ width: 2000, height: 900 });
+    await expect.poll(
+      () => page.evaluate(() => document.activeElement?.getAttribute("aria-label")),
+    ).toBe("Recenter view");
     await page.setViewportSize({ width: 1400, height: 900 });
 
     // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:

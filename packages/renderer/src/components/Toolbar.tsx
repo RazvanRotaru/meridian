@@ -6,7 +6,7 @@
  * composition worklist rides along on the Service lens.
  */
 
-import { useState, type ReactNode } from "react";
+import { useLayoutEffect, useState, type ReactNode } from "react";
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { EnvSelector } from "./EnvSelector";
@@ -29,6 +29,8 @@ const CONTROL_PANEL_CONTROLS_ID = "meridian-control-panel-controls";
 
 export function Toolbar(props: { preselectedEnv: string | null }) {
   const [controlsCollapsed, setControlsCollapsed] = useState(false);
+  const [panelHost, setPanelHost] = useState<HTMLDivElement | null>(null);
+  const [actionBarOwnsLeftLane, setActionBarOwnsLeftLane] = useState(false);
   const viewMode = useBlueprint((state) => state.viewMode);
   const telemetryMode = useBlueprint((state) => state.telemetryMode);
   const hasOverlay = useBlueprint((state) => state.hasOverlay);
@@ -40,15 +42,37 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
   const isComposition = viewMode === "call";
   // Every module-family lens (Map / Service / UI — unified in phase C) wears the same dials.
   const onModuleSurface = viewMode === "modules" || viewMode === "ui" || isComposition;
+  useLayoutEffect(() => {
+    const surface = panelHost?.parentElement ?? null;
+    if (surface === null) return;
+    const update = () => {
+      const bounds = surface.getBoundingClientRect();
+      setActionBarOwnsLeftLane(bounds.width < LEFT_LANE_MIN_WIDTH || bounds.height < LEFT_LANE_MIN_HEIGHT);
+    };
+    const observer = new ResizeObserver(update);
+    observer.observe(surface);
+    update();
+    return () => observer.disconnect();
+  }, [panelHost]);
   if (reviewActive) {
     return (
-      <Panel position="top-left" style={REVIEW_NAV_HOST_STYLE}>
+      <Panel
+        ref={setPanelHost}
+        id="meridian-review-navigation-host"
+        position="top-left"
+        style={actionBarOwnsLeftLane ? CONSTRAINED_REVIEW_NAV_HOST_STYLE : REVIEW_NAV_HOST_STYLE}
+      >
         <PrReviewNavigation />
       </Panel>
     );
   }
   return (
-    <Panel position="top-left" style={PANEL_HOST_STYLE}>
+    <Panel
+      ref={setPanelHost}
+      id="meridian-toolbar-host"
+      position="top-left"
+      style={actionBarOwnsLeftLane ? CONSTRAINED_PANEL_HOST_STYLE : PANEL_HOST_STYLE}
+    >
       <div id={CONTROL_PANEL_ID} style={PANEL_STYLE}>
         <ControlPanelHeader />
 
@@ -62,7 +86,10 @@ export function Toolbar(props: { preselectedEnv: string | null }) {
         <Divider />
         <div style={PR_CONTROLS_STYLE}>
           <PrReviewSection />
-          <ControlsDisclosure collapsed={controlsCollapsed} onToggle={() => setControlsCollapsed((collapsed) => !collapsed)} />
+          <ControlsDisclosure
+            collapsed={controlsCollapsed}
+            onToggle={() => setControlsCollapsed((collapsed) => !collapsed)}
+          />
           <div
             id={CONTROL_PANEL_CONTROLS_ID}
             hidden={controlsCollapsed}
@@ -159,7 +186,17 @@ const PANEL_HOST_STYLE: React.CSSProperties = {
   overflowX: "hidden",
   borderRadius: 14,
 };
+const CONSTRAINED_PANEL_HOST_STYLE: React.CSSProperties = {
+  ...PANEL_HOST_STYLE,
+  maxHeight: "calc(100% - 156px)",
+};
 const REVIEW_NAV_HOST_STYLE: React.CSSProperties = { zIndex: 20 };
+const CONSTRAINED_REVIEW_NAV_HOST_STYLE: React.CSSProperties = {
+  ...CONSTRAINED_PANEL_HOST_STYLE,
+  zIndex: 20,
+};
+const LEFT_LANE_MIN_WIDTH = 900;
+const LEFT_LANE_MIN_HEIGHT = 500;
 const PR_CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column" };
 const CONTROLS_STYLE: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 11 };
 const HIDDEN_CONTROLS_STYLE: React.CSSProperties = { ...CONTROLS_STYLE, display: "none" };

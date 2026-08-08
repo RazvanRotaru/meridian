@@ -184,6 +184,17 @@ export function EdgeFilterIcon({ size = 15 }: IconProps) {
   );
 }
 
+/** Horizontal overflow dots — secondary canvas actions that remain available in compact layouts. */
+export function MoreActionsIcon({ size = 15 }: IconProps) {
+  return (
+    <svg {...svgProps(size)}>
+      <circle cx="5" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none" />
+      <circle cx="19" cy="12" r="1.5" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
+
 /** Repository frame with lit cards — place the extracted code back in whole-codebase context. */
 export function CodebaseHighlightIcon({ size = 15 }: IconProps) {
   return (

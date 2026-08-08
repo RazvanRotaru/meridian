@@ -4,6 +4,7 @@
  * point and the extracted graph's own actions so floating controls never compete for space.
  */
 
+import { useLayoutEffect, useRef } from "react";
 import { Panel } from "@xyflow/react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import {
@@ -20,6 +21,7 @@ import {
   CanvasActionGroup,
   CanvasActionSeparator,
 } from "./canvasActionBarKit";
+import { CanvasActionOverflow, type CanvasActionOverflowSection } from "./CanvasActionOverflow";
 import { canvasActionPlacement, panelAnchorStyle, useSurfaceSize, type CanvasActionMode } from "./canvasActionBarLayout";
 import { CanvasRelationFilter } from "./CanvasRelationFilter";
 import {
@@ -138,6 +140,9 @@ export function CanvasActionBar({
     toggleHighways,
   } = useBlueprintActions();
   const [anchorRef, surfaceSize] = useSurfaceSize();
+  const recenterButtonRef = useRef<HTMLButtonElement>(null);
+  const overflowButtonRef = useRef<HTMLButtonElement>(null);
+  const responsiveFocusRef = useRef<"secondary" | "overflow" | null>(null);
 
   const selectionNeighbourCount = selectionGraph === null
     ? 0
@@ -178,11 +183,216 @@ export function CanvasActionBar({
       + (showCollapseViewedAction ? 45 : 0)
       + (showReviewCodePreviewAction ? 45 : 0)
       + (showReviewGhostDiffAction ? 45 : 0),
-    surfaceSize === null ? undefined : { ...surfaceSize, shiftIntoBottomLane: reviewActive },
+    surfaceSize === null
+      ? undefined
+      : {
+          bottomChromeLeft: surfaceSize.bottomChromeLeft,
+          shiftIntoBottomLane: reviewActive,
+          canCompact: true,
+        },
   );
+  const compact = placement.compact === true;
+  const previousCompactRef = useRef(compact);
+  useLayoutEffect(() => {
+    const previousCompact = previousCompactRef.current;
+    previousCompactRef.current = compact;
+    if (previousCompact === compact) return;
+    const retiringFocus = responsiveFocusRef.current;
+    responsiveFocusRef.current = null;
+    if (compact && retiringFocus === "secondary") {
+      overflowButtonRef.current?.focus({ preventScroll: true });
+    } else if (!compact && retiringFocus === "overflow") {
+      recenterButtonRef.current?.focus({ preventScroll: true });
+    }
+  }, [compact]);
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
+  const secondaryViewActions = (
+    <>
+      <CanvasActionButton
+        ariaLabel="Expand selection by one level"
+        title={
+          selectedCount === 0
+            ? "Select one or more nodes to include their one-hop neighbours"
+            : !selectionExpansionReady
+              ? "Selection expansion is unavailable while this graph is updating"
+              : selectionNeighbourCount === 0
+                ? "The selection already includes every visible one-hop neighbour"
+                : `Add ${selectionNeighbourCount} visible one-hop ${selectionNeighbourCount === 1 ? "neighbour" : "neighbours"} to the selection`
+        }
+        icon={<ExpandSelectionIcon size={18} />}
+        onClick={() => {
+          if (selectionGraph !== null) {
+            expandModuleSelectionByOneHop(selectionGraph.nodes, selectionGraph.edges);
+          }
+        }}
+        disabled={!selectionExpansionReady || selectionNeighbourCount === 0}
+      />
+      {codebaseView ? null : (
+        <>
+          <CanvasActionButton
+            ariaLabel="Expand one level"
+            title="Expand the selection one level, or the whole view when nothing is selected"
+            icon={<ExpandIcon size={18} />}
+            onClick={expandAll}
+          />
+          <CanvasActionButton
+            ariaLabel="Collapse all"
+            title="Collapse all open containers in the selection, or the whole view when nothing is selected"
+            icon={<CollapseIcon size={18} />}
+            onClick={collapseAll}
+          />
+          {showCollapseViewedAction ? (
+            <CanvasActionButton
+              ariaLabel="Collapse all viewed nodes"
+              title={viewedCollapseCount === 0
+                ? "No viewed nodes are currently expanded"
+                : "Collapse every open container inside nodes already marked viewed"}
+              icon={<CollapseViewedIcon size={18} />}
+              onClick={collapseAllViewedNodes}
+              disabled={viewedCollapseCount === 0}
+            />
+          ) : null}
+        </>
+      )}
+    </>
+  );
+  const minimalCurationAction = minimalOpen && !codebaseView ? (
+    <CanvasActionButton
+      ariaLabel="Remove added nodes in selection"
+      title={
+        removableCount > 0
+          ? "Remove added nodes associated with the current selection from this view"
+          : "Select added nodes while keeping at least one member in the extracted graph"
+      }
+      icon={<RemoveSelectionIcon size={18} />}
+      onClick={removeSelectionFromView}
+      disabled={removableCount === 0}
+    />
+  ) : null;
+  const sourceCurationAction = showSourceSelectionActions ? (
+    <CanvasActionButton
+      ariaLabel="Remove added nodes in selection"
+      title={
+        removableCount > 0
+          ? "Remove added nodes associated with the current selection from this view"
+          : "Only nodes added to this view can be removed"
+      }
+      icon={<RemoveSelectionIcon size={18} />}
+      onClick={removeSelectionFromView}
+      disabled={removableCount === 0}
+    />
+  ) : null;
+  const secondaryExtractedActions = minimalOpen && !codebaseView ? (
+    <>
+      {onToggleGhostNodes === undefined ? null : (
+        <CanvasActionButton
+          ariaLabel="Show ghost nodes"
+          title={
+            !hasGhostNodes
+              ? "No ghost nodes in this extracted graph"
+              : ghostNodesVisible
+                ? "Hide ghost nodes and their connections"
+                : "Show ghost nodes and their connections"
+          }
+          icon={<GhostVisibilityIcon size={18} visible={ghostNodesVisible} />}
+          onClick={onToggleGhostNodes}
+          disabled={!hasGhostNodes}
+          pressed={ghostNodesVisible}
+        />
+      )}
+      {showReviewGhostDiffAction ? (
+        <ReviewGhostDiffAction
+          active={reviewGhostDiffOnly}
+          disabled={!hasGhostNodes}
+          onToggle={onToggleReviewGhostDiffOnly}
+        />
+      ) : null}
+      {showReviewCodePreviewAction ? (
+        <CanvasActionButton
+          ariaLabel="Code previews"
+          title={reviewCodePreviewEnabled
+            ? "Disable automatic code previews; use the node header View source button instead"
+            : "Enable automatic code previews using the saved hover or click behavior"}
+          icon={<CodePreviewVisibilityIcon size={18} />}
+          onClick={toggleReviewCodePreview}
+          pressed={reviewCodePreviewEnabled}
+        />
+      ) : null}
+      <CanvasActionButton
+        ariaLabel="Highways"
+        title={showHighways
+          ? "Disable highways and draw node links individually"
+          : "Enable highways for dense edge traffic"}
+        icon={<HighwaysIcon size={18} />}
+        onClick={toggleHighways}
+        pressed={showHighways}
+      />
+      <CanvasActionButton
+        ariaLabel="Rearrange extracted graph"
+        title={
+          !minimalHasMembers
+            ? "No visible nodes to rearrange"
+            : minimalArranged
+            ? "Re-run the compact layout for the current extracted graph"
+            : "Lay out the current extracted graph compactly, ignoring its map positions"
+        }
+        icon={<RearrangeIcon size={18} />}
+        onClick={rearrangeMinimalGraph}
+        disabled={!minimalHasMembers}
+      />
+      <CanvasActionButton
+        ariaLabel="Reset extracted graph"
+        title={
+          minimalChanged
+            ? "Restore the original selection, collapsed rollups, and map positions"
+            : "Already matches the original selection, disclosure, and map positions"
+        }
+        icon={<ResetIcon size={18} />}
+        onClick={resetMinimalGraph}
+        disabled={!minimalChanged}
+      />
+    </>
+  ) : null;
+  const secondaryCodebaseActions = codebaseView && showReviewCodePreviewAction ? (
+    <CanvasActionButton
+      ariaLabel="Code previews"
+      title={reviewCodePreviewEnabled
+        ? "Disable automatic code previews; use the node header View source button instead"
+        : "Enable automatic code previews using the saved hover or click behavior"}
+      icon={<CodePreviewVisibilityIcon size={18} />}
+      onClick={toggleReviewCodePreview}
+      pressed={reviewCodePreviewEnabled}
+    />
+  ) : null;
+  const overflowSections: CanvasActionOverflowSection[] = [
+    { label: "View actions", children: secondaryViewActions },
+    ...(secondaryExtractedActions === null
+      ? []
+      : [{ label: "Extracted graph actions", children: secondaryExtractedActions }]),
+    ...(secondaryCodebaseActions === null
+      ? []
+      : [{ label: "Codebase view actions", children: secondaryCodebaseActions }]),
+  ];
   return (
-    <Panel ref={anchorRef} position={placement.position} style={panelAnchorStyle(placement)}>
+    <Panel
+      ref={anchorRef}
+      position={placement.position}
+      style={panelAnchorStyle(placement)}
+      onFocusCapture={(event) => {
+        const target = event.target as HTMLElement;
+        responsiveFocusRef.current = target.closest("[data-canvas-secondary-actions]") !== null
+          ? "secondary"
+          : target.getAttribute("aria-label") === "More canvas actions"
+            ? "overflow"
+            : null;
+      }}
+      onBlurCapture={(event) => {
+        const next = event.relatedTarget;
+        if (!(next instanceof Node) || !event.currentTarget.contains(next)) {
+          responsiveFocusRef.current = null;
+        }
+      }}
+    >
       <CanvasActionBarFrame layout={placement.layout}>
         <CanvasActionGroup label="View actions">
           <CanvasActionButton
@@ -190,66 +400,16 @@ export function CanvasActionBar({
             title="Recenter on the current selection, or the whole graph if nothing is selected"
             icon={<RecenterIcon size={18} />}
             onClick={recenter}
+            buttonRef={recenterButtonRef}
           />
-          <CanvasActionButton
-            ariaLabel="Expand selection by one level"
-            title={
-              selectedCount === 0
-                ? "Select one or more nodes to include their one-hop neighbours"
-                : !selectionExpansionReady
-                  ? "Selection expansion is unavailable while this graph is updating"
-                  : selectionNeighbourCount === 0
-                    ? "The selection already includes every visible one-hop neighbour"
-                    : `Add ${selectionNeighbourCount} visible one-hop ${selectionNeighbourCount === 1 ? "neighbour" : "neighbours"} to the selection`
-            }
-            icon={<ExpandSelectionIcon size={18} />}
-            onClick={() => {
-              if (selectionGraph !== null) {
-                expandModuleSelectionByOneHop(selectionGraph.nodes, selectionGraph.edges);
-              }
-            }}
-            disabled={!selectionExpansionReady || selectionNeighbourCount === 0}
+          {compact ? null : <span data-canvas-secondary-actions style={SECONDARY_ACTIONS_STYLE}>{secondaryViewActions}</span>}
+          <CanvasActionOverflow
+            enabled={compact}
+            fallbackFocusRef={recenterButtonRef}
+            triggerRef={overflowButtonRef}
+            sections={overflowSections}
           />
-          {codebaseView ? null : (
-            <>
-              <CanvasActionButton
-                ariaLabel="Expand one level"
-                title="Expand the selection one level, or the whole view when nothing is selected"
-                icon={<ExpandIcon size={18} />}
-                onClick={expandAll}
-              />
-              <CanvasActionButton
-                ariaLabel="Collapse all"
-                title="Collapse all open containers in the selection, or the whole view when nothing is selected"
-                icon={<CollapseIcon size={18} />}
-                onClick={collapseAll}
-              />
-              {showCollapseViewedAction ? (
-                <CanvasActionButton
-                  ariaLabel="Collapse all viewed nodes"
-                  title={viewedCollapseCount === 0
-                    ? "No viewed nodes are currently expanded"
-                    : "Collapse every open container inside nodes already marked viewed"}
-                  icon={<CollapseViewedIcon size={18} />}
-                  onClick={collapseAllViewedNodes}
-                  disabled={viewedCollapseCount === 0}
-                />
-              ) : null}
-              {minimalOpen ? (
-                <CanvasActionButton
-                  ariaLabel="Remove added nodes in selection"
-                  title={
-                    removableCount > 0
-                      ? "Remove added nodes associated with the current selection from this view"
-                      : "Select added nodes while keeping at least one member in the extracted graph"
-                  }
-                  icon={<RemoveSelectionIcon size={18} />}
-                  onClick={removeSelectionFromView}
-                  disabled={removableCount === 0}
-                />
-              ) : null}
-            </>
-          )}
+          {minimalCurationAction}
         </CanvasActionGroup>
         {showSourceSelectionActions ? (
           <>
@@ -263,17 +423,7 @@ export function CanvasActionBar({
                 icon={<ExtractSelectionIcon size={18} />}
                 onClick={buildMinimalGraph}
               />
-              <CanvasActionButton
-                ariaLabel="Remove added nodes in selection"
-                title={
-                  removableCount > 0
-                    ? "Remove added nodes associated with the current selection from this view"
-                    : "Only nodes added to this view can be removed"
-                }
-                icon={<RemoveSelectionIcon size={18} />}
-                onClick={removeSelectionFromView}
-                disabled={removableCount === 0}
-              />
+              {sourceCurationAction}
             </CanvasActionGroup>
           </>
         ) : null}
@@ -309,74 +459,8 @@ export function CanvasActionBar({
                   onClick={buildMinimalGraph}
                 />
               )}
-              {onToggleGhostNodes === undefined ? null : (
-                <CanvasActionButton
-                  ariaLabel="Show ghost nodes"
-                  title={
-                    !hasGhostNodes
-                      ? "No ghost nodes in this extracted graph"
-                      : ghostNodesVisible
-                        ? "Hide ghost nodes and their connections"
-                        : "Show ghost nodes and their connections"
-                  }
-                  icon={<GhostVisibilityIcon size={18} visible={ghostNodesVisible} />}
-                  onClick={onToggleGhostNodes}
-                  disabled={!hasGhostNodes}
-                  pressed={ghostNodesVisible}
-                />
-              )}
-              {showReviewGhostDiffAction ? (
-                <ReviewGhostDiffAction
-                  active={reviewGhostDiffOnly}
-                  disabled={!hasGhostNodes}
-                  onToggle={onToggleReviewGhostDiffOnly}
-                />
-              ) : null}
-              {showReviewCodePreviewAction ? (
-                <CanvasActionButton
-                  ariaLabel="Code previews"
-                  title={reviewCodePreviewEnabled
-                    ? "Disable automatic code previews; use the node header View source button instead"
-                    : "Enable automatic code previews using the saved hover or click behavior"}
-                  icon={<CodePreviewVisibilityIcon size={18} />}
-                  onClick={toggleReviewCodePreview}
-                  pressed={reviewCodePreviewEnabled}
-                />
-              ) : null}
-              <CanvasActionButton
-                ariaLabel="Highways"
-                title={showHighways
-                  ? "Disable highways and draw node links individually"
-                  : "Enable highways for dense edge traffic"}
-                icon={<HighwaysIcon size={18} />}
-                onClick={toggleHighways}
-                pressed={showHighways}
-              />
+              {compact ? null : <span data-canvas-secondary-actions style={SECONDARY_ACTIONS_STYLE}>{secondaryExtractedActions}</span>}
               {relationKinds === undefined ? null : <CanvasRelationFilter kinds={relationKinds} />}
-              <CanvasActionButton
-                ariaLabel="Rearrange extracted graph"
-                title={
-                  !minimalHasMembers
-                    ? "No visible nodes to rearrange"
-                    : minimalArranged
-                    ? "Re-run the compact layout for the current extracted graph"
-                    : "Lay out the current extracted graph compactly, ignoring its map positions"
-                }
-                icon={<RearrangeIcon size={18} />}
-                onClick={rearrangeMinimalGraph}
-                disabled={!minimalHasMembers}
-              />
-              <CanvasActionButton
-                ariaLabel="Reset extracted graph"
-                title={
-                  minimalChanged
-                    ? "Restore the original selection, collapsed rollups, and map positions"
-                    : "Already matches the original selection, disclosure, and map positions"
-                }
-                icon={<ResetIcon size={18} />}
-                onClick={resetMinimalGraph}
-                disabled={!minimalChanged}
-              />
               {onShowCodebase === undefined ? null : (
                 <CanvasActionButton
                   ariaLabel="Highlight code in codebase"
@@ -434,17 +518,7 @@ export function CanvasActionBar({
                   }}
                 />
               )}
-              {showReviewCodePreviewAction ? (
-                <CanvasActionButton
-                  ariaLabel="Code previews"
-                  title={reviewCodePreviewEnabled
-                    ? "Disable automatic code previews; use the node header View source button instead"
-                    : "Enable automatic code previews using the saved hover or click behavior"}
-                  icon={<CodePreviewVisibilityIcon size={18} />}
-                  onClick={toggleReviewCodePreview}
-                  pressed={reviewCodePreviewEnabled}
-                />
-              ) : null}
+              {compact ? null : <span data-canvas-secondary-actions style={SECONDARY_ACTIONS_STYLE}>{secondaryCodebaseActions}</span>}
               <CanvasActionButton
                 ariaLabel="Back to extracted graph"
                 title="Return to the curated extracted graph"
@@ -465,6 +539,8 @@ export function CanvasActionBar({
     </Panel>
   );
 }
+
+const SECONDARY_ACTIONS_STYLE: React.CSSProperties = { display: "contents" };
 
 function ReviewGhostDiffAction({
   active,
