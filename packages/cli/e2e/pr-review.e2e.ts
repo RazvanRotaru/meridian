@@ -112,8 +112,36 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await reviewFiles.waitFor({ timeout: 120_000 });
     const syncProvenance = page.getByText(/^pr-head → main · head graph @[0-9a-f]{7}$/);
     await syncProvenance.waitFor({ timeout: 120_000 });
-    await page.getByRole("region", { name: "Extracted graph" }).waitFor();
+    const initialReviewGraph = page.getByRole("region", { name: "Extracted graph" });
+    await initialReviewGraph.waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
+
+    // A wide review bar shares the bottom lane with the legend and MiniMap instead of floating one
+    // full MiniMap-height above them. It remains contained by the graph side of the review split.
+    await page.setViewportSize({ width: 1800, height: 900 });
+    const initialActionBar = initialReviewGraph.getByRole("group", { name: "Canvas actions" });
+    await expect.poll(async () => {
+      const [surface, bar, legend, minimap, reviewPane] = await Promise.all([
+        initialReviewGraph.boundingBox(),
+        initialActionBar.boundingBox(),
+        initialReviewGraph.getByRole("button", { name: /Legend/ }).boundingBox(),
+        initialReviewGraph.locator(".react-flow__minimap").boundingBox(),
+        page.locator("#meridian-pr-review-pane").boundingBox(),
+      ]);
+      if (surface === null || bar === null || legend === null || minimap === null || reviewPane === null) return null;
+      return {
+        bottomInset: Math.round(surface.y + surface.height - bar.y - bar.height),
+        insideGraph: bar.x >= surface.x && bar.x + bar.width <= surface.x + surface.width,
+        clearsChrome: bar.x + bar.width <= Math.min(legend.x, minimap.x) - 15,
+        clearsReviewPane: bar.x + bar.width <= reviewPane.x,
+      };
+    }, { timeout: 5_000 }).toEqual({
+      bottomInset: 16,
+      insideGraph: true,
+      clearsChrome: true,
+      clearsReviewPane: true,
+    });
+    await page.setViewportSize({ width: 1400, height: 900 });
 
     // The whole-codebase overview is an alternate read-only surface, not a review close/reopen:
     // the prepared HEAD artifact, change colours, and review rail stay live, while its chevrons

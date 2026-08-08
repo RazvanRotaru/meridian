@@ -178,6 +178,7 @@ export function CanvasActionBar({
       + (showCollapseViewedAction ? 45 : 0)
       + (showReviewCodePreviewAction ? 45 : 0)
       + (showReviewGhostDiffAction ? 45 : 0),
+    surfaceSize === null ? undefined : { ...surfaceSize, shiftIntoBottomLane: reviewActive },
   );
   const boundaryOrientation = placement.layout === "row" ? "vertical" : "horizontal";
   return (

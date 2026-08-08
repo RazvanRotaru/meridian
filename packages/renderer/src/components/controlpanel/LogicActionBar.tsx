@@ -34,6 +34,7 @@ export function LogicActionBar(props: LogicActionBarProps) {
     "base",
     surfaceSize?.height ?? null,
     45,
+    surfaceSize ?? undefined,
   );
   const hasSelection = props.selectedCount > 0;
 
