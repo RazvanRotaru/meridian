@@ -43,13 +43,13 @@ export function MapLegend({
     .filter((kind) => showIpc || kind.family !== "messaging");
   if (!open) {
     return (
-      <button type="button" style={PILL} title="What the shapes and colours mean" onClick={() => setOpen(true)}>
+      <button data-canvas-bottom-chrome="legend" type="button" style={PILL} title="What the shapes and colours mean" onClick={() => setOpen(true)}>
         ◫ Legend
       </button>
     );
   }
   return (
-    <div style={CARD} role="region" aria-label="Map legend">
+    <div data-canvas-bottom-chrome="legend" style={CARD} role="region" aria-label="Map legend">
       <div style={HEAD_ROW}>
         <strong style={TITLE}>Legend</strong>
         <button type="button" style={CLOSE} onClick={() => setOpen(false)} title="Close">✕</button>

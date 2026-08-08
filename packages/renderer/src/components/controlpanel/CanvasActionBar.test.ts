@@ -79,6 +79,50 @@ describe("canvasActionPlacement", () => {
     expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 16 });
   });
 
+  it("uses the bottom lane when the measured bar clears the bottom-right canvas chrome", () => {
+    expect(canvasActionPlacement(1303, "review-focus", 700, 180, {
+      actionBarWidth: 830,
+      bottomChromeLeft: 1180,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 327,
+      bottom: 16,
+    });
+    expect(canvasActionPlacement(1303, "review-focus", 700, 180, {
+      actionBarWidth: 830,
+      bottomChromeLeft: 1172,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 327,
+      bottom: 181,
+    });
+  });
+
+  it("shifts a review bar into the free bottom lane before lifting it above canvas chrome", () => {
+    expect(canvasActionPlacement(1400, "review-focus", 700, 180, {
+      actionBarWidth: 830,
+      bottomChromeLeft: 1100,
+      shiftIntoBottomLane: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 254,
+      bottom: 16,
+    });
+    expect(canvasActionPlacement(1400, "review-focus", 700, 180, {
+      actionBarWidth: 830,
+      bottomChromeLeft: 800,
+      shiftIntoBottomLane: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 327,
+      bottom: 181,
+    });
+  });
+
   it("lifts the bar above chrome when horizontal or vertical overlap is unavoidable", () => {
     expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 16, bottom: 181, zIndex: 7 });
     expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305))).toMatchObject({
