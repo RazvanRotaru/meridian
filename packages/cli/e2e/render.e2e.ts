@@ -127,8 +127,42 @@ describe.skipIf(!chromiumInstalled())("rendered blueprint (headless chromium)", 
       await page.setViewportSize({ width: 900, height: 600 });
       await actionBar.getByRole("button", { name: "Recenter view" }).click();
       await expectNoOverlap(actionBar, page.locator("#meridian-control-panel"));
-      await expectNoOverlap(actionBar, page.getByRole("button", { name: /Legend/ }));
+      expect(await page.getByRole("button", { name: /Legend/ }).count()).toBe(0);
       await expectNoOverlap(actionBar, page.locator(".react-flow__minimap"));
+      await expectNoOverlap(actionBar, page.locator(".react-flow__controls"));
+      await expect.poll(async () => {
+        const [bar, surface] = await Promise.all([
+          actionBar.boundingBox(),
+          page.locator('[data-graph-surface="source"]').boundingBox(),
+        ]);
+        return bar === null || surface === null
+          ? null
+          : Math.round(surface.y + surface.height - bar.y - bar.height);
+      }).toBe(16);
+
+      const firstDetailedControl = page.locator("#meridian-control-panel-controls button").first();
+      await firstDetailedControl.focus();
+      await page.setViewportSize({ width: 520, height: 350 });
+      await expect.poll(() => firstDetailedControl.evaluate((element) => element === document.activeElement)).toBe(true);
+      await expectNoOverlap(actionBar, page.locator("#meridian-toolbar-host"));
+      await expectNoOverlap(actionBar, page.locator(".react-flow__controls"));
+      const lastDetailedControl = page.locator("#meridian-control-panel-controls button:not([disabled])").last();
+      await lastDetailedControl.scrollIntoViewIfNeeded();
+      await lastDetailedControl.focus();
+      await expect.poll(() => lastDetailedControl.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        const hit = document.elementFromPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+        return hit === element || (hit !== null && element.contains(hit));
+      })).toBe(true);
+      await expect.poll(async () => {
+        const [bar, surface] = await Promise.all([
+          actionBar.boundingBox(),
+          page.locator('[data-graph-surface="source"]').boundingBox(),
+        ]);
+        return bar === null || surface === null
+          ? null
+          : Math.round(surface.y + surface.height - bar.y - bar.height);
+      }).toBe(16);
     } finally {
       await page.setViewportSize({ width: 1400, height: 900 });
       await page.locator(".react-flow__pane").dispatchEvent("click");

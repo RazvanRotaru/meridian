@@ -45,6 +45,8 @@ export const MINIMAP_NODE_CAP = 250;
 export const MINIMAP_W = 200;
 export const MINIMAP_H = 150;
 export const MINIMAP_MIN_SURFACE_HEIGHT = 403;
+export const MINIMAP_MIN_SURFACE_WIDTH = 900;
+export const LEGEND_MIN_SURFACE_WIDTH = 1400;
 export const CHROME_EDGE = 15; // React Flow's default panel inset from the canvas edge
 export const CHROME_GAP = 12;
 export const LEGEND_BOTTOM = 16; // the Map Legend pill's bottom inset
@@ -57,22 +59,25 @@ const CONTROLS_BOTTOM = LEGEND_BOTTOM + LEGEND_PILL_H + CHROME_GAP; // clear of 
 // pre-mounted parent graphs remain available to semantic zoom without also appearing in the MiniMap.
 const miniMapNodeClassName = (node: Node): string => node.className ?? "";
 
-// The three chrome children every read-only surface renders: a dotted background, the zoom/fit
-// controls (interactive toggle hidden — the graph is read-only), and a pannable minimap tinted per
-// node by the view's own colour fn. Controls stack above the Legend pill (left of the minimap); with
-// the minimap dropped (a dense graph) they fall back to the corner.
+// The read-only surface chrome: a dotted background, keyboard-operable zoom/fit controls, and,
+// when the bottom-right lane has enough room, a pannable minimap tinted by the view's own colour fn.
+// If the minimap retires, its controls take the freed corner; the action-bar layout measures them
+// there and compacts horizontally instead of ever moving upward.
 export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: Node) => string; minimap?: boolean }) {
+  const surfaceWidth = useStore((state) => state.width);
   const surfaceHeight = useStore((state) => state.height);
   // A 150px minimap stops being useful once it consumes most of a short graph pane (for example
   // above an open flow drawer). Retire it there so the primary canvas actions own the bottom lane.
-  const showMinimap = minimap && surfaceHeight >= MINIMAP_MIN_SURFACE_HEIGHT;
+  const showMinimap = shouldShowMiniMap(minimap, surfaceWidth, surfaceHeight);
   return (
     <>
       <Background variant={BackgroundVariant.Dots} gap={22} size={1} color="#222732" />
       <Controls
         showInteractive={false}
         position="bottom-right"
-        style={showMinimap ? { right: CONTROLS_COLUMN, bottom: CONTROLS_BOTTOM } : { right: CHROME_EDGE, bottom: CHROME_EDGE }}
+        style={showMinimap
+          ? { right: CONTROLS_COLUMN, bottom: CONTROLS_BOTTOM }
+          : { right: CHROME_EDGE, bottom: CHROME_EDGE }}
       />
       {/* Lighter mask + a per-node stroke: the old 0.7 mask over near-black node fills made the
           minimap read as an empty rectangle; the stroke keeps tiny nodes visible at any density. */}
@@ -81,4 +86,20 @@ export function CanvasChrome({ nodeColor, minimap = true }: { nodeColor: (node: 
       ) : null}
     </>
   );
+}
+
+export function shouldShowMiniMap(enabled: boolean, surfaceWidth: number, surfaceHeight: number): boolean {
+  return enabled
+    && surfaceWidth >= MINIMAP_MIN_SURFACE_WIDTH
+    && surfaceHeight >= MINIMAP_MIN_SURFACE_HEIGHT;
+}
+
+export function shouldShowMapLegend(
+  surfaceWidth: number,
+  surfaceHeight: number,
+  interactiveTopRightChrome = false,
+): boolean {
+  return !interactiveTopRightChrome
+    && surfaceWidth >= LEGEND_MIN_SURFACE_WIDTH
+    && surfaceHeight >= MINIMAP_MIN_SURFACE_HEIGHT;
 }

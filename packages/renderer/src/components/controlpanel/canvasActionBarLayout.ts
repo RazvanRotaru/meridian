@@ -1,6 +1,6 @@
 import { useLayoutEffect, useState } from "react";
 import type { PanelPosition } from "@xyflow/react";
-import { CHROME_EDGE, MINIMAP_H } from "../canvas/flowCanvasProps";
+import { CHROME_EDGE } from "../canvas/flowCanvasProps";
 import { CONTROL_PANEL_WIDTH } from "./panelKit";
 
 export type CanvasActionMode = "base" | "extract" | "minimal" | "review-focus" | "codebase";
@@ -11,6 +11,8 @@ export interface CanvasActionPlacement {
   layout: CanvasActionLayout;
   left?: number;
   bottom?: number;
+  maxWidth?: number;
+  compact?: boolean;
 }
 
 interface SurfaceSize {
@@ -21,17 +23,20 @@ interface SurfaceSize {
   bottomChromeLeft: number | null;
 }
 
-interface CanvasActionMeasurement extends Pick<SurfaceSize, "actionBarWidth" | "bottomChromeLeft"> {
+interface CanvasActionMeasurement extends Pick<SurfaceSize, "bottomChromeLeft"> {
   /** Review navigation is shallow, so its wide bar may use the free bottom-left lane. */
   shiftIntoBottomLane?: boolean;
+  /** Secondary actions can move behind the accessible overflow control. */
+  canCompact?: boolean;
 }
 
 /** Keep the full bar in one row whenever it can sit beside the control panel. Narrow panes stack
- * whole groups; collision-free bars share the bottom lane, while real chrome collisions lift. */
+ * whole groups and compact secondary actions before constraining the row. Vertical placement is an
+ * invariant: width pressure must never push primary canvas actions up into the graph. */
 export function canvasActionPlacement(
   surfaceWidth: number | null,
   mode: CanvasActionMode,
-  surfaceHeight: number | null = null,
+  _surfaceHeight: number | null = null,
   extraActionWidth = 0,
   measurement?: CanvasActionMeasurement,
 ): CanvasActionPlacement {
@@ -41,8 +46,18 @@ export function canvasActionPlacement(
       ? "stacked"
       : "row";
   const barWidth = layout === "stacked" ? STACKED_BAR_WIDTHS[mode] + extraActionWidth : rowWidth;
+  const chromeLeft = measurement?.bottomChromeLeft;
 
-  if (surfaceWidth === null || (layout === "row" && surfaceWidth >= CONTROL_CLEARANCE * 2 + rowWidth)) {
+  if (surfaceWidth === null) {
+    return { position: "bottom-center", layout };
+  }
+  const centeredRight = (surfaceWidth + rowWidth) / 2;
+  const centeredClearsChrome = chromeLeft === null
+    || chromeLeft === undefined
+    || centeredRight + EDGE_GAP <= chromeLeft;
+  if (layout === "row"
+      && surfaceWidth >= CONTROL_CLEARANCE * 2 + rowWidth
+      && centeredClearsChrome) {
     return { position: "bottom-center", layout };
   }
   const edgeClampedLeft = Math.max(EDGE_GAP, surfaceWidth - barWidth - EDGE_GAP);
@@ -51,42 +66,36 @@ export function canvasActionPlacement(
     CONTROL_CLEARANCE,
     fitsBesideControls ? Math.max(CONTROL_PANEL_END, edgeClampedLeft) : edgeClampedLeft,
   );
-  const bottomLaneLeft = measurement?.bottomChromeLeft === null || measurement?.bottomChromeLeft === undefined
+  const fullBottomLaneLeft = chromeLeft === null || chromeLeft === undefined
     ? null
-    : measurement.bottomChromeLeft - EDGE_GAP - measurement.actionBarWidth;
-  const left = measurement?.shiftIntoBottomLane === true && bottomLaneLeft !== null && bottomLaneLeft >= EDGE_GAP
-    ? Math.min(defaultLeft, bottomLaneLeft)
+    : chromeLeft - EDGE_GAP - barWidth;
+  let left = measurement?.shiftIntoBottomLane === true
+      && fullBottomLaneLeft !== null
+      && fullBottomLaneLeft >= EDGE_GAP
+    ? Math.min(defaultLeft, fullBottomLaneLeft)
     : defaultLeft;
+  const collidesWithChrome = chromeLeft !== null
+    && chromeLeft !== undefined
+    && left + barWidth + EDGE_GAP > chromeLeft;
+  const collidesWithSurface = left + barWidth + EDGE_GAP > surfaceWidth;
+  const compact = (collidesWithChrome || collidesWithSurface)
+    && measurement?.canCompact === true;
+  if (compact) {
+    // Compact groups have a different max-of-groups width when stacked, so do not infer their
+    // footprint by subtracting icon slots. Give them the complete left lane and let the measured
+    // chrome boundary clamp the frame without a resize feedback loop.
+    left = EDGE_GAP;
+  }
   return {
     position: "bottom-left",
     layout,
     left,
-    bottom: actionBarBottom(
-      surfaceHeight,
-      layout,
-      left + (measurement?.actionBarWidth ?? barWidth),
-      measurement?.bottomChromeLeft,
-    ),
+    bottom: EDGE_GAP,
+    ...(chromeLeft === null || chromeLeft === undefined
+      ? {}
+      : { maxWidth: Math.max(0, chromeLeft - left - EDGE_GAP) }),
+    ...(compact ? { compact: true } : {}),
   };
-}
-
-function actionBarBottom(
-  surfaceHeight: number | null,
-  layout: CanvasActionLayout,
-  barRight: number,
-  bottomChromeLeft?: number | null,
-): number {
-  // The bar and the minimap/legend/zoom cluster can share the bottom lane whenever their measured
-  // horizontal footprints do not meet. Before the first client measurement, retain the lifted
-  // fallback so hydration never flashes the action bar over interactive canvas chrome.
-  if (bottomChromeLeft === null || (bottomChromeLeft !== undefined && barRight + EDGE_GAP <= bottomChromeLeft)) {
-    return EDGE_GAP;
-  }
-  const barHeight = layout === "stacked" ? STACKED_BAR_HEIGHT : ROW_BAR_HEIGHT;
-  if (surfaceHeight === null) {
-    return NORMAL_BOTTOM;
-  }
-  return Math.min(NORMAL_BOTTOM, Math.max(EDGE_GAP, surfaceHeight - barHeight - EDGE_GAP));
 }
 
 export function useSurfaceSize(): [(element: HTMLDivElement | null) => void, SurfaceSize | null] {
@@ -111,9 +120,13 @@ export function useSurfaceSize(): [(element: HTMLDivElement | null) => void, Sur
     const update = () => {
       observeChrome();
       const surfaceBounds = surface.getBoundingClientRect();
+      const actionBarBounds = actionBar.getBoundingClientRect();
       const chromeLefts = [...surface.querySelectorAll<HTMLElement>(BOTTOM_CHROME_SELECTOR)]
         .map((chrome) => chrome.getBoundingClientRect())
-        .filter((bounds) => bounds.width > 0 && bounds.height > 0)
+        .filter((bounds) => bounds.width > 0
+          && bounds.height > 0
+          && bounds.bottom > actionBarBounds.top
+          && bounds.top < actionBarBounds.bottom)
         .map((bounds) => bounds.left - surfaceBounds.left);
       const next: SurfaceSize = {
         width: surfaceBounds.width,
@@ -169,19 +182,19 @@ export function panelAnchorStyle(placement: CanvasActionPlacement): React.CSSPro
     left: placement.left,
     bottom: placement.bottom,
     margin: 0,
-    // Placement normally preserves EDGE_GAP. When a wider stacked group only just fits beside the
-    // controls, allow it to use the smaller remaining edge margin instead of becoming scrollable.
-    maxWidth: `calc(100% - ${placement.left ?? 0}px)`,
-    zIndex: (placement.left ?? CONTROL_CLEARANCE) < CONTROL_CLEARANCE || (placement.bottom ?? NORMAL_BOTTOM) < NORMAL_BOTTOM ? 7 : 4,
+    // The frame owns horizontal overflow, so a pane can remain usable even after all secondary
+    // actions have moved behind More. This boundary prevents the bar from painting over the
+    // MiniMap or Legend while preserving the fixed bottom inset.
+    maxWidth: placement.maxWidth === undefined
+      ? `calc(100% - ${(placement.left ?? 0) + EDGE_GAP}px)`
+      : placement.maxWidth,
+    zIndex: 7,
   };
 }
 
 const EDGE_GAP = 16;
 const CONTROL_PANEL_END = CHROME_EDGE + CONTROL_PANEL_WIDTH;
 const CONTROL_CLEARANCE = CHROME_EDGE + CONTROL_PANEL_WIDTH + EDGE_GAP;
-const NORMAL_BOTTOM = MINIMAP_H + CHROME_EDGE + EDGE_GAP;
-const ROW_BAR_HEIGHT = 54;
-const STACKED_BAR_HEIGHT = 109;
 const BOTTOM_CHROME_SELECTOR = '[data-canvas-bottom-chrome], .react-flow__controls, .react-flow__minimap';
 const BASE_BAR_WIDTH = 144;
 const BAR_WIDTHS: Record<CanvasActionMode, number> = {
@@ -201,5 +214,5 @@ const STACKED_BAR_WIDTHS: Record<CanvasActionMode, number> = {
 const CENTERED_ANCHOR_STYLE: React.CSSProperties = {
   marginBottom: EDGE_GAP,
   maxWidth: `calc(100% - ${EDGE_GAP * 2}px)`,
-  zIndex: 4,
+  zIndex: 7,
 };

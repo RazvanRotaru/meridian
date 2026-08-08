@@ -118,6 +118,7 @@ export function CanvasRelationFilter({ kinds }: { kinds: readonly string[] }) {
           role="dialog"
           aria-label="Edge type filters"
           tabIndex={-1}
+          data-canvas-action-popover
           className="mrd-scroll"
           style={{ ...POPOVER_STYLE, left: position.left, bottom: position.bottom }}
           onPointerDown={(event) => event.stopPropagation()}

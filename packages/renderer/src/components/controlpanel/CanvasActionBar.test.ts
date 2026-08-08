@@ -28,111 +28,131 @@ describe("canvasActionPlacement", () => {
       position: "bottom-left",
       layout: "row",
       left: 327,
-      bottom: 181,
+      bottom: 16,
     });
     expect(canvasActionPlacement(1172, "review-focus", null, 180)).toEqual({
       position: "bottom-left",
       layout: "stacked",
       left: 327,
-      bottom: 181,
-    });
-  });
-
-  it("moves a full row beside the control panel when centering would overlap it", () => {
-    expect(canvasActionPlacement(797, "base")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(915, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(1243, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(1303, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(935, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-  });
-
-  it("keeps the minimal actions in one row down to the exact side-lane boundary", () => {
-    expect(canvasActionPlacement(933, "minimal")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(932, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(993, "review-focus")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(992, "review-focus")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-  });
-
-  it("stacks whole groups after a review panel narrows the graph pane", () => {
-    expect(canvasActionPlacement(542, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 126, bottom: 181 });
-    expect(canvasActionPlacement(541, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 125, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 181 });
-    expect(canvasActionPlacement(624, "codebase")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(625, "codebase")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(605, "extract")).toEqual({ position: "bottom-left", layout: "row", left: 327, bottom: 181 });
-    expect(canvasActionPlacement(604, "extract")).toEqual({ position: "bottom-left", layout: "stacked", left: 327, bottom: 181 });
-  });
-
-  it("keeps the short stacked layout when the side lane disappears", () => {
-    expect(canvasActionPlacement(497, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 81, bottom: 181 });
-    expect(canvasActionPlacement(496, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 80, bottom: 181 });
-    expect(canvasActionPlacement(400, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 16, bottom: 181 });
-  });
-
-  it("clamps a stacked bar to the canvas edge at a truly tiny width", () => {
-    expect(canvasActionPlacement(150, "minimal")).toEqual({ position: "bottom-left", layout: "stacked", left: 16, bottom: 181 });
-  });
-
-  it("slides toward the bottom only when the graph itself becomes short", () => {
-    expect(canvasActionPlacement(520, "minimal", 306)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 181 });
-    expect(canvasActionPlacement(520, "minimal", 305)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 180 });
-    expect(canvasActionPlacement(520, "minimal", 141)).toEqual({ position: "bottom-left", layout: "stacked", left: 104, bottom: 16 });
-  });
-
-  it("uses the bottom lane when the measured bar clears the bottom-right canvas chrome", () => {
-    expect(canvasActionPlacement(1303, "review-focus", 700, 180, {
-      actionBarWidth: 830,
-      bottomChromeLeft: 1180,
-    })).toEqual({
-      position: "bottom-left",
-      layout: "row",
-      left: 327,
       bottom: 16,
     });
-    expect(canvasActionPlacement(1303, "review-focus", 700, 180, {
-      actionBarWidth: 830,
-      bottomChromeLeft: 1172,
-    })).toEqual({
-      position: "bottom-left",
-      layout: "row",
-      left: 327,
-      bottom: 181,
-    });
   });
 
-  it("shifts a review bar into the free bottom lane before lifting it above canvas chrome", () => {
+  it("shifts a full review bar horizontally when it can share the bottom lane", () => {
     expect(canvasActionPlacement(1400, "review-focus", 700, 180, {
-      actionBarWidth: 830,
       bottomChromeLeft: 1100,
       shiftIntoBottomLane: true,
+      canCompact: true,
     })).toEqual({
       position: "bottom-left",
       layout: "row",
       left: 254,
       bottom: 16,
+      maxWidth: 830,
+    });
+    expect(canvasActionPlacement(1600, "review-focus", 700, 180, {
+      bottomChromeLeft: 1000,
+      shiftIntoBottomLane: true,
+      canCompact: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 154,
+      bottom: 16,
+      maxWidth: 830,
+    });
+  });
+
+  it("compacts secondary actions and clamps the bar before bottom chrome instead of lifting it", () => {
+    expect(canvasActionPlacement(1400, "review-focus", 700, 180, {
+      bottomChromeLeft: 800,
+      shiftIntoBottomLane: true,
+      canCompact: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 16,
+      bottom: 16,
+      maxWidth: 768,
+      compact: true,
     });
     expect(canvasActionPlacement(1400, "review-focus", 700, 180, {
-      actionBarWidth: 830,
       bottomChromeLeft: 800,
       shiftIntoBottomLane: true,
     })).toEqual({
       position: "bottom-left",
       layout: "row",
       left: 327,
-      bottom: 181,
+      bottom: 16,
+      maxWidth: 457,
+    });
+    expect(canvasActionPlacement(720, "minimal", 500, 45, {
+      bottomChromeLeft: 465,
+      shiftIntoBottomLane: true,
+      canCompact: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "stacked",
+      left: 16,
+      bottom: 16,
+      maxWidth: 433,
+      compact: true,
+    });
+    expect(canvasActionPlacement(720, "base", 500, 45, {
+      bottomChromeLeft: 465,
+      shiftIntoBottomLane: true,
+    })).toEqual({
+      position: "bottom-left",
+      layout: "row",
+      left: 260,
+      bottom: 16,
+      maxWidth: 189,
     });
   });
 
-  it("lifts the bar above chrome when horizontal or vertical overlap is unavoidable", () => {
-    expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({ left: 16, bottom: 181, zIndex: 7 });
-    expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305))).toMatchObject({
-      left: 104,
-      bottom: 180,
-      maxWidth: "calc(100% - 104px)",
+  it("keeps a 16px bottom inset for every width, mode, height, and chrome state", () => {
+    const modes = ["base", "extract", "minimal", "review-focus", "codebase"] as const;
+    const heights = [141, 403, 900];
+    for (let width = 320; width <= 1800; width += 1) {
+      for (const mode of modes) {
+        for (const height of heights) {
+          const placements = [
+            canvasActionPlacement(width, mode, height, 180),
+            canvasActionPlacement(width, mode, height, 180, { bottomChromeLeft: null }),
+            canvasActionPlacement(width, mode, height, 180, {
+              bottomChromeLeft: Math.max(96, width - 300),
+              shiftIntoBottomLane: true,
+              canCompact: true,
+            }),
+          ];
+          for (const placement of placements) {
+            expect(normalizedBottomInset(placement)).toBe(16);
+          }
+        }
+      }
+    }
+  });
+
+  it("bounds horizontal overflow without changing the vertical anchor", () => {
+    expect(panelAnchorStyle(canvasActionPlacement(330, "minimal", 600))).toMatchObject({
+      left: 16,
+      bottom: 16,
+      maxWidth: "calc(100% - 32px)",
       zIndex: 7,
     });
+    expect(panelAnchorStyle(canvasActionPlacement(520, "minimal", 305, 0, {
+      bottomChromeLeft: 300,
+      canCompact: true,
+    }))).toMatchObject({ bottom: 16, maxWidth: 268, zIndex: 7 });
   });
 });
+
+function normalizedBottomInset(placement: ReturnType<typeof canvasActionPlacement>): number | undefined {
+  const style = panelAnchorStyle(placement);
+  return placement.position === "bottom-center"
+    ? style.marginBottom as number | undefined
+    : style.bottom as number | undefined;
+}
 
 describe("CanvasActionBar Remove action", () => {
   it("is described and aria-disabled for canonical selections, then enabled for an added card", () => {

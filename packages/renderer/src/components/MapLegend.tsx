@@ -6,11 +6,19 @@
  * legend is reference material, so selecting a card must not change its contents or size.
  */
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
+import { useStore } from "@xyflow/react";
+import { useBlueprint } from "../state/StoreContext";
 import { CALLER_WIRE } from "../theme/edgeColors";
 import { accentForKind } from "../theme/kindColors";
 import { CALL_RESOLVED, CONSTRUCT, IMPORT_SIBLING } from "../theme/mapPalette";
-import { CHROME_EDGE, CHROME_GAP, MINIMAP_W, LEGEND_BOTTOM } from "./canvas/flowCanvasProps";
+import {
+  CHROME_EDGE,
+  CHROME_GAP,
+  MINIMAP_W,
+  LEGEND_BOTTOM,
+  shouldShowMapLegend,
+} from "./canvas/flowCanvasProps";
 import { MAP_RELATION_POLICY, type LensRelationPolicy } from "../graph/lensRelationPolicy";
 import { relationshipKindsForPolicy } from "../theme/relationshipKinds";
 import { relationSpec } from "../graph/relationCatalog";
@@ -39,20 +47,79 @@ export function MapLegend({
   readOnly = false,
 }: MapLegendProps) {
   const [open, setOpen] = useState(false);
+  const legendElementRef = useRef<HTMLElement | null>(null);
+  const ownerSurfaceRef = useRef<HTMLElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const returnFocusToTriggerRef = useRef(false);
+  const surfaceWidth = useStore((state) => state.width);
+  const surfaceHeight = useStore((state) => state.height);
+  const interactiveTopRightChrome = useBlueprint((state) => state.coverageMode || state.telemetryMode);
   const relationships = relationshipKindsForPolicy(relationPolicy)
     .filter((kind) => showIpc || kind.family !== "messaging");
+  const visible = shouldShowMapLegend(surfaceWidth, surfaceHeight, interactiveTopRightChrome);
+  // Capture this before React removes the focused Legend node. The layout effect hands focus to the
+  // stable Recenter action and closes an expanded card, so widening cannot resurrect stale chrome.
+  const restoreFocus = !visible
+    && typeof document !== "undefined"
+    && legendElementRef.current?.contains(document.activeElement) === true;
+  useLayoutEffect(() => {
+    if (visible) return;
+    if (restoreFocus) {
+      ownerSurfaceRef.current
+        ?.querySelector<HTMLButtonElement>('button[aria-label="Recenter view"]')
+        ?.focus({ preventScroll: true });
+    }
+    if (open) setOpen(false);
+  }, [open, restoreFocus, visible]);
+  useLayoutEffect(() => {
+    if (!visible) return;
+    if (open) {
+      closeButtonRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (returnFocusToTriggerRef.current) {
+      returnFocusToTriggerRef.current = false;
+      triggerRef.current?.focus({ preventScroll: true });
+    }
+  }, [open, visible]);
+  // The expanded card is wider than the MiniMap. Retire the entire informational control until
+  // both it and a compact primary action bar can share the bottom lane without clipping.
+  if (!visible) {
+    return null;
+  }
+  const rememberLegendElement = (element: HTMLElement | null) => {
+    legendElementRef.current = element;
+    if (element !== null) {
+      ownerSurfaceRef.current = element.closest<HTMLElement>("[data-graph-surface]");
+    }
+  };
+  const closeLegend = () => {
+    returnFocusToTriggerRef.current = true;
+    setOpen(false);
+  };
   if (!open) {
     return (
-      <button data-canvas-bottom-chrome="legend" type="button" style={PILL} title="What the shapes and colours mean" onClick={() => setOpen(true)}>
+      <button
+        ref={(element) => {
+          triggerRef.current = element;
+          rememberLegendElement(element);
+        }}
+        data-canvas-bottom-chrome="legend"
+        type="button"
+        style={PILL}
+        title="What the shapes and colours mean"
+        onClick={() => setOpen(true)}
+      >
         ◫ Legend
       </button>
     );
   }
   return (
-    <div data-canvas-bottom-chrome="legend" style={CARD} role="region" aria-label="Map legend">
+    <div ref={rememberLegendElement} data-canvas-bottom-chrome="legend" style={CARD} role="region" aria-label="Map legend">
       <div style={HEAD_ROW}>
         <strong style={TITLE}>Legend</strong>
-        <button type="button" style={CLOSE} onClick={() => setOpen(false)} title="Close">✕</button>
+        <button ref={closeButtonRef} type="button" style={CLOSE} onClick={closeLegend} title="Close">✕</button>
       </div>
       <Section title="Cards">
         {showPackages ? (

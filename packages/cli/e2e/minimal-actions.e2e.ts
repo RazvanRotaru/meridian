@@ -242,6 +242,21 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
         { timeout: 5_000 },
       ).toBe(true);
       expect(await centerIsHit(close)).toBe(true);
+      const moreCanvasActions = actionBar.getByRole("button", { name: "More canvas actions" });
+      await moreCanvasActions.focus();
+      await page.keyboard.press("Enter");
+      const overflow = page.getByRole("dialog", { name: "More canvas actions" });
+      await overflow.waitFor();
+      await expect.poll(async () => {
+        const bounds = await overflow.boundingBox();
+        return bounds !== null && bounds.y >= 12 && bounds.y + bounds.height <= 338;
+      }, { timeout: 5_000 }).toBe(true);
+      const overflowRearrange = overflow.getByRole("button", { name: "Rearrange extracted graph" });
+      await overflowRearrange.scrollIntoViewIfNeeded();
+      expect(await centerIsHit(overflowRearrange)).toBe(true);
+      await page.keyboard.press("Escape");
+      await overflow.waitFor({ state: "detached" });
+      await expect.poll(() => moreCanvasActions.evaluate((element) => element === document.activeElement)).toBe(true);
     } finally {
       await page.setViewportSize({ width: 1600, height: 1000 });
     }
@@ -265,17 +280,22 @@ describe.skipIf(!chromiumInstalled())("extracted graph actions (headless chromiu
 
 async function expectNarrowGeometry(page: Page, actionBar: Locator, extractedActions: Locator): Promise<void> {
   await expect.poll(async () => {
-    const [bar, surface, minimap, viewGroup, extractedGroup] = await Promise.all([
+    const [bar, surface, minimapHidden, controls, legendCount, viewGroup, extractedGroup] = await Promise.all([
       actionBar.boundingBox(),
       page.locator('[data-graph-surface="minimal"]').boundingBox(),
-      page.locator('[data-graph-surface="minimal"] .react-flow__minimap').boundingBox(),
+      page.locator('[data-graph-surface="minimal"] .react-flow__minimap').isHidden(),
+      page.locator('[data-graph-surface="minimal"] .react-flow__controls').boundingBox(),
+      page.locator('[data-graph-surface="minimal"] [data-canvas-bottom-chrome="legend"]').count(),
       actionBar.getByRole("group", { name: "View actions" }).boundingBox(),
       extractedActions.boundingBox(),
     ]);
-    return bar !== null && surface !== null && minimap !== null && viewGroup !== null && extractedGroup !== null
+    return bar !== null && surface !== null && controls !== null && viewGroup !== null && extractedGroup !== null
+      && minimapHidden
+      && legendCount === 0
       && bar.x >= surface.x
       && bar.x + bar.width <= surface.x + surface.width
-      && bar.y + bar.height <= minimap.y
+      && bar.x + bar.width <= controls.x - 15
+      && Math.round(surface.y + surface.height - bar.y - bar.height) === 16
       && viewGroup.y + viewGroup.height <= extractedGroup.y;
   }, { timeout: 5_000 }).toBe(true);
   expect(await actionBar.evaluate((element) => element.scrollWidth <= element.clientWidth + 1)).toBe(true);
