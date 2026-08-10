@@ -188,8 +188,8 @@ pnpm typecheck
 # Refresh the checked-in renderer sample from real V8 execution counters (emitted as Istanbul JSON)
 pnpm sample:refresh       # sample:coverage, then sample:graph
 
-# End-to-end (generate → web → headless Chromium). Install the browser once:
-npx playwright install chromium
+# End-to-end (generate → web → headless Chromium/WebKit). Install the browsers once:
+npx playwright install chromium webkit
 pnpm e2e
 ```
 

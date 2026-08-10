@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createGunzip } from "node:zlib";
-import { chromium, type Locator } from "playwright";
+import { chromium, webkit, type Locator } from "playwright";
 import { parsePatchDetail, parsePatchHunks } from "../src/server/github-parse";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +49,14 @@ export interface PrReviewFixture {
 export function chromiumInstalled(): boolean {
   try {
     return existsSync(chromium.executablePath());
+  } catch {
+    return false;
+  }
+}
+
+export function webkitInstalled(): boolean {
+  try {
+    return existsSync(webkit.executablePath());
   } catch {
     return false;
   }

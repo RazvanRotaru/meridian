@@ -15,6 +15,8 @@ const GRANT: GraphViewLeaseGrant = {
   heartbeatIntervalMs: 1_000,
 };
 
+const BROWSER_ORIGIN = "http://127.0.0.1:4173";
+
 const PREPARED_REVIEW_GRANT: PreparedReviewHandoffGrant = {
   version: 1,
   claimId: "a".repeat(32),
@@ -151,14 +153,24 @@ describe("graph view lease", () => {
       firstLease.beginPreparedReviewHandoff(PREPARED_REVIEW_GRANT),
       secondLease.beginPreparedReviewHandoff(otherClaim),
     ]);
-    expect(fetchMock.mock.calls.filter(([url]) => url === PREPARED_REVIEW_GRANT.url)).toHaveLength(1);
-    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === absoluteEndpoint(PREPARED_REVIEW_GRANT.url),
+    )).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === absoluteEndpoint(otherClaim.url),
+    )).toHaveLength(1);
 
     await first.release();
-    expect(fetchMock.mock.calls.filter(([url]) => url === PREPARED_REVIEW_GRANT.url)).toHaveLength(2);
-    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(1);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === absoluteEndpoint(PREPARED_REVIEW_GRANT.url),
+    )).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === absoluteEndpoint(otherClaim.url),
+    )).toHaveLength(1);
     await second.commit();
-    expect(fetchMock.mock.calls.filter(([url]) => url === otherClaim.url)).toHaveLength(2);
+    expect(fetchMock.mock.calls.filter(
+      ([url]) => url === absoluteEndpoint(otherClaim.url),
+    )).toHaveLength(2);
     firstLease.dispose();
     secondLease.dispose();
   });
@@ -250,7 +262,9 @@ describe("graph view lease", () => {
     firstPut.resolve(okResponse());
     const [stale, current] = await Promise.all([stalePromise, currentPromise]);
 
-    expect(fetchMock.mock.calls.some(([url]) => url === PREPARED_REVIEW_GRANT.url)).toBe(false);
+    expect(fetchMock.mock.calls.some(
+      ([url]) => url === absoluteEndpoint(PREPARED_REVIEW_GRANT.url),
+    )).toBe(false);
     expectPreparedReviewAttach(fetchMock, 2, nextClaim);
     await stale.commit();
     await stale.release();
@@ -650,8 +664,8 @@ function stubBrowser() {
 
   vi.stubGlobal("window", {
     location: {
-      href: "http://127.0.0.1:4173/view?id=base",
-      origin: "http://127.0.0.1:4173",
+      href: `${BROWSER_ORIGIN}/view?id=base`,
+      origin: BROWSER_ORIGIN,
     },
     setInterval: globalThis.setInterval,
     clearInterval: globalThis.clearInterval,
@@ -682,23 +696,27 @@ function stubBrowser() {
 }
 
 function expectPut(fetchMock: ReturnType<typeof vi.fn>, call: number, graphIds: string[]): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, GRANT.url, expect.objectContaining({
-    method: "PUT",
-    mode: "same-origin",
-    credentials: "same-origin",
-    cache: "no-store",
-    body: JSON.stringify({ version: 1, graphIds }),
-  }));
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    call + 1,
+    absoluteEndpoint(GRANT.url),
+    expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ version: 1, graphIds }),
+    }),
+  );
 }
 
 function expectCreate(fetchMock: ReturnType<typeof vi.fn>, call: number, graphIds: string[]): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, GRANT.createUrl, expect.objectContaining({
-    method: "POST",
-    mode: "same-origin",
-    credentials: "same-origin",
-    cache: "no-store",
-    body: JSON.stringify({ version: 1, baseGraphId: "base", graphIds }),
-  }));
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    call + 1,
+    absoluteEndpoint(GRANT.createUrl),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ version: 1, baseGraphId: "base", graphIds }),
+    }),
+  );
 }
 
 function expectPreparedReviewAttach(
@@ -707,13 +725,15 @@ function expectPreparedReviewAttach(
   grant: PreparedReviewHandoffGrant,
   viewLeaseId = GRANT.leaseId,
 ): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
-    method: "POST",
-    mode: "same-origin",
-    credentials: "same-origin",
-    cache: "no-store",
-    body: JSON.stringify({ version: 1, viewLeaseId }),
-  }));
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    call + 1,
+    absoluteEndpoint(grant.url),
+    expect.objectContaining({
+      method: "POST",
+      body: JSON.stringify({ version: 1, viewLeaseId }),
+    }),
+  );
 }
 
 function expectPreparedReviewCommit(
@@ -722,13 +742,15 @@ function expectPreparedReviewCommit(
   grant: PreparedReviewHandoffGrant,
   viewLeaseId = GRANT.leaseId,
 ): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
-    method: "PUT",
-    mode: "same-origin",
-    credentials: "same-origin",
-    cache: "no-store",
-    body: JSON.stringify({ version: 1, viewLeaseId, action: "commit" }),
-  }));
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    call + 1,
+    absoluteEndpoint(grant.url),
+    expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ version: 1, viewLeaseId, action: "commit" }),
+    }),
+  );
 }
 
 function expectPreparedReviewRelease(
@@ -736,22 +758,37 @@ function expectPreparedReviewRelease(
   call: number,
   grant: PreparedReviewHandoffGrant,
 ): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, grant.url, expect.objectContaining({
-    method: "DELETE",
-    mode: "same-origin",
-    credentials: "same-origin",
-    cache: "no-store",
-  }));
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    call + 1,
+    absoluteEndpoint(grant.url),
+    expect.objectContaining({ method: "DELETE" }),
+  );
 }
 
 function expectDelete(fetchMock: ReturnType<typeof vi.fn>, call: number, url = GRANT.url): void {
-  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, url, {
+  expectSafeRequestPolicy(fetchMock, call);
+  expect(fetchMock).toHaveBeenNthCalledWith(call + 1, absoluteEndpoint(url), {
     method: "DELETE",
-    mode: "same-origin",
+    redirect: "error",
     credentials: "same-origin",
     cache: "no-store",
     keepalive: true,
   });
+}
+
+function expectSafeRequestPolicy(fetchMock: ReturnType<typeof vi.fn>, call: number): void {
+  const init = fetchMock.mock.calls[call]?.[1];
+  expect(init).toEqual(expect.objectContaining({
+    redirect: "error",
+    credentials: "same-origin",
+    cache: "no-store",
+  }));
+  expect(init).not.toHaveProperty("mode");
+}
+
+function absoluteEndpoint(value: string): string {
+  return new URL(value, BROWSER_ORIGIN).href;
 }
 
 function okResponse(): Response {
