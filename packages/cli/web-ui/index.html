@@ -19,9 +19,9 @@
   Every GitHub-sourced string is written via textContent and every external URL is https-validated
   before use — repo names/descriptions are untrusted.
 
-  Design: a task-first landing surface with browser-local recent-work shortcuts beside a
-  deterministic capture of Meridian's current renderer. GitHub and local-folder entry points
-  reuse the same generation and PR-preparation contracts below.
+  Design: a graph-first landing surface with the pull-request workflow in a persistent right dock,
+  browser-local recent-work shortcuts, and a deterministic capture of Meridian's current renderer.
+  GitHub and local-folder entry points reuse the same generation and PR-preparation contracts below.
 -->
 <html lang="en" data-theme="dark">
   <head>
@@ -1257,39 +1257,51 @@
         }
       }
 
-      /* ---- task-first landing direction ---- */
+      /* ---- graph-first landing with a persistent review dock ---- */
+      :root {
+        --landing-header-height: 62px;
+        --landing-dock-width: clamp(420px, 33.5vw, 470px);
+      }
       body {
+        width: 100%;
         min-height: 100vh;
-        height: auto;
+        height: 100dvh;
         background: #080d12;
-        overflow-x: hidden;
-        overflow-y: auto;
+        overflow: hidden;
       }
       #bg {
-        opacity: 0.72;
+        position: absolute;
+        inset: -5% auto -5% -31%;
+        width: 136%;
+        height: 110%;
+        object-fit: cover;
+        object-position: center;
+        opacity: 0.86;
         filter: none;
       }
+      .scrim {
+        position: absolute;
+        inset: 0;
+      }
       .scrim-radial {
-        background: radial-gradient(110% 95% at 78% 48%, rgba(8, 11, 14, 0.06) 0%, rgba(8, 11, 14, 0.24) 54%, rgba(8, 11, 14, 0.86) 100%);
+        background: radial-gradient(85% 68% at 56% 44%, rgba(8, 13, 18, 0) 28%, rgba(8, 13, 18, 0.2) 72%, rgba(8, 13, 18, 0.54) 100%);
       }
       .scrim-vertical {
-        background: linear-gradient(180deg, rgba(8, 11, 14, 0.48), rgba(8, 11, 14, 0) 22%, rgba(8, 11, 14, 0.08) 76%, rgba(8, 11, 14, 0.76));
+        background: linear-gradient(180deg, rgba(8, 13, 18, 0.4), rgba(8, 13, 18, 0.04) 24%, rgba(8, 13, 18, 0.04) 78%, rgba(8, 13, 18, 0.44));
       }
       .scrim-left {
-        background: linear-gradient(90deg, #080d12 0%, #080d12 40%, rgba(8, 13, 18, 0.9) 50%, rgba(8, 13, 18, 0.18) 67%, rgba(8, 13, 18, 0) 78%);
+        background: linear-gradient(90deg, rgba(8, 13, 18, 0.58), rgba(8, 13, 18, 0.08) 42%, rgba(8, 13, 18, 0) 72%);
       }
       nav {
-        position: sticky;
-        top: 0;
-        z-index: 4;
+        position: relative;
+        z-index: 6;
+        height: var(--landing-header-height);
         width: 100%;
         max-width: none;
-        min-height: 70px;
-        padding: 20px clamp(28px, 5vw, 76px);
+        min-height: var(--landing-header-height);
+        padding: 0 clamp(24px, 3.3vw, 48px);
         border-bottom: 1px solid rgba(255, 255, 255, 0.08);
-        background: rgba(8, 11, 14, 0.72);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
+        background: #080d12;
       }
       .wordmark {
         font-size: 20px;
@@ -1339,49 +1351,70 @@
         font-size: 12.5px;
       }
       main {
-        flex: none;
-        min-height: calc(100vh - 70px);
-        grid-template-columns: minmax(0, 620px) minmax(0, 1fr);
-        grid-template-rows: auto auto;
-        align-content: start;
-        align-items: start;
-        column-gap: clamp(44px, 6vw, 90px);
-        row-gap: 25px;
-        width: 100%;
-        max-width: 1488px;
-        padding: 54px clamp(76px, 6.7vw, 96px) 48px;
-      }
-      .hero {
-        grid-column: 1;
-        grid-row: 1;
-        max-width: 600px;
-      }
-      .hero h1 {
-        max-width: 590px;
-        font-size: clamp(44px, 3.65vw, 52px);
-        line-height: 1.04;
-        letter-spacing: -0.045em;
-        text-wrap: balance;
-      }
-      .hero p {
-        max-width: 530px;
-        margin-top: 18px;
-        color: #8f9baa;
-        font-size: 16.5px;
-        line-height: 1.55;
-      }
-      .card-wrap {
-        grid-column: 1;
-        grid-row: 2;
-        justify-self: stretch;
+        flex: 1;
+        min-height: 0;
+        height: calc(100dvh - var(--landing-header-height));
+        grid-template-columns: minmax(0, 1fr) var(--landing-dock-width);
+        grid-template-rows: minmax(0, 1fr);
+        align-items: stretch;
+        gap: 0;
         width: 100%;
         max-width: none;
+        margin: 0;
+        padding: 0;
+        overflow: hidden;
+      }
+      .graph-stage {
+        position: relative;
+        grid-column: 1;
+        grid-row: 1;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+        background: #0e1116;
+      }
+      .hero {
+        position: absolute;
+        z-index: 2;
+        top: 34px;
+        left: clamp(28px, 3.2vw, 48px);
+        grid-column: 1;
+        grid-row: 1;
+        max-width: min(560px, calc(100% - 56px));
+        pointer-events: none;
+      }
+      .hero h1 {
+        max-width: none;
+        font-size: clamp(17px, 1.45vw, 21px);
+        line-height: 1.25;
+        letter-spacing: -0.02em;
+        font-weight: 500;
+        text-wrap: nowrap;
+      }
+      .hero p {
+        display: none;
+      }
+      .card-wrap {
+        position: relative;
+        z-index: 4;
+        grid-column: 2;
+        grid-row: 1;
+        justify-self: stretch;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        max-width: none;
+        border-left: 1px solid rgba(255, 255, 255, 0.1);
+        background: #0b1119;
       }
       .card {
-        overflow: visible;
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+        overflow: hidden;
         border: 0;
         border-radius: 0;
-        background: transparent;
+        background: #0b1119;
         box-shadow: none;
         backdrop-filter: none;
         -webkit-backdrop-filter: none;
@@ -1390,12 +1423,39 @@
         display: none;
       }
       .card-scroll {
+        height: 100%;
+        min-height: 0;
         max-height: none;
-        overflow: visible;
+        overflow: hidden;
         padding: 0;
       }
-      .card-header {
-        margin-bottom: 15px;
+      #view-form,
+      #form {
+        width: 100%;
+        height: 100%;
+        min-height: 0;
+      }
+      #form {
+        display: grid;
+        grid-template-rows: minmax(0, 1fr) auto;
+        gap: 0;
+      }
+      .dock-body {
+        display: flex;
+        min-height: 0;
+        overflow-x: hidden;
+        overflow-y: auto;
+        flex-direction: column;
+        gap: 0;
+        padding: 32px 30px 22px;
+      }
+      .dock-footer {
+        padding: 14px 30px 24px;
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        background: #0b1119;
+      }
+      .dock-body > .card-header {
+        display: none;
       }
       .card h2,
       .recent-work h2 {
@@ -1408,73 +1468,52 @@
       }
       form,
       .fieldset {
-        gap: 13px;
+        gap: 20px;
       }
       .intent-toggle {
         grid-template-columns: 1fr 1fr;
-        gap: 10px;
+        gap: 26px;
         padding: 0;
         border: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
         border-radius: 0;
         background: transparent;
       }
       .intent-toggle button {
         position: relative;
-        display: grid;
-        grid-template-columns: 16px 38px minmax(0, 1fr);
-        grid-template-rows: 1fr;
+        display: block;
         align-items: center;
-        min-height: 96px;
-        padding: 15px 14px;
-        border: 1px solid rgba(255, 255, 255, 0.11);
-        border-radius: 10px;
-        color: #bac4cf;
-        background: rgba(255, 255, 255, 0.025);
-        text-align: left;
-        column-gap: 10px;
-        transition: border-color 0.16s, background 0.16s, transform 0.16s;
+        min-height: 48px;
+        padding: 0 0 14px;
+        border: 0;
+        border-bottom: 2px solid transparent;
+        border-radius: 0;
+        color: #8d99a8;
+        background: transparent;
+        text-align: center;
+        transition: color 0.16s, border-color 0.16s;
       }
       .intent-toggle button:hover {
-        transform: translateY(-1px);
-        border-color: rgba(255, 255, 255, 0.2);
-        background: rgba(255, 255, 255, 0.045);
+        color: #dce5ed;
+        transform: none;
+        border-bottom-color: rgba(255, 255, 255, 0.26);
+        background: transparent;
       }
       .intent-toggle button:focus-visible {
         outline: none;
-        border-color: var(--blue);
-        box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.14);
+        border-bottom-color: var(--blue);
+        box-shadow: 0 3px 0 rgba(88, 166, 255, 0.16);
       }
       .intent-toggle button.active,
       .intent-toggle button[aria-pressed="true"] {
         color: var(--text);
-        border-color: rgba(69, 205, 96, 0.72);
-        background: rgba(38, 85, 48, 0.22);
-        box-shadow: inset 0 0 0 1px rgba(69, 205, 96, 0.07);
+        border-bottom-color: #5edd75;
+        background: transparent;
+        box-shadow: none;
       }
-      .intent-radio {
-        position: relative;
-        top: auto;
-        right: auto;
-        width: 14px;
-        height: 14px;
-        border: 1px solid rgba(255, 255, 255, 0.25);
-        border-radius: 50%;
-      }
-      .intent-toggle button[aria-pressed="true"] .intent-radio {
-        border: 4px solid #4bd468;
-      }
+      .intent-radio,
       .intent-icon-shell {
-        display: grid;
-        place-items: center;
-        width: 36px;
-        height: 36px;
-        border-radius: 7px;
-        color: #69aef7;
-        background: rgba(88, 166, 255, 0.1);
-      }
-      .intent-toggle button[aria-pressed="true"] .intent-icon-shell {
-        color: #59d776;
-        background: rgba(63, 185, 80, 0.12);
+        display: none;
       }
       .intent-icon {
         width: 20px;
@@ -1482,37 +1521,44 @@
         fill: currentColor;
       }
       .intent-copy {
-        display: flex;
+        display: block;
         min-width: 0;
-        flex-direction: column;
-        gap: 5px;
-        padding-right: 8px;
+        padding: 0;
       }
       .intent-copy strong {
         color: inherit;
-        font-size: 15px;
+        font-size: 14.5px;
         line-height: 1.2;
       }
       .intent-copy small {
-        color: #798694;
-        font-size: 11.5px;
-        font-weight: 400;
-        line-height: 1.35;
+        display: none;
       }
       .field > label {
-        color: #aeb9c4;
+        color: #a8b3bf;
         font-size: 12px;
-        font-weight: 600;
+        font-weight: 500;
       }
       .field {
-        gap: 11px;
+        gap: 9px;
+      }
+      #github-fields {
+        gap: 24px;
+      }
+      #review-fields {
+        gap: 20px;
       }
       input,
       .menu-trigger,
       .repository-selection {
-        min-height: 46px;
+        min-height: 50px;
         border-radius: 8px;
-        background: rgba(255, 255, 255, 0.028);
+        background: rgba(255, 255, 255, 0.022);
+      }
+      input:focus,
+      .menu-trigger:focus-visible,
+      .menu-trigger[aria-expanded="true"] {
+        border-color: #5edd75;
+        box-shadow: 0 0 0 3px rgba(63, 185, 80, 0.12);
       }
       input::placeholder {
         color: #83909d;
@@ -1532,27 +1578,85 @@
       #repo {
         padding-left: 40px;
       }
+      .repository-selection {
+        min-height: 54px;
+        padding: 6px 0 14px;
+        border: 0;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.12);
+        border-radius: 0;
+        background: transparent;
+      }
+      .repository-selection-name {
+        font-size: 15px;
+      }
+      button.change-repository {
+        min-height: 34px;
+        padding: 6px 0 6px 10px;
+        border: 0;
+        background: transparent;
+        color: #63dc79;
+        font-size: 12px;
+      }
+      button.change-repository:hover,
+      button.change-repository:focus-visible {
+        border: 0;
+        background: transparent;
+        color: #9aefaa;
+        box-shadow: none;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+      .filter-row {
+        grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+        gap: 14px;
+      }
+      .state-toggle {
+        min-height: 50px;
+        gap: 8px;
+        padding: 0;
+        border: 0;
+        background: transparent;
+      }
+      .state-toggle button {
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 8px;
+        background: rgba(255, 255, 255, 0.02);
+      }
+      .state-toggle button.active {
+        color: #7ee787;
+        border-color: rgba(94, 221, 117, 0.8);
+        background: rgba(63, 185, 80, 0.09);
+      }
+      #pr-query {
+        min-height: 56px;
+      }
+      .dropdown.pr-dropdown {
+        position: static;
+        max-height: clamp(160px, calc(100dvh - 556px), 280px);
+        margin-top: 6px;
+        top: auto;
+        bottom: auto;
+      }
       .field-note:empty,
       .status:empty {
         display: none;
       }
+      .field-note {
+        min-height: 14px;
+        font-size: 11px;
+      }
       button.primary {
-        min-height: 46px;
-        margin-top: 1px;
+        width: 100%;
+        min-height: 56px;
+        margin: 0;
         border-radius: 8px;
         color: #07170c;
         background: linear-gradient(180deg, #65e27b, #47c761);
         box-shadow: 0 9px 28px -12px rgba(63, 185, 80, 0.72), inset 0 1px 0 rgba(255, 255, 255, 0.35);
-        font-size: 14px;
+        font-size: 15px;
       }
       .source-divider {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-        margin: 20px 0 7px;
-        color: #596573;
-        font-family: var(--font-mono);
-        font-size: 9.5px;
+        display: none;
       }
       .source-divider::before,
       .source-divider::after {
@@ -1563,8 +1667,8 @@
       }
       .toggle {
         display: block;
-        margin: 0;
-        padding: 0;
+        margin: auto 0 0;
+        padding: 20px 0 0;
         border: 0;
         border-radius: 0;
         background: transparent;
@@ -1593,9 +1697,9 @@
         align-items: center;
         justify-content: flex-start;
         gap: 7px;
-        margin: 11px 0 0;
-        color: #6f7b88;
-        font-size: 11px;
+        margin: 0 0 12px;
+        color: #7e8b99;
+        font-size: 11.5px;
       }
       .inline-icon {
         width: 15px;
@@ -1607,7 +1711,7 @@
         color: #5aae6d;
       }
       .recent-work {
-        margin-top: 36px;
+        margin-top: 22px;
       }
       .recent-work h2 {
         margin: 0 0 11px;
@@ -1692,69 +1796,121 @@
         fill: currentColor;
       }
       #view-device {
-        max-width: 500px;
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        overflow: auto;
+        padding: 34px 30px;
       }
 
       @media (max-height: 860px) and (min-width: 981px) {
-        nav {
-          min-height: 62px;
-          padding-top: 14px;
-          padding-bottom: 14px;
+        .dock-body {
+          padding: 24px 26px 16px;
         }
-        main {
-          min-height: calc(100vh - 62px);
-          row-gap: 18px;
-          padding-top: 34px;
-          padding-bottom: 34px;
-        }
-        .hero h1 {
-          font-size: 44px;
-        }
-        .hero p {
-          margin-top: 13px;
+        .dock-footer {
+          padding: 11px 26px 18px;
         }
         .intent-toggle button {
-          min-height: 88px;
+          min-height: 44px;
+          padding-bottom: 12px;
+        }
+        #github-fields {
+          gap: 20px;
+        }
+        #review-fields {
+          gap: 17px;
+        }
+        .trust-note {
+          margin-bottom: 9px;
+        }
+        button.primary {
+          min-height: 52px;
         }
         .recent-work {
-          margin-top: 18px;
+          margin-top: 16px;
         }
         .recent-item button {
-          min-height: 53px;
+          min-height: 48px;
         }
       }
       @media (max-width: 980px) {
+        body {
+          display: block;
+          height: auto;
+          min-height: 100vh;
+          overflow-x: hidden;
+          overflow-y: auto;
+        }
         #bg {
-          opacity: 0.25;
+          inset: -12% auto -12% -18%;
+          width: 126%;
+          height: 124%;
+          opacity: 0.56;
         }
         .scrim-left {
-          background: rgba(8, 11, 14, 0.9);
+          background: linear-gradient(90deg, rgba(8, 11, 14, 0.72), rgba(8, 11, 14, 0.12) 70%);
         }
         nav {
+          position: sticky;
+          top: 0;
+          height: 64px;
           min-height: 64px;
-          padding: 15px 24px;
+          padding: 0 24px;
         }
         main {
+          height: auto;
           min-height: calc(100vh - 64px);
           grid-template-columns: 1fr;
-          grid-template-rows: auto auto;
-          gap: 28px;
-          padding: 42px 24px 64px;
+          grid-template-rows: 280px auto;
+          gap: 0;
+          overflow: visible;
+          padding: 0;
         }
-        .hero,
+        .graph-stage,
         .card-wrap {
           grid-column: 1;
-          max-width: 620px;
-          margin: 0 auto;
+          width: 100%;
+          max-width: none;
+          margin: 0;
         }
-        .hero {
+        .graph-stage {
           grid-row: 1;
         }
         .card-wrap {
           grid-row: 2;
+          height: auto;
+          border-top: 1px solid rgba(255, 255, 255, 0.1);
+          border-left: 0;
         }
         .hero h1 {
-          font-size: clamp(39px, 8vw, 50px);
+          font-size: clamp(18px, 3.6vw, 22px);
+        }
+        .card,
+        .card-scroll,
+        #view-form,
+        #form {
+          height: auto;
+          min-height: 0;
+          max-height: none;
+          overflow: visible;
+        }
+        #form {
+          display: block;
+        }
+        .dock-body {
+          overflow: visible;
+          padding: 30px 24px 24px;
+        }
+        .dock-footer {
+          padding: 16px 24px 30px;
+        }
+        .dropdown.pr-dropdown {
+          max-height: 280px;
+        }
+        #view-device {
+          height: auto;
+          overflow: visible;
+          padding: 30px 24px;
         }
       }
       @media (max-width: 620px) {
@@ -1763,14 +1919,12 @@
         #github-auth .avatar {
           display: none;
         }
-        .intent-toggle {
-          grid-template-columns: 1fr;
-        }
         .intent-toggle button {
-          min-height: 82px;
+          min-height: 46px;
+          font-size: 13px;
         }
-        .hero h1 br {
-          display: none;
+        .filter-row {
+          grid-template-columns: 1fr;
         }
         .recent-copy {
           grid-template-columns: minmax(0, 1fr);
@@ -1783,18 +1937,6 @@
     </style>
   </head>
   <body>
-    <img
-      id="bg"
-      src="/landing-renderer-background.png"
-      alt=""
-      aria-hidden="true"
-      decoding="async"
-      fetchpriority="high"
-    />
-    <div class="scrim scrim-radial"></div>
-    <div class="scrim scrim-vertical"></div>
-    <div class="scrim scrim-left"></div>
-
     <nav>
       <span class="wordmark">Meridian<span class="dot">.</span></span>
       <div id="github-auth">
@@ -1821,11 +1963,24 @@
     </nav>
 
     <main>
-      <section class="hero">
-        <h1>Let&rsquo;s make sense of<br /> your <span class="grad-word">codebase.</span></h1>
-        <p>
-          Meridian turns your repository into an explorable code graph so you can understand it, not just search it.
-        </p>
+      <section class="graph-stage" aria-label="Meridian code graph preview">
+        <img
+          id="bg"
+          src="/landing-renderer-background.png"
+          alt=""
+          aria-hidden="true"
+          decoding="async"
+          fetchpriority="high"
+        />
+        <div class="scrim scrim-radial"></div>
+        <div class="scrim scrim-vertical"></div>
+        <div class="scrim scrim-left"></div>
+        <section class="hero">
+          <h1>Let&rsquo;s make sense of your <span class="grad-word">codebase.</span></h1>
+          <p>
+            Meridian turns your repository into an explorable code graph so you can understand it, not just search it.
+          </p>
+        </section>
       </section>
 
       <section class="card-wrap">
@@ -1833,12 +1988,12 @@
           <div class="card-accent"></div>
           <div class="card-scroll">
           <div id="view-form">
-          <div class="card-header">
-            <h2 id="card-title">What would you like to do?</h2>
-            <p class="card-subtitle" id="card-subtitle">Choose a starting point.</p>
-          </div>
-
           <form id="form" autocomplete="off">
+            <div class="dock-body">
+              <div class="card-header">
+                <h2 id="card-title">What would you like to do?</h2>
+                <p class="card-subtitle" id="card-subtitle">Choose a starting point.</p>
+              </div>
             <div class="fieldset" id="github-fields">
               <div class="intent-toggle" role="group" aria-label="GitHub action">
                 <button type="button" id="intent-review" class="active" aria-pressed="true">
@@ -2000,7 +2155,6 @@
               <p class="hint">Extraction runs on the server; nothing is uploaded to GitHub.</p>
             </div>
 
-            <button type="submit" class="primary" id="submit">Review this pull request</button>
             <section
               class="prepare-progress"
               id="prepare-progress"
@@ -2045,7 +2199,6 @@
               </ol>
             </section>
             <div class="status" id="status" role="status" aria-live="polite"></div>
-          </form>
 
           <div class="source-divider" aria-hidden="true"><span>OR</span></div>
           <div class="toggle" id="toggle" role="group" aria-label="Repository source">
@@ -2058,14 +2211,19 @@
               Open a local folder instead
             </button>
           </div>
-          <p class="trust-note">
-            <svg class="inline-icon" viewBox="0 0 15 15" aria-hidden="true"><path d="M5 4.63601C5 3.76031 5.24219 3.1054 5.64323 2.67357C6.03934 2.24705 6.64582 1.9783 7.5014 1.9783C8.35745 1.9783 8.96306 2.24652 9.35823 2.67208C9.75838 3.10299 10 3.75708 10 4.63325V5.99999H5V4.63601ZM4 5.99999V4.63601C4 3.58148 4.29339 2.65754 4.91049 1.99307C5.53252 1.32329 6.42675 0.978302 7.5014 0.978302C8.57583 0.978302 9.46952 1.32233 10.091 1.99162C10.7076 2.65557 11 3.57896 11 4.63325V5.99999H12C12.5523 5.99999 13 6.44771 13 6.99999V13C13 13.5523 12.5523 14 12 14H3C2.44772 14 2 13.5523 2 13V6.99999C2 6.44771 2.44772 5.99999 3 5.99999H4ZM3 6.99999H12V13H3V6.99999Z" /></svg>
-            <span>Read-only analysis. Nothing is pushed to GitHub.</span>
-          </p>
           <section class="recent-work" id="recent-work" aria-labelledby="recent-work-title" hidden>
             <h2 id="recent-work-title">Pick up where you left off</h2>
             <ul class="recent-list" id="recent-work-list"></ul>
           </section>
+            </div>
+            <div class="dock-footer">
+              <p class="trust-note">
+                <svg class="inline-icon" viewBox="0 0 15 15" aria-hidden="true"><path d="M5 4.63601C5 3.76031 5.24219 3.1054 5.64323 2.67357C6.03934 2.24705 6.64582 1.9783 7.5014 1.9783C8.35745 1.9783 8.96306 2.24652 9.35823 2.67208C9.75838 3.10299 10 3.75708 10 4.63325V5.99999H5V4.63601ZM4 5.99999V4.63601C4 3.58148 4.29339 2.65754 4.91049 1.99307C5.53252 1.32329 6.42675 0.978302 7.5014 0.978302C8.57583 0.978302 9.46952 1.32233 10.091 1.99162C10.7076 2.65557 11 3.57896 11 4.63325V5.99999H12C12.5523 5.99999 13 6.44771 13 6.99999V13C13 13.5523 12.5523 14 12 14H3C2.44772 14 2 13.5523 2 13V6.99999C2 6.44771 2.44772 5.99999 3 5.99999H4ZM3 6.99999H12V13H3V6.99999Z" /></svg>
+                <span>Read-only analysis. Nothing is pushed to GitHub.</span>
+              </p>
+              <button type="submit" class="primary" id="submit">Review this pull request</button>
+            </div>
+          </form>
           <template id="recent-chevron-template">
             <!-- Radix Icons ChevronRightIcon. -->
             <svg class="recent-chevron" viewBox="0 0 15 15" aria-hidden="true">
