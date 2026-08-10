@@ -137,42 +137,48 @@ export function ReviewPreviewViewedControl({
   );
 }
 
-/** File-level viewed control for source surfaces outside the graph. Resolving by review path is
- * deliberate: a full source view may be showing a declaration node, a renamed-file alias, or an
- * unmatched synthetic file, but the gesture must remain GitHub's atomic whole-file transition. */
-export function ReviewFileViewedControl({
-  path,
+/** Header-sized counterpart of the node-attached viewed control. Prefer the exact source node so
+ * declarations and containers retain the Map's unit semantics; fall back to the review path only
+ * for unmatched or synthetic whole-file source surfaces. */
+export function ReviewSourceViewedControl({
+  nodeId,
+  fallbackPath,
   compact = false,
 }: {
-  path: string;
+  nodeId: string;
+  fallbackPath?: string;
   compact?: boolean;
 }) {
-  const control = useReviewFileViewedControl(path);
+  const nodeControl = useReviewViewedControl(nodeId, "source");
+  const fileControl = useReviewFileViewedControl(fallbackPath);
+  const control = nodeControl ?? fileControl;
   if (control === null) {
     return null;
   }
   return (
     <button
       type="button"
-      className="review-source-file-viewed-button"
+      className="review-source-viewed-button"
       title={control.label}
       aria-label={control.label}
       aria-pressed={control.state === "done"}
       disabled={control.blocked}
       data-review-source-viewed="true"
       data-review-source-viewed-compact={compact || undefined}
-      data-review-viewed-scope="file"
+      data-review-source-viewed-fallback={nodeControl === null || undefined}
+      data-review-node-id={nodeId}
+      data-review-viewed-scope={control.scope}
       data-review-view-state={control.state}
       style={{
-        ...SOURCE_FILE_BUTTON,
-        ...(compact ? SOURCE_FILE_BUTTON_COMPACT : {}),
+        ...SOURCE_VIEWED_BUTTON,
+        ...(compact ? SOURCE_VIEWED_BUTTON_COMPACT : {}),
         color: control.color,
-        ...(control.blocked ? SOURCE_FILE_BUTTON_BLOCKED : {}),
+        ...(control.blocked ? SOURCE_VIEWED_BUTTON_BLOCKED : {}),
       }}
       onClick={control.onToggle}
     >
       <ViewedIcon state={control.state} />
-      <span style={compact ? VISUALLY_HIDDEN_TEXT : undefined}>{sourceFileViewedText(control.state)}</span>
+      <span style={compact ? VISUALLY_HIDDEN_TEXT : undefined}>{sourceViewedText(control.state)}</span>
     </button>
   );
 }
@@ -236,8 +242,10 @@ function useReviewViewedControl(nodeId: string, scope: ReviewViewedTargetScope):
   return useReviewViewedTargetControl(target);
 }
 
-function useReviewFileViewedControl(path: string): ReviewViewedControl | null {
-  const file = useBlueprint((state) => state.reviewFiles.find((candidate) => candidate.path === path));
+function useReviewFileViewedControl(path: string | undefined): ReviewViewedControl | null {
+  const file = useBlueprint((state) => path === undefined
+    ? undefined
+    : state.reviewFiles.find((candidate) => candidate.path === path));
   const target = useMemo<ReviewViewedTarget | null>(
     () => file === undefined ? null : { kind: "file", file },
     [file],
@@ -286,7 +294,7 @@ function useReviewViewedTargetControl(target: ReviewViewedTarget | null): Review
   };
 }
 
-function sourceFileViewedText(state: CheckState): string {
+function sourceViewedText(state: CheckState): string {
   if (state === "done") return "Viewed";
   return state === "stale" ? "Mark again" : "Mark viewed";
 }
@@ -373,7 +381,7 @@ const BUTTON_HIT_TARGET: React.CSSProperties = {
   cursor: "pointer",
 };
 const BLOCKED_HIT_TARGET: React.CSSProperties = { cursor: "wait" };
-const SOURCE_FILE_BUTTON: React.CSSProperties = {
+const SOURCE_VIEWED_BUTTON: React.CSSProperties = {
   minHeight: 28,
   display: "inline-flex",
   alignItems: "center",
@@ -390,11 +398,11 @@ const SOURCE_FILE_BUTTON: React.CSSProperties = {
   whiteSpace: "nowrap",
   cursor: "pointer",
 };
-const SOURCE_FILE_BUTTON_BLOCKED: React.CSSProperties = {
+const SOURCE_VIEWED_BUTTON_BLOCKED: React.CSSProperties = {
   opacity: 0.62,
   cursor: "wait",
 };
-const SOURCE_FILE_BUTTON_COMPACT: React.CSSProperties = {
+const SOURCE_VIEWED_BUTTON_COMPACT: React.CSSProperties = {
   width: 28,
   padding: 4,
   justifyContent: "center",

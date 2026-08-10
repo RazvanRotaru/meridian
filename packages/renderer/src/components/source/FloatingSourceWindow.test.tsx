@@ -35,7 +35,7 @@ describe("FloatingSourceWindow", () => {
         }}
         rail={(controls) => {
           railControls = controls;
-          return <div>Related rail</div>;
+          return <div>{controls.sideRailCloseButton}Related rail</div>;
         }}
       />,
     );
@@ -61,6 +61,12 @@ describe("FloatingSourceWindow", () => {
     expect(markup).toContain('data-source-window-rail-count="3"');
     expect(markup).toContain("Source body");
     expect(markup).toContain("Related rail");
+    const close = elementWithDataAttribute(markup, "data-source-window-close", "button");
+    expect(markup.match(/data-source-window-close=/g)).toHaveLength(1);
+    expect(close).toContain('aria-label="Close source"');
+    expect(close).toContain('aria-keyshortcuts="Escape"');
+    expect(close).toContain('data-source-window-close-placement="side-rail"');
+    expect(close).not.toContain("position:absolute");
 
     expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
     expect(markup.match(/role="separator"/g)).toHaveLength(4);
@@ -96,6 +102,6 @@ describe("FloatingSourceWindow", () => {
   });
 });
 
-function elementWithDataAttribute(markup: string, attribute: string): string {
-  return markup.match(new RegExp(`<div(?=[^>]*${attribute})[^>]*>`))?.[0] ?? "";
+function elementWithDataAttribute(markup: string, attribute: string, tag = "div"): string {
+  return markup.match(new RegExp(`<${tag}(?=[^>]*${attribute})[^>]*>`))?.[0] ?? "";
 }

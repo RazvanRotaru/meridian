@@ -7,9 +7,9 @@ import { StoreProvider } from "../../state/StoreContext";
 import { SurfaceInteractionScope } from "../canvas/SurfaceInteractionContext";
 import {
   REVIEW_NODE_VIEWED_CSS,
-  ReviewFileViewedControl,
   ReviewNodeViewedChrome,
   ReviewPreviewViewedControl,
+  ReviewSourceViewedControl,
   ReviewViewedButton,
 } from "./ReviewFileNodeViewedControls";
 
@@ -295,16 +295,17 @@ describe("ReviewPreviewViewedControl", () => {
   });
 });
 
-describe("ReviewFileViewedControl", () => {
-  it("resolves the dock action by path to the atomic file state", () => {
+describe("ReviewSourceViewedControl", () => {
+  it("resolves module source to the same atomic file target as its node", () => {
     const store = reviewStore({ fingerprint: "file-fingerprint", folderMembers: [FILE_ID] });
     const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
-        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+        <ReviewSourceViewedControl nodeId={FILE_ID} />
       </StoreProvider>,
     );
 
     expect(markup).toContain('data-review-source-viewed="true"');
+    expect(markup).toContain(`data-review-node-id="${FILE_ID}"`);
     expect(markup).toContain('data-review-viewed-scope="file"');
     expect(markup).toContain('data-review-view-state="done"');
     expect(markup).toContain('aria-pressed="true"');
@@ -312,28 +313,45 @@ describe("ReviewFileViewedControl", () => {
     expect(markup).toContain("Viewed</span>");
   });
 
-  it("keeps file semantics when only one declaration in the file is viewed", () => {
+  it("reuses unit and unit-group semantics for declaration source", () => {
     const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
-    store.getState().toggleReviewUnitTick(UNIT_ID);
-    const snapshot = store.getState();
-    Object.assign(store, { getInitialState: () => snapshot });
     const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
-        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+        <ReviewSourceViewedControl nodeId={CLASS_ID} />
+        <ReviewSourceViewedControl nodeId={UNIT_ID} />
       </StoreProvider>,
     );
 
-    expect(markup).toContain('data-review-view-state="todo"');
-    expect(markup).toContain('aria-pressed="false"');
-    expect(markup).toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
-    expect(markup).toContain("Mark viewed</span>");
+    expect(markup.match(/data-review-viewed-scope="unit"/g)).toHaveLength(2);
+    expect(markup).toContain(`data-review-node-id="${CLASS_ID}"`);
+    expect(markup).toContain(`data-review-node-id="${UNIT_ID}"`);
+    expect(markup).toContain('aria-label="Mark OsService as viewed"');
+    expect(markup).toContain('aria-label="Mark run as viewed"');
+    expect(markup).not.toContain('data-review-source-viewed-fallback="true"');
+    expect(markup).not.toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
   });
 
-  it("self-hides when the source path is not part of the active review", () => {
+  it("falls back to the review path for unmatched synthetic source", () => {
     const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
     const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
-        <ReviewFileViewedControl path="src/not-in-review.ts" />
+        <ReviewSourceViewedControl
+          nodeId="synthetic:unmatched"
+          fallbackPath="src/ServiceContainerFactory.ts"
+        />
+      </StoreProvider>,
+    );
+
+    expect(markup).toContain('data-review-source-viewed-fallback="true"');
+    expect(markup).toContain('data-review-viewed-scope="file"');
+    expect(markup).toContain('aria-label="Mark src/ServiceContainerFactory.ts as viewed"');
+  });
+
+  it("self-hides when exact node source has no viewed target", () => {
+    const store = reviewStore({ fingerprint: undefined, folderMembers: [FILE_ID] });
+    const markup = renderToStaticMarkup(
+      <StoreProvider store={store}>
+        <ReviewSourceViewedControl nodeId="synthetic:unmatched" />
       </StoreProvider>,
     );
 
@@ -351,7 +369,7 @@ describe("ReviewFileViewedControl", () => {
     Object.assign(store, { getInitialState: () => snapshot });
     const markup = renderToStaticMarkup(
       <StoreProvider store={store}>
-        <ReviewFileViewedControl path="src/ServiceContainerFactory.ts" />
+        <ReviewSourceViewedControl nodeId={UNIT_ID} />
       </StoreProvider>,
     );
 

@@ -9,12 +9,20 @@ import { StoreProvider } from "../state/StoreContext";
 import { CodePanel } from "./CodePanel";
 
 const FILE = "src/order.ts";
+const MODULE: GraphNode = {
+  id: "ts:src/order.ts",
+  kind: "module",
+  qualifiedName: FILE,
+  displayName: "order.ts",
+  parentId: null,
+  location: { file: FILE, startLine: 1, endLine: 40 },
+};
 const NODE: GraphNode = {
   id: "ts:src/order.ts#Order",
   kind: "interface",
   qualifiedName: "Order",
   displayName: "Order",
-  parentId: null,
+  parentId: MODULE.id,
   location: { file: FILE, startLine: 17, endLine: 20 },
 };
 const ARTIFACT: GraphArtifact = {
@@ -22,7 +30,7 @@ const ARTIFACT: GraphArtifact = {
   generatedAt: "2026-07-12T00:00:00.000Z",
   generator: { name: "test", version: "0" },
   target: { name: "fixture", root: ".", language: "typescript" },
-  nodes: [NODE],
+  nodes: [MODULE, NODE],
   edges: [],
 };
 
@@ -74,6 +82,7 @@ function sourceWindow(options: {
   pendingComments?: ReviewComment[];
   commentsVisible?: boolean;
   reviewPathAlias?: string;
+  reviewNode?: boolean;
   stale?: boolean;
   reviewedHeadSha?: string | null;
   lookup?: boolean;
@@ -130,9 +139,18 @@ function sourceWindow(options: {
       reviewFiles: [{
         path: options.reviewPathAlias,
         status,
-        moduleId: NODE.id,
+        moduleId: MODULE.id,
         isTest: false,
-        units: [],
+        units: options.reviewNode ? [{
+          nodeId: NODE.id,
+          displayName: NODE.displayName,
+          kind: NODE.kind,
+          startLine: NODE.location.startLine,
+          endLine: NODE.location.endLine ?? NODE.location.startLine,
+          depth: 0,
+          isTest: false,
+          fingerprint: "order-unit",
+        }] : [],
         fingerprint: "test-file",
         blastRadius: 0,
         deletedImpact: null,
@@ -219,6 +237,8 @@ describe("CodePanel review comments", () => {
     expect(markup).toContain('aria-label="Open source search"');
     expect(markup).toContain('aria-keyshortcuts="Control+F Meta+F"');
     expect(markup).toContain('aria-label="Close source"');
+    expect(markup.match(/data-source-window-close=/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-window-close-placement="side-rail"');
   });
 
   it("omits symbol lookup and selection when no lookup action is provided", () => {
@@ -228,14 +248,33 @@ describe("CodePanel review comments", () => {
     expect(markup).not.toContain('data-source-symbol-selection-enabled="true"');
   });
 
-  it("offers the canonical whole-file viewed action for the shown review path", () => {
-    const markup = sourceWindow({ live: true, reviewPathAlias: FILE });
+  it("reuses the node viewed action for the declaration shown in source", () => {
+    const markup = sourceWindow({ live: true, reviewPathAlias: FILE, reviewNode: true });
 
     expect(markup).toContain('data-review-source-viewed="true"');
     expect(markup).toContain('data-review-source-viewed-compact="true"');
+    expect(markup).toContain(`data-review-node-id="${NODE.id}"`);
+    expect(markup).toContain('data-review-viewed-scope="unit"');
+    expect(markup).toContain('aria-label="Mark Order as viewed"');
+    expect(markup).not.toContain('aria-label="Mark src/order.ts as viewed"');
+    expect(markup).not.toContain('data-review-source-viewed-fallback="true"');
+    expect(markup).toContain("Mark viewed</span>");
+  });
+
+  it("falls back to the whole-file action only for an explicit whole-file source", () => {
+    const markup = sourceWindow({ live: true, reviewPathAlias: FILE, wholeFile: true });
+
     expect(markup).toContain('data-review-viewed-scope="file"');
+    expect(markup).toContain('data-review-source-viewed-fallback="true"');
     expect(markup).toContain('aria-label="Mark src/order.ts as viewed"');
     expect(markup).toContain("Mark viewed</span>");
+  });
+
+  it("does not widen unmatched declaration source to a whole-file action", () => {
+    const markup = sourceWindow({ live: true, reviewPathAlias: FILE });
+
+    expect(markup).not.toContain('data-review-source-viewed="true"');
+    expect(markup).not.toContain('aria-label="Mark src/order.ts as viewed"');
   });
 
   it("offers drafts on every visible HEAD row and explains the inline subset", () => {
