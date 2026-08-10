@@ -6,7 +6,7 @@
  */
 
 import type { Edge } from "@xyflow/react";
-import { Cross2Icon, MoveIcon, ResetIcon } from "@radix-ui/react-icons";
+import { MoveIcon, ResetIcon } from "@radix-ui/react-icons";
 import { EdgeSourcePane } from "./CodePanel";
 import { WireInspector } from "./WireInspector";
 import { useBlueprint } from "../state/StoreContext";
@@ -32,6 +32,7 @@ export function EdgeInspectionDock({ pair, labelOf, onClose, onDrill }: EdgeInsp
   return (
     <FloatingSourceWindow
       ariaLabel="Edge inspection"
+      closeLabel={sourcePath === null ? "Close edge inspection" : "Close source"}
       onClose={requestClose}
       defaultRegionElementId="meridian-review-graph-pane"
       portalElementId={FLOATING_SOURCE_WINDOW_PORTAL_HOST_ID}
@@ -52,17 +53,17 @@ export function EdgeInspectionDock({ pair, labelOf, onClose, onDrill }: EdgeInsp
               windowControls={windowControls}
               relatedCodeCount={pair.length}
               relatedRailLabel="Related edge evidence"
-              onClose={requestClose}
             />
           )}
         </div>
       )}
-      rail={sourcePath === null ? undefined : (
+      rail={sourcePath === null ? undefined : (windowControls) => (
         <WireInspector
           pair={pair}
           labelOf={labelOf}
           onClose={requestClose}
           onDrill={onDrill}
+          frameClose={windowControls.sideRailCloseButton}
           showClose={false}
         />
       )}
@@ -79,7 +80,11 @@ function EdgeMetadataPane(props: {
 }) {
   return (
     <div style={METADATA_PANEL_STYLE} data-edge-metadata-only="true">
-      <header style={METADATA_HEADER_STYLE} {...props.windowControls.headerDragProps}>
+      <header
+        style={METADATA_HEADER_STYLE}
+        data-source-window-frame-close-reserved="true"
+        {...props.windowControls.headerDragProps}
+      >
         <h2 style={METADATA_TITLE_STYLE}>Edge inspection</h2>
         <div style={METADATA_ACTIONS_STYLE} data-source-header-actions="true">
           <button {...props.windowControls.moveHandleProps} style={METADATA_ACTION_STYLE}>
@@ -94,15 +99,6 @@ function EdgeMetadataPane(props: {
             onClick={props.windowControls.resetGeometry}
           >
             <ResetIcon />
-          </button>
-          <button
-            type="button"
-            style={METADATA_ACTION_STYLE}
-            aria-label="Close edge inspection"
-            title="Close edge inspection"
-            onClick={props.onClose}
-          >
-            <Cross2Icon />
           </button>
         </div>
       </header>
@@ -143,7 +139,7 @@ const METADATA_HEADER_STYLE: React.CSSProperties = {
   display: "flex",
   alignItems: "center",
   gap: 12,
-  padding: "10px 12px",
+  padding: "10px 48px 10px 12px",
   borderBottom: "1px solid #2A2F37",
   background: "#161B22",
 };

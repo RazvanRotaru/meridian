@@ -120,8 +120,9 @@ describe("EdgeInspectionDock", () => {
     expect(markup.match(/role="separator"/g)).toHaveLength(4);
     expect(markup.match(/aria-label="Close source"/g)).toHaveLength(1);
     expect(markup).not.toContain('aria-label="Close edge inspection"');
+    expect(markup.match(/data-source-window-close=/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-window-close-placement="side-rail"');
     expect(markup).not.toContain("aria-modal");
-    expect(markup.indexOf("Highlighted edge source")).toBeLessThan(markup.indexOf("Close source"));
   });
 
   it("keeps the global source dock out of edge inspection", () => {
@@ -151,6 +152,10 @@ describe("EdgeInspectionDock", () => {
     expect(markup).toContain('aria-label="Move source window"');
     expect(markup).toContain('data-source-window-reset="true"');
     expect(markup).toContain('aria-label="Close edge inspection"');
+    expect(markup.match(/data-source-window-close=/g)).toHaveLength(1);
+    expect(markup).toContain('data-source-window-close-placement="frame"');
+    expect(markup).toContain("position:absolute;top:8px;right:8px");
+    expect(markup).toContain('data-source-window-frame-close-reserved="true"');
     expect(markup.match(/data-source-window-resize-zone=/g)).toHaveLength(8);
     expect(markup).not.toContain('role="complementary"');
     expect(markup).not.toContain('data-source-window-related-toggle="true"');

@@ -667,6 +667,20 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(initialWindowRect.right).toBeLessThanOrEqual(reviewPaneBox.x + 1);
     expect(await loyaltySourceDialog.getAttribute("aria-modal")).toBeNull();
     expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("side");
+    const sourceFrameClose = loyaltySourceDialog.getByRole("button", { name: "Close source" });
+    expect(await sourceFrameClose.count()).toBe(1);
+    expect(await sourceFrameClose.getAttribute("data-source-window-close-placement")).toBe("side-rail");
+    const [sourceFrameCloseBox, sourceWindowHostBox] = await Promise.all([
+      sourceFrameClose.boundingBox(),
+      sourceWindowHost.boundingBox(),
+    ]);
+    if (sourceFrameCloseBox === null || sourceWindowHostBox === null) {
+      throw new Error("floating source close position is not measurable");
+    }
+    expect(Math.abs(sourceFrameCloseBox.y - (sourceWindowHostBox.y + 8))).toBeLessThanOrEqual(1);
+    expect(Math.abs(
+      sourceFrameCloseBox.x + sourceFrameCloseBox.width - (sourceWindowHostBox.x + sourceWindowHostBox.width - 8),
+    )).toBeLessThanOrEqual(1);
 
     // The shell itself never catches input. Only the window and its resize hit zones do, leaving
     // uncovered graph pixels reachable by the real pointer stack.
@@ -685,9 +699,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       document.elementFromPoint(x, y)?.closest('[data-floating-source-window-host="true"]') === null
     ), pointerThroughPoint)).toBe(true);
 
-    // A real pane click reaches the graph through the shell, clears its selected-node state, and
-    // deliberately does not dismiss the floating window. Keyboard activation of graph chrome then
-    // changes the camera while focus and Escape remain owned by the graph rather than the window.
+    // A real pane click reaches the graph through the shell and does not dismiss the floating
+    // window. Keyboard activation of graph chrome still changes the camera, while Escape closes the
+    // source from anywhere in the workspace rather than depending on which surface owns focus.
     await relatedOnly.waitFor();
     await clickBareCanvas(page, extractedReviewSurface);
     await relatedOnly.waitFor({ state: "detached" });
@@ -702,10 +716,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await expect.poll(() => sourceOpenGraphViewport.getAttribute("style")).not.toBe(sourceOpenTransform);
     expect(await loyaltySourceDialog.isVisible()).toBe(true);
     await sourceOpenZoomOut.press("Escape");
-    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await loyaltySourceDialog.waitFor({ state: "detached" });
+    await loyaltyCodeButton.click();
+    await loyaltySourceDialog.waitFor();
 
     // Modeless source shortcuts are focus-scoped: graph-owned focus keeps Ctrl/Cmd+F available to
     // the workspace/browser, while focus returned to the window lets its search own the same chord.
+    await sourceOpenZoomOut.focus();
     await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
     expect(await sourceSearch.count()).toBe(0);
     expect(await sourceOpenZoomOut.evaluate((element) => element === document.activeElement)).toBe(true);
@@ -747,18 +764,20 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await relatedRailFrame.evaluate((element) => getComputedStyle(element).overflowY)).toBe("hidden");
     expect(await relatedRailScroller.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
 
-    // The window is a complete review surface: its path-based action changes the whole file (not
-    // merely the declaration node), while its editor-style find stays above the one scroll owner.
-    const dockViewedControl = loyaltySourceDialog.getByRole("button", {
-      name: "Mark src/pricing/loyaltyTiers.ts as viewed",
-    });
+    // The window reuses the exact viewed target of the shown node instead of promoting a declaration
+    // gesture to its whole file. Its editor-style find remains above the one scroll owner.
+    const dockViewedControl = loyaltySourceDialog.locator('[data-review-source-viewed="true"]');
+    const nodeViewedControl = loyaltyTierNode.locator(".review-node-viewed-button");
+    expect(await dockViewedControl.getAttribute("data-review-viewed-scope")).toBe("unit");
+    expect(await dockViewedControl.getAttribute("aria-label")).toBe(
+      await nodeViewedControl.getAttribute("aria-label"),
+    );
     await dockViewedControl.click();
-    await loyaltySourceDialog.getByRole("button", {
-      name: "Viewed src/pricing/loyaltyTiers.ts — click to unmark",
-    }).waitFor();
-    await loyaltySourceDialog.getByRole("button", {
-      name: "Viewed src/pricing/loyaltyTiers.ts — click to unmark",
-    }).click();
+    await expect.poll(() => dockViewedControl.getAttribute("aria-label")).toBe(
+      await nodeViewedControl.getAttribute("aria-label"),
+    );
+    expect(await dockViewedControl.getAttribute("aria-pressed")).toBe("true");
+    await dockViewedControl.click();
     await dockViewedControl.waitFor();
     await expect.poll(() => [...viewedFileMutations]).toEqual([
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
@@ -784,8 +803,10 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await sourceSearchInput.press("Shift+Enter");
     await sourceSearchStatus.getByText(/^1 of 2 · L1:\d+$/).waitFor();
     await sourceSearchInput.press("Escape");
-    await sourceSearch.waitFor({ state: "detached" });
-    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await loyaltySourceDialog.waitFor({ state: "detached" });
+    await loyaltyCodeButton.click();
+    await loyaltySourceDialog.waitFor();
+    expect(await sourceSearch.count()).toBe(0);
     expect(await loyaltySourceDialog.locator('[data-source-search-match-count]').count()).toBe(0);
     expect(await sourceScrollOwner.count()).toBe(1);
 
@@ -918,8 +939,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(Math.abs(resetWindowRect.top - (resetGraphBox.y + 12))).toBeLessThanOrEqual(1);
     expect(Math.abs(resetWindowRect.right - (resetGraphBox.x + resetGraphBox.width - 12))).toBeLessThanOrEqual(1);
 
-    // Below 620px the related rail becomes an explicit overlay toggle. Escape closes that overlay
-    // first and leaves the modeless source window open; reset returns to the deterministic default.
+    // Below 620px the related rail becomes an explicit overlay toggle. Escape still closes the
+    // whole source window from the rail's focused control; reopen preserves the compact geometry,
+    // and reset returns to the deterministic default.
     await rightResizeEdge.focus();
     for (let attempt = 0; attempt < 20; attempt += 1) {
       const current = await floatingSourceWindowRect(sourceWindowLayer, sourceWindowHost);
@@ -943,13 +965,24 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await relatedRailScroller.evaluate((element) => getComputedStyle(element).overflowY)).toBe("auto");
     expect(await relatedRailToggle.getAttribute("aria-expanded")).toBe("true");
     expect(await sourceWindowHost.locator('[data-source-window-main="true"]').getAttribute("inert")).not.toBeNull();
+    expect(await sourceFrameClose.getAttribute("data-source-window-close-placement")).toBe("frame");
+    const [compactFrameCloseBox, compactRailCloseBox] = await Promise.all([
+      sourceFrameClose.boundingBox(),
+      compactRailClose.boundingBox(),
+    ]);
+    if (compactFrameCloseBox === null || compactRailCloseBox === null) {
+      throw new Error("compact source close controls are not measurable");
+    }
+    expect(compactRailCloseBox.x + compactRailCloseBox.width).toBeLessThanOrEqual(compactFrameCloseBox.x - 4);
     await expect.poll(() => compactRailClose.evaluate((element) => element === document.activeElement)).toBe(true);
     await page.keyboard.press(SOURCE_SEARCH_SHORTCUT);
     expect(await sourceSearch.count()).toBe(0);
     await compactRailClose.press("Escape");
-    expect(await loyaltySourceDialog.isVisible()).toBe(true);
+    await loyaltySourceDialog.waitFor({ state: "detached" });
+    await loyaltyCodeButton.click();
+    await loyaltySourceDialog.waitFor();
     expect(await sourceWindowHost.getAttribute("data-source-window-rail-mode")).toBe("hidden");
-    await expect.poll(() => relatedRailToggle.evaluate((element) => element === document.activeElement)).toBe(true);
+    expect(await relatedRailToggle.getAttribute("aria-expanded")).toBe("false");
     await loyaltySourceDialog.getByRole("button", {
       name: "Reset source window position and size",
     }).click();
@@ -1111,10 +1144,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
     ]);
 
-    // 4h — Escape from the graph leaves its floating source window open; Escape closes the window only
-    // after focus enters it. Repeated graph Escape and outward zoom leave the review overlay in place,
-    // while explicit Close parks it for the text-only Resume chip. The source graph stays mounted
-    // beneath Minimal Graph, but an active PR review is its own navigation root.
+    // 4h — Escape closes the floating source even while focus remains on its graph opener. The
+    // review overlay stays in place and the source graph remains mounted beneath Minimal Graph;
+    // an active PR review is still its own navigation root.
     // Scope this raw CSS locator to the extracted surface rather than matching the intentionally
     // retained source copy of the same file card.
     const extractedSurface = page.getByRole("region", { name: "Extracted graph" });
@@ -1127,9 +1159,6 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await sourceDialog.waitFor();
     await codeButton.focus();
     await page.keyboard.press("Escape");
-    expect(await sourceDialog.isVisible()).toBe(true);
-    await sourceDialog.getByRole("button", { name: "Open source search" }).focus();
-    await page.keyboard.press("Escape");
     await sourceDialog.waitFor({ state: "detached" });
     await expect.poll(() => codeButton.evaluate((element) => element === document.activeElement)).toBe(true);
     expect(await page.getByRole("region", { name: "Extracted graph" }).count()).toBe(1);
@@ -1140,7 +1169,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
 
     // Cross the old semantic-parent threshold through the real user-facing zoom control. Review
     // owns this canvas boundary: neither its graph nor its HEAD provenance may yield to the covered
-    // source surface, and Resume remains unavailable until the explicit Close below.
+    // source surface, and Resume remains unavailable until the explicit review Close below.
     const zoomOut = extractedSurface.locator(".react-flow__controls-zoomout");
     await zoomOut.waitFor();
     for (let attempt = 0; attempt < 8; attempt += 1) {

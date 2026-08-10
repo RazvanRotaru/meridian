@@ -35,27 +35,49 @@ interface WireInspectorProps {
   onClose: () => void;
   /** A bundle's constituent row drills the inspector into that single wire. */
   onDrill: (edge: Edge) => void;
-  /** The shared floating source header owns the only visible close action when false. */
+  /** The shared floating frame owns the only visible close action when false. */
   showClose?: boolean;
+  /** Inline frame close supplied when this inspector is the floating window's side rail. */
+  frameClose?: React.ReactNode;
 }
 
 const ROW_CAP = 12;
 const SITE_CAP = 6;
 
-export function WireInspector({ pair, labelOf, onClose, onDrill, showClose = true }: WireInspectorProps) {
+export function WireInspector({
+  pair,
+  labelOf,
+  onClose,
+  onDrill,
+  showClose = true,
+  frameClose,
+}: WireInspectorProps) {
   return (
     <div style={PANEL}>
       {pair[0].type === BUNDLE_EDGE_TYPE ? (
-        <BundleBody edge={pair[0]} labelOf={labelOf} onClose={onClose} onDrill={onDrill} showClose={showClose} />
+        <BundleBody
+          edge={pair[0]}
+          labelOf={labelOf}
+          onClose={onClose}
+          onDrill={onDrill}
+          showClose={showClose}
+          frameClose={frameClose}
+        />
       ) : (
-        <PairBody pair={pair} labelOf={labelOf} onClose={onClose} showClose={showClose} />
+        <PairBody
+          pair={pair}
+          labelOf={labelOf}
+          onClose={onClose}
+          showClose={showClose}
+          frameClose={frameClose}
+        />
       )}
     </div>
   );
 }
 
 /** The pair's story: endpoints once in the header, then one evidence section per strand (kind). */
-function PairBody({ pair, labelOf, onClose, showClose }: Omit<WireInspectorProps, "onDrill">) {
+function PairBody({ pair, labelOf, onClose, showClose, frameClose }: Omit<WireInspectorProps, "onDrill">) {
   const index = useBlueprint((state) => state.index);
   const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
   const first = pair[0];
@@ -67,11 +89,13 @@ function PairBody({ pair, labelOf, onClose, showClose }: Omit<WireInspectorProps
           <span style={ARROW}> → </span>
           <RevealName id={first.target} label={name(first.target)} onRevealed={onClose} />
         </span>
-        {showClose ? <CloseButton onClose={onClose} /> : null}
+        {showClose ? <CloseButton onClose={onClose} /> : frameClose}
       </div>
-      {pair.map((edge) => (
-        <KindSection key={edge.id} edge={edge} name={name} onRevealed={onClose} />
-      ))}
+      <div style={SCROLL_BODY}>
+        {pair.map((edge) => (
+          <KindSection key={edge.id} edge={edge} name={name} onRevealed={onClose} />
+        ))}
+      </div>
     </>
   );
 }
@@ -110,7 +134,14 @@ function KindSection({ edge, name, onRevealed }: { edge: Edge; name: (id: string
 }
 
 /** A bundle highway's inspector: the member wires, each drillable into its own evidence. */
-function BundleBody({ edge, labelOf, onClose, onDrill, showClose }: Omit<WireInspectorProps, "pair"> & { edge: Edge }) {
+function BundleBody({
+  edge,
+  labelOf,
+  onClose,
+  onDrill,
+  showClose,
+  frameClose,
+}: Omit<WireInspectorProps, "pair"> & { edge: Edge }) {
   const index = useBlueprint((state) => state.index);
   const bundle = edge.data as unknown as BundleEdgeData;
   const name = (id: string) => labelOf(id) ?? unitLabel(id, index);
@@ -119,32 +150,34 @@ function BundleBody({ edge, labelOf, onClose, onDrill, showClose }: Omit<WireIns
       <Header
         kind={`highway · ${bundleLabel(bundle.breakdown)}`}
         weight={bundle.count}
-        onClose={showClose ? onClose : undefined}
+        action={showClose ? <CloseButton onClose={onClose} /> : frameClose}
       />
-      <div style={ENDS}>
-        {name(bundle.sourceParent)} <span style={ARROW}>→</span> {name(bundle.targetParent)}
+      <div style={SCROLL_BODY}>
+        <div style={ENDS}>
+          {name(bundle.sourceParent)} <span style={ARROW}>→</span> {name(bundle.targetParent)}
+        </div>
+        <CappedRows
+          count={bundle.constituents.length}
+          render={(shown) =>
+            bundle.constituents.slice(0, shown).map((member) => {
+              const data = member.data as { weight?: number } | undefined;
+              const kind = relationKindOf(member.data) ?? "wire";
+              return (
+                <button key={member.id} type="button" style={ROW_BUTTON} title="Inspect this wire" onClick={() => onDrill(member)}>
+                  <span style={{ ...KIND_DOT, background: relationColor(kind) ?? "#8B95A3" }} />
+                  <span style={ROW_MAIN}>
+                    {name(member.source)} <span style={ARROW}>→</span> {name(member.target)}
+                  </span>
+                  <span style={ROW_KIND}>
+                    {kind}
+                    {(data?.weight ?? 1) > 1 ? ` ×${data?.weight}` : ""}
+                  </span>
+                </button>
+              );
+            })
+          }
+        />
       </div>
-      <CappedRows
-        count={bundle.constituents.length}
-        render={(shown) =>
-          bundle.constituents.slice(0, shown).map((member) => {
-            const data = member.data as { weight?: number } | undefined;
-            const kind = relationKindOf(member.data) ?? "wire";
-            return (
-              <button key={member.id} type="button" style={ROW_BUTTON} title="Inspect this wire" onClick={() => onDrill(member)}>
-                <span style={{ ...KIND_DOT, background: relationColor(kind) ?? "#8B95A3" }} />
-                <span style={ROW_MAIN}>
-                  {name(member.source)} <span style={ARROW}>→</span> {name(member.target)}
-                </span>
-                <span style={ROW_KIND}>
-                  {kind}
-                  {(data?.weight ?? 1) > 1 ? ` ×${data?.weight}` : ""}
-                </span>
-              </button>
-            );
-          })
-        }
-      />
     </>
   );
 }
@@ -211,14 +244,22 @@ function RevealName({ id, label, onRevealed }: { id: string; label: string; onRe
   );
 }
 
-function Header({ kind, weight, onClose }: { kind: string; weight: number; onClose?: () => void }) {
+function Header({
+  kind,
+  weight,
+  action,
+}: {
+  kind: string;
+  weight: number;
+  action?: React.ReactNode;
+}) {
   return (
     <div style={HEADER}>
       <span style={HEADER_KIND}>
         {kind}
         {weight > 1 ? <span style={HEADER_WEIGHT}> ×{weight}</span> : null}
       </span>
-      {onClose ? <CloseButton onClose={onClose} /> : null}
+      {action}
     </div>
   );
 }
@@ -252,13 +293,37 @@ const PANEL: React.CSSProperties = {
   minWidth: 0,
   height: "100%",
   boxSizing: "border-box",
-  overflowY: "auto",
+  display: "flex",
+  flexDirection: "column",
+  overflow: "hidden",
   background: "rgba(22, 27, 34, 0.97)",
-  padding: "8px 10px",
   fontFamily: MONO,
 };
-const HEADER: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 };
-const HEADER_KIND: React.CSSProperties = { fontSize: 11.5, fontWeight: 700, color: "#E6EDF3" };
+const HEADER: React.CSSProperties = {
+  flex: "0 0 auto",
+  minWidth: 0,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  gap: 8,
+  padding: "8px 10px 0",
+};
+const SCROLL_BODY: React.CSSProperties = {
+  flex: 1,
+  minHeight: 0,
+  overflowY: "auto",
+  padding: "0 10px 8px",
+};
+const HEADER_KIND: React.CSSProperties = {
+  flex: 1,
+  minWidth: 0,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+  whiteSpace: "nowrap",
+  fontSize: 11.5,
+  fontWeight: 700,
+  color: "#E6EDF3",
+};
 const HEADER_WEIGHT: React.CSSProperties = { fontWeight: 400, color: "#9AA4B2" };
 // The pair header IS the endpoints — bold card ink, one line, symmetric truncation via ellipsis.
 const HEADER_ENDS: React.CSSProperties = { minWidth: 0, fontSize: 11.5, fontWeight: 700, color: "#E6EDF3", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };

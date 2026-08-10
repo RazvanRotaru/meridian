@@ -5,7 +5,6 @@
  */
 
 import {
-  Cross2Icon,
   MagnifyingGlassIcon,
   MoveIcon,
   ResetIcon,
@@ -17,7 +16,7 @@ import { formatCallSite } from "../graph/edgeEvidence";
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import type { CodeView } from "../state/store";
 import { relationColor } from "../theme/relationTheme";
-import { ReviewFileViewedControl } from "./review/ReviewFileNodeViewedControls";
+import { ReviewSourceViewedControl } from "./review/ReviewFileNodeViewedControls";
 import { useReviewLineComposerGuard } from "./review/useReviewLineComposerGuard";
 import { SourceDiffBody, useSourceDiffModel } from "./SourceDiffBody";
 import {
@@ -58,12 +57,16 @@ export function CodePanel({
       defaultRegionElementId="meridian-review-graph-pane"
       railLabel="Related code blocks"
       railCount={relatedCount}
-      rail={<RelatedCodeRail currentNode={codeView.node} />}
+      rail={(windowControls) => (
+        <RelatedCodeRail
+          currentNode={codeView.node}
+          frameClose={windowControls.sideRailCloseButton}
+        />
+      )}
       main={(windowControls) => (
         <SourcePanel
           codeView={codeView}
           presentation="dock"
-          onClose={requestClose}
           windowControls={windowControls}
           relatedCodeCount={relatedCount}
           relatedRailLabel="Related code blocks"
@@ -80,12 +83,10 @@ export function EdgeSourcePane({
   windowControls,
   relatedCodeCount = 0,
   relatedRailLabel = "Related code blocks",
-  onClose,
 }: {
   windowControls?: FloatingSourceWindowControls;
   relatedCodeCount?: number;
   relatedRailLabel?: string;
-  onClose?: () => void;
 } = {}) {
   const codeView = useBlueprint((state) => state.codeView);
   if (!codeView || codeView.mode !== "modal" || codeView.edgeEvidence === undefined) {
@@ -98,7 +99,6 @@ export function EdgeSourcePane({
       windowControls={windowControls}
       relatedCodeCount={relatedCodeCount}
       relatedRailLabel={relatedRailLabel}
-      onClose={onClose}
     />
   );
 }
@@ -106,7 +106,6 @@ export function EdgeSourcePane({
 function SourcePanel({
   codeView,
   presentation,
-  onClose,
   onLookupSymbol,
   windowControls,
   relatedCodeCount = 0,
@@ -114,7 +113,6 @@ function SourcePanel({
 }: {
   codeView: CodeView;
   presentation: "dock" | "edge";
-  onClose?: () => void;
   onLookupSymbol?: (symbol: string | null) => void;
   windowControls?: FloatingSourceWindowControls;
   relatedCodeCount?: number;
@@ -189,7 +187,13 @@ function SourcePanel({
       data-source-code-dock={presentation === "dock" ? "true" : undefined}
       onClick={(event) => event.stopPropagation()}
     >
-        <header style={HEADER_STYLE} {...windowControls?.headerDragProps}>
+        <header
+          style={{
+            ...HEADER_STYLE,
+            ...(windowControls?.railCollapsed ? HEADER_WITH_FRAME_CLOSE_STYLE : {}),
+          }}
+          {...windowControls?.headerDragProps}
+        >
           <div style={HEADER_TEXT_STYLE}>
             <h2
               style={TITLE_STYLE}
@@ -238,47 +242,49 @@ function SourcePanel({
               </div>
             ) : null}
           </div>
-          {onClose || windowControls ? (
+          {windowControls ? (
             <div style={HEADER_ACTIONS_STYLE} data-source-header-actions="true">
-              {windowControls ? (
-                <>
-                  <button
-                    {...windowControls.moveHandleProps}
-                    style={HEADER_ACTION_STYLE}
-                  >
-                    <MoveIcon />
-                  </button>
-                  <button
-                    type="button"
-                    style={HEADER_ACTION_STYLE}
-                    aria-label="Reset source window position and size"
-                    title="Reset source window position and size"
-                    data-source-window-reset="true"
-                    onClick={windowControls.resetGeometry}
-                  >
-                    <ResetIcon />
-                  </button>
-                  {windowControls.railCollapsed ? (
-                    <button
-                      ref={windowControls.railToggleRef}
-                      type="button"
-                      style={{
-                        ...HEADER_ACTION_STYLE,
-                        ...(windowControls.railOpen ? HEADER_ACTION_ACTIVE_STYLE : {}),
-                      }}
-                      aria-label={`${relatedRailLabel} (${relatedCodeCount})`}
-                      aria-expanded={windowControls.railOpen}
-                      aria-controls={FLOATING_SOURCE_WINDOW_RAIL_ID}
-                      title={`${relatedRailLabel} (${relatedCodeCount})`}
-                      data-source-window-related-toggle="true"
-                      onClick={windowControls.toggleRail}
-                    >
-                      <RowsIcon />
-                    </button>
-                  ) : null}
-                </>
+              <button
+                {...windowControls.moveHandleProps}
+                style={HEADER_ACTION_STYLE}
+              >
+                <MoveIcon />
+              </button>
+              <button
+                type="button"
+                style={HEADER_ACTION_STYLE}
+                aria-label="Reset source window position and size"
+                title="Reset source window position and size"
+                data-source-window-reset="true"
+                onClick={windowControls.resetGeometry}
+              >
+                <ResetIcon />
+              </button>
+              {windowControls.railCollapsed ? (
+                <button
+                  ref={windowControls.railToggleRef}
+                  type="button"
+                  style={{
+                    ...HEADER_ACTION_STYLE,
+                    ...(windowControls.railOpen ? HEADER_ACTION_ACTIVE_STYLE : {}),
+                  }}
+                  aria-label={`${relatedRailLabel} (${relatedCodeCount})`}
+                  aria-expanded={windowControls.railOpen}
+                  aria-controls={FLOATING_SOURCE_WINDOW_RAIL_ID}
+                  title={`${relatedRailLabel} (${relatedCodeCount})`}
+                  data-source-window-related-toggle="true"
+                  onClick={windowControls.toggleRail}
+                >
+                  <RowsIcon />
+                </button>
               ) : null}
-              {presentation === "dock" ? <ReviewFileViewedControl path={model.reviewPath} compact /> : null}
+              {presentation === "dock" ? (
+                <ReviewSourceViewedControl
+                  nodeId={model.view.node.id}
+                  fallbackPath={wholeFile ? model.reviewPath : undefined}
+                  compact
+                />
+              ) : null}
               {onLookupSymbol ? (
                 <button
                   type="button"
@@ -310,17 +316,6 @@ function SourcePanel({
               >
                 <MagnifyingGlassIcon />
               </button>
-              {onClose ? (
-                <button
-                  type="button"
-                  style={HEADER_ACTION_STYLE}
-                  onClick={onClose}
-                  aria-label="Close source"
-                  title="Close source"
-                >
-                  <Cross2Icon />
-                </button>
-              ) : null}
             </div>
           ) : null}
         </header>
@@ -384,6 +379,7 @@ const HEADER_STYLE: React.CSSProperties = {
   borderBottom: "1px solid #2A2F37",
   background: "#161B22",
 };
+const HEADER_WITH_FRAME_CLOSE_STYLE: React.CSSProperties = { paddingRight: 48 };
 const HEADER_ACTIONS_STYLE: React.CSSProperties = {
   minWidth: 0,
   maxWidth: "100%",

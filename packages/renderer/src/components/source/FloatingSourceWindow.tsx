@@ -62,11 +62,14 @@ export interface FloatingSourceWindowControls {
   railToggleRef: RefCallback<HTMLButtonElement>;
   railCollapsed: boolean;
   railOpen: boolean;
+  /** Place at the end of the side rail's top row; compact modes use frame-level close chrome. */
+  sideRailCloseButton: ReactNode | null;
   toggleRail: () => void;
 }
 
 export interface FloatingSourceWindowProps {
   ariaLabel?: string;
+  closeLabel?: string;
   /** Render prop so the source header can own the visible move and reset controls. */
   main: (controls: FloatingSourceWindowControls) => ReactNode;
   rail?: ReactNode | ((controls: FloatingSourceWindowControls) => ReactNode);
@@ -120,6 +123,8 @@ const FALLBACK_MEASUREMENT: MeasuredWindowRegion = {
 export function FloatingSourceWindow(props: FloatingSourceWindowProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
   const hostRef = useRef<HTMLDivElement | null>(null);
+  const onCloseRef = useRef(props.onClose);
+  onCloseRef.current = props.onClose;
   const railRef = useRef<HTMLElement | null>(null);
   const railCloseRef = useRef<HTMLButtonElement | null>(null);
   const railToggleNodeRef = useRef<HTMLButtonElement | null>(null);
@@ -282,32 +287,25 @@ export function FloatingSourceWindow(props: FloatingSourceWindowProps) {
     };
   }, []);
 
-  // Escape is focus-scoped because this is a sticky tool window, not a workspace modal.
+  // The sticky tool window owns Escape across the workspace, independent of which underlying or
+  // source-window control has focus. Only a higher modal gets the first dismissal gesture.
   useLayoutEffect(() => {
     const host = hostRef.current;
-    const layer = layerRef.current;
     const ownerDocument = host?.ownerDocument;
     const ownerWindow = ownerDocument?.defaultView;
-    if (host === null || layer === null || ownerDocument === undefined || ownerWindow === null || ownerWindow === undefined) return;
+    if (host === null || ownerDocument === undefined || ownerWindow === null || ownerWindow === undefined) return;
     const closeFromEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || isEditableTarget(event.target)) return;
-      if (!(event.target instanceof Node) || !layer.contains(event.target)) return;
-      // Search is the first nested Escape layer. Its capture listener closes it independently.
-      if (host.querySelector('[data-source-search="true"]') !== null) return;
+      if (event.key !== "Escape") return;
       const higherModalOpen = Array.from(ownerDocument.querySelectorAll<HTMLElement>('[aria-modal="true"]'))
         .some((modal) => modal.closest("[inert]") === null);
       if (higherModalOpen) return;
       event.preventDefault();
       event.stopPropagation();
-      if (railCollapsed && railOpen) {
-        closeCompactRail();
-        return;
-      }
-      props.onClose();
+      onCloseRef.current();
     };
     ownerWindow.addEventListener("keydown", closeFromEscape, true);
     return () => ownerWindow.removeEventListener("keydown", closeFromEscape, true);
-  }, [closeCompactRail, props.onClose, railCollapsed, railOpen]);
+  }, []);
 
   const commitPreferredRect = useCallback((rect: SourceWindowRect) => {
     setPreferredRect(rect);
@@ -445,6 +443,13 @@ export function FloatingSourceWindow(props: FloatingSourceWindowProps) {
     railToggleRef: setRailToggleRef,
     railCollapsed,
     railOpen: railCollapsed && railOpen,
+    sideRailCloseButton: railMode === "side" ? (
+      <SourceWindowCloseButton
+        label={props.closeLabel ?? "Close source"}
+        onClose={props.onClose}
+        placement="side-rail"
+      />
+    ) : null,
     toggleRail: () => setRailOpen((current) => !current),
   };
   const renderedRail = typeof props.rail === "function" ? props.rail(controls) : props.rail;
@@ -476,6 +481,13 @@ export function FloatingSourceWindow(props: FloatingSourceWindowProps) {
         data-source-window-rail-mode={railMode}
         onClick={(event) => event.stopPropagation()}
       >
+        {railMode === "side" ? null : (
+          <SourceWindowCloseButton
+            label={props.closeLabel ?? "Close source"}
+            onClose={props.onClose}
+            placement="frame"
+          />
+        )}
         <div
           style={MAIN_STYLE}
           data-source-window-main="true"
@@ -552,6 +564,32 @@ export function FloatingSourceWindow(props: FloatingSourceWindowProps) {
     </div>
   );
   return portalTarget === null ? layer : createPortal(layer, portalTarget);
+}
+
+function SourceWindowCloseButton({
+  label,
+  onClose,
+  placement,
+}: {
+  label: string;
+  onClose: () => void;
+  placement: "frame" | "side-rail";
+}) {
+  return (
+    <button
+      type="button"
+      style={placement === "frame" ? FRAME_CLOSE_STYLE : SIDE_RAIL_CLOSE_STYLE}
+      aria-label={label}
+      aria-keyshortcuts="Escape"
+      title={label}
+      data-source-window-close="true"
+      data-source-window-close-placement={placement}
+      onPointerDown={(event) => event.stopPropagation()}
+      onClick={onClose}
+    >
+      <Cross2Icon />
+    </button>
+  );
 }
 
 export type FloatingSourceWindowRailMode = "side" | "overlay" | "hidden";
@@ -770,16 +808,6 @@ function sourceWindowOpenerBeforeCommit(): HTMLElement | null {
   return active instanceof HTMLElement && active !== document.body ? active : null;
 }
 
-function isEditableTarget(target: EventTarget | null): boolean {
-  const element = target instanceof HTMLElement ? target : null;
-  return element !== null && (
-    element.tagName === "INPUT"
-    || element.tagName === "TEXTAREA"
-    || element.tagName === "SELECT"
-    || element.isContentEditable
-  );
-}
-
 function isDragExcludedTarget(target: EventTarget | null): boolean {
   const element = target instanceof Element ? target : null;
   return element?.closest([
@@ -823,6 +851,39 @@ const HOST_STYLE: React.CSSProperties = {
   border: "1px solid #30363d",
   borderRadius: 10,
   boxShadow: "0 18px 48px rgba(0,0,0,0.48)",
+};
+
+const FRAME_CLOSE_STYLE: React.CSSProperties = {
+  position: "absolute",
+  top: 8,
+  right: 8,
+  zIndex: 10,
+  width: 26,
+  height: 26,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  background: "#1A1F27",
+  color: "#9AA4B2",
+  cursor: "pointer",
+};
+
+const SIDE_RAIL_CLOSE_STYLE: React.CSSProperties = {
+  flex: "0 0 auto",
+  width: 26,
+  height: 26,
+  display: "inline-flex",
+  alignItems: "center",
+  justifyContent: "center",
+  padding: 0,
+  border: "1px solid #2A2F37",
+  borderRadius: 6,
+  background: "#1A1F27",
+  color: "#9AA4B2",
+  cursor: "pointer",
 };
 
 const MAIN_STYLE: React.CSSProperties = {
@@ -881,7 +942,7 @@ const RAIL_OVERLAY_HEADER_STYLE: React.CSSProperties = {
   alignItems: "center",
   justifyContent: "space-between",
   gap: 8,
-  padding: "6px 8px 6px 12px",
+  padding: "6px 46px 6px 12px",
   borderBottom: "1px solid #30363d",
   background: "#161B22",
 };

@@ -6,7 +6,7 @@
  */
 
 import { ArrowLeftIcon, ArrowRightIcon } from "@radix-ui/react-icons";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { GraphEdge, GraphNode } from "@meridian/core";
 import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import type { GraphIndex } from "../../graph/graphIndex";
@@ -97,7 +97,13 @@ export function deriveRelatedCodeGroups(
     }));
 }
 
-export function RelatedCodeRail({ currentNode }: { currentNode: GraphNode }) {
+export function RelatedCodeRail({
+  currentNode,
+  frameClose,
+}: {
+  currentNode: GraphNode;
+  frameClose?: ReactNode;
+}) {
   const index = useBlueprint((state) => state.index);
   const composerConfirmDiscard = useBlueprint(
     (state) => state.reviewLineComposer?.confirmDiscard ?? false,
@@ -138,6 +144,7 @@ export function RelatedCodeRail({ currentNode }: { currentNode: GraphNode }) {
       <header style={HEADER_STYLE}>
         <span style={TITLE_STYLE}>Related in loaded graph</span>
         <span style={COUNT_STYLE}>{groups.reduce((total, group) => total + group.neighbors.length, 0)}</span>
+        {frameClose}
       </header>
       {groups.length === 0 ? (
         <div role="status" data-related-code-empty="true" style={EMPTY_STYLE}>
@@ -238,12 +245,13 @@ const HEADER_STYLE: React.CSSProperties = {
   alignItems: "center",
   justifyContent: "space-between",
   gap: 8,
-  padding: "10px 12px",
+  padding: "8px 8px 8px 12px",
   borderBottom: "1px solid #30363d",
   background: "rgba(22, 27, 34, 0.98)",
 };
 
 const TITLE_STYLE: React.CSSProperties = {
+  flex: 1,
   minWidth: 0,
   overflow: "hidden",
   textOverflow: "ellipsis",
