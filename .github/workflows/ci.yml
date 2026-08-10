@@ -24,7 +24,7 @@ jobs:
       # Map / Service / UI / minimal-graph behave the same; see docs/plans/2026-07-10-unified-canvas-design.md
       - run: pnpm test
       # playwright is a CLI-package devDependency, not a root one — resolve it in that workspace
-      - run: pnpm --filter @meridian/cli exec playwright install --with-deps chromium
+      - run: pnpm --filter @meridian/cli exec playwright install --with-deps chromium webkit
       # full e2e: cross-lens/render smoke tests plus same-file Meridian ↔ GitHub U3 ↔ raw Git
       # parity across replacement, shifted-line, diverged-base, deleted-node, and removed-file PRs
       - run: pnpm --filter @meridian/cli e2e

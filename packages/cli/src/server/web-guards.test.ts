@@ -31,6 +31,7 @@ describe("isSameOrigin", () => {
 
   it("rejects a foreign Origin or a malformed one", () => {
     expect(isSameOrigin("http://evil.example", "127.0.0.1:4180")).toBe(false);
+    expect(isSameOrigin("null", "127.0.0.1:4180")).toBe(false);
     expect(isSameOrigin("not a url", "127.0.0.1:4180")).toBe(false);
   });
 });

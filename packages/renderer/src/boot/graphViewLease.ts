@@ -224,7 +224,7 @@ export function startGraphViewLease(
       try {
         response = await fetch(endpoint, {
           method: "PUT",
-          mode: "same-origin",
+          redirect: "error",
           credentials: "same-origin",
           cache: "no-store",
           headers: {
@@ -268,7 +268,7 @@ export function startGraphViewLease(
     try {
       response = await fetch(createEndpoint, {
         method: "POST",
-        mode: "same-origin",
+        redirect: "error",
         credentials: "same-origin",
         cache: "no-store",
         headers: {
@@ -307,7 +307,7 @@ export function startGraphViewLease(
         try {
           response = await fetch(handoffEndpoint, {
             method: "DELETE",
-            mode: "same-origin",
+            redirect: "error",
             credentials: "same-origin",
             cache: "no-store",
             signal: controller.signal,
@@ -337,7 +337,7 @@ export function startGraphViewLease(
         try {
           response = await fetch(handoffEndpoint, {
             method,
-            mode: "same-origin",
+            redirect: "error",
             credentials: "same-origin",
             cache: "no-store",
             headers: {
@@ -382,7 +382,7 @@ export function startGraphViewLease(
     try {
       void fetch(endpoint, {
         method: "DELETE",
-        mode: "same-origin",
+        redirect: "error",
         credentials: "same-origin",
         cache: "no-store",
         keepalive: true,
@@ -691,9 +691,9 @@ function validateSameOriginEndpoint(value: string): string {
   if (endpoint.origin !== window.location.origin || endpoint.username || endpoint.password) {
     throw new Error("Graph view lease endpoint must be same-origin.");
   }
-  // Fetch a root-relative endpoint so the controller cannot accidentally retain or transmit an
-  // origin supplied by boot HTML. URL fragments are client-only and do not belong on the request.
-  return `${endpoint.pathname}${endpoint.search}`;
+  // Anchor the request to the verified document origin instead of a boot-supplied origin or a
+  // future cross-origin <base>. URL fragments are client-only and do not belong on the request.
+  return `${window.location.origin}${endpoint.pathname}${endpoint.search}`;
 }
 
 async function readResponseJson(response: Response): Promise<unknown> {
