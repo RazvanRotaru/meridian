@@ -168,6 +168,49 @@ describe("semantic parents across module-family lenses", () => {
     }));
   });
 
+  it("keeps React composition edges on the Map-shaped PR review canvas", async () => {
+    const store = freshStore();
+    store.setState({
+      viewMode: "modules",
+      review: {
+        context: {
+          changedFiles: [
+            { path: "packages/app/src/ui/App.tsx", status: "modified" },
+            { path: "packages/app/src/ui/Button.tsx", status: "modified" },
+          ],
+          baseRef: "main",
+          baseSha: null,
+          headRef: "feature/react-composition",
+          reviewKey: "react-composition-review",
+          warnings: [],
+        },
+        rows: [],
+        flows: {},
+      },
+      reviewAffectedIds: new Set([APP_COMPONENT, BUTTON_COMPONENT]),
+      minimalSeedIds: [APP_FILE, BUTTON_FILE],
+      minimalMemberIds: [APP_FILE, BUTTON_FILE],
+      moduleExpanded: new Set([APP_FILE, BUTTON_FILE]),
+    });
+
+    await store.getState().minimalRelayout();
+
+    expect(store.getState().minimalRfEdges).toContainEqual(expect.objectContaining({
+      source: APP_COMPONENT,
+      target: BUTTON_COMPONENT,
+      data: expect.objectContaining({
+        relationKind: "renders",
+        underlyingEdgeIds: ["render"],
+      }),
+    }));
+
+    store.getState().toggleRelKind("renders");
+    expect(store.getState().relationVisibilityOverrides).toMatchObject({
+      review: { renders: false },
+    });
+    expect(store.getState().relationVisibilityOverrides.map).toBeUndefined();
+  });
+
   it("clears the outgoing mounted scene synchronously when switching lenses", async () => {
     const store = freshStore();
     store.setState({ viewMode: "modules", moduleFocus: UI, moduleSelected: new Set([ALPHA]) });

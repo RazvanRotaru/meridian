@@ -7,14 +7,15 @@
 import { useBlueprint, useBlueprintActions } from "../state/StoreContext";
 import { relationshipKindGroupsForPolicy } from "../theme/relationshipKinds";
 import { Pill } from "./controlpanel/panelKit";
-import { activeModuleSurfaceSpec } from "./canvas/surfaceSpec";
+import { activeModuleRelationPolicy } from "./canvas/surfaceSpec";
 import { isRelationShown } from "../graph/relationVisibility";
 
 export function RelationshipToggles({ kinds }: { kinds?: readonly string[] } = {}) {
   const viewMode = useBlueprint((state) => state.viewMode);
+  const reviewActive = useBlueprint((state) => state.review !== null);
   const overrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const { toggleRelKind, resetRelationshipDefaults } = useBlueprintActions();
-  const policy = activeModuleSurfaceSpec(viewMode).relations;
+  const policy = activeModuleRelationPolicy(viewMode, reviewActive);
   const allowedKinds = kinds === undefined ? null : new Set(kinds);
   const groups = relationshipKindGroupsForPolicy(policy).flatMap((group) => {
     const visibleKinds = allowedKinds === null

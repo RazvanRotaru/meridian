@@ -184,6 +184,21 @@ export const MAP_RELATION_POLICY = defineLensRelationPolicy({
   fallback: IGNORED,
 });
 
+/**
+ * PR review is a cross-cutting code view rather than a selectable architecture lens. It keeps the
+ * Map's complete dependency vocabulary, but React composition must remain visible between changed
+ * components instead of disappearing merely because review entry normalizes `viewMode` to Map.
+ * A distinct id keeps review filter overrides from leaking into the ordinary Map after review closes.
+ */
+export const REVIEW_RELATION_POLICY = defineLensRelationPolicy({
+  id: "review",
+  rules: [
+    ...MAP_RELATION_POLICY.rules,
+    { match: { kind: "renders" }, ...MAP_PRIMARY },
+  ],
+  fallback: MAP_RELATION_POLICY.fallback,
+});
+
 /** Service structure drives placement; behavioral and incidental dependencies are opt-in paint. */
 export const SERVICE_RELATION_POLICY = defineLensRelationPolicy({
   id: "service",

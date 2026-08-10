@@ -21,7 +21,12 @@
 
 import { describe, expect, it } from "vitest";
 import type { ViewMode } from "../derive/edgeSelection";
-import { activeModuleSurfaceSpec, moduleSurfaceSpec, MINIMAL_OVERLAY_HIGHWAYS } from "../components/canvas/surfaceSpec";
+import {
+  activeModuleRelationPolicy,
+  activeModuleSurfaceSpec,
+  moduleSurfaceSpec,
+  MINIMAL_OVERLAY_HIGHWAYS,
+} from "../components/canvas/surfaceSpec";
 import {
   ALL_VIEW_MODES,
   MODULE_SURFACE_MODES,
@@ -65,6 +70,12 @@ describe("the surface registry (the parity table's row source)", () => {
     for (const mode of MODULE_SURFACE_MODES) {
       expect(spec(mode).highways).toEqual({ bundling: true, routing: true, spooling: true });
     }
+  });
+
+  it("uses a review-only relation policy over the Map-shaped review canvas", () => {
+    expect(activeModuleRelationPolicy("modules", false).id).toBe("map");
+    expect(activeModuleRelationPolicy("modules", true).id).toBe("review");
+    expect(isRelationShown(activeModuleRelationPolicy("modules", true), {}, "renders")).toBe(true);
   });
 
   it("keeps relation visibility per lens and restores Service's structural defaults", () => {

@@ -10,7 +10,7 @@ import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { isRelationShown } from "../../graph/relationVisibility";
 import { relationshipKindsForPolicy } from "../../theme/relationshipKinds";
 import { RelationshipToggles } from "../RelationshipToggles";
-import { activeModuleSurfaceSpec } from "../canvas/surfaceSpec";
+import { activeModuleRelationPolicy } from "../canvas/surfaceSpec";
 import { CanvasActionButton } from "./canvasActionBarKit";
 import { EdgeFilterIcon } from "./icons";
 import { SectionLabel, TOKENS } from "./panelKit";
@@ -20,9 +20,10 @@ const VIEWPORT_GAP = 12;
 
 export function CanvasRelationFilter({ kinds }: { kinds: readonly string[] }) {
   const viewMode = useBlueprint((state) => state.viewMode);
+  const reviewActive = useBlueprint((state) => state.review !== null);
   const overrides = useBlueprint((state) => state.relationVisibilityOverrides);
   const { resetRelationshipFilter } = useBlueprintActions();
-  const policy = activeModuleSurfaceSpec(viewMode).relations;
+  const policy = activeModuleRelationPolicy(viewMode, reviewActive);
   const availableKeys = useMemo(
     () => new Set(relationshipKindsForPolicy(policy).map((kind) => kind.key)),
     [policy],
