@@ -79,11 +79,12 @@ summaries):
 
 ![Python blueprint](docs/media/05-python.png)
 
-**`meridian web`** — review a pull request by default, or switch to exploring a repository. Open a
-GitHub repo or local folder, then return to recent GitHub work without re-entering it. Source analysis
-is read-only and runs on your machine:
+**`meridian web`** — review a pull request by default in a focused right-side dock while a current
+Meridian graph keeps the product in view. The primary action stays on screen without page scrolling;
+switch to repository exploration, open a local folder, or return to recent GitHub work. Source
+analysis is read-only and runs on your machine:
 
-![Meridian web landing page with pull-request review selected, a current renderer preview, GitHub repository input, local-folder access, and three recent-work shortcuts](docs/media/06-web-landing.png)
+![Meridian web landing page with a current renderer graph on the left and pull-request review actions in a fixed right-side dock](docs/media/06-web-landing.png)
 
 ## How it works
 
