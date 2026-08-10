@@ -144,6 +144,7 @@ import type { ModuleCategory } from "../derive/moduleCategory";
 import type { HighlightMode } from "../components/moduleMapPaint";
 import { expandedSelectionByOneHop, type SelectionEdge, type SelectionNode } from "../derive/selectionExpansion";
 import {
+  activeModuleRelationPolicy,
   activeModuleSurfaceSpec,
   moduleSurfaceSpec,
   type SurfaceSemanticParent,
@@ -2144,9 +2145,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
   const EMPTY_HIDDEN_IDS: ReadonlySet<string> = new Set<string>();
   // The code-dependency substrate (coupling edges at their real endpoints), same lifecycle.
   let blockDeps: BlockDeps | null = null;
-  // The UI source surface derives `renders` separately from code dependencies. Its extracted graph
-  // has only the shared minimal-subgraph input, so cache that composition-enriched variant too.
-  let uiMinimalDeps: BlockDeps | null = null;
+  // UI and PR-review surfaces both need React `renders` alongside the ordinary code dependencies.
+  // Their extracted graph has one shared minimal-subgraph input, so cache that enriched variant.
+  let renderMinimalDeps: BlockDeps | null = null;
   // Request bulk-reveal and one-node clicks both install the same canonical Map projection. Keep
   // artifact/cached-graph plumbing in one seam so those entry points cannot drift in disclosure.
   const requestCodebaseContextFor = (
@@ -2381,7 +2382,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewProjectionFrameBaseline = null;
     moduleGraph = null;
     blockDeps = null;
-    uiMinimalDeps = null;
+    renderMinimalDeps = null;
     unitIndex = null;
     unitIndexSource = null;
     codePayloadCache.clear();
@@ -7880,7 +7881,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // Show/hide a relationship kind's wires. PAINT-ONLY, like the category filter — no relayout.
     toggleRelKind(kind) {
       const state = get();
-      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      const policy = activeModuleRelationPolicy(state.viewMode, state.review !== null);
       set({
         relationVisibilityOverrides: toggleRelationOverride(
           policy,
@@ -7897,7 +7898,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     resetRelationshipFilter() {
       const state = get();
-      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      const policy = activeModuleRelationPolicy(state.viewMode, state.review !== null);
       set({
         relationVisibilityOverrides: showAllRelations(
           policy,
@@ -7908,7 +7909,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     resetRelationshipDefaults() {
       const state = get();
-      const policy = activeModuleSurfaceSpec(state.viewMode).relations;
+      const policy = activeModuleRelationPolicy(state.viewMode, state.review !== null);
       set({
         relationVisibilityOverrides: resetRelationsToPolicyDefaults(
           policy,
@@ -8407,9 +8408,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         const explicitRootIds = state.minimalMemberIds.filter((id) => !seedIds.has(id));
         moduleGraph ??= buildModuleGraph(index);
         const deps = (blockDeps ??= buildBlockDeps(index));
-        const minimalDeps = state.viewMode !== "ui"
+        const reviewActive = state.review !== null;
+        const minimalDeps = state.viewMode !== "ui" && !reviewActive
           ? deps
-          : (uiMinimalDeps ??= {
+          : (renderMinimalDeps ??= {
               edges: [
                 ...deps.edges,
                 ...index.edges.filter((edge) => edge.kind === UI_EDGE_KIND),
@@ -8422,6 +8424,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         for (const id of explicitRootVisibleIds(index, explicitRootIds)) hidden.delete(id);
         const members = minimalMembersForFlowInspection(state);
         const surface = activeModuleSurfaceSpec(state.viewMode);
+        const relationPolicy = activeModuleRelationPolicy(state.viewMode, reviewActive);
         // An ordinary Extract retains the strongest shortest weak bridge between same-abstraction
         // source cards. Derive it from the already-laid structural scene on every pass: URL restore lays
         // that scene first, while PR/Service projections whose seeds do not exist there safely add
@@ -8469,7 +8472,11 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
             };
         const rollupSourceTree = requestedGroupExpansions.size === 0
           ? null
-          : surface.deriveTree(rollupSourceState, { graph: moduleGraph, deps, flows }, { hiddenIds: hidden });
+          : surface.deriveTree(
+              rollupSourceState,
+              { graph: moduleGraph, deps: reviewActive ? minimalDeps : deps, flows },
+              { hiddenIds: hidden },
+            );
         const rollupExpansions = rollupSourceTree === null
           ? []
           : minimalRollupExpansions(rollupSourceTree, index, requestedGroupExpansions);
@@ -8486,7 +8493,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           visibleIds: state.review !== null && state.reviewDiffOnly
             ? reviewDiffVisibleIds(index, state.reviewAffectedIds, explicitRootIds)
             : undefined,
-        }, minimalArrange, hidden, surface.relations);
+        }, minimalArrange, hidden, relationPolicy);
         if (minimalLayoutSeq !== sequence) {
           return; // a newer build/promote/demote/reset/re-arrange superseded this one.
         }

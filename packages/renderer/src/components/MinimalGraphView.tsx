@@ -8,14 +8,15 @@
  * green ring) and PERSISTENT cards (ghosts the reader promoted) — ringed by the Map's OWN ghost
  * SATELLITES: every code coupling that leaves the member set charts its off-overlay symbol as a
  * dashed `GhostNode` card banded outside the core (callers left, dependencies right), per-kind
- * wired. Like the Map, satellites are ON-DEMAND context: selecting a member reveals only that
- * member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
+ * wired. Review adds React `renders` to that Map vocabulary so changed components retain their
+ * composition topology. Like the Map, satellites are ON-DEMAND context: selecting a member reveals
+ * only that member's off-view callers/dependencies. Each satellite wears a subtle round "+" that promotes its
  * home file/folder into the members and opens the path until the original symbol is visible. A
  * crowded sibling set folds under its persistent real parent; that parent's explicit chevron
  * discloses exact children as outward neighbours. The shared bottom action bar removes selected
  * promoted members, rearranges, resets, and explicitly closes the extracted graph, returning to the
  * active lens with the selection kept. Wires are painted by the Map's OWN chain and keyed by its
- * own `MapLegend`, so the overlay's colour vocabulary is the Map's by construction. Highways here means SPOOLING
+ * own `MapLegend`, parameterized by the active Map/UI/review relation policy. Highways here means SPOOLING
  * only: fan hubs gather their many wires into shared trunks (no containers to pair-bundle in this
  * flat overlay); every overlay wire is a painted import/dep wire, so when Highways is on they ALL
  * spool.
@@ -41,7 +42,7 @@ import {
   adaptMinimalGraphToSemanticSource,
   type MinimalSourceGraphState,
 } from "./canvas/minimalSemanticSource";
-import { activeModuleSurfaceSpec, MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
+import { activeModuleRelationPolicy, MINIMAL_OVERLAY_HIGHWAYS } from "./canvas/surfaceSpec";
 import { useModuleNodeInteractions } from "./canvas/useModuleNodeInteractions";
 import { useRecenter } from "./canvas/useRecenter";
 import {
@@ -102,7 +103,7 @@ export function MinimalGraphView({
     setMinimalShowGhostNodes,
     setMinimalShowNonDiffGhostNodes,
   } = useBlueprintActions();
-  const relations = activeModuleSurfaceSpec(viewMode).relations;
+  const relations = activeModuleRelationPolicy(viewMode, reviewActive);
   const ghostIds = useMemo(
     () => new Set(nodes.filter((node) => node.type === "ghost").map((node) => node.id)),
     [nodes],
@@ -291,8 +292,8 @@ export function MinimalGraphView({
         )}
       >
         {/* The Map's own legend, in the Map's own corner (bottom-left, clear of the zoom controls) — the
-            overlay shares the Map's colour vocabulary, so it shares the Map's key to it. The package row
-            shows only when a group member/ghost card is actually present; IPC joins the key only
+            overlay shares the active lens/review colour vocabulary, so it shares the same parameterized
+            key. The package row shows only when a group member/ghost card is actually present; IPC joins the key only
             when the extracted graph contains a collapsed sender→handler wire. */}
         <MapLegend
           hasSteps={visibleGraph.nodes.some((node) => node.type === "step")}

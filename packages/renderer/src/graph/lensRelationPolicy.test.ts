@@ -3,6 +3,7 @@ import { defineRelationCatalog } from "./relationCatalog";
 import {
   BUILT_IN_LENS_RELATION_POLICIES,
   MAP_RELATION_POLICY,
+  REVIEW_RELATION_POLICY,
   SERVICE_RELATION_POLICY,
   UI_RELATION_POLICY,
   defineLensRelationPolicy,
@@ -138,6 +139,16 @@ describe("built-in lens policies", () => {
     }
     expect(isRelationRelevant(MAP_RELATION_POLICY, "renders")).toBe(false);
     expect(isRelationRelevant(MAP_RELATION_POLICY, "registers")).toBe(false);
+  });
+
+  it("adds React composition to review without changing the ordinary Map policy", () => {
+    for (const kind of ["calls", "references", "imports", "renders"]) {
+      expect(isRelationVisible(REVIEW_RELATION_POLICY, kind), kind).toBe(true);
+      expect(relationParticipatesInLayout(REVIEW_RELATION_POLICY, kind), kind).toBe(true);
+      expect(relationGhostPolicy(REVIEW_RELATION_POLICY, kind), kind).toBe("boundary");
+    }
+    expect(REVIEW_RELATION_POLICY.id).toBe("review");
+    expect(isRelationRelevant(MAP_RELATION_POLICY, "renders")).toBe(false);
   });
 
   it("makes Service composition primary and inheritance/construction structural", () => {

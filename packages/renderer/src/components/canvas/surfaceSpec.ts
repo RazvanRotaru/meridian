@@ -43,6 +43,7 @@ import { resolveServiceAnchors } from "../../state/lensPath";
 import { scopeSetOf, serviceScopeFor, type ServiceScope } from "../../state/serviceScope";
 import {
   MAP_RELATION_POLICY,
+  REVIEW_RELATION_POLICY,
   SERVICE_RELATION_POLICY,
   UI_RELATION_POLICY,
   type LensRelationPolicy,
@@ -378,4 +379,16 @@ export function moduleSurfaceSpec(viewMode: ViewMode): SurfaceSpec | null {
  * historical branch was `viewMode === "call" ? service : map`, so non-call modes fell to the Map. */
 export function activeModuleSurfaceSpec(viewMode: ViewMode): SurfaceSpec {
   return moduleSurfaceSpec(viewMode) ?? MAP_SURFACE;
+}
+
+/**
+ * Review paints a Map-shaped containment surface, but it also needs React composition between
+ * changed components. Keep this choice centralized so derivation, paint,
+ * legends, and filter actions cannot disagree about whether `renders` belongs on the review canvas.
+ */
+export function activeModuleRelationPolicy(
+  viewMode: ViewMode,
+  reviewActive: boolean,
+): LensRelationPolicy {
+  return reviewActive ? REVIEW_RELATION_POLICY : activeModuleSurfaceSpec(viewMode).relations;
 }
