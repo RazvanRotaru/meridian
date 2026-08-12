@@ -138,6 +138,45 @@ describe("semantic compiler observations", () => {
     ]));
   });
 
+  it("observes the export type symbol used for dynamic-import callback resolution", () => {
+    const consumer = [
+      "export function load() {",
+      '  return import("./provider")',
+      "    .then(({ composeHostSecureStore }) => composeHostSecureStore());",
+      "}",
+      "",
+    ].join("\n");
+    const inspected = inspectSemanticCompilerObservation(
+      loadedProject("/dynamic-import-callback", {
+        "src/consumer.ts": consumer,
+        "src/provider.ts": [
+          "export function composeHostSecureStore(): string {",
+          '  return "secure";',
+          "}",
+          "",
+        ].join("\n"),
+      }, false, { noLib: false }),
+      CONSUMER,
+    );
+    const recovered = inspected.transcript.find((candidate) => (
+      candidate !== null
+      && typeof candidate === "object"
+      && (candidate as { kind?: string }).kind === "dynamic-import-callback-export"
+    ));
+
+    expect(recovered).toMatchObject({
+      value: {
+        exportedName: "composeHostSecureStore",
+        typeSymbol: {
+          direct: {
+            declarations: [expect.objectContaining({ address: "repo:src/provider.ts" })],
+          },
+        },
+      },
+    });
+    expect(inspected.providerAddresses).toContain("repo:src/provider.ts");
+  });
+
   it("observes declarations contributed by an external-module augmentation", () => {
     const consumer = [
       'import type { Box } from "./provider";',

@@ -8,6 +8,7 @@
 import { Node, type Symbol as TsSymbol } from "ts-morph";
 import type { EdgeResolution } from "@meridian/core";
 import { traceConstructedReceiverMember } from "./constructed-receiver";
+import { isRuntimeImportCall, moduleSpecifierValue } from "./import-dependency";
 import { importedSymbolReference, type ImportedSymbolReference } from "./import-reference";
 import { nodeKey } from "./model";
 import { posixBasename } from "./paths";
@@ -45,11 +46,18 @@ export interface TargetReferenceDerivation {
   imported: ImportedSymbolReference | null;
   symbol: TsSymbol | undefined;
   declaration: Node | undefined;
+  /** Exact typed export lookup used for a destructured dynamic-import callback binding. */
+  dynamicImportCallbackExport: TargetDynamicImportCallbackExport | null;
   /**
    * Exact shorthand value-symbol queries consumed while selecting the implementation declaration.
    * Observation records both missing and present values so ambient binding changes cannot collide.
    */
   shorthandValueSteps: readonly TargetShorthandValueStep[];
+}
+
+export interface TargetDynamicImportCallbackExport {
+  exportedName: string;
+  typeSymbol: TsSymbol | undefined;
 }
 
 export interface TargetShorthandValueStep {
@@ -65,18 +73,68 @@ export interface TargetShorthandValueStep {
  */
 export function deriveTargetReference(callee: Node): TargetReferenceDerivation {
   const original = calleeSymbol(callee);
-  const symbol = aliasedSymbol(original);
+  const dynamicImportCallbackExport = deriveDynamicImportCallbackExport(callee);
+  const symbol = aliasedSymbol(dynamicImportCallbackExport?.typeSymbol ?? original);
   const shorthandValueSteps: TargetShorthandValueStep[] = [];
   return {
     original,
     imported: importedSymbolReference(callee, original),
     symbol,
+    dynamicImportCallbackExport,
     declaration: implementationDeclaration(
       symbol,
       new Set(),
       shorthandValueSteps,
     ),
     shorthandValueSteps,
+  };
+}
+
+/**
+ * Recover the exported function behind the first parameter of a direct `import(...).then(...)`.
+ *
+ * TypeScript binds `composeHostSecureStore` below to the local BindingElement, so the ordinary
+ * callee symbol cannot reach the exported function declaration:
+ *
+ *   import("./compose").then(({ composeHostSecureStore }) => composeHostSecureStore())
+ *
+ * The binding's function type does retain that exact export symbol. Limit the recovery to this
+ * statically named, direct dynamic-import shape so an arbitrary Promise/object destructure is not
+ * treated as module provenance.
+ */
+export function deriveDynamicImportCallbackExport(
+  callee: Node,
+): TargetDynamicImportCallbackExport | null {
+  if (!Node.isIdentifier(callee)) return null;
+  const binding = callee.getSymbol()?.getDeclarations().find(Node.isBindingElement);
+  if (binding === undefined || binding.getDotDotDotToken() !== undefined) return null;
+
+  const pattern = binding.getParent();
+  if (!Node.isObjectBindingPattern(pattern)) return null;
+  const parameter = pattern.getParent();
+  if (!Node.isParameterDeclaration(parameter) || parameter.getNameNode() !== pattern) return null;
+  const callback = parameter.getParent();
+  if (!Node.isArrowFunction(callback) && !Node.isFunctionExpression(callback)) return null;
+  if (callback.getParameters()[0] !== parameter) return null;
+
+  const thenCall = callback.getParent();
+  if (!Node.isCallExpression(thenCall) || thenCall.getArguments()[0] !== callback) return null;
+  const thenAccess = thenCall.getExpression();
+  if (!Node.isPropertyAccessExpression(thenAccess) || thenAccess.getName() !== "then") return null;
+  const runtimeImport = thenAccess.getExpression();
+  if (!isRuntimeImportCall(runtimeImport) || moduleSpecifierValue(runtimeImport) === null) return null;
+
+  const propertyName = binding.getPropertyNameNode() ?? binding.getNameNode();
+  if (!Node.isIdentifier(propertyName) && !Node.isStringLiteral(propertyName)) return null;
+  const exportedName = Node.isStringLiteral(propertyName)
+    ? propertyName.getLiteralValue()
+    : propertyName.getText();
+  const type = callee.getType();
+  const typeSymbol = type.getAliasSymbol() ?? type.getSymbol();
+  const exportedSymbol = aliasedSymbol(typeSymbol);
+  return {
+    exportedName,
+    typeSymbol: exportedSymbol?.getName() === exportedName ? typeSymbol : undefined,
   };
 }
 

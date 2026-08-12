@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { Node, ts, type SourceFile } from "ts-morph";
 import {
+  deriveDynamicImportCallbackExport,
   deriveTargetReference,
   type TargetReferenceDerivation,
 } from "../edge-resolve";
@@ -30,7 +31,7 @@ import { throughLocalReexports } from "../reexport-reference";
 import { canonicalJson, compareCanonicalStrings } from "./canonical-json";
 import { portableFingerprintAddress } from "./fingerprints";
 
-export const SEMANTIC_COMPILER_OBSERVATION_VERSION = 4 as const;
+export const SEMANTIC_COMPILER_OBSERVATION_VERSION = 5 as const;
 
 export interface SemanticCompilerFileObservation {
   version: typeof SEMANTIC_COMPILER_OBSERVATION_VERSION;
@@ -314,6 +315,11 @@ function observeSourceFile(input: {
   visit(input.sourceFile);
 
   if (input.selectedSourceFile !== undefined) {
+    observeDynamicImportCallbackExports({
+      observeSymbol,
+      record,
+      sourceFile: input.selectedSourceFile,
+    });
     observeConstructedReceiverMembers({
       observeDeclaration: (declaration) => declarationObservation(
         declaration.compilerNode as ts.Declaration,
@@ -381,6 +387,26 @@ function observeSourceFile(input: {
     queryCount,
     providerAddresses: [...providerAddresses].sort(compareCanonicalStrings),
   };
+}
+
+/** Record the exact binding-type query used to recover a destructured dynamic-import export. */
+function observeDynamicImportCallbackExports(input: {
+  observeSymbol: (symbol: ts.Symbol | undefined) => {
+    direct: SymbolObservation | null;
+    aliased: SymbolObservation | null;
+  };
+  record: (kind: string, node: ts.Node, value: unknown) => void;
+  sourceFile: SourceFile;
+}): void {
+  for (const call of input.sourceFile.getDescendantsOfKind(ts.SyntaxKind.CallExpression)) {
+    const callee = call.getExpression();
+    const recovered = deriveDynamicImportCallbackExport(callee);
+    if (recovered === null) continue;
+    input.record("dynamic-import-callback-export", callee.compilerNode, {
+      exportedName: recovered.exportedName,
+      typeSymbol: input.observeSymbol(recovered.typeSymbol?.compilerSymbol),
+    });
+  }
 }
 
 /** Record the exact extra checker query used to recover an any-typed receiver's member target. */
