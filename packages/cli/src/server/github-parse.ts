@@ -64,6 +64,10 @@ export interface PrGitHubComment {
   id: number;
   inReplyToId: number | null;
   path: string;
+  /** First coordinate of a valid GitHub multi-line range; absent for one-line comments. */
+  startLine?: number;
+  startSide?: "LEFT" | "RIGHT";
+  /** Last coordinate of a multi-line range, or the only coordinate of a one-line comment. */
   line: number | null;
   side: "LEFT" | "RIGHT" | null;
   body: string;
@@ -228,15 +232,31 @@ export function parsePullRequestComments(json: unknown): PrGitHubComment[] {
   }
   return json.slice(0, PR_COMMENT_RESULT_LIMIT).map((item) => {
     const comment = asObject(item);
-    const line = comment.line;
-    const side = comment.side;
+    const rawLine = comment.line;
+    const rawSide = comment.side;
+    const line = typeof rawLine === "number" && Number.isSafeInteger(rawLine) && rawLine > 0 ? rawLine : null;
+    const side = rawSide === "LEFT" || rawSide === "RIGHT" ? rawSide : null;
+    const rawStartLine = comment.start_line;
+    const rawStartSide = comment.start_side;
+    const startLine = typeof rawStartLine === "number"
+      && Number.isSafeInteger(rawStartLine)
+      && rawStartLine > 0
+      ? rawStartLine
+      : null;
+    const startSide = rawStartSide === "LEFT" || rawStartSide === "RIGHT" ? rawStartSide : null;
+    const validRange = startLine !== null
+      && startSide !== null
+      && line !== null
+      && side !== null
+      && (startSide !== side || startLine < line);
     const inReplyToId = comment.in_reply_to_id;
     return {
       id: positiveIntegerOrThrow(comment.id, "id"),
       inReplyToId: positiveIntegerOrNull(inReplyToId),
       path: requireString(comment, "path"),
-      line: typeof line === "number" && Number.isSafeInteger(line) && line > 0 ? line : null,
-      side: side === "LEFT" || side === "RIGHT" ? side : null,
+      ...(validRange ? { startLine, startSide } : {}),
+      line,
+      side,
       body: requireString(comment, "body").slice(0, PR_COMMENT_BODY_LIMIT),
       author: requireString(asObject(comment.user ?? {}), "login"),
       updatedAt: requireString(comment, "updated_at"),

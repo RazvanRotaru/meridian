@@ -52,8 +52,21 @@ function draft(
   anchorLabel: string | null = null,
   line: number | null = null,
   side: PrReviewCommentSide | null = line === null ? null : "RIGHT",
+  startLine?: number,
+  startSide?: PrReviewCommentSide,
 ): ReviewComment {
-  return { id: body, path, nodeId, line, side, anchorLabel, body, at: "t" };
+  return {
+    id: body,
+    path,
+    nodeId,
+    line,
+    side,
+    ...(startLine === undefined ? {} : { startLine }),
+    ...(startSide === undefined ? {} : { startSide }),
+    anchorLabel,
+    body,
+    at: "t",
+  };
 }
 
 describe("buildReviewSubmission", () => {
@@ -150,6 +163,32 @@ describe("buildReviewSubmission", () => {
     expect(submission.fileComments).toEqual([]);
   });
 
+  it("submits a RIGHT range only when the whole range belongs to one comment hunk", () => {
+    const submission = buildReviewSubmission(
+      [
+        draft("src/a.ts", null, "one hunk", null, 83, "RIGHT", 82, "RIGHT"),
+        draft("src/a.ts", null, "crosses the gap", null, 83, "RIGHT", 79, "RIGHT"),
+        draft("src/a.ts", null, "mixed sides", null, 83, "RIGHT", 82, "LEFT"),
+      ],
+      FILES,
+      CONTEXT,
+      { "src/a.ts": [{ start: 77, end: 80 }, { start: 82, end: 88 }] },
+    );
+
+    expect(submission.comments).toEqual([{
+      path: "src/a.ts",
+      line: 83,
+      side: "RIGHT",
+      startLine: 82,
+      startSide: "RIGHT",
+      body: "one hunk",
+    }]);
+    expect(submission.fileComments).toEqual([
+      { path: "src/a.ts", label: "L79–L83", body: "crosses the gap" },
+      { path: "src/a.ts", label: "L82–L83", body: "mixed sides" },
+    ]);
+  });
+
   it("anchors an exact deleted row on the LEFT side, including a whole-file deletion", () => {
     const submission = buildReviewSubmission(
       [
@@ -172,6 +211,42 @@ describe("buildReviewSubmission", () => {
       { path: "src/gone.ts", line: 4, side: "LEFT", body: "why remove this file line?" },
     ]);
     expect(submission.fileComments).toEqual([]);
+  });
+
+  it("submits a LEFT range only when every old-side line is proven deleted", () => {
+    const submission = buildReviewSubmission(
+      [
+        draft("src/a.ts", null, "all deleted", null, 24, "LEFT", 22, "LEFT"),
+        draft("src/a.ts", null, "interior gap", null, 22, "LEFT", 20, "LEFT"),
+      ],
+      FILES,
+      CONTEXT,
+      {},
+      {
+        diffLinesByFile: {
+          "src/a.ts": [
+            { kind: "deleted", oldLine: 20, newLine: null, beforeNewLine: 25, text: "twenty" },
+            { kind: "deleted", oldLine: 22, newLine: null, beforeNewLine: 25, text: "twenty-two" },
+            { kind: "deleted", oldLine: 23, newLine: null, beforeNewLine: 25, text: "twenty-three" },
+            { kind: "deleted", oldLine: 24, newLine: null, beforeNewLine: 25, text: "twenty-four" },
+          ],
+        },
+      },
+    );
+
+    expect(submission.comments).toEqual([{
+      path: "src/a.ts",
+      line: 24,
+      side: "LEFT",
+      startLine: 22,
+      startSide: "LEFT",
+      body: "all deleted",
+    }]);
+    expect(submission.fileComments).toEqual([{
+      path: "src/a.ts",
+      label: "L20–L22 · base",
+      body: "interior gap",
+    }]);
   });
 
   it("demotes stale or unverified LEFT lines without losing their base-side label", () => {
@@ -293,7 +368,10 @@ describe("buildReviewSubmission", () => {
   });
 
   it("keeps a previous-revision line draft as a labeled file comment even when the same number remains API-anchorable", () => {
-    const previousRevision = { ...draft("src/a.ts", null, "old L78", null, 78), lineStale: true };
+    const previousRevision = {
+      ...draft("src/a.ts", null, "old range", null, 83, "RIGHT", 78, "RIGHT"),
+      lineStale: true,
+    };
     const submission = buildReviewSubmission(
       [previousRevision],
       FILES,
@@ -303,8 +381,8 @@ describe("buildReviewSubmission", () => {
     expect(submission.comments).toEqual([]);
     expect(submission.fileComments).toEqual([{
       path: "src/a.ts",
-      label: "L78 · previous revision",
-      body: "old L78",
+      label: "L78–L83 · previous revision",
+      body: "old range",
     }]);
   });
 

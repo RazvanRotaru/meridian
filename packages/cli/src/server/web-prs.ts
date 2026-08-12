@@ -813,12 +813,31 @@ function boundedArray(raw: unknown, name: string): unknown[] {
 
 function parseComment(entry: unknown): ReviewCommentInput {
   const comment = asRecord(entry);
-  const { path, line, body, side = "RIGHT" } = comment;
+  const { path, startLine, startSide, line, body, side = "RIGHT" } = comment;
   const validLine = typeof line === "number" && Number.isSafeInteger(line) && line > 0;
   if (!isFilledString(path) || !validLine || (side !== "LEFT" && side !== "RIGHT") || !isFilledString(body)) {
     throw new WebError(400, "each comment needs a path, a positive line, LEFT or RIGHT side, and a non-empty body");
   }
-  return { path, line: line as number, side, body };
+  const hasStartLine = startLine !== undefined;
+  const hasStartSide = startSide !== undefined;
+  if (hasStartLine !== hasStartSide) {
+    throw new WebError(400, "startLine and startSide must be provided together for a multi-line comment");
+  }
+  if (!hasStartLine) {
+    return { path, line: line as number, side, body };
+  }
+  if (
+    typeof startLine !== "number"
+    || !Number.isSafeInteger(startLine)
+    || startLine <= 0
+    || (startSide !== "LEFT" && startSide !== "RIGHT")
+  ) {
+    throw new WebError(400, "startLine must be a positive integer and startSide must be LEFT or RIGHT");
+  }
+  if (startSide === side && startLine >= (line as number)) {
+    throw new WebError(400, "startLine must be less than line when both range coordinates use the same side");
+  }
+  return { path, startLine, startSide, line: line as number, side, body };
 }
 
 function parseFileComment(entry: unknown): ReviewFileCommentInput {

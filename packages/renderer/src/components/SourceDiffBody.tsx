@@ -17,6 +17,7 @@ import type { CodeView } from "../state/store";
 import {
   CodeBlock,
   type CodeDiffLine,
+  type CodeReviewCommentTarget,
   type CodeSourceSide,
 } from "./CodeBlock";
 import type { SourceSearchMatch } from "./source/sourceSearch";
@@ -71,6 +72,9 @@ export interface SourceDiffModel {
   commentableLines: ReadonlySet<number>;
   /** Exact visible BASE lines represented by canonical deletion rows. */
   deletedCommentableLines: ReadonlySet<number>;
+  /** Canonical deletion rows retained only to restore a single unfinished composer when its source
+   * row is filtered. Never use this wider set to form or restore a multi-line range. */
+  deletedDraftableLines: ReadonlySet<number>;
   /** Explains which drafts become inline comments versus file-level review comments. */
   reviewCommentScopeNote: string | null;
   removedRows: ReadonlyMap<number, string[]>;
@@ -191,6 +195,9 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
   const deletedLines = useMemo(() => new Set(
     (rawDiffLines ?? []).flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []),
   ), [rawDiffLines]);
+  const displayedDeletedLines = useMemo(() => new Set(
+    (diffLines ?? []).flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []),
+  ), [diffLines]);
   const commentCode = sourceSide === "head" ? codeView.code : null;
   const headComments = useCodeReviewComments(file, baseLine, commentCode, sourceLineCount);
   const deletedComments = useDeletedCodeReviewComments(file, deletedLines);
@@ -233,6 +240,14 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
       || prReviewRefreshing
       || prReviewStatus === "preparing"
       ? EMPTY_COMMENTABLE_LINES
+      : displayedDeletedLines,
+    [displayedDeletedLines, prReviewRefreshing, prReviewStatus, review],
+  );
+  const deletedDraftableLines = useMemo(
+    () => review === null
+      || prReviewRefreshing
+      || prReviewStatus === "preparing"
+      ? EMPTY_COMMENTABLE_LINES
       : deletedLines,
     [deletedLines, prReviewRefreshing, prReviewStatus, review],
   );
@@ -262,6 +277,7 @@ export function useSourceDiffModel(codeView: CodeView): SourceDiffModel {
     inlineCommentableLines,
     commentableLines,
     deletedCommentableLines,
+    deletedDraftableLines,
     reviewCommentScopeNote,
     removedRows,
     removedTruncated: diffLines === undefined && legacyRemovedTruncated,
@@ -319,10 +335,22 @@ export function SourceDiffBody({
       path: model.file,
       line: composer.line,
       side: composer.side,
+      ...(composer.startLine === undefined ? {} : {
+        startLine: composer.startLine,
+        startSide: composer.startSide,
+      }),
     })
-    && (composer.side === "LEFT"
-      ? model.deletedCommentableLines.has(composer.line)
-      : model.commentableLines.has(composer.line))
+    && codeReviewTargetIsVisible(
+      composer,
+      composer.side === "LEFT"
+        ? composer.startLine === undefined
+          ? model.deletedDraftableLines
+          : model.deletedCommentableLines
+        : composer.startLine === undefined
+          ? model.commentableLines
+          : model.inlineCommentableLines,
+      composer.side === "RIGHT" ? model.hiddenSourceLines : EMPTY_HIDDEN_SOURCE_LINES,
+    )
     ? composer
     : null;
   useEffect(() => {
@@ -354,7 +382,9 @@ export function SourceDiffBody({
       ) : null}
       {code !== null ? (
         <CodeBlock
-          key={sourceDiffInstanceKey(model)}
+          // A local gutter selection is meaningful only in the revision where it was made. Remount
+          // the stateful listing on a head change before a stale selection can open a new composer.
+          key={`${sourceDiffInstanceKey(model)}:${lineRevision ?? "no-review-revision"}`}
           code={code}
           lineCount={model.sourceLineCount}
           maxHeight={maxHeight}
@@ -369,16 +399,28 @@ export function SourceDiffBody({
           activeSearchIndex={activeSearchIndex}
           hiddenSourceLines={model.hiddenSourceLines}
           commentableLines={model.commentableLines}
+          rangeCommentableLines={model.inlineCommentableLines}
           commentableDeletedLines={model.deletedCommentableLines}
-          onLineClick={model.commentableLines.size > 0 || model.deletedCommentableLines.size > 0 ? (line, side) => {
-            // Pin synchronously. Waiting for the controlled composer render is late enough for a
-            // hover-card leave timer to win when the inserted row moves the pointer outside.
-            onComposerEngage?.();
-            openReviewLineComposer(model.file, line, side);
+          onLineClick={model.commentableLines.size > 0 || model.deletedCommentableLines.size > 0 ? (target) => {
+            // Pin synchronously only after the store accepts this exact target. A refresh or dirty
+            // composer elsewhere can reject the move; pinning in that case would strand a hover
+            // card with no composer visible inside it.
+            const opened = openReviewLineComposer(
+              model.file,
+              target.line,
+              target.side,
+              target.startLine,
+              target.startSide,
+            );
+            if (opened) onComposerEngage?.();
           } : undefined}
           lineComposer={activeComposer === null ? null : {
             line: activeComposer.line,
             side: activeComposer.side,
+            ...(activeComposer.startLine === undefined ? {} : {
+              startLine: activeComposer.startLine,
+              startSide: activeComposer.startSide,
+            }),
             draft: activeComposer.draft,
             onValueChange: setReviewLineComposerBody,
             confirmDiscard: activeComposer.confirmDiscard,
@@ -386,7 +428,15 @@ export function SourceDiffBody({
             onKeepEditing: keepEditingReviewLineComposer,
             onDiscard: discardReviewLineComposer,
             onAdd: (body) => {
-              addReviewComment(model.reviewPath, null, body, activeComposer.line, activeComposer.side);
+              addReviewComment(
+                model.reviewPath,
+                null,
+                body,
+                activeComposer.line,
+                activeComposer.side,
+                activeComposer.startLine,
+                activeComposer.startSide,
+              );
               discardReviewLineComposer();
             },
             onCancel: () => {
@@ -408,6 +458,32 @@ export function SourceDiffBody({
       {truncated ? <div style={TRUNCATED_STYLE}>Snippet truncated by the server.</div> : null}
     </div>
   );
+}
+
+/** A shared composer may remount in another source host only when that host renders the complete
+ * selected range. This keeps a range from silently shrinking across hover, inline, and modal views. */
+export function codeReviewTargetIsVisible(
+  target: CodeReviewCommentTarget,
+  visibleLines: ReadonlySet<number>,
+  hiddenLines: ReadonlySet<number> = EMPTY_HIDDEN_SOURCE_LINES,
+): boolean {
+  if (!Number.isSafeInteger(target.line) || target.line < 1) return false;
+  const hasStartLine = target.startLine !== undefined;
+  const hasStartSide = target.startSide !== undefined;
+  if (hasStartLine !== hasStartSide) return false;
+  const start = target.startLine ?? target.line;
+  if (
+    !Number.isSafeInteger(start)
+    || start < 1
+    || start > target.line
+    || (hasStartLine && (start === target.line || target.startSide !== target.side))
+  ) {
+    return false;
+  }
+  for (let line = start; line <= target.line; line += 1) {
+    if (!visibleLines.has(line) || hiddenLines.has(line)) return false;
+  }
+  return true;
 }
 
 /** A source switch must remount the stateful diff table so an expanded fold from one file, side,

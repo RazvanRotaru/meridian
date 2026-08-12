@@ -60,6 +60,10 @@ export interface ReviewComment {
   line: number | null;
   /** Diff side for an explicit line. Legacy line drafts omitted this and normalize to RIGHT. */
   side: PrReviewCommentSide | null;
+  /** Inclusive first coordinate of a multi-line range. Both start fields are omitted for a
+   * single-line draft. */
+  startLine?: number;
+  startSide?: PrReviewCommentSide;
   /** The PR revision changed after this line was selected. Keep the draft, but disarm its inline
    * anchor so it submits as a file-level comment rather than retargeting unrelated code. */
   lineStale?: boolean;
@@ -203,17 +207,33 @@ function isTickMap(value: unknown): value is Record<string, ReviewTick> {
     });
 }
 
-type StoredReviewComment = Omit<ReviewComment, "line" | "side"> & {
+type StoredReviewComment = Omit<ReviewComment, "line" | "side" | "startLine" | "startSide"> & {
   line?: number | null;
   side?: PrReviewCommentSide | null;
+  // Older/corrupt JSON can contain either half of the optional pair, nulls, or arbitrary values.
+  // Keep the core comment and let normalization discard only the unusable range metadata.
+  startLine?: unknown;
+  startSide?: unknown;
 };
 
 function normalizeComment(comment: StoredReviewComment): ReviewComment {
   const line = comment.line ?? null;
+  const side = line === null ? null : comment.side === "LEFT" ? "LEFT" : "RIGHT";
+  const { startLine, startSide, ...rest } = comment;
+  const hasValidRange = line !== null
+    && Number.isSafeInteger(line)
+    && line > 0
+    && Number.isSafeInteger(startLine)
+    && (startLine as number) > 0
+    && (startLine as number) < line
+    && startSide === side;
   return {
-    ...comment,
+    ...rest,
     line,
-    side: line === null ? null : comment.side === "LEFT" ? "LEFT" : "RIGHT",
+    side,
+    ...(hasValidRange
+      ? { startLine: startLine as number, startSide: startSide as PrReviewCommentSide }
+      : {}),
   };
 }
 

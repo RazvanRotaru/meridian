@@ -114,7 +114,7 @@ describe("reviewLineComposer", () => {
     expect(confirming.draft.getSnapshot()).toBe("Still here");
   });
 
-  it("matches the review, revision, path, side, and line exactly", () => {
+  it("matches the review, revision, path, side, and complete range exactly", () => {
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET })).toBe(true);
     expect(matchesReviewLineComposerTarget(null, TARGET)).toBe(false);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, reviewKey: "repo|pr-43" })).toBe(false);
@@ -124,5 +124,10 @@ describe("reviewLineComposer", () => {
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, path: "src/other.ts" })).toBe(false);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, line: 20 })).toBe(false);
     expect(matchesReviewLineComposerTarget(TARGET, { ...TARGET, side: "LEFT" })).toBe(false);
+    const range = { ...TARGET, startLine: 17, startSide: "RIGHT" as const };
+    expect(matchesReviewLineComposerTarget(range, { ...range })).toBe(true);
+    expect(matchesReviewLineComposerTarget(TARGET, range)).toBe(false);
+    expect(matchesReviewLineComposerTarget(range, { ...range, startLine: 18 })).toBe(false);
+    expect(matchesReviewLineComposerTarget(range, { ...range, startSide: "LEFT" })).toBe(false);
   });
 });

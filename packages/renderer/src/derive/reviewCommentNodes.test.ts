@@ -86,6 +86,41 @@ describe("review comment node evidence", () => {
     });
   });
 
+  it("preserves a refreshed range preview while ownership stays on its terminal line", () => {
+    const result = deriveReviewCommentNodeEvidence(input({
+      drafts: [{
+        ...draft("range", null, 25),
+        startLine: 15,
+        startSide: "RIGHT",
+      }],
+      existingComments: [{
+        ...existing("RIGHT", 25),
+        startLine: 15,
+        startSide: "RIGHT",
+      }],
+    }));
+
+    expect(countsOf(result)).toEqual({
+      [METHOD]: { draftCount: 1, existingCount: 1 },
+    });
+    expect(result.get(METHOD)?.comments).toEqual([
+      expect.objectContaining({
+        kind: "draft",
+        startLine: 15,
+        startSide: "RIGHT",
+        line: 25,
+        side: "RIGHT",
+      }),
+      expect.objectContaining({
+        kind: "existing",
+        startLine: 15,
+        startSide: "RIGHT",
+        line: 25,
+        side: "RIGHT",
+      }),
+    ]);
+  });
+
   it("never infers a specific HEAD owner from deletion-shifted base spans", () => {
     const result = deriveReviewCommentNodeEvidence(input({
       existingComments: [existing("RIGHT", 20)],

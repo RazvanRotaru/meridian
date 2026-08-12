@@ -346,6 +346,44 @@ describe("parsePullRequestComments", () => {
       },
     ]);
   });
+
+  it("projects only complete valid multi-line start coordinates", () => {
+    const base = {
+      path: "src/range.ts",
+      line: 12,
+      side: "RIGHT",
+      body: "Range note",
+      user: { login: "mina" },
+      updated_at: "2026-07-10T09:30:00Z",
+    };
+    const comments = parsePullRequestComments([
+      { ...base, id: 201, start_line: 9, start_side: "RIGHT", original_start_line: 8 },
+      { ...base, id: 202, start_line: 9 },
+      { ...base, id: 203, start_line: 12, start_side: "RIGHT" },
+      { ...base, id: 204, start_line: 20, start_side: "LEFT" },
+    ]);
+
+    expect(comments[0]).toMatchObject({
+      id: 201,
+      startLine: 9,
+      startSide: "RIGHT",
+      line: 12,
+      side: "RIGHT",
+    });
+    expect(comments[0]).not.toHaveProperty("start_line");
+    expect(comments[0]).not.toHaveProperty("original_start_line");
+    expect(comments[1]).not.toHaveProperty("startLine");
+    expect(comments[1]).not.toHaveProperty("startSide");
+    expect(comments[2]).not.toHaveProperty("startLine");
+    expect(comments[2]).not.toHaveProperty("startSide");
+    expect(comments[3]).toMatchObject({
+      id: 204,
+      startLine: 20,
+      startSide: "LEFT",
+      line: 12,
+      side: "RIGHT",
+    });
+  });
 });
 
 describe("parsePatchDetail", () => {

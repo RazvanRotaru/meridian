@@ -3920,6 +3920,86 @@ describe("PR store slice", () => {
     expect(store.getState().prDiscussion?.comments[0]?.body).toBe("Keep this in the review draft");
   });
 
+  it("keeps a selected line range intact from the shared composer through review submission", async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL, _init?: RequestInit) => {
+      const url = input.toString();
+      if (url.includes("/api/prs/review")) {
+        return Promise.resolve(Response.json({ url: "https://github.com/o/r/pull/7#range-review" }));
+      }
+      if (url.includes("/api/prs/comments")) {
+        return Promise.resolve(Response.json({
+          comments: [],
+          reviews: { approved: [], changesRequested: [], commented: 1 },
+          hasMore: false,
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const store = freshStore();
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    const review = store.getState().review!;
+    store.setState({
+      review: {
+        ...review,
+        context: {
+          ...review.context,
+          changedFiles: review.context.changedFiles.map((file) => file.path === path
+            ? { ...file, hunks: [{ start: 1, end: 3 }] }
+            : file),
+        },
+      },
+      reviewCommentRangesByFile: { [path]: [{ start: 1, end: 3 }] },
+      prReviewRevision: {
+        ...store.getState().prReviewRevision!,
+        headSha: "abcdef1234567890abcdef1234567890abcdef12",
+      },
+    });
+
+    expect(store.getState().openReviewLineComposer(path, 3, "RIGHT", 1, "LEFT")).toBe(false);
+    expect(store.getState().reviewLineComposer).toBeNull();
+    expect(store.getState().openReviewLineComposer(path, 3, "RIGHT", 1, "RIGHT")).toBe(true);
+    expect(store.getState().reviewLineComposer).toMatchObject({
+      path,
+      startLine: 1,
+      startSide: "RIGHT",
+      line: 3,
+      side: "RIGHT",
+    });
+    store.getState().addReviewComment(path, null, "Review this whole range", 3, "RIGHT", 1, "RIGHT");
+    expect(store.getState().reviewComments).toEqual([
+      expect.objectContaining({
+        path,
+        startLine: 1,
+        startSide: "RIGHT",
+        line: 3,
+        side: "RIGHT",
+        anchorLabel: "L1–L3",
+        body: "Review this whole range",
+      }),
+    ]);
+
+    await store.getState().submitReviewComments();
+
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({
+      number: 7,
+      event: "COMMENT",
+      comments: [{
+        path,
+        startLine: 1,
+        startSide: "RIGHT",
+        line: 3,
+        side: "RIGHT",
+        body: "Review this whole range",
+      }],
+      fileComments: [],
+      commitId: "abcdef1234567890abcdef1234567890abcdef12",
+    });
+    expect(store.getState().reviewComments).toEqual([]);
+  });
+
   it("submits approval without drafts and request changes with a required summary", async () => {
     const submissions: unknown[] = [];
     const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {

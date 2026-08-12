@@ -1,5 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { reviewCommentLineLabel } from "../../derive/reviewCommentPreview";
 import type { PrGitHubComment } from "../../state/prTypes";
 import { ExistingCommentLinks, reviewCommentThreadOrder } from "./ExistingReviewComments";
 import { CommentComposer } from "./ReviewComments";
@@ -62,6 +63,28 @@ describe("CommentComposer", () => {
   });
 });
 
+describe("review comment line labels", () => {
+  it("shows a multi-line draft range with its existing base and stale suffixes", () => {
+    expect(reviewCommentLineLabel({
+      startLine: 14,
+      startSide: "LEFT",
+      line: 19,
+      side: "LEFT",
+      lineStale: true,
+    })).toBe("L14–L19 · base · previous revision");
+  });
+
+  it("labels a GitHub range that crosses diff sides without reversing its meaning", () => {
+    expect(reviewCommentLineLabel({
+      startLine: 20,
+      startSide: "LEFT",
+      line: 12,
+      side: "RIGHT",
+      lineStale: false,
+    })).toBe("L20 · base → L12");
+  });
+});
+
 describe("reviewCommentThreadOrder", () => {
   it("places replies directly after their root while retaining orphaned replies", () => {
     const rootA = githubComment(1, null);
@@ -82,6 +105,20 @@ describe("reviewCommentThreadOrder", () => {
 
     expect(markup).toContain("L1 · octo");
     expect(markup).toContain("L1 · base · octo");
+  });
+
+  it("shows the full range in refreshed comment links", () => {
+    const markup = renderToStaticMarkup(
+      <ExistingCommentLinks comments={[{
+        ...githubComment(1, null),
+        startLine: 4,
+        startSide: "LEFT",
+        line: 8,
+        side: "LEFT",
+      }]} />,
+    );
+
+    expect(markup).toContain("L4–L8 · base · octo");
   });
 });
 

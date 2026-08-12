@@ -14,7 +14,15 @@ import type { ReviewComment } from "../state/reviewTicksPref";
 import type { ReviewFileRow, ReviewUnitRow } from "./reviewFiles";
 
 export interface ReviewSubmission {
-  comments: { path: string; line: number; side: PrReviewCommentSide; body: string }[];
+  comments: {
+    path: string;
+    line: number;
+    side: PrReviewCommentSide;
+    /** GitHub range start; both fields are absent for the established single-line payload. */
+    startLine?: number;
+    startSide?: PrReviewCommentSide;
+    body: string;
+  }[];
   fileComments: { path: string; label: string | null; body: string }[];
 }
 
@@ -50,7 +58,15 @@ export function buildReviewSubmission(
         options.diffLinesByFile ?? EMPTY_DIFF_LINES,
       );
     if (anchor !== null) {
-      submission.comments.push({ path: anchor.path, line: anchor.line, side: anchor.side, body: draft.body });
+      submission.comments.push({
+        path: anchor.path,
+        line: anchor.line,
+        side: anchor.side,
+        ...(anchor.startLine === undefined
+          ? {}
+          : { startLine: anchor.startLine, startSide: anchor.startSide }),
+        body: draft.body,
+      });
     } else {
       submission.fileComments.push({
         // Keep the exact draft path only when the current PR cannot resolve one safe canonical
@@ -69,7 +85,16 @@ interface ReviewAnchor {
   path: string;
   line: number;
   side: PrReviewCommentSide;
+  startLine?: number;
+  startSide?: PrReviewCommentSide;
 }
+
+interface ReviewRangeStart {
+  startLine: number;
+  startSide: PrReviewCommentSide;
+}
+
+type ReviewRange = ReviewRangeStart | null | "invalid";
 
 /** The canonical PR path + exact diff coordinate a draft anchors to; null ⇒ attach it to the file. */
 function reviewAnchor(
@@ -86,9 +111,14 @@ function reviewAnchor(
     if (draft.lineStale === true || explicitLine < 1) {
       return null;
     }
+    const range = reviewRange(draft, explicitLine, explicitSide);
+    if (range === "invalid") {
+      return null;
+    }
     const diffLines = linesForPath(diffLinesByFile, path, draft.path);
-    return diffLines?.some((line) => line.kind === "deleted" && line.oldLine === explicitLine)
-      ? { path, line: explicitLine, side: "LEFT" }
+    const startLine = range?.startLine ?? explicitLine;
+    return deletedRangeIsProven(diffLines, startLine, explicitLine)
+      ? rangeAnchor(path, explicitLine, explicitSide, range)
       : null;
   }
   const hunks = anchorableHunks(path, context);
@@ -105,12 +135,18 @@ function reviewAnchor(
     if (draft.lineStale === true) {
       return null;
     }
+    const range = reviewRange(draft, explicitLine, explicitSide!);
+    if (range === "invalid") {
+      return null;
+    }
     // `hunks` is intentionally tight (actual edit lines) for graph marking; `commentRangesByFile`
     // comes from the patch headers and includes GitHub's surrounding context rows. Artifact-only
     // reviews have no header map, so their tight hunks remain the conservative fallback.
     const ranges = rangesForPath(commentRangesByFile, draft.path, path) ?? hunks;
-    return explicitLine >= 1 && ranges.some((range) => explicitLine >= range.start && explicitLine <= range.end)
-      ? { path, line: explicitLine, side: "RIGHT" }
+    const startLine = range?.startLine ?? explicitLine;
+    return explicitLine >= 1
+      && ranges.some((commentRange) => startLine >= commentRange.start && explicitLine <= commentRange.end)
+      ? rangeAnchor(path, explicitLine, explicitSide!, range)
       : null;
   }
   if (draft.nodeId === null) {
@@ -122,9 +158,69 @@ function reviewAnchor(
   return overlap ? { path, line: Math.max(overlap.start, unit.startLine), side: "RIGHT" } : null;
 }
 
+/** A range is represented only by a complete, ordered pair on the same diff side as its end. */
+function reviewRange(
+  draft: ReviewComment,
+  endLine: number,
+  endSide: PrReviewCommentSide,
+): ReviewRange {
+  if (draft.startLine === undefined && draft.startSide === undefined) {
+    return null;
+  }
+  if (
+    !Number.isSafeInteger(endLine)
+    || !Number.isSafeInteger(draft.startLine)
+    || draft.startLine === undefined
+    || draft.startLine < 1
+    || draft.startLine >= endLine
+    || draft.startSide !== endSide
+  ) {
+    return "invalid";
+  }
+  return { startLine: draft.startLine, startSide: draft.startSide };
+}
+
+function rangeAnchor(
+  path: string,
+  line: number,
+  side: PrReviewCommentSide,
+  range: ReviewRangeStart | null,
+): ReviewAnchor {
+  return range === null
+    ? { path, line, side }
+    : { path, line, side, startLine: range.startLine, startSide: range.startSide };
+}
+
+/** Count exact old-side coordinates instead of assuming that two endpoint deletions are
+ * contiguous. Duplicate parser rows cannot make a gap look proven. */
+function deletedRangeIsProven(
+  diffLines: readonly ChangedDiffLine[] | undefined,
+  startLine: number,
+  endLine: number,
+): boolean {
+  if (diffLines === undefined) {
+    return false;
+  }
+  const proven = new Set(
+    diffLines
+      .filter(
+        (line) => line.kind === "deleted"
+          && line.oldLine !== null
+          && Number.isSafeInteger(line.oldLine)
+          && line.oldLine >= startLine
+          && line.oldLine <= endLine,
+      )
+      .map((line) => line.oldLine),
+  );
+  return proven.size === endLine - startLine + 1;
+}
+
 function explicitLineLabel(draft: ReviewComment): string {
+  const coordinate = Number.isSafeInteger(draft.startLine) && (draft.startLine ?? 0) > 0
+    ? `L${draft.startLine}–L${draft.line}`
+    : `L${draft.line}`;
   return [
-    `L${draft.line}`,
+    coordinate,
     draft.side === "LEFT" ? "base" : null,
     draft.lineStale === true ? "previous revision" : null,
   ].filter((part): part is string => part !== null).join(" · ");

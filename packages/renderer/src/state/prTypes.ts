@@ -135,6 +135,11 @@ export interface PrGitHubComment {
   /** The top-level review comment this replies to; null identifies a thread root. */
   inReplyToId: number | null;
   path: string;
+  /** First line of a multi-line review comment. Omitted for legacy and single-line comments. */
+  startLine?: number;
+  /** Diff side of startLine. Omitted for legacy and single-line comments. */
+  startSide?: PrReviewCommentSide;
+  /** Terminal line of the comment range; this remains the placement/ownership coordinate. */
   line: number | null;
   side: PrReviewCommentSide | null;
   body: string;

@@ -55,7 +55,7 @@ describe("readReviewProgress", () => {
           headSha: "a".repeat(40),
         },
       },
-      comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, side: "LEFT", lineStale: true, lineRevision: "rev-a", anchorLabel: "L12 · base", body: "note", at: "t" }],
+      comments: [{ id: "1", path: "a.ts", nodeId: null, line: 12, side: "LEFT", startLine: 10, startSide: "LEFT", lineStale: true, lineRevision: "rev-a", anchorLabel: "L10–L12 · base", body: "note", at: "t" }],
     };
     writeReviewProgress("scope", progress);
     expect(readReviewProgress("scope")).toEqual(progress);
@@ -97,6 +97,47 @@ describe("readReviewProgress", () => {
     expect(readReviewProgress("scope").comments).toEqual([
       { ...good, side: "RIGHT" },
       { ...fileDraft, line: null, side: null },
+    ]);
+  });
+
+  it("keeps only complete, ordered same-side range pairs", () => {
+    const comment = {
+      id: "range",
+      path: "a.ts",
+      nodeId: null,
+      line: 15,
+      side: "RIGHT",
+      anchorLabel: "L12–L15",
+      body: "range note",
+      at: "t",
+    };
+    stubStorage({
+      "meridian.review.scope": JSON.stringify({
+        version: 3,
+        ticks: {},
+        unitTicks: {},
+        fileTicks: {},
+        comments: [
+          { ...comment, id: "valid", startLine: 12, startSide: "RIGHT" },
+          { ...comment, id: "missing-side", startLine: 12 },
+          { ...comment, id: "missing-line", startSide: "RIGHT" },
+          { ...comment, id: "null-pair", startLine: null, startSide: null },
+          { ...comment, id: "reversed", startLine: 16, startSide: "RIGHT" },
+          { ...comment, id: "wrong-side", startLine: 12, startSide: "LEFT" },
+          { ...comment, id: "bad-type", startLine: "12", startSide: "RIGHT" },
+        ],
+      }),
+    });
+
+    const comments = readReviewProgress("scope").comments;
+    expect(comments[0]).toEqual({ ...comment, id: "valid", startLine: 12, startSide: "RIGHT" });
+    expect(comments.slice(1)).toEqual([
+      { ...comment, id: "missing-side" },
+      { ...comment, id: "missing-line" },
+      { ...comment, id: "null-pair" },
+      { ...comment, id: "reversed" },
+      { ...comment, id: "wrong-side" },
+      { ...comment, id: "bad-type" },
     ]);
   });
 });

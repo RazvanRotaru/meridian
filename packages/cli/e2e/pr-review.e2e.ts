@@ -61,7 +61,14 @@ interface SubmittedReview {
   event: string;
   body?: string;
   commit_id?: string;
-  comments: Array<{ path: string; line: number; side: string; body: string }>;
+  comments: Array<{
+    path: string;
+    line: number;
+    side: string;
+    start_line?: number;
+    start_side?: string;
+    body: string;
+  }>;
 }
 
 interface ViewedFileMutation {
@@ -546,7 +553,9 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const inlineRange = fixture!.files[0].headerHunks[0];
     const firstInlineLine = inlineRange.start;
     const secondInlineLine = inlineRange.end;
+    const secondRangeStartLine = secondInlineLine - 1;
     expect(secondInlineLine).toBeGreaterThan(firstInlineLine);
+    expect(secondInlineLine - secondRangeStartLine).toBe(1);
     const previewSourceRow = loyaltyPreview.locator(`tr[data-source-line="${firstInlineLine}"]`);
     const previewLineAction = previewSourceRow.getByRole("button", {
       name: `Comment on line ${firstInlineLine}`,
@@ -1026,7 +1035,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const sourceLine = loyaltySourceDialog.locator(`tr[data-source-line="${EXISTING_COMMENT_LINE}"]`);
     const listing = sourceLine.locator("xpath=ancestor::table[1]/..");
     const gutter = sourceLine.locator("td").first();
-    const lineNumber = gutter.locator("span").last();
+    const lineNumber = gutter.locator(`[data-review-line-selector="${EXISTING_COMMENT_LINE}"]`);
     await listing.evaluate((element) => { element.scrollLeft = 0; });
     const commentBox = await existingCommentCard.boundingBox();
     const listingBox = await listing.boundingBox();
@@ -1064,13 +1073,29 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
     expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
 
-    // Add the second distinct line draft through the full-source gutter. An attempted window close
-    // first exposes the shared Keep/Discard choice; keeping resumes the exact text before Add.
+    // Add the second draft with GitHub's range gesture: select one eligible line number, Shift-click
+    // its contiguous neighbour, then use the terminal +. An attempted window close first exposes
+    // the shared Keep/Discard choice; keeping resumes the exact ranged draft before Add.
+    const secondRangeStartRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondRangeStartLine}"]`);
     const secondSourceRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondInlineLine}"]`);
-    await secondSourceRow.scrollIntoViewIfNeeded();
-    await secondSourceRow.hover();
-    await secondSourceRow.getByRole("button", { name: `Comment on line ${secondInlineLine}`, exact: true }).click();
-    const secondDraft = loyaltySourceDialog.getByPlaceholder(`Comment on line ${secondInlineLine}…`);
+    await secondRangeStartRow.scrollIntoViewIfNeeded();
+    await secondRangeStartRow.getByRole("button", {
+      name: `Select line ${secondRangeStartLine} for a review comment`,
+      exact: true,
+    }).click();
+    await secondSourceRow.getByRole("button", {
+      name: `Select line ${secondInlineLine} for a review comment`,
+      exact: true,
+    }).click({ modifiers: ["Shift"] });
+    expect(await secondRangeStartRow.getAttribute("data-review-comment-range-selected")).toBe("true");
+    expect(await secondSourceRow.getAttribute("data-review-comment-range-terminal")).toBe("true");
+    await secondSourceRow.getByRole("button", {
+      name: `Comment on lines ${secondRangeStartLine}–${secondInlineLine}`,
+      exact: true,
+    }).click();
+    const secondDraft = loyaltySourceDialog.getByPlaceholder(
+      `Comment on lines ${secondRangeStartLine}–${secondInlineLine}…`,
+    );
     await secondDraft.fill(SECOND_DRAFT_TEXT);
     await loyaltySourceDialog.getByRole("button", { name: "Close source" }).click();
     await loyaltySourceDialog.getByRole("alert").waitFor();
@@ -1130,9 +1155,23 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltyFileNode.getByRole("button", { name: "Expand" }).click();
     await loyaltyTierNode.waitFor();
 
-    // 4f — submit one GitHub review whose two drafts stay as two ordered inline comments.
+    // 4f — submit one GitHub review whose single-line and ranged drafts stay ordered inline.
+    const submittedReviewRequest = page.waitForRequest((request) => (
+      request.method() === "POST" && new URL(request.url()).pathname === "/api/prs/review"
+    ));
     await page.getByRole("button", { name: "Submit comments" }).click();
     await page.getByText("Comments submitted", { exact: true }).waitFor();
+    const rendererPayload = (await submittedReviewRequest).postDataJSON() as {
+      comments: Array<Record<string, unknown>>;
+    };
+    expect(rendererPayload.comments[1]).toEqual({
+      path: "src/pricing/loyaltyTiers.ts",
+      startLine: secondRangeStartLine,
+      startSide: "RIGHT",
+      line: secondInlineLine,
+      side: "RIGHT",
+      body: SECOND_DRAFT_TEXT,
+    });
     expect(submittedReviews).toEqual([
       {
         event: "COMMENT",
@@ -1146,6 +1185,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
           },
           {
             path: "src/pricing/loyaltyTiers.ts",
+            start_line: secondRangeStartLine,
+            start_side: "RIGHT",
             line: secondInlineLine,
             side: "RIGHT",
             body: SECOND_DRAFT_TEXT,
