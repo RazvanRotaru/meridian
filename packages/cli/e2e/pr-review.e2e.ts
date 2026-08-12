@@ -116,6 +116,36 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await initialReviewGraph.waitFor();
     expect(await page.getByRole("region", { name: "Extracted selection" }).count()).toBe(0);
 
+    // Existing discussion can focus any commenter either to the prose they authored or to every
+    // comment in the threads they joined. The interaction also proves Escape restores the compact
+    // trigger after the non-modal filter dialog closes.
+    const commentFocus = page.locator('button[aria-haspopup="dialog"][aria-label^="Comment focus:"]');
+    await commentFocus.waitFor();
+    expect(await commentFocus.getAttribute("aria-label")).toBe("Comment focus: All comments, showing 2 of 2 comments");
+    await commentFocus.click();
+    const commentFilters = page.getByRole("dialog", { name: "Comment filters" });
+    await commentFilters.waitFor();
+    const personFilter = commentFilters.getByLabel("Person");
+    // All users disables the mode radios, so Tab leaves the non-modal dialog. Escape must still
+    // dismiss it and restore the trigger instead of relying on an event bubbling from inside.
+    await personFilter.press("Tab");
+    await expect.poll(() => commentFilters.evaluate((element) => !element.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Escape");
+    await commentFilters.waitFor({ state: "detached" });
+    await expect.poll(() => commentFocus.evaluate((element) => element === document.activeElement)).toBe(true);
+    await commentFocus.click();
+    await commentFilters.waitFor();
+    await personFilter.selectOption({ label: "@outside-reviewer" });
+    await expect.poll(() => commentFocus.getAttribute("aria-label"))
+      .toBe("Comment focus: @outside-reviewer · Comments, showing 1 of 2 comments");
+    await commentFilters.getByLabel("Participated threads").check();
+    await expect.poll(() => commentFocus.getAttribute("aria-label"))
+      .toBe("Comment focus: @outside-reviewer · Threads, showing 2 of 2 comments");
+    await personFilter.selectOption({ label: "All users" });
+    await personFilter.press("Escape");
+    await commentFilters.waitFor({ state: "detached" });
+    await expect.poll(() => commentFocus.evaluate((element) => element === document.activeElement)).toBe(true);
+
     // A review bar always owns the bottom lane instead of floating one full MiniMap-height above
     // it. Wide panes show the complete bar; narrower panes compact secondary controls behind More.
     // Both presentations remain contained by the graph side of the review split and clear chrome.
@@ -420,7 +450,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await relatedOnly.waitFor({ state: "detached" });
 
     const loyaltyCommentToolbar = extractedReviewSurface.locator(`[data-review-comment-node-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
-    const loyaltyCommentIndicator = loyaltyCommentToolbar.getByRole("button", { name: "1 review comment" });
+    const loyaltyCommentIndicator = loyaltyCommentToolbar.getByRole("button", { name: "2 review comments" });
     await loyaltyCommentIndicator.waitFor();
     expect(await extractedReviewSurface.locator(`[data-review-comment-node-id="${ORDER_SERVICE_MODULE_ID}"]`).count()).toBe(0);
 
@@ -1443,7 +1473,22 @@ async function generateSession(baseUrl: string): Promise<{ id: string }> {
 
 function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeof fetch {
   let existingCommentBody = EXISTING_COMMENT_TEXT;
-  const threadReplies: Array<Record<string, unknown>> = [];
+  const threadReplies: Array<Record<string, unknown>> = [{
+    id: 7002,
+    in_reply_to_id: 7001,
+    pull_request_review_id: 77,
+    path: "src/pricing/loyaltyTiers.ts",
+    commit_id: source.headSha,
+    original_commit_id: source.headSha,
+    line: EXISTING_COMMENT_LINE,
+    original_line: EXISTING_COMMENT_LINE,
+    side: "RIGHT",
+    body: "I checked this thread too.",
+    user: { login: "outside-reviewer" },
+    created_at: "2026-07-11T09:33:00Z",
+    updated_at: "2026-07-11T09:33:00Z",
+    html_url: "https://github.com/e2e/shop/pull/7#discussion_r7002",
+  }];
   const viewedFileStates = new Map<string, "VIEWED" | "UNVIEWED" | "DISMISSED">(
     source.files.map((file) => [file.api.filename, "UNVIEWED" as const]),
   );
@@ -1579,7 +1624,7 @@ function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeo
     if (request.method === "POST" && path === "/repos/e2e/shop/pulls/7/comments/7001/replies") {
       const payload = (await request.json()) as { body: string };
       threadReplies.push({
-        id: 7002,
+        id: 7003,
         in_reply_to_id: 7001,
         pull_request_review_id: 77,
         path: "src/pricing/loyaltyTiers.ts",
@@ -1592,9 +1637,9 @@ function fakeGitHub(source: PrReviewFixture, captured: SubmittedReview[]): typeo
         user: { login: "e2e-reviewer" },
         created_at: "2026-07-11T09:35:00Z",
         updated_at: "2026-07-11T09:35:00Z",
-        html_url: "https://github.com/e2e/shop/pull/7#discussion_r7002",
+        html_url: "https://github.com/e2e/shop/pull/7#discussion_r7003",
       });
-      return json({ id: 7002 });
+      return json({ id: 7003 });
     }
     if (request.method === "POST" && path === "/repos/e2e/shop/pulls/7/reviews") {
       captured.push((await request.json()) as SubmittedReview);
