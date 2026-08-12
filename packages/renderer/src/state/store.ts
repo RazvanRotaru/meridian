@@ -79,6 +79,10 @@ import type {
 } from "./graphSymbolSearch";
 import { matchAffectedFiles } from "../derive/matchAffectedFiles";
 import { isReviewPathInScope, normalizeReviewPathScope } from "../derive/reviewPathScope";
+import {
+  DEFAULT_REVIEW_COMMENT_FILTER,
+  reviewCommentFilterForComments,
+} from "../derive/reviewCommentFilter";
 import { isSourceBackedNode } from "../derive/sourceBackedNode";
 import { rollupSeeds } from "../derive/seedRollup";
 import { minimalGraphConnectorIds } from "../derive/minimalGraphConnectors";
@@ -3689,6 +3693,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         prDiscussionSeq += 1;
         set({
           prDiscussion: { comments: discussion.comments, reviews: discussion.reviews },
+          reviewCommentFilter: reviewCommentFilterForComments(get().reviewCommentFilter, discussion.comments),
           prCommentMutationStatus: "idle",
           prCommentMutationId: null,
           prCommentMutationError: null,
@@ -5310,7 +5315,7 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewExcludeFormatOnlyChanges: reviewPreferences.excludeFormatOnlyChanges,
     reviewPanelHidden: false,
     reviewCommentsVisible: true,
-    reviewCommentFilter: "all",
+    reviewCommentFilter: DEFAULT_REVIEW_COMMENT_FILTER,
     reviewSubmitStatus: "idle",
     reviewSubmitError: null,
     reviewSubmitNotice: null,
@@ -9611,7 +9616,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
               && current.review?.context.reviewKey === submittedKey
               && current.prReviewRevision === submittedRevision
             ) {
-              set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
+              set({
+                prDiscussion: { comments: discussion.comments, reviews: discussion.reviews },
+                reviewCommentFilter: reviewCommentFilterForComments(get().reviewCommentFilter, discussion.comments),
+              });
             }
           } catch {
             console.warn("[meridian] Submitted review discussion could not be refreshed.");
@@ -10646,7 +10654,10 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           void fetchPrDiscussion(prCommentsUrl, number).then(
             (discussion) => {
               if (prDiscussionSeq === discussionSequence && prFilesSeq === sequence && get().prSelected === number) {
-                set({ prDiscussion: { comments: discussion.comments, reviews: discussion.reviews } });
+                set({
+                  prDiscussion: { comments: discussion.comments, reviews: discussion.reviews },
+                  reviewCommentFilter: reviewCommentFilterForComments(get().reviewCommentFilter, discussion.comments),
+                });
               }
             },
             () => {
@@ -10813,7 +10824,12 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
           prFilesOutside: files.outsideCount ?? 0,
           prFilesSuggestedSubdir: files.suggestedSubdir ?? "",
           ...(prDiscussionSeq === discussionSequence
-            ? { prDiscussion: discussion === null ? null : { comments: discussion.comments, reviews: discussion.reviews } }
+            ? {
+                prDiscussion: discussion === null ? null : { comments: discussion.comments, reviews: discussion.reviews },
+                ...(discussion === null
+                  ? {}
+                  : { reviewCommentFilter: reviewCommentFilterForComments(current.reviewCommentFilter, discussion.comments) }),
+              }
             : {}),
           // Checks are commit-specific. A failed/unsupported refresh must clear the prior head's
           // rollup instead of presenting it as if it described the new revision.

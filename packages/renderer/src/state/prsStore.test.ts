@@ -4238,7 +4238,7 @@ describe("PR store slice", () => {
     expect(store.getState().reviewCommentsVisible).toBe(true);
     const visible = renderPanel();
     expect(visible).toContain("3 existing comments");
-    expect(visible).toMatch(/<button(?=[^>]*aria-label="Comment focus: All comments, 3 of 3")/);
+    expect(visible).toMatch(/<button(?=[^>]*aria-label="Comment focus: All comments, showing 3 of 3 comments")/);
     expect(visible).toMatch(/<button(?=[^>]*aria-label="Hide comments on canvas")(?=[^>]*aria-pressed="true")/);
     expect(visible).not.toContain("Moved into the canvas code row");
     expect(visible).toContain("Base-side fallback stays in the rail");
@@ -4258,6 +4258,55 @@ describe("PR store slice", () => {
     expect(hidden).not.toContain("Truncated-source comment body stays out of the rail");
     expect(hidden).not.toContain("https://github.com/o/r/pull/7#discussion_r1");
     expect(hidden).not.toContain("https://github.com/o/r/pull/7#discussion_r3");
+  });
+
+  it("focuses comments by any author or by the complete threads they participated in", async () => {
+    const store = freshStore();
+    expect(store.getState().reviewCommentFilter).toEqual({
+      subject: { kind: "all" },
+      mode: "authored",
+    });
+    store.setState(selectedPrState(7));
+    await store.getState().reviewPrInGraph();
+    const path = store.getState().reviewFiles[0].path;
+    store.getState().addReviewComment(path, null, "Keep this pending draft visible");
+    store.setState({
+      prDiscussion: {
+        comments: [
+          githubComment({ id: 201, path, author: "alice", viewerCanEdit: false }),
+          githubComment({ id: 202, path, author: "bob", viewerCanEdit: false, inReplyToId: 201 }),
+          githubComment({ id: 203, path, author: "carol", viewerCanEdit: false }),
+        ],
+        reviews: { approved: [], changesRequested: [], commented: 3 },
+      },
+      reviewCommentsVisible: false,
+    });
+    const renderPanel = () => {
+      const state = store.getState();
+      Object.assign(store, { getInitialState: () => state });
+      return renderToStaticMarkup(
+        createElement(StoreProvider, { store, children: createElement(ReviewPanel) }),
+      );
+    };
+
+    store.getState().setReviewCommentFilter({
+      subject: { kind: "author", login: "ALICE" },
+      mode: "authored",
+    });
+    expect(store.getState().reviewCommentsVisible).toBe(true);
+    const authored = renderPanel();
+    expect(authored).toMatch(/aria-label="Comment focus: @ALICE · Comments, showing 1 of 3 comments"/);
+    expect(authored).toContain("1 pending");
+    expect(authored).toContain("Keep this pending draft visible");
+
+    store.getState().setReviewCommentFilter({
+      subject: { kind: "author", login: "alice" },
+      mode: "participated",
+    });
+    const participated = renderPanel();
+    expect(participated).toMatch(/aria-label="Comment focus: @alice · Threads, showing 2 of 3 comments"/);
+    expect(participated).toContain("1 pending");
+    expect(participated).toContain("Keep this pending draft visible");
   });
 
   it("submits stale review comments against the reviewed SHA while keeping decisions blocked", async () => {

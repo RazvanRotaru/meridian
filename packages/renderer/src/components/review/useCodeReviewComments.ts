@@ -3,7 +3,7 @@ import type { LineRange } from "@meridian/core";
 import { useBlueprint } from "../../state/StoreContext";
 import type { PrGitHubComment } from "../../state/prTypes";
 import type { ReviewComment } from "../../state/reviewTicksPref";
-import { filterReviewComments } from "../../derive/reviewCommentFilter";
+import { DEFAULT_REVIEW_COMMENT_FILTER, filterReviewComments } from "../../derive/reviewCommentFilter";
 
 const NO_COMMENTS: readonly PrGitHubComment[] = [];
 const NO_DRAFTS: readonly ReviewComment[] = [];
@@ -234,7 +234,7 @@ export function useCodeReviewComments(
 ): readonly PrGitHubComment[] {
   const discussion = useBlueprint((state) => state.prDiscussion);
   const visible = useBlueprint((state) => state.reviewCommentsVisible);
-  const filter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
+  const filter = useBlueprint((state) => state.reviewCommentFilter ?? DEFAULT_REVIEW_COMMENT_FILTER);
   const livePrReview = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
   const paths = useReviewCommentPaths(path);
   return useMemo(
@@ -250,7 +250,7 @@ export function useDeletedCodeReviewComments(
 ): readonly PrGitHubComment[] {
   const discussion = useBlueprint((state) => state.prDiscussion);
   const visible = useBlueprint((state) => state.reviewCommentsVisible);
-  const filter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
+  const filter = useBlueprint((state) => state.reviewCommentFilter ?? DEFAULT_REVIEW_COMMENT_FILTER);
   const livePrReview = useBlueprint((state) => state.prReviewed !== null && state.review !== null);
   const paths = useReviewCommentPaths(path);
   return useMemo(

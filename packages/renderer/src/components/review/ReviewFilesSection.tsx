@@ -27,7 +27,7 @@ import { UnitRow } from "./ReviewUnitRow";
 import { isHeadSideReviewComment } from "./useCodeReviewComments";
 import { isReviewPathInScope } from "../../derive/reviewPathScope";
 import { basename, CARET, MONO, NO_FOCUS_RING, SECTION_COUNT, SECTION_HEAD, SECTION_TITLE, TICK_BTN, TICK_COLOR, TICK_GLYPH, type CommentTarget } from "./reviewPanelKit";
-import { filterReviewComments } from "../../derive/reviewCommentFilter";
+import { DEFAULT_REVIEW_COMMENT_FILTER, filterReviewComments } from "../../derive/reviewCommentFilter";
 import { visibleReviewFilePath } from "../../derive/reviewSubmit";
 import { ReviewDiscussionToolbar } from "./ReviewDiscussionToolbar";
 import { reviewViewedGestureBlockReason } from "../../state/store";
@@ -76,7 +76,7 @@ function ReviewFilesSectionImpl({ expanded = false, onExpandedChange }: ReviewFi
   const reviewContext = useBlueprint((state) => state.review?.context ?? null);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const commentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
-  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
+  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? DEFAULT_REVIEW_COMMENT_FILTER);
   const pathScope = useBlueprint((state) => state.reviewPathScope);
   const focusedSubgraphPaths = useBlueprint((state) => state.reviewFocusedSubgraph?.filePaths ?? null);
   const { setReviewFilesSort, retryReviewViewedFiles } = useBlueprintActions();

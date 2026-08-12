@@ -145,9 +145,21 @@ export interface PrGitHubComment {
   url: string;
 }
 
+export type ReviewCommentFilterMode = "authored" | "participated";
+
+/** The person whose existing GitHub review discussion should be projected. The authenticated
+ * viewer remains permission-backed because their login is not otherwise exposed to the renderer. */
+export type ReviewCommentFilterSubject =
+  | { readonly kind: "all" }
+  | { readonly kind: "viewer" }
+  | { readonly kind: "author"; readonly login: string };
+
 /** Which existing GitHub review comments the PR-review workspace projects. Local pending
- * comments are authored by the viewer and remain visible in every mode. */
-export type ReviewCommentFilter = "all" | "mine" | "participated";
+ * comments are authored by the viewer and remain visible for every subject and mode. */
+export interface ReviewCommentFilter {
+  readonly subject: ReviewCommentFilterSubject;
+  readonly mode: ReviewCommentFilterMode;
+}
 
 export interface PrReviewRollup {
   approved: string[];

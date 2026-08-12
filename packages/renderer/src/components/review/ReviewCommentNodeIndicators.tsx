@@ -10,7 +10,7 @@ import {
 } from "../../derive/reviewCommentNodes";
 import { useBlueprint } from "../../state/StoreContext";
 import { ReviewCommentIndicator } from "./ReviewCommentHoverCard";
-import { filterReviewComments } from "../../derive/reviewCommentFilter";
+import { DEFAULT_REVIEW_COMMENT_FILTER, filterReviewComments } from "../../derive/reviewCommentFilter";
 
 const NO_EXISTING_COMMENTS = [] as const;
 
@@ -20,7 +20,7 @@ export function ReviewCommentNodeIndicators({ visibleNodes }: { visibleNodes: re
   const drafts = useBlueprint((state) => state.reviewComments);
   const discussion = useBlueprint((state) => state.prDiscussion);
   const existingCommentsVisible = useBlueprint((state) => state.reviewCommentsVisible);
-  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? "all");
+  const commentFilter = useBlueprint((state) => state.reviewCommentFilter ?? DEFAULT_REVIEW_COMMENT_FILTER);
   const files = useBlueprint((state) => state.reviewFiles);
   const index = useBlueprint((state) => state.index);
   const preparedHeadGraph = useBlueprint((state) => state.prPreparedArtifactCurrent);
