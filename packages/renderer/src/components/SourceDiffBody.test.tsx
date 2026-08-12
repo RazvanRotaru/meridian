@@ -14,6 +14,7 @@ import { StoreProvider } from "../state/StoreContext";
 import type { CodeDiffLine } from "./CodeBlock";
 import {
   diffLinesWithinSlice,
+  codeReviewTargetIsVisible,
   githubLineCommentScopeNote,
   SourceDiffBody,
   sourceDiffInstanceKey,
@@ -43,6 +44,16 @@ const REPLACEMENT: CodeDiffLine[] = [
 ];
 
 describe("SourceDiffBody", () => {
+  it("restores a range only when the complete same-side interval is visible", () => {
+    const visible = new Set([17, 18, 19, 20]);
+    expect(codeReviewTargetIsVisible({ startLine: 17, startSide: "RIGHT", line: 20, side: "RIGHT" }, visible)).toBe(true);
+    expect(codeReviewTargetIsVisible({ startLine: 17, startSide: "RIGHT", line: 20, side: "RIGHT" }, visible, new Set([18]))).toBe(false);
+    expect(codeReviewTargetIsVisible({ startLine: 17, startSide: "RIGHT", line: 21, side: "RIGHT" }, visible)).toBe(false);
+    expect(codeReviewTargetIsVisible({ startLine: 17, startSide: "LEFT", line: 20, side: "RIGHT" }, visible)).toBe(false);
+    expect(codeReviewTargetIsVisible({ startLine: 20, startSide: "RIGHT", line: 20, side: "RIGHT" }, visible)).toBe(false);
+    expect(codeReviewTargetIsVisible({ line: 20, side: "RIGHT" }, visible)).toBe(true);
+  });
+
   it("keeps one semantic body across host heights and folds to exactly three context lines", () => {
     const code = Array.from({ length: 40 }, (_value, index) => index === 19 ? "line 20 new" : `line ${index + 1}`).join("\n");
     const view: CodeView = {
@@ -544,6 +555,67 @@ describe("SourceDiffBody source-comment preference", () => {
     expect(html.replaceAll(/<[^>]+>/g, "")).toContain("value = call(); // New explanation.");
     expect(html).not.toContain("Old explanation.");
     expect(sourceRowOpeningTag(html, 1)).not.toContain("data-diff-origin");
+  });
+
+  it("does not bridge a LEFT range across a deleted row omitted by the active diff filter", () => {
+    const view: CodeView = {
+      node: { ...NODE, location: { ...NODE.location, startLine: 1, endLine: 1 } },
+      code: "replacement();",
+      lineCount: 1,
+      loading: false,
+      error: null,
+      mode: "inline",
+      baseLine: 1,
+      diffLines: [
+        { kind: "deleted", oldLine: 10, newLine: null, beforeNewLine: 1, text: "first visible deletion" },
+        {
+          kind: "deleted",
+          oldLine: 11,
+          newLine: null,
+          beforeNewLine: 1,
+          text: "filtered comment deletion",
+          sourceCommentOnly: true,
+          sourceCommentLineOnly: true,
+        },
+        { kind: "deleted", oldLine: 12, newLine: null, beforeNewLine: 1, text: "last visible deletion" },
+        { kind: "added", oldLine: null, newLine: 1, beforeNewLine: 1, text: "replacement();" },
+      ],
+      sourceSide: "head",
+    };
+    const common = { reviewHideAddedSourceCommentDiffs: true };
+    const ranged = renderBody(view, 340, {
+      ...common,
+      reviewLineComposer: composerWithDraft({
+        reviewKey: "source-diff-test",
+        lineRevision: null,
+        path: FILE,
+        startLine: 10,
+        startSide: "LEFT",
+        line: 12,
+        side: "LEFT",
+      }, "Do not bridge the hidden deletion"),
+    });
+    const single = renderBody(view, 340, {
+      ...common,
+      reviewLineComposer: composerWithDraft({
+        reviewKey: "source-diff-test",
+        lineRevision: null,
+        path: FILE,
+        line: 12,
+        side: "LEFT",
+      }, "Keep the visible deletion editable"),
+    });
+
+    expect(ranged).toContain("first visible deletion");
+    expect(ranged).toContain("last visible deletion");
+    expect(ranged).not.toContain("filtered comment deletion");
+    expect(ranged).toContain('data-review-line-selector="10"');
+    expect(ranged).toContain('data-review-line-selector="12"');
+    expect(ranged).not.toContain('data-review-line-selector="11"');
+    expect(ranged).not.toContain("Do not bridge the hidden deletion");
+    expect(ranged).not.toContain('placeholder="Comment on deleted lines 10–12…"');
+    expect(single).toContain('placeholder="Comment on deleted line 12…"');
+    expect(single).toContain("Keep the visible deletion editable");
   });
 
   it("hides physically comment-only source rows from a BASE preview too", () => {

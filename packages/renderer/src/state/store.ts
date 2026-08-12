@@ -230,6 +230,7 @@ import {
   requestReviewLineComposerDismiss as requestReviewLineComposerDismissState,
   setReviewLineComposerBody as setReviewLineComposerBodyState,
   type ReviewLineComposerState,
+  type ReviewLineComposerTarget,
 } from "./reviewLineComposer";
 import {
   fetchPreparedArtifact,
@@ -1270,8 +1271,16 @@ export interface BlueprintState {
     body: string,
     line?: number | null,
     side?: PrReviewCommentSide | null,
+    startLine?: number,
+    startSide?: PrReviewCommentSide,
   ): void;
-  openReviewLineComposer(path: string, line: number, side?: PrReviewCommentSide): void;
+  openReviewLineComposer(
+    path: string,
+    line: number,
+    side?: PrReviewCommentSide,
+    startLine?: number,
+    startSide?: PrReviewCommentSide,
+  ): boolean;
   setReviewLineComposerBody(body: string): void;
   /** Admit one host/navigation transition through the single dirty-composer replay queue. The
    * latest request replaces any older pending intent; callers execute immediately when true. */
@@ -1871,15 +1880,31 @@ function codeViewCanHostReviewLineComposer(state: BlueprintState, view: CodeView
   ) {
     return false;
   }
+  const startLine = composer.startLine ?? composer.line;
+  if (
+    !Number.isSafeInteger(startLine)
+    || startLine < 1
+    || startLine > composer.line
+    || ((composer.startLine === undefined) !== (composer.startSide === undefined))
+    || (composer.startLine !== undefined && (startLine === composer.line || composer.startSide !== composer.side))
+  ) {
+    return false;
+  }
   if (composer.side === "LEFT") {
-    return view.diffLines?.some((line) => line.kind === "deleted" && line.oldLine === composer.line) === true;
+    const deletedLines = new Set(
+      view.diffLines?.flatMap((line) => line.kind === "deleted" && line.oldLine !== null ? [line.oldLine] : []) ?? [],
+    );
+    for (let line = startLine; line <= composer.line; line += 1) {
+      if (!deletedLines.has(line)) return false;
+    }
+    return true;
   }
   if ((view.sourceSide ?? "head") !== "head") {
     return false;
   }
   const baseLine = view.baseLine ?? view.node.location.startLine;
   const lineCount = view.lineCount ?? view.code.split("\n").length;
-  return composer.line >= baseLine && composer.line < baseLine + lineCount;
+  return startLine >= baseLine && composer.line < baseLine + lineCount;
 }
 
 /** The module surface (Map + Service) opened at its top level: whole-repo overview, nothing expanded
@@ -9091,23 +9116,32 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     // The line composer is one session-only editing surface shared by hover, inline, modal, and
     // edge source hosts. Capturing the review revision prevents a remounted view from silently
     // retargeting unfinished prose after the PR head changes.
-    openReviewLineComposer(path, line, side = "RIGHT") {
+    openReviewLineComposer(path, line, side = "RIGHT", startLine, startSide) {
       const state = get();
+      const lineSide = side === "LEFT" ? "LEFT" : "RIGHT";
+      const rangeRequested = startLine !== undefined || startSide !== undefined;
       if (
         !state.review
         || state.prReviewRefreshing
         || state.prReviewStatus === "preparing"
-        || !Number.isInteger(line)
+        || !Number.isSafeInteger(line)
         || line < 1
+        || (rangeRequested && (
+          !Number.isSafeInteger(startLine)
+          || startLine! < 1
+          || startLine! >= line
+          || startSide !== lineSide
+        ))
       ) {
-        return;
+        return false;
       }
-      const target = {
+      const target: ReviewLineComposerTarget = {
         reviewKey: state.review.context.reviewKey,
         lineRevision: prReviewRevisionKey(state.prReviewRevision),
         path,
         line,
-        side,
+        side: lineSide,
+        ...(rangeRequested ? { startLine: startLine!, startSide: lineSide } : {}),
       };
       const current = state.reviewLineComposer;
       if (matchesReviewLineComposerTarget(current, target)) {
@@ -9115,12 +9149,15 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         // previously queued source transition and leaves confirmation mode.
         pendingReviewLineComposerTransition = null;
         set({ reviewLineComposer: openReviewLineComposerState(current, target) });
-        return;
+        return true;
       }
-      if (!guardReviewLineComposerTransition(() => get().openReviewLineComposer(path, line, side))) {
-        return;
+      if (!guardReviewLineComposerTransition(
+        () => get().openReviewLineComposer(path, line, lineSide, startLine, startSide),
+      )) {
+        return false;
       }
       set({ reviewLineComposer: openReviewLineComposerState(get().reviewLineComposer, target) });
+      return true;
     },
 
     setReviewLineComposerBody(body) {
@@ -9164,24 +9201,45 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
 
     // Add a draft comment on a file (nodeId null), touched unit, or explicit diff line. Drafts
     // persist under the reviewKey until submitted or deleted.
-    addReviewComment(path, nodeId, body, line = null, side = line === null ? null : "RIGHT") {
+    addReviewComment(
+      path,
+      nodeId,
+      body,
+      line = null,
+      side = line === null ? null : "RIGHT",
+      startLine,
+      startSide,
+    ) {
       const { review, reviewComments, index, prReviewRevision } = get();
       const trimmed = body.trim();
-      if (!review || trimmed.length === 0) {
+      const lineSide = line === null ? null : side === "LEFT" ? "LEFT" : "RIGHT";
+      const rangeRequested = startLine !== undefined || startSide !== undefined;
+      if (
+        !review
+        || trimmed.length === 0
+        || (rangeRequested && (
+          line === null
+          || !Number.isSafeInteger(line)
+          || !Number.isSafeInteger(startLine)
+          || startLine! < 1
+          || startLine! >= line
+          || startSide !== lineSide
+        ))
+      ) {
         return;
       }
       const lineRevision = line === null ? null : prReviewRevisionKey(prReviewRevision);
-      const lineSide = line === null ? null : side === "LEFT" ? "LEFT" : "RIGHT";
       const comment: ReviewComment = {
         id: newCommentId(),
         path,
         nodeId,
         line,
         side: lineSide,
+        ...(rangeRequested ? { startLine: startLine!, startSide: lineSide! } : {}),
         ...(lineRevision === null ? {} : { lineRevision }),
         anchorLabel: line === null
           ? (nodeId === null ? null : (index.nodesById.get(nodeId)?.displayName ?? null))
-          : `L${line}${lineSide === "LEFT" ? " · base" : ""}`,
+          : `${startLine === undefined ? `L${line}` : `L${startLine}–L${line}`}${lineSide === "LEFT" ? " · base" : ""}`,
         body: trimmed,
         at: new Date().toISOString(),
       };

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { reviewCommentLineLabel, reviewCommentLineRangeLabel } from "../../derive/reviewCommentPreview";
 import type { PrGitHubComment } from "../../state/prTypes";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import { CommentComposer } from "./ReviewComments";
@@ -29,6 +30,9 @@ export function ExistingCommentList(props: {
       {orderedComments.map((comment) => {
         const composer = activeComposer?.commentId === comment.id ? activeComposer.mode : null;
         const replyTargetId = comment.inReplyToId ?? comment.id;
+        const crossesSides = comment.startSide !== undefined
+          && comment.side !== null
+          && comment.startSide !== comment.side;
         const busy = mutationStatus === "submitting" || reviewStale || reviewRefreshing || reviewPreparing;
         const blockedTitle = reviewStale || reviewRefreshing
           ? "Refresh the pull request before updating comments"
@@ -43,8 +47,12 @@ export function ExistingCommentList(props: {
             data-review-comment-reply={comment.inReplyToId === null ? undefined : "true"}
           >
             <div style={META}>
-              {props.showLocation && comment.line !== null ? <span style={LINE_CHIP}>L{comment.line}</span> : null}
-              {props.showLocation && comment.side === "LEFT" ? <span style={SIDE_CHIP}>base side</span> : null}
+              {props.showLocation && comment.line !== null ? (
+                <span style={LINE_CHIP}>
+                  {crossesSides ? reviewCommentLineLabel({ ...comment, lineStale: false }) : reviewCommentLineRangeLabel(comment)}
+                </span>
+              ) : null}
+              {props.showLocation && !crossesSides && comment.side === "LEFT" ? <span style={SIDE_CHIP}>base side</span> : null}
               {props.showLocation && comment.line === null ? <span style={SIDE_CHIP}>no current line</span> : null}
               {comment.url ? (
                 <a style={AUTHOR} href={comment.url} target="_blank" rel="noreferrer" title="Open comment on GitHub">
@@ -128,9 +136,7 @@ export function ExistingCommentLinks(props: { comments: readonly PrGitHubComment
   return (
     <div style={LINK_LIST} data-existing-review-comment-links="true">
       {props.comments.map((comment) => {
-        const location = comment.line === null
-          ? "Comment"
-          : `L${comment.line}${comment.side === "LEFT" ? " · base" : ""}`;
+        const location = reviewCommentLineLabel({ ...comment, lineStale: false }) ?? "Comment";
         const label = `${location} · ${comment.author}`;
         return comment.url ? (
           <a

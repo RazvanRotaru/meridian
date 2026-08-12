@@ -7,6 +7,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
 import type { ReviewComment } from "../../state/reviewTicksPref";
+import { reviewCommentLineLabel } from "../../derive/reviewCommentPreview";
 import { buildReviewSubmission } from "../../derive/reviewSubmit";
 import { NO_FOCUS_RING } from "./reviewPanelKit";
 import { MessageIcon } from "./MessageIcon";
@@ -87,7 +88,7 @@ export function CommentList(props: { comments: readonly ReviewComment[]; placeme
                   ? "GitHub will attach this review comment to the file because its line cannot be anchored inline"
                   : undefined}
               >
-                {`L${comment.line}${comment.side === "LEFT" ? " · base" : ""}${comment.lineStale ? " · previous revision" : ""}`}
+                {reviewCommentLineLabel(comment)}
               </span>
             ) : null}
             {inCode ? <span style={PENDING_CHIP}>Pending</span> : null}

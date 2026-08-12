@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ReviewCommentNodePreview } from "../../derive/reviewCommentPreview";
+import { reviewCommentLineLabel, type ReviewCommentNodePreview } from "../../derive/reviewCommentPreview";
 import { GitHubMarkdown } from "./GitHubMarkdown";
 import { MessageIcon } from "./MessageIcon";
 
@@ -55,7 +55,7 @@ export function CommentPreviewCard({ label, comments }: { label: string; comment
               <span style={AUTHOR}>{comment.author}</span>
               {comment.line !== null ? (
                 <span style={comment.lineStale ? STALE_LINE : LINE}>
-                  {`L${comment.line}${comment.side === "LEFT" ? " · base" : ""}${comment.lineStale ? " · previous revision" : ""}`}
+                  {reviewCommentLineLabel(comment)}
                 </span>
               ) : null}
               <span style={{ flex: 1 }} />

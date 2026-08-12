@@ -823,6 +823,8 @@ describe("PR routes", () => {
             {
               id: 101,
               path: "packages/cli/src/a.ts",
+              start_line: 10,
+              start_side: "RIGHT",
               line: 12,
               side: "RIGHT",
               body: "Please cover this branch",
@@ -872,6 +874,8 @@ describe("PR routes", () => {
           id: 101,
           inReplyToId: null,
           path: "src/a.ts",
+          startLine: 10,
+          startSide: "RIGHT",
           line: 12,
           side: "RIGHT",
           body: "Please cover this branch",
@@ -1177,6 +1181,78 @@ describe("handleSubmitReview", () => {
     });
   });
 
+  it("maps complete multi-line ranges to GitHub start_line/start_side fields", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    let posted: unknown;
+    vi.stubGlobal("fetch", (async (_url: string | URL | Request, init?: RequestInit) => {
+      posted = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({}), { status: 200 });
+    }) as typeof fetch);
+
+    const captured = await invokePost(
+      ctxWithSource({ kind: "github", owner: "org", repo: "repo", subdir: "packages/cli" }),
+      bodyRequest({
+        number: 7,
+        comments: [
+          {
+            path: "src/a.ts",
+            startLine: 20,
+            startSide: "RIGHT",
+            line: 25,
+            body: "head range",
+          },
+          {
+            path: "src/b.ts",
+            startLine: 30,
+            startSide: "LEFT",
+            line: 32,
+            side: "LEFT",
+            body: "base range",
+          },
+          {
+            path: "src/c.ts",
+            startLine: 40,
+            startSide: "LEFT",
+            line: 39,
+            side: "RIGHT",
+            body: "cross-side range",
+          },
+        ],
+      }),
+    );
+
+    expect(captured.status()).toBe(200);
+    expect(posted).toEqual({
+      event: "COMMENT",
+      comments: [
+        {
+          path: "packages/cli/src/a.ts",
+          start_line: 20,
+          start_side: "RIGHT",
+          line: 25,
+          side: "RIGHT",
+          body: "head range",
+        },
+        {
+          path: "packages/cli/src/b.ts",
+          start_line: 30,
+          start_side: "LEFT",
+          line: 32,
+          side: "LEFT",
+          body: "base range",
+        },
+        {
+          path: "packages/cli/src/c.ts",
+          start_line: 40,
+          start_side: "LEFT",
+          line: 39,
+          side: "RIGHT",
+          body: "cross-side range",
+        },
+      ],
+    });
+  });
+
   it("never adds a review-level body to the GitHub payload", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     let posted: unknown;
@@ -1367,6 +1443,27 @@ describe("handleSubmitReview", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it("400s incomplete, invalid, and non-forward same-side multi-line ranges", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "env_secret");
+    vi.stubGlobal("fetch", vi.fn());
+    const ctx = ctxWithSource({ kind: "github", owner: "org", repo: "repo" });
+    const comments = [
+      { path: "a.ts", startLine: 1, line: 2, body: "missing start side" },
+      { path: "a.ts", startSide: "RIGHT", line: 2, body: "missing start line" },
+      { path: "a.ts", startLine: 0, startSide: "RIGHT", line: 2, body: "zero start" },
+      { path: "a.ts", startLine: 1.5, startSide: "RIGHT", line: 2, body: "fractional start" },
+      { path: "a.ts", startLine: 1, startSide: "MIDDLE", line: 2, body: "invalid start side" },
+      { path: "a.ts", startLine: 2, startSide: "RIGHT", line: 2, body: "equal range" },
+      { path: "a.ts", startLine: 3, startSide: "LEFT", line: 2, side: "LEFT", body: "reversed range" },
+    ];
+
+    const results = await Promise.all(comments.map((comment) =>
+      invokePost(ctx, bodyRequest({ number: 7, comments: [comment] }))));
+
+    expect(results.map((result) => result.status())).toEqual([400, 400, 400, 400, 400, 400, 400]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("retries an inline-anchor 422 once with every inline draft converted to FILE threads", async () => {
     vi.stubEnv("GITHUB_TOKEN", "env_secret");
     const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -1393,7 +1490,7 @@ describe("handleSubmitReview", () => {
       bodyRequest({
         ...VALID_BODY,
         comments: [
-          { path: "src/a.ts", line: 25, side: "LEFT", body: "check" },
+          { path: "src/a.ts", startLine: 23, startSide: "LEFT", line: 25, side: "LEFT", body: "check" },
           { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
         ],
         fileComments: [{ path: "src/c.ts", label: "File", body: "Existing file note" }],
@@ -1418,7 +1515,14 @@ describe("handleSubmitReview", () => {
     expect(JSON.parse(String(calls[0].init?.body))).toMatchObject({
       commit_id: "abcdef1234567",
       comments: [
-        { path: "src/a.ts", line: 25, side: "LEFT", body: "check" },
+        {
+          path: "src/a.ts",
+          start_line: 23,
+          start_side: "LEFT",
+          line: 25,
+          side: "LEFT",
+          body: "check",
+        },
         { path: "src/b.ts", line: 41, side: "RIGHT", body: "check this too" },
       ],
     });
@@ -1435,7 +1539,7 @@ describe("handleSubmitReview", () => {
       {
         reviewId: "PRR_node_61",
         path: "src/a.ts",
-        body: "**Meridian location:** `L25 · base` · review commit `abcdef1`\n\ncheck",
+        body: "**Meridian location:** `L23–25 · base` · review commit `abcdef1`\n\ncheck",
       },
       {
         reviewId: "PRR_node_61",

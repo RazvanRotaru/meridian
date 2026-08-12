@@ -18,12 +18,19 @@ import {
 import { WebError } from "./web-error";
 
 /** One inline comment anchored to an exact side + line of the PR diff. */
-export interface ReviewCommentInput {
+interface ReviewCommentBase {
   path: string;
+  /** Last coordinate of the comment range (or the only coordinate for one line). */
   line: number;
   side: "LEFT" | "RIGHT";
   body: string;
 }
+
+/** The paired union prevents direct typed callers from supplying only half of a range. */
+export type ReviewCommentInput = ReviewCommentBase & (
+  | { startLine?: undefined; startSide?: undefined }
+  | { startLine: number; startSide: "LEFT" | "RIGHT" }
+);
 
 /** One GitHub FILE-subject review thread. `label` retains the requested semantic/line location. */
 export interface ReviewFileCommentInput {
@@ -86,11 +93,37 @@ export function submitPullRequestReview(request: SubmitReviewRequest): Promise<S
   return submitPullRequestReviewWithFetch(globalThis.fetch, request);
 }
 
-export function submitPullRequestReviewWithFetch(
+export async function submitPullRequestReviewWithFetch(
   fetchImpl: typeof fetch,
   request: SubmitReviewRequest,
 ): Promise<SubmitReviewResult> {
-  return submitWithRecovery(fetchImpl, request, { forced: false, pendingRecovered: false });
+  validateInlineCommentRanges(request.comments);
+  return await submitWithRecovery(fetchImpl, request, { forced: false, pendingRecovered: false });
+}
+
+/** The HTTP route validates this contract, but the exported client is also called directly by
+ * composed GitHub adapters. Reject malformed range metadata here before any review side effect so
+ * a half-pair cannot silently degrade into a comment on only the terminal line. */
+function validateInlineCommentRanges(comments: readonly ReviewCommentInput[]): void {
+  for (const comment of comments) {
+    const hasStartLine = comment.startLine !== undefined;
+    const hasStartSide = comment.startSide !== undefined;
+    if (hasStartLine !== hasStartSide) {
+      throw new WebError(400, "startLine and startSide must be provided together for a multi-line comment");
+    }
+    if (!Number.isSafeInteger(comment.line) || comment.line < 1) {
+      throw new WebError(400, "comment line must be a positive integer");
+    }
+    if (!hasStartLine) continue;
+    if (
+      !Number.isSafeInteger(comment.startLine)
+      || comment.startLine! < 1
+      || (comment.startSide !== "LEFT" && comment.startSide !== "RIGHT")
+      || (comment.startSide === comment.side && comment.startLine! >= comment.line)
+    ) {
+      throw new WebError(400, "invalid multi-line comment range");
+    }
+  }
 }
 
 async function submitWithRecovery(
@@ -199,6 +232,9 @@ function pendingReviewPayload(request: SubmitReviewRequest): Record<string, unkn
 function inlinePayload(comments: readonly ReviewCommentInput[]): Array<Record<string, unknown>> {
   return comments.map((comment) => ({
     path: comment.path,
+    ...(comment.startLine !== undefined && comment.startSide !== undefined
+      ? { start_line: comment.startLine, start_side: comment.startSide }
+      : {}),
     line: comment.line,
     side: comment.side,
     body: comment.body,
@@ -208,9 +244,25 @@ function inlinePayload(comments: readonly ReviewCommentInput[]): Array<Record<st
 function inlineAsFileComment(comment: ReviewCommentInput): ReviewFileCommentInput {
   return {
     path: comment.path,
-    label: `L${comment.line}${comment.side === "LEFT" ? " · base" : ""}`,
+    label: inlineLocationLabel(comment),
     body: comment.body,
   };
+}
+
+/** Preserve the complete requested location when an invalid GitHub anchor is retried as a FILE
+ * thread. Single-line labels remain byte-for-byte compatible with the original contract. */
+function inlineLocationLabel(comment: ReviewCommentInput): string {
+  if (comment.startLine === undefined || comment.startSide === undefined) {
+    return lineLocationLabel(comment.line, comment.side);
+  }
+  if (comment.startSide === comment.side) {
+    return `L${comment.startLine}–${comment.line}${comment.side === "LEFT" ? " · base" : ""}`;
+  }
+  return `${lineLocationLabel(comment.startLine, comment.startSide)} → ${lineLocationLabel(comment.line, comment.side)}`;
+}
+
+function lineLocationLabel(line: number, side: "LEFT" | "RIGHT"): string {
+  return `L${line}${side === "LEFT" ? " · base" : ""}`;
 }
 
 async function parseCreatedPendingReview(

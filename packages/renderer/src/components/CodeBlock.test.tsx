@@ -10,7 +10,9 @@ import { createBlueprintStore } from "../state/store";
 import { StoreProvider } from "../state/StoreContext";
 import {
   CodeBlock,
+  codeReviewRangeTarget,
   codeFocusScrollTop,
+  subscribeToCodeReviewDragEnd,
 } from "./CodeBlock";
 import type { CodeDiffLine } from "./CodeBlock";
 
@@ -104,6 +106,120 @@ describe("CodeBlock symbol selection", () => {
     expect(html.match(/data-source-code-cell=/g)).toHaveLength(1);
     expect(html).toContain('data-source-code-cell="41"');
     expect(html.match(/data-diff-origin="delete"/g)).toHaveLength(1);
+  });
+});
+
+describe("CodeBlock review line ranges", () => {
+  it("ends drag selection on document-level pointer release and cleans up both listeners", () => {
+    const listeners = new Map<string, EventListener>();
+    const ownerDocument = {
+      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+        listeners.set(type, listener as EventListener);
+      },
+      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      },
+    };
+    let ended = 0;
+
+    const unsubscribe = subscribeToCodeReviewDragEnd(ownerDocument, () => { ended += 1; });
+    listeners.get("pointerup")?.(new Event("pointerup"));
+    listeners.get("pointercancel")?.(new Event("pointercancel"));
+
+    expect(ended).toBe(2);
+    unsubscribe();
+    expect(listeners.size).toBe(0);
+  });
+
+  it("normalizes upward selections and stops before a hidden, folded, or un-commentable row", () => {
+    const commentable = new Set([40, 41, 42, 43, 45]);
+
+    expect(codeReviewRangeTarget(43, 40, "RIGHT", commentable)).toEqual({
+      startLine: 40,
+      startSide: "RIGHT",
+      line: 43,
+      side: "RIGHT",
+    });
+    expect(codeReviewRangeTarget(40, 45, "RIGHT", commentable)).toEqual({
+      startLine: 40,
+      startSide: "RIGHT",
+      line: 43,
+      side: "RIGHT",
+    });
+    expect(codeReviewRangeTarget(40, 43, "RIGHT", commentable, new Set([42]))).toEqual({
+      startLine: 40,
+      startSide: "RIGHT",
+      line: 41,
+      side: "RIGHT",
+    });
+    expect(codeReviewRangeTarget(40, 43, "RIGHT", commentable, new Set(), new Set([41]))).toEqual({
+      line: 40,
+      side: "RIGHT",
+    });
+    expect(codeReviewRangeTarget(44, 45, "RIGHT", commentable)).toBeNull();
+  });
+
+  it("renders a controlled RIGHT range across every selected row with its composer at the end", () => {
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "first\nsecond\nthird\nfourth",
+      startLine: 40,
+      showGutter: true,
+      commentableLines: new Set([40, 41, 42, 43]),
+      rangeCommentableLines: new Set([40, 41, 42, 43]),
+      onLineClick: () => undefined,
+      lineComposer: {
+        startLine: 40,
+        startSide: "RIGHT" as const,
+        line: 42,
+        side: "RIGHT" as const,
+        draft: createReviewLineComposerDraft("Range thought"),
+        onValueChange: () => undefined,
+        onAdd: () => undefined,
+        onCancel: () => undefined,
+      },
+    }));
+
+    expect(html.match(/data-review-comment-range-selected="true"/g)).toHaveLength(3);
+    expect(html.match(/<tr[^>]*data-review-comment-range-terminal="true"/g)).toHaveLength(1);
+    expect(html).toContain('data-line-comment-composer="42" data-line-comment-composer-side="RIGHT" data-line-comment-composer-start="40" data-line-comment-composer-start-side="RIGHT"');
+    expect(html).toContain('aria-label="Comment on lines 40–42"');
+    expect(html).toContain('placeholder="Comment on lines 40–42…"');
+    expect(html).toContain("Shift-select another line, or drag across line numbers, to choose a range");
+    expect(html).toContain("Activate the selected final line again to open its comment composer");
+    expect(html).toMatch(/data-review-line-selector="42"[^>]*aria-describedby="[^"]+"[^>]*aria-pressed="true"/);
+    expect(html).toContain('data-review-line-selector="42" data-review-line-selector-side="RIGHT"');
+    expect(html.indexOf('data-source-line="42"')).toBeLessThan(html.indexOf('data-line-comment-composer="42"'));
+    expect(html.indexOf('data-line-comment-composer="42"')).toBeLessThan(html.indexOf('data-source-line="43"'));
+  });
+
+  it("renders a controlled LEFT range on contiguous deleted rows", () => {
+    const deletions: CodeDiffLine[] = [
+      { kind: "deleted", oldLine: 8, newLine: null, beforeNewLine: 1, text: "first old" },
+      { kind: "deleted", oldLine: 9, newLine: null, beforeNewLine: 1, text: "second old" },
+    ];
+    const html = renderToStaticMarkup(createElement(CodeBlock, {
+      code: "replacement",
+      startLine: 1,
+      showGutter: true,
+      diffLines: deletions,
+      commentableDeletedLines: new Set([8, 9]),
+      onLineClick: () => undefined,
+      lineComposer: {
+        startLine: 8,
+        startSide: "LEFT" as const,
+        line: 9,
+        side: "LEFT" as const,
+        draft: createReviewLineComposerDraft("Deleted range thought"),
+        onValueChange: () => undefined,
+        onAdd: () => undefined,
+        onCancel: () => undefined,
+      },
+    }));
+
+    expect(html.match(/data-review-comment-range-selected="true"/g)).toHaveLength(2);
+    expect(html).toContain('aria-label="Comment on deleted lines 8–9"');
+    expect(html).toContain('placeholder="Comment on deleted lines 8–9…"');
+    expect(html).toContain('data-line-comment-composer="9" data-line-comment-composer-side="LEFT" data-line-comment-composer-start="8" data-line-comment-composer-start-side="LEFT"');
   });
 });
 

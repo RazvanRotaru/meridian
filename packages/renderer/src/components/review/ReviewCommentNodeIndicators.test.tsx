@@ -77,7 +77,7 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
       <CommentPreviewCard
         label="2 review comments"
         comments={[
-          comment("first", { line: 42, side: "LEFT", body: "Use **the helper**", url: "https://github.com/o/r/pull/1#comment" }),
+          comment("first", { startLine: 40, startSide: "LEFT", line: 42, side: "LEFT", body: "Use **the helper**", url: "https://github.com/o/r/pull/1#comment" }),
           comment("draft", { kind: "draft", author: "Draft comment", line: null }),
         ]}
       />,
@@ -85,7 +85,7 @@ describe("ReviewCommentNodeIndicatorLayer", () => {
 
     expect(markup).toContain('role="tooltip"');
     expect(markup).toContain("2 review comments");
-    expect(markup).toContain("L42 · base");
+    expect(markup).toContain("L40–L42 · base");
     expect(markup).toContain("<strong>the helper</strong>");
     expect(markup).toContain('href="https://github.com/o/r/pull/1#comment"');
     expect(markup).toContain("Draft comment");

@@ -58,6 +58,9 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
       kind: "draft",
       body: draft.body,
       author: "Draft comment",
+      ...(draft.startLine !== undefined && draft.startSide !== undefined
+        ? { startLine: draft.startLine, startSide: draft.startSide }
+        : {}),
       line: draft.line,
       side: draft.side,
       lineStale: draft.lineStale === true,
@@ -77,6 +80,9 @@ export function deriveReviewCommentNodeEvidence(input: ReviewCommentNodeInput): 
         kind: "existing",
         body: comment.body,
         author: comment.author,
+        ...(comment.startLine !== undefined && comment.startSide !== undefined
+          ? { startLine: comment.startLine, startSide: comment.startSide }
+          : {}),
         line: comment.line,
         side: comment.side,
         lineStale: false,

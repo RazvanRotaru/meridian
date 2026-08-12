@@ -7,7 +7,7 @@
  * React still escapes as a plain string child.
  */
 
-import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { ChangedDiffLine, ChangedLineKind } from "@meridian/core";
 import type { PrGitHubComment, PrReviewCommentSide } from "../state/prTypes";
 import type { ReviewLineComposerDraft } from "../state/reviewLineComposer";
@@ -31,9 +31,16 @@ export type CodeDiffLine = ChangedDiffLine;
 
 export type CodeSourceSide = "head" | "base";
 
-interface CodeLineComposer {
+export interface CodeReviewCommentTarget {
+  /** GitHub names the final row of both singleton and multi-line comments `line`. */
   line: number;
   side: PrReviewCommentSide;
+  /** Multi-line comments add their first row; singleton comments omit both start fields. */
+  startLine?: number;
+  startSide?: PrReviewCommentSide;
+}
+
+interface CodeLineComposer extends CodeReviewCommentTarget {
   onAdd: (body: string) => void | boolean | Promise<void | boolean>;
   onCancel: () => void;
   draft: ReviewLineComposerDraft;
@@ -142,8 +149,9 @@ export function CodeBlock({
   hiddenSourceLines,
   onLineClick,
   commentableLines,
+  rangeCommentableLines,
   commentableDeletedLines,
-  lineComposer,
+  lineComposer = null,
   existingComments = EMPTY_EXISTING_COMMENTS,
   pendingComments = EMPTY_PENDING_COMMENTS,
   removedRows,
@@ -181,10 +189,13 @@ export function CodeBlock({
   /** Source-code rows omitted from the listing. Review discussions anchored to those rows remain. */
   hiddenSourceLines?: ReadonlySet<number>;
   /** Opens the controlled line composer from either the source row or its keyboard gutter action. */
-  onLineClick?: (line: number, side: PrReviewCommentSide) => void;
+  onLineClick?: (target: CodeReviewCommentTarget) => void;
   /** Absolute HEAD-side lines allowed to open a review draft. GitHub-safe rows submit inline;
    * other rows become file-level review comments through the submission projection. */
   commentableLines?: ReadonlySet<number>;
+  /** HEAD-side rows that may participate in one GitHub inline range. Omitted retains the complete
+   * singleton set for non-PR callers; PR hosts pass the exact context-hunk rows. */
+  rangeCommentableLines?: ReadonlySet<number>;
   /** Exact BASE-side deletion lines allowed to open an inline review draft. */
   commentableDeletedLines?: ReadonlySet<number>;
   /** The panel-owned composer shown immediately below its absolute source row. */
@@ -278,8 +289,8 @@ export function CodeBlock({
       focusLines,
       existingCommentsByLine: reviewCommentsByLine(existingCommentsByCoordinate, sourceSide === "base" ? "LEFT" : "RIGHT"),
       pendingCommentsByLine: reviewCommentsByLine(pendingCommentsByCoordinate, sourceSide === "base" ? "LEFT" : "RIGHT"),
-      composerLine: lineComposer?.side === (sourceSide === "base" ? "LEFT" : "RIGHT")
-        ? lineComposer.line
+      composer: lineComposer?.side === (sourceSide === "base" ? "LEFT" : "RIGHT")
+        ? lineComposer
         : undefined,
       removedRows: effectiveRemovedRows,
       diffLines,
@@ -313,8 +324,7 @@ export function CodeBlock({
     existingCommentsByCoordinate,
     foldUnchanged,
     highlightedLines.length,
-    lineComposer?.line,
-    lineComposer?.side,
+    lineComposer,
     pendingCommentsByCoordinate,
     effectiveRemovedRows,
     diffLines,
@@ -332,7 +342,178 @@ export function CodeBlock({
     if (expandedFolds.has(unchangedCodeFoldKey(fold))) continue;
     for (let line = fold.startLine; line <= fold.endLine; line += 1) collapsedLines.add(line);
   }
+  const [reviewSelection, setReviewSelection] = useState<CodeReviewRangeSelection | null>(null);
+  const reviewSelectionHelpId = useId();
+  const reviewSelectionRef = useRef<CodeReviewRangeSelection | null>(null);
+  const reviewAnchorRef = useRef<{ line: number; side: PrReviewCommentSide } | null>(null);
+  const draggingReviewRangeRef = useRef(false);
+  const previousComposerRef = useRef(lineComposer !== null);
   const listingRef = useRef<HTMLDivElement | HTMLPreElement>(null);
+  const clearReviewSelection = () => {
+    reviewSelectionRef.current = null;
+    reviewAnchorRef.current = null;
+    draggingReviewRangeRef.current = false;
+    setReviewSelection(null);
+  };
+  const reviewSelectionForGesture = (
+    anchorLine: number,
+    focusLine: number,
+    side: PrReviewCommentSide,
+  ): CodeReviewRangeSelection | null => {
+    if (onLineClick === undefined) return null;
+    const allowedLines = side === "LEFT"
+      ? commentableDeletedLines
+      : rangeCommentableLines ?? commentableLines;
+    // RIGHT rows are always source rows. A BASE source preview also expresses its source rows as
+    // LEFT; head-side deletion ghosts use unrelated old coordinates and must not inherit HEAD folds.
+    const sourceRowSelection = side === "RIGHT" || sourceSide === "base";
+    const blockedByFold = sourceRowSelection ? collapsedLines : EMPTY_LINE_SET;
+    const blockedByPreference = sourceRowSelection ? hiddenSourceLines : undefined;
+    const target = codeReviewRangeTarget(
+      anchorLine,
+      focusLine,
+      side,
+      allowedLines,
+      blockedByFold,
+      blockedByPreference,
+    ) ?? (side === "RIGHT"
+      && commentableLines?.has(anchorLine)
+      && !blockedByFold.has(anchorLine)
+      && !blockedByPreference?.has(anchorLine)
+      ? { line: anchorLine, side }
+      : null);
+    return target === null ? null : { anchorLine, ...target };
+  };
+  const updateReviewSelection = (
+    anchorLine: number,
+    focusLine: number,
+    side: PrReviewCommentSide,
+  ): CodeReviewRangeSelection | null => {
+    const selection = reviewSelectionForGesture(anchorLine, focusLine, side);
+    reviewSelectionRef.current = selection;
+    setReviewSelection(selection);
+    return selection;
+  };
+  const openReviewTarget = (target: CodeReviewCommentTarget) => {
+    const current = reviewSelectionRef.current;
+    const selection = current !== null && sameCodeReviewTarget(current, target)
+      ? current
+      : selectionFromReviewTarget(target);
+    reviewSelectionRef.current = selection;
+    reviewAnchorRef.current = { line: selection.anchorLine, side: selection.startSide ?? selection.side };
+    draggingReviewRangeRef.current = false;
+    setReviewSelection(selection);
+    onLineClick?.(target);
+  };
+  const composerAnchor = (side: PrReviewCommentSide) => lineComposer !== null
+    && (lineComposer.startSide ?? lineComposer.side) === side
+    ? { line: lineComposer.startLine ?? lineComposer.line, side }
+    : null;
+  const beginReviewSelection = (
+    event: React.PointerEvent<HTMLElement>,
+    line: number,
+    side: PrReviewCommentSide,
+  ) => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const previousAnchor = reviewAnchorRef.current ?? composerAnchor(side);
+    const extend = event.shiftKey && previousAnchor?.side === side;
+    const anchor = extend ? previousAnchor : { line, side };
+    reviewAnchorRef.current = anchor;
+    draggingReviewRangeRef.current = true;
+    updateReviewSelection(anchor.line, line, side);
+  };
+  const effectiveReviewSelection = reviewSelection
+    ?? (lineComposer === null ? null : selectionFromReviewTarget(lineComposer));
+  const activateReviewSelector = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    line: number,
+    side: PrReviewCommentSide,
+  ) => {
+    // Pointer activation already updated the range on pointerdown. Keyboard activation has no
+    // pointerdown, so handle only its synthetic click here while still containing the pointer click.
+    if (event.detail !== 0) {
+      event.stopPropagation();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const selected = effectiveReviewSelection;
+    if (!event.shiftKey && selected !== null && selected.side === side && selected.line === line) {
+      // The action precedes the selector in DOM order. A second keyboard activation of the selected
+      // terminal row is therefore the direct, forward-only path into the composer.
+      openReviewTarget(codeReviewTargetOf(selected));
+      return;
+    }
+    const previousAnchor = reviewAnchorRef.current ?? composerAnchor(side);
+    const extend = event.shiftKey && previousAnchor?.side === side;
+    const anchor = extend ? previousAnchor : { line, side };
+    reviewAnchorRef.current = anchor;
+    updateReviewSelection(anchor.line, line, side);
+  };
+  const extendReviewSelection = (line: number, side: PrReviewCommentSide) => {
+    const anchor = reviewAnchorRef.current;
+    if (!draggingReviewRangeRef.current || anchor?.side !== side) return;
+    updateReviewSelection(anchor.line, line, side);
+  };
+  const reviewTargetForLine = (line: number, side: PrReviewCommentSide): CodeReviewCommentTarget => {
+    const selected = effectiveReviewSelection;
+    return selected !== null && selected.side === side && selected.line === line
+      ? codeReviewTargetOf(selected)
+      : { line, side };
+  };
+  useEffect(() => {
+    const hadComposer = previousComposerRef.current;
+    previousComposerRef.current = lineComposer !== null;
+    if (hadComposer && lineComposer === null) clearReviewSelection();
+  }, [lineComposer]);
+  useEffect(() => {
+    if (lineComposer === null) return;
+    const current = reviewSelectionRef.current;
+    if (current !== null && !sameCodeReviewTarget(current, lineComposer)) {
+      clearReviewSelection();
+      return;
+    }
+    if (current === null) {
+      reviewAnchorRef.current = {
+        line: lineComposer.startLine ?? lineComposer.line,
+        side: lineComposer.startSide ?? lineComposer.side,
+      };
+    }
+  }, [lineComposer]);
+  useEffect(() => {
+    const current = reviewSelectionRef.current;
+    if (current === null) return;
+    const reconciled = reviewSelectionForGesture(current.anchorLine, current.line, current.side);
+    if (reconciled === null) {
+      clearReviewSelection();
+      return;
+    }
+    if (!sameCodeReviewTarget(current, reconciled)) {
+      reviewSelectionRef.current = reconciled;
+      setReviewSelection(reconciled);
+    }
+  }, [
+    commentableDeletedLines,
+    commentableLines,
+    expandedFolds,
+    foldProjection,
+    hiddenSourceLines,
+    onLineClick,
+    rangeCommentableLines,
+    sourceSide,
+  ]);
+  useEffect(() => {
+    clearReviewSelection();
+  }, [code, sourceSide, startLine]);
+  useEffect(() => {
+    const ownerDocument = listingRef.current?.ownerDocument;
+    if (ownerDocument === undefined) return;
+    return subscribeToCodeReviewDragEnd(ownerDocument, () => {
+      draggingReviewRangeRef.current = false;
+    });
+  }, [startLine]);
   const publishSelection = () => {
     const listing = listingRef.current;
     publishSourceSymbolSelection(
@@ -422,11 +603,18 @@ export function CodeBlock({
   const firstLine = startLine;
   const lastLine = startLine + highlightedLines.length - 1;
   const deletedReviewProps = {
+    activateReviewSelector,
+    beginReviewSelection,
     commentableLines: commentableDeletedLines,
+    effectiveReviewSelection,
     existingCommentsByCoordinate,
+    extendReviewSelection,
     lineComposer,
     onLineClick,
+    openReviewTarget,
     pendingCommentsByCoordinate,
+    reviewTargetForLine,
+    reviewSelectionHelpId,
   };
   return (
     <div
@@ -434,10 +622,38 @@ export function CodeBlock({
       data-source-scroll-owner="true"
       data-source-symbol-selection-enabled={onSymbolSelection ? "true" : undefined}
       style={{ ...LISTING_STYLE, ...(fillHeight ? FILL_HEIGHT_STYLE : {}), maxHeight }}
-      onPointerUp={publishSelection}
+      onPointerUp={() => {
+        draggingReviewRangeRef.current = false;
+        publishSelection();
+      }}
+      onPointerCancel={() => { draggingReviewRangeRef.current = false; }}
+      onPointerMove={(event) => {
+        if (!draggingReviewRangeRef.current) return;
+        // Touch and pen implicitly capture their pointer on press, so sibling pointerenter events do
+        // not fire. Hit-test the physical pointer position to preserve the same drag gesture.
+        const hit = event.currentTarget.ownerDocument.elementFromPoint(event.clientX, event.clientY);
+        const selector = hit?.closest("[data-review-line-selector][data-review-line-selector-side]");
+        if (selector === null || selector === undefined || !event.currentTarget.contains(selector)) return;
+        const line = Number(selector.getAttribute("data-review-line-selector"));
+        const side = selector.getAttribute("data-review-line-selector-side");
+        if (!Number.isSafeInteger(line) || (side !== "LEFT" && side !== "RIGHT")) return;
+        extendReviewSelection(line, side);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Escape" || lineComposer !== null || reviewSelectionRef.current === null) return;
+        event.preventDefault();
+        event.stopPropagation();
+        clearReviewSelection();
+      }}
       onKeyUp={publishSelection}
     >
       <style>{LINE_COMMENT_BUTTON_CSS}</style>
+      {hasCommentableLines ? (
+        <span id={reviewSelectionHelpId} style={SCREEN_READER_ONLY_STYLE}>
+          Select a line. Shift-select another line, or drag across line numbers, to choose a range.
+          Activate the selected final line again to open its comment composer.
+        </span>
+      ) : null}
       <table style={CODE_TABLE_STYLE}>
         <tbody>
           {canonicalRows?.deletedByBeforeLine.get(firstLine)?.map((line) => (
@@ -484,6 +700,10 @@ export function CodeBlock({
             const lineComments = existingCommentsByCoordinate.get(coordinate) ?? EMPTY_EXISTING_COMMENTS;
             const lineDrafts = pendingCommentsByCoordinate.get(coordinate) ?? EMPTY_PENDING_COMMENTS;
             const lineLabel = reviewSide === "LEFT" ? `deleted line ${lineNo}` : `line ${lineNo}`;
+            const rangeSelected = reviewSelectionContains(effectiveReviewSelection, lineNo, reviewSide);
+            const rangeTerminal = rangeSelected && effectiveReviewSelection?.line === lineNo;
+            const commentTarget = reviewTargetForLine(lineNo, reviewSide);
+            const commentTargetLabel = codeReviewTargetLabel(commentTarget);
             return (
               <Fragment key={`line-${lineNo}`}>
                 {fold && foldExpanded ? (
@@ -512,33 +732,59 @@ export function CodeBlock({
                   data-source-search-active={searchActive ? "true" : undefined}
                   data-review-comment-line={commentable ? lineNo : undefined}
                   data-review-comment-side={commentable ? reviewSide : undefined}
+                  data-review-comment-range-selected={rangeSelected ? "true" : undefined}
+                  data-review-comment-range-terminal={rangeTerminal ? "true" : undefined}
                   data-line-comment-composer-open={composerOpen ? "true" : undefined}
                 >
                   {gutterVisible ? (
                     <td style={GUTTER_CELL_STYLE}>
                       <div style={GUTTER_CONTENT_STYLE}>
-                        {commentable ? (
+                        {commentable && (!rangeSelected || rangeTerminal) ? (
                           <button
                             type="button"
                             className="mrd-line-comment-button"
                             style={LINE_COMMENT_BUTTON_STYLE}
-                            aria-label={`Comment on ${lineLabel}`}
-                            title={`Comment on ${lineLabel}`}
+                            aria-label={`Comment on ${commentTargetLabel}`}
+                            title={`Comment on ${commentTargetLabel}`}
                             onClick={(event) => {
                               event.stopPropagation();
-                              onLineClick(lineNo, reviewSide);
+                              openReviewTarget(commentTarget);
                             }}
                           >
                             +
                           </button>
                         ) : null}
-                        <span
-                          aria-hidden="true"
-                          style={kind ? kindGutterStyle(kind) : evidence ? EVIDENCE_GUTTER_STYLE : changed ? CHANGED_LINE_STYLE : undefined}
-                        >
-                          {lineMarker(kind, changed, evidence)}
-                          {lineNo}
-                        </span>
+                        {commentable ? (
+                          <button
+                            type="button"
+                            className="mrd-review-line-selector"
+                            data-review-line-selector={lineNo}
+                            data-review-line-selector-side={reviewSide}
+                            aria-label={`Select ${lineLabel} for a review comment`}
+                            aria-describedby={reviewSelectionHelpId}
+                            aria-pressed={rangeSelected}
+                            title="Select a line; drag or Shift-click another line to select a range"
+                            style={{
+                              ...LINE_SELECTOR_STYLE,
+                              ...(kind ? kindGutterStyle(kind) : evidence ? EVIDENCE_GUTTER_STYLE : changed ? CHANGED_LINE_STYLE : {}),
+                              ...(rangeSelected ? LINE_SELECTOR_SELECTED_STYLE : {}),
+                            }}
+                            onPointerDown={(event) => beginReviewSelection(event, lineNo, reviewSide)}
+                            onPointerEnter={() => extendReviewSelection(lineNo, reviewSide)}
+                            onClick={(event) => activateReviewSelector(event, lineNo, reviewSide)}
+                          >
+                            {lineMarker(kind, changed, evidence)}
+                            {lineNo}
+                          </button>
+                        ) : (
+                          <span
+                            aria-hidden="true"
+                            style={kind ? kindGutterStyle(kind) : evidence ? EVIDENCE_GUTTER_STYLE : changed ? CHANGED_LINE_STYLE : undefined}
+                          >
+                            {lineMarker(kind, changed, evidence)}
+                            {lineNo}
+                          </span>
+                        )}
                       </div>
                     </td>
                   ) : null}
@@ -554,13 +800,14 @@ export function CodeBlock({
                       ...(searchMatched ? SEARCH_MATCH_ROW_STYLE : {}),
                       ...(searchActive ? SEARCH_ACTIVE_ROW_STYLE : {}),
                       ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
+                      ...(rangeSelected ? COMMENT_RANGE_SELECTED_STYLE : {}),
                     }}
                     onClick={commentable ? (event) => {
                       // A compact hover preview should not require finding a 15px gutter target.
                       // Preserve ordinary code selection and modified clicks, but make a direct
                       // primary click on any draftable source line open the same composer.
                       if (!shouldOpenLineComposerFromCodeCell(event)) return;
-                      onLineClick(lineNo, reviewSide);
+                      openReviewTarget({ line: lineNo, side: reviewSide });
                     } : undefined}
                   >
                     {renderHighlightedSearchLine(line, lineSearchMatches, activeSearchIndex)}
@@ -601,6 +848,89 @@ export function CodeBlock({
       </table>
     </div>
   );
+}
+
+interface CodeReviewRangeSelection extends CodeReviewCommentTarget {
+  /** The first line-number gesture, retained so later Shift-clicks extend from the same anchor. */
+  anchorLine: number;
+}
+
+/** Normalize an upward/downward gutter gesture and stop at the first row Meridian cannot show as
+ * one honest contiguous selection. The submission layer separately proves GitHub hunk validity. */
+export function codeReviewRangeTarget(
+  anchorLine: number,
+  focusLine: number,
+  side: PrReviewCommentSide,
+  commentableLines: ReadonlySet<number> | undefined,
+  collapsedLines: ReadonlySet<number> = EMPTY_LINE_SET,
+  hiddenLines: ReadonlySet<number> | undefined = undefined,
+): CodeReviewCommentTarget | null {
+  if (!commentableLines?.has(anchorLine) || collapsedLines.has(anchorLine) || hiddenLines?.has(anchorLine)) {
+    return null;
+  }
+  const direction = focusLine < anchorLine ? -1 : 1;
+  let reached = anchorLine;
+  while (reached !== focusLine) {
+    const candidate = reached + direction;
+    if (!commentableLines.has(candidate) || collapsedLines.has(candidate) || hiddenLines?.has(candidate)) break;
+    reached = candidate;
+  }
+  const startLine = Math.min(anchorLine, reached);
+  const line = Math.max(anchorLine, reached);
+  return startLine === line
+    ? { line, side }
+    : { startLine, startSide: side, line, side };
+}
+
+function selectionFromReviewTarget(target: CodeReviewCommentTarget): CodeReviewRangeSelection {
+  return { anchorLine: target.startLine ?? target.line, ...target };
+}
+
+function sameCodeReviewTarget(left: CodeReviewCommentTarget, right: CodeReviewCommentTarget): boolean {
+  return left.line === right.line
+    && left.side === right.side
+    && left.startLine === right.startLine
+    && left.startSide === right.startSide;
+}
+
+function codeReviewTargetOf(selection: CodeReviewRangeSelection): CodeReviewCommentTarget {
+  return selection.startLine === undefined
+    ? { line: selection.line, side: selection.side }
+    : {
+        startLine: selection.startLine,
+        startSide: selection.startSide ?? selection.side,
+        line: selection.line,
+        side: selection.side,
+      };
+}
+
+function reviewSelectionContains(
+  selection: CodeReviewRangeSelection | null,
+  line: number,
+  side: PrReviewCommentSide,
+): boolean {
+  if (selection === null || selection.side !== side || (selection.startSide ?? side) !== side) return false;
+  return line >= (selection.startLine ?? selection.line) && line <= selection.line;
+}
+
+export function codeReviewTargetLabel(target: CodeReviewCommentTarget): string {
+  const deleted = target.side === "LEFT";
+  return target.startLine === undefined
+    ? `${deleted ? "deleted " : ""}line ${target.line}`
+    : `${deleted ? "deleted " : ""}lines ${target.startLine}–${target.line}`;
+}
+
+/** End drag selection even when pointerup happens outside this scroll owner. */
+export function subscribeToCodeReviewDragEnd(
+  ownerDocument: Pick<Document, "addEventListener" | "removeEventListener">,
+  onEnd: () => void,
+): () => void {
+  ownerDocument.addEventListener("pointerup", onEnd);
+  ownerDocument.addEventListener("pointercancel", onEnd);
+  return () => {
+    ownerDocument.removeEventListener("pointerup", onEnd);
+    ownerDocument.removeEventListener("pointercancel", onEnd);
+  };
 }
 
 function reviewCoordinateKey(side: PrReviewCommentSide, line: number): string {
@@ -646,7 +976,7 @@ function foldFocus(options: {
   focusLines?: ReadonlySet<number>;
   existingCommentsByLine: ReadonlyMap<number, readonly PrGitHubComment[]>;
   pendingCommentsByLine: ReadonlyMap<number, readonly ReviewComment[]>;
-  composerLine?: number;
+  composer?: Pick<CodeReviewCommentTarget, "line" | "side" | "startLine" | "startSide">;
   removedRows?: ReadonlyMap<number, string[]>;
   diffLines?: readonly CodeDiffLine[];
   sourceSide: CodeSourceSide;
@@ -662,7 +992,10 @@ function foldFocus(options: {
   // Canonical +/- rows define the fold; existing comments/drafts below can still pin their rows.
   options.existingCommentsByLine.forEach((_comments, line) => lines.add(line));
   options.pendingCommentsByLine.forEach((_comments, line) => lines.add(line));
-  if (options.composerLine !== undefined) lines.add(options.composerLine);
+  if (options.composer !== undefined) {
+    const start = options.composer.startLine ?? options.composer.line;
+    for (let line = start; line <= options.composer.line; line += 1) lines.add(line);
+  }
   options.removedRows?.forEach((_rows, line) => gaps.add(line + 1));
   for (const row of options.diffLines ?? []) {
     if (options.sourceSide === "base") {
@@ -677,15 +1010,22 @@ function foldFocus(options: {
 }
 
 function GhostRow(props: {
+  activateReviewSelector: (event: React.MouseEvent<HTMLButtonElement>, line: number, side: PrReviewCommentSide) => void;
+  beginReviewSelection: (event: React.PointerEvent<HTMLElement>, line: number, side: PrReviewCommentSide) => void;
   text?: string;
   line?: CodeDiffLine;
   showGutter: boolean;
   marker?: boolean;
   commentableLines?: ReadonlySet<number>;
+  effectiveReviewSelection: CodeReviewRangeSelection | null;
   existingCommentsByCoordinate: ReadonlyMap<string, readonly PrGitHubComment[]>;
+  extendReviewSelection: (line: number, side: PrReviewCommentSide) => void;
   lineComposer?: CodeLineComposer | null;
-  onLineClick?: (line: number, side: PrReviewCommentSide) => void;
+  onLineClick?: (target: CodeReviewCommentTarget) => void;
+  openReviewTarget: (target: CodeReviewCommentTarget) => void;
   pendingCommentsByCoordinate: ReadonlyMap<string, readonly ReviewComment[]>;
+  reviewTargetForLine: (line: number, side: PrReviewCommentSide) => CodeReviewCommentTarget;
+  reviewSelectionHelpId: string;
 }) {
   const text = props.line?.text ?? props.text ?? "";
   const oldLine = props.line?.kind === "deleted" ? props.line.oldLine : null;
@@ -702,6 +1042,10 @@ function GhostRow(props: {
   const composerOpen = oldLine !== null
     && props.lineComposer?.side === "LEFT"
     && props.lineComposer.line === oldLine;
+  const rangeSelected = oldLine !== null
+    && reviewSelectionContains(props.effectiveReviewSelection, oldLine, "LEFT");
+  const rangeTerminal = rangeSelected && props.effectiveReviewSelection?.line === oldLine;
+  const commentTarget = oldLine === null ? null : props.reviewTargetForLine(oldLine, "LEFT");
   return (
     <>
       <tr
@@ -712,6 +1056,8 @@ function GhostRow(props: {
         data-no-newline={props.line?.noNewline ? "true" : undefined}
         data-review-comment-line={commentable ? oldLine : undefined}
         data-review-comment-side={commentable ? "LEFT" : undefined}
+        data-review-comment-range-selected={rangeSelected ? "true" : undefined}
+        data-review-comment-range-terminal={rangeTerminal ? "true" : undefined}
         data-line-comment-composer-open={composerOpen ? "true" : undefined}
         aria-label={canonicalDiffAriaLabel(props.line)}
       >
@@ -721,22 +1067,39 @@ function GhostRow(props: {
             aria-hidden={commentable ? undefined : "true"}
           >
             <div style={GUTTER_CONTENT_STYLE}>
-              {commentable ? (
+              {commentable && (!rangeSelected || rangeTerminal) ? (
                 <button
                   type="button"
                   className="mrd-line-comment-button"
                   style={LINE_COMMENT_BUTTON_STYLE}
-                  aria-label={`Comment on deleted line ${oldLine}`}
-                  title={`Comment on deleted line ${oldLine}`}
+                  aria-label={`Comment on ${codeReviewTargetLabel(commentTarget!)}`}
+                  title={`Comment on ${codeReviewTargetLabel(commentTarget!)}`}
                   onClick={(event) => {
                     event.stopPropagation();
-                    props.onLineClick!(oldLine!, "LEFT");
+                    props.openReviewTarget(commentTarget!);
                   }}
                 >
                   +
                 </button>
               ) : null}
-              <span>{oldLine === null ? "− " : `− ${oldLine}`}</span>
+              {commentable ? (
+                <button
+                  type="button"
+                  className="mrd-review-line-selector"
+                  data-review-line-selector={oldLine!}
+                  data-review-line-selector-side="LEFT"
+                  aria-label={`Select deleted line ${oldLine} for a review comment`}
+                  aria-describedby={props.reviewSelectionHelpId}
+                  aria-pressed={rangeSelected}
+                  title="Select a line; drag or Shift-click another line to select a range"
+                  style={{ ...LINE_SELECTOR_STYLE, ...GHOST_LINE_SELECTOR_STYLE, ...(rangeSelected ? LINE_SELECTOR_SELECTED_STYLE : {}) }}
+                  onPointerDown={(event) => props.beginReviewSelection(event, oldLine!, "LEFT")}
+                  onPointerEnter={() => props.extendReviewSelection(oldLine!, "LEFT")}
+                  onClick={(event) => props.activateReviewSelector(event, oldLine!, "LEFT")}
+                >
+                  − {oldLine}
+                </button>
+              ) : <span>{oldLine === null ? "− " : `− ${oldLine}`}</span>}
             </div>
           </td>
         ) : null}
@@ -749,10 +1112,11 @@ function GhostRow(props: {
             ...GHOST_CODE_STYLE,
             ...(props.marker ? GHOST_MARKER_STYLE : {}),
             ...(commentable ? COMMENTABLE_CODE_CELL_STYLE : {}),
+            ...(rangeSelected ? COMMENT_RANGE_SELECTED_STYLE : {}),
           }}
           onClick={commentable ? (event) => {
             if (!shouldOpenLineComposerFromCodeCell(event)) return;
-            props.onLineClick!(oldLine!, "LEFT");
+            props.openReviewTarget({ line: oldLine!, side: "LEFT" });
           } : undefined}
         >
           {text.length > 0 ? text : " "}
@@ -808,11 +1172,13 @@ function LineReviewRows({
         <tr
           data-line-comment-composer={line}
           data-line-comment-composer-side={side}
+          data-line-comment-composer-start={composer.startLine}
+          data-line-comment-composer-start-side={composer.startSide}
         >
           <td colSpan={gutterVisible ? 2 : 1} style={COMPOSER_CELL_STYLE}>
             <ReviewLineCommentComposer
-              key={`${side}-${line}`}
-              placeholder={`Comment on ${side === "LEFT" ? "deleted " : ""}line ${line}…`}
+              key={`${composer.startSide ?? side}-${composer.startLine ?? line}-${side}-${line}`}
+              placeholder={`Comment on ${codeReviewTargetLabel(composer)}…`}
               onAdd={composer.onAdd}
               onCancel={composer.onCancel}
               draft={composer.draft}
@@ -1054,6 +1420,7 @@ const EMPTY_EXISTING_COMMENTS: readonly PrGitHubComment[] = [];
 const EMPTY_PENDING_COMMENTS: readonly ReviewComment[] = [];
 const EMPTY_SEARCH_MATCHES: readonly SourceSearchMatch[] = [];
 const EMPTY_INDEXED_SEARCH_MATCHES: readonly IndexedSourceSearchMatch[] = [];
+const EMPTY_LINE_SET: ReadonlySet<number> = new Set<number>();
 
 const PRE_STYLE: React.CSSProperties = {
   margin: 0,
@@ -1112,6 +1479,39 @@ const LINE_COMMENT_BUTTON_STYLE: React.CSSProperties = {
   cursor: "pointer",
   flexShrink: 0,
 };
+const LINE_SELECTOR_STYLE: React.CSSProperties = {
+  minWidth: 18,
+  margin: 0,
+  padding: 0,
+  border: 0,
+  borderRadius: 3,
+  background: "transparent",
+  color: "inherit",
+  font: "inherit",
+  fontWeight: "inherit",
+  lineHeight: "inherit",
+  textAlign: "right",
+  cursor: "default",
+  userSelect: "none",
+  touchAction: "none",
+};
+const GHOST_LINE_SELECTOR_STYLE: React.CSSProperties = { minWidth: 28 };
+const LINE_SELECTOR_SELECTED_STYLE: React.CSSProperties = {
+  background: "rgba(56,139,253,0.28)",
+  color: "#B6E3FF",
+  fontWeight: 800,
+};
+const SCREEN_READER_ONLY_STYLE: React.CSSProperties = {
+  position: "absolute",
+  width: 1,
+  height: 1,
+  padding: 0,
+  margin: -1,
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};
 export const LINE_COMMENT_BUTTON_CSS = `
 tr[data-review-comment-line] .mrd-line-comment-button {
   opacity: 0;
@@ -1120,6 +1520,7 @@ tr[data-review-comment-line] .mrd-line-comment-button {
 }
 tr[data-review-comment-line]:hover .mrd-line-comment-button,
 tr[data-review-comment-line]:focus-within .mrd-line-comment-button,
+tr[data-review-comment-range-terminal="true"] .mrd-line-comment-button,
 tr[data-line-comment-composer-open="true"] .mrd-line-comment-button {
   opacity: 1;
   pointer-events: auto;
@@ -1128,6 +1529,10 @@ tr[data-line-comment-composer-open="true"] .mrd-line-comment-button {
   tr[data-review-comment-line] .mrd-line-comment-button { transition: none; }
 }`;
 const COMMENTABLE_CODE_CELL_STYLE: React.CSSProperties = { cursor: "pointer" };
+const COMMENT_RANGE_SELECTED_STYLE: React.CSSProperties = {
+  backgroundImage: "linear-gradient(rgba(56,139,253,0.20), rgba(56,139,253,0.20))",
+  boxShadow: "inset 3px 0 0 #388BFD",
+};
 const CHANGED_LINE_STYLE: React.CSSProperties = { color: "#E2A33C", fontWeight: 700 };
 const EVIDENCE_GUTTER_STYLE: React.CSSProperties = { color: "#7DD3FC", fontWeight: 800 };
 const CODE_LINE_STYLE: React.CSSProperties = { display: "block", width: "100%" };

@@ -16,6 +16,9 @@ export interface ReviewLineComposerTarget {
   readonly path: string;
   readonly line: number;
   readonly side: PrReviewCommentSide;
+  /** Inclusive first coordinate; the pair is absent for a single-line target. */
+  readonly startLine?: number;
+  readonly startSide?: PrReviewCommentSide;
 }
 
 export interface ReviewLineComposerDraft {
@@ -84,7 +87,7 @@ export function discardReviewLineComposer(current: ReviewLineComposerState | nul
   return null;
 }
 
-/** Exact identity includes the immutable source revision and diff side. */
+/** Exact identity includes the immutable source revision and every diff range coordinate. */
 export function matchesReviewLineComposerTarget(
   left: ReviewLineComposerTarget | null,
   right: ReviewLineComposerTarget,
@@ -94,7 +97,9 @@ export function matchesReviewLineComposerTarget(
     && left.lineRevision === right.lineRevision
     && left.path === right.path
     && left.line === right.line
-    && left.side === right.side;
+    && left.side === right.side
+    && left.startLine === right.startLine
+    && left.startSide === right.startSide;
 }
 
 /** State-suffixed aliases keep call sites explicit when the helpers are imported beside actions. */
