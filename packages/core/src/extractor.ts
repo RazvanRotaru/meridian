@@ -74,10 +74,10 @@ export interface ExtractOptions {
   includeExternal?: boolean;
   includeUnresolved?: boolean;
   emitImportEdges?: boolean;
-  /** Opt-in: emit `references` edges for imported symbols used as plain VALUES (a callback, a
-   * const read, a namespace receiver) — the usage the call/new/type/JSX passes don't model. Turns
-   * featureless `imports` wires into traceable dependency edges. Off by default (extra type-checker
-   * work); the extractor no-ops when unset. */
+  /** Opt-in: emit `references` edges for symbols used as plain VALUES (a callback, a const read, a
+   * namespace receiver) — the usage the call/new/type/JSX passes don't model. This explains imports
+   * and same-file plain-value uses of callable identifiers without fabricating direct calls. Off by
+   * default (extra type-checker work); the extractor no-ops when unset. */
   valueRefs?: boolean;
   /** Optional observation hook. It cannot affect cache identity or graph output. */
   onProgress?: (progress: ExtractionProgress) => void;

@@ -241,6 +241,84 @@ describe("deriveDeletedNodeProjection", () => {
     })]);
   });
 
+  it("keeps a surviving callable's historical reference to a deleted same-file callback", () => {
+    const path = "src/callbacks.ts";
+    const moduleId = "ts:src/callbacks.ts";
+    const consumerId = `${moduleId}#createConsumer`;
+    const callbackId = `${moduleId}#localCallback`;
+    const historicalReference: GraphEdge = {
+      id: edgeId("references", consumerId, callbackId),
+      source: consumerId,
+      target: callbackId,
+      kind: "references",
+      resolution: "resolved",
+      callSites: [{ file: path, line: 20 }],
+    };
+    const outgoingReference: GraphEdge = {
+      id: edgeId("references", callbackId, consumerId),
+      source: callbackId,
+      target: consumerId,
+      kind: "references",
+    };
+    const excludedInstantiation: GraphEdge = {
+      id: edgeId("instantiates", consumerId, callbackId),
+      source: consumerId,
+      target: callbackId,
+      kind: "instantiates",
+    };
+    const base = artifact([
+      node(moduleId, "module", path, path, 1, 40, null),
+      node(callbackId, "function", path, "localCallback", 5, 8, moduleId),
+      node(consumerId, "function", path, "createConsumer", 15, 25, moduleId),
+    ], { edges: [historicalReference, outgoingReference, excludedInstantiation] });
+    const rows = [deleted(5), deleted(6), deleted(7), deleted(8)];
+    const head = artifact([
+      node(moduleId, "module", path, path, 1, 36, null),
+      node(consumerId, "function", path, "createConsumer", 11, 21, moduleId),
+    ], {
+      extensions: {
+        changedSince: {
+          stats: { [path]: { added: 0, deleted: rows.length } },
+          diffLines: { [path]: rows },
+        },
+      } as unknown as GraphArtifact["extensions"],
+    });
+
+    const result = project(
+      head,
+      base,
+      [{ path, status: "modified", hunks: [{ start: 5, end: 8 }] }],
+      [{
+        path,
+        status: "modified",
+        additions: 0,
+        deletions: rows.length,
+        diffComplete: true,
+        diffLines: rows,
+      }],
+    );
+
+    expect(result.deletedNodeIds).toEqual(new Set([callbackId]));
+    expect(result.artifact.edges).toContainEqual(historicalReference);
+    expect(result.index.edgesById.has(outgoingReference.id)).toBe(false);
+    expect(result.index.edgesById.has(excludedInstantiation.id)).toBe(false);
+
+    const ghosts = ghostDepWires(
+      buildBlockDeps(result.index),
+      [],
+      new Set([callbackId]),
+      result.index,
+      (id) => id === callbackId,
+      new Set(),
+    );
+    expect(ghosts.ghosts.has(consumerId)).toBe(true);
+    expect(ghosts.wires).toContainEqual(expect.objectContaining({
+      source: consumerId,
+      target: callbackId,
+      kind: "references",
+    }));
+  });
+
   it("does not reintroduce a formatting-only survivor from raw artifact rows in a mixed file", () => {
     const path = "src/mixed.ts";
     const moduleId = "ts:src/mixed.ts";
@@ -295,7 +373,13 @@ describe("deriveDeletedNodeProjection", () => {
     expect(result.survivingAffectedHeadIds.has(formattingId)).toBe(false);
   });
 
-  it("keeps canonical caller/callee ghosts when a deletion-only progressive pair hydrates HEAD context", async () => {
+  it.each([
+    ["calls", true],
+    ["references", false],
+  ] as const)("keeps canonical %s ghosts when a deletion-only progressive pair hydrates HEAD context", async (
+    contextKind,
+    keepOutgoing,
+  ) => {
     const removedModule = "ts:src/removed.ts";
     const removedClass = `${removedModule}#Removed`;
     const removedMethod = `${removedModule}#Removed.run`;
@@ -304,9 +388,25 @@ describe("deriveDeletedNodeProjection", () => {
     const liveCallee = `${liveModule}#callee`;
     const unrelated = `${liveModule}#unrelated`;
     const headEdge: GraphEdge = { id: edgeId("calls", liveCaller, liveCallee), source: liveCaller, target: liveCallee, kind: "calls" };
-    const incoming: GraphEdge = { id: edgeId("calls", liveCaller, removedMethod), source: liveCaller, target: removedMethod, kind: "calls" };
-    const outgoing: GraphEdge = { id: edgeId("calls", removedMethod, liveCallee), source: removedMethod, target: liveCallee, kind: "calls" };
+    const incoming: GraphEdge = {
+      id: edgeId(contextKind, liveCaller, removedMethod),
+      source: liveCaller,
+      target: removedMethod,
+      kind: contextKind,
+    };
+    const outgoing: GraphEdge = {
+      id: edgeId(contextKind, removedMethod, liveCallee),
+      source: removedMethod,
+      target: liveCallee,
+      kind: contextKind,
+    };
     const unrelatedBaseEdge: GraphEdge = { id: edgeId("calls", liveCaller, unrelated), source: liveCaller, target: unrelated, kind: "calls" };
+    const excludedBaseEdge: GraphEdge = {
+      id: edgeId("instantiates", liveCaller, removedMethod),
+      source: liveCaller,
+      target: removedMethod,
+      kind: "instantiates",
+    };
     const base = artifact([
       node(PACKAGE_ID, "package", "src", "src", 1, 1, null),
       node(removedModule, "module", "src/removed.ts", "src/removed.ts", 1, 30, PACKAGE_ID),
@@ -316,7 +416,10 @@ describe("deriveDeletedNodeProjection", () => {
       node(liveCaller, "function", "src/live.ts", "caller", 2, 2, liveModule),
       node(liveCallee, "function", "src/live.ts", "callee", 3, 3, liveModule),
       node(unrelated, "function", "src/live.ts", "unrelated", 4, 4, liveModule),
-    ], { edges: [incoming, outgoing, unrelatedBaseEdge], extensions: { logicFlow: { [removedMethod]: [] }, baseOnly: true } });
+    ], {
+      edges: [incoming, outgoing, unrelatedBaseEdge, excludedBaseEdge],
+      extensions: { logicFlow: { [removedMethod]: [] }, baseOnly: true },
+    });
     const head = artifact([
       node(PACKAGE_ID, "package", "src", "src", 1, 1, null),
       node(liveModule, "module", "src/live.ts", "src/live.ts", 1, 5, PACKAGE_ID),
@@ -333,8 +436,10 @@ describe("deriveDeletedNodeProjection", () => {
 
     expect(result.deletedNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
     expect(result.baseSourceNodeIds).toEqual(new Set([removedModule, removedClass, removedMethod]));
-    expect(result.artifact.edges).toEqual([headEdge, incoming, outgoing]);
+    const expectedContextEdges = keepOutgoing ? [incoming, outgoing] : [incoming];
+    expect(result.artifact.edges).toEqual([headEdge, ...expectedContextEdges]);
     expect(result.index.edgesById.has(unrelatedBaseEdge.id)).toBe(false);
+    expect(result.index.edgesById.has(excludedBaseEdge.id)).toBe(false);
     expect(result.artifact.extensions).toBe(head.extensions);
     expect(result.artifact.extensions).not.toHaveProperty("baseOnly");
     expect(result.files[0]).toMatchObject({
@@ -357,10 +462,14 @@ describe("deriveDeletedNodeProjection", () => {
       (id) => id === removedMethod,
       new Set(),
     );
-    expect([...ghosts.ghosts.keys()].sort()).toEqual([liveCallee, liveCaller].sort());
+    expect([...ghosts.ghosts.keys()].sort()).toEqual(
+      (keepOutgoing ? [liveCallee, liveCaller] : [liveCaller]).sort(),
+    );
     expect(ghosts.wires).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: "calls" }),
-      expect.objectContaining({ source: removedMethod, target: liveCallee, kind: "calls" }),
+      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: contextKind }),
+      ...(keepOutgoing
+        ? [expect.objectContaining({ source: removedMethod, target: liveCallee, kind: contextKind })]
+        : []),
     ]));
 
     // A deletion-only changed-files projection has no HEAD roots. Its comparison slice still has
@@ -379,7 +488,7 @@ describe("deriveDeletedNodeProjection", () => {
     });
     const comparisonArtifact = artifact(
       base.nodes.filter((candidate) => candidate.id !== unrelated),
-      { edges: [incoming, outgoing], extensions: base.extensions },
+      { edges: [incoming, outgoing, excludedBaseEdge], extensions: base.extensions },
     );
     const comparison = graphProjection(comparisonArtifact, {
       graphId: "base",
@@ -444,8 +553,10 @@ describe("deriveDeletedNodeProjection", () => {
     expect(progressive.artifact.edges).toEqual(result.artifact.edges);
     expect([...progressiveGhosts.ghosts.keys()].sort()).toEqual([...ghosts.ghosts.keys()].sort());
     expect(progressiveGhosts.wires).toEqual(expect.arrayContaining([
-      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: "calls" }),
-      expect.objectContaining({ source: removedMethod, target: liveCallee, kind: "calls" }),
+      expect.objectContaining({ source: liveCaller, target: removedMethod, kind: contextKind }),
+      ...(keepOutgoing
+        ? [expect.objectContaining({ source: removedMethod, target: liveCallee, kind: contextKind })]
+        : []),
     ]));
     expect(fetchImpl).toHaveBeenCalledOnce();
   });

@@ -24,9 +24,9 @@ describe("canonical repository analysis", () => {
     });
 
     expect(Object.isFrozen(REPOSITORY_ANALYSIS_POLICY)).toBe(true);
-    // Type aliases, explicit value-call callback owners, and transparently wrapped object literals
-    // now participate in canonical graph identity, so older artifacts are not reusable.
-    expect(REPOSITORY_ANALYSIS_VERSION).toBe(16);
+    // Same-file callable handoffs now participate in canonical graph identity, so older artifacts
+    // that contained only imported value references are not reusable.
+    expect(REPOSITORY_ANALYSIS_VERSION).toBe(17);
     expect(extractToArtifact).toHaveBeenCalledWith({
       absoluteRoot: "/repo",
       cwd: "/repo",

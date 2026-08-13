@@ -29,6 +29,7 @@ import type {
   GraphSymbolSearchResultV1,
   JsonValue,
 } from "@meridian/core";
+import { isDeletedContextEdge } from "../derive/deletedContextEdges";
 import {
   MAX_GRAPH_SYMBOL_RESPONSE_BYTES,
   parseBoundedGraphSymbolText,
@@ -264,10 +265,10 @@ function explicitRootProjectionRequests(
   });
 }
 
-/** Surviving caller/callee files absent from the current HEAD slice. Deleted-node projection only
- * preserves comparison `calls` edges incident to a proven tombstone, so limit pair hydration to
- * call boundaries crossing a changed comparison root. Other presentation-only boundary modules
- * must not fan out into whole HEAD files on the critical admission path. */
+/** Surviving caller/callee files absent from the current HEAD slice. Deleted-node projection keeps
+ * calls around a proven tombstone and references into it, so pair hydration follows that exact
+ * direction policy at changed comparison roots. Other presentation-only boundary modules must not
+ * fan out into whole HEAD files on the critical admission path. */
 export function comparisonContextPathsMissingFromHead(
   head: GraphProjectionV1,
   comparison: GraphProjectionV1 | null,
@@ -310,10 +311,17 @@ export function comparisonContextPathsMissingFromHead(
   };
   const contextPaths = new Set<string>();
   for (const edge of comparison.edges) {
-    if (edge.kind !== "calls") continue;
+    // A stable reference target already present in HEAD cannot become a tombstone. Avoid hydrating
+    // all of its historical dependents, which can have very high fan-in for shared types/helpers.
+    // A rename changes identity, so an absent old id remains conservatively eligible for hydration.
+    if (edge.kind === "references" && headNodesById.has(edge.target)) continue;
     const sourceFile = fileOf(edge.source);
     const targetFile = fileOf(edge.target);
     if (sourceFile === null || targetFile === null || sourceFile === targetFile) continue;
+    if (!isDeletedContextEdge(edge, (nodeId) => {
+      const fileId = fileOf(nodeId);
+      return fileId !== null && comparisonRoots.has(fileId);
+    })) continue;
     const addMissingEndpoint = (endpointId: string, fileId: string): void => {
       const path = nodesById.get(fileId)?.location.file;
       if (

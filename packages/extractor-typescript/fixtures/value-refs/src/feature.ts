@@ -16,3 +16,27 @@ declare module './wire' {
 export function retriesLeft(attempt: number): number {
     return RETRY_LIMIT - attempt;
 }
+
+type CallbackOptions = {
+    callback(input: string): string | undefined;
+};
+
+declare class CallbackConsumer {
+    constructor(options: CallbackOptions);
+}
+
+export function localCallback(input: string): string | undefined {
+    return input === "skip" ? undefined : input;
+}
+
+export function createConsumer(): unknown {
+    return new CallbackConsumer({ callback: (localCallback as CallbackOptions["callback"]) });
+}
+
+export function exposeCallback(): (input: string) => string | undefined {
+    return localCallback;
+}
+
+export function invokeCallback(input: string): string | undefined {
+    return localCallback(input);
+}

@@ -1,9 +1,9 @@
 /**
- * The opt-in value-reference pass (`valueRefs`). It surfaces imported symbols used as plain VALUES
- * — a callback, a const read, an `instanceof` — which the call/new/type/JSX passes don't model,
- * turning featureless `imports` wires into traceable `references` edges. These golden tests pin:
+ * The opt-in value-reference pass (`valueRefs`). It surfaces symbols used as plain VALUES — an
+ * imported const, an `instanceof`, or a same-file callback handoff — which the call/new/type/JSX
+ * passes don't model, turning otherwise hidden usage into traceable `references` edges. These tests pin:
  *   - it adds real value references (orders-service's `toErrorResponse` reads `ValidationError`),
- *   - every added edge is a concrete cross-module `references` (never intra-file / external noise),
+ *   - imported-value edges stay concrete and cross-module; local edges are callable handoffs only,
  *   - it NEVER double-counts what another pass owns — JSX composition stays `renders` only,
  *   - it is strictly opt-in (off by default), and the artifact still validates with zero warnings.
  */
@@ -104,6 +104,45 @@ describe("value-refs module fallback", () => {
     );
     expect(constRead).toBeDefined();
     expect(constRead?.resolution).toBe("resolved");
+  });
+
+  it("surfaces generic plain-value uses of a same-file callable", () => {
+    const constructorSource = on.nodes.find((node) => node.qualifiedName === "createConsumer");
+    const returnSource = on.nodes.find((node) => node.qualifiedName === "exposeCallback");
+    const invocationSource = on.nodes.find((node) => node.qualifiedName === "invokeCallback");
+    const target = on.nodes.find((node) => node.qualifiedName === "localCallback");
+    expect(constructorSource).toBeDefined();
+    expect(returnSource).toBeDefined();
+    expect(invocationSource).toBeDefined();
+    expect(target).toBeDefined();
+
+    expect(references(on)).toContainEqual(expect.objectContaining({
+      source: constructorSource!.id,
+      target: target!.id,
+      resolution: "resolved",
+      callSites: [expect.objectContaining({ file: "src/feature.ts", line: 33 })],
+    }));
+    expect(references(on)).toContainEqual(expect.objectContaining({
+      source: returnSource!.id,
+      target: target!.id,
+      resolution: "resolved",
+      callSites: [expect.objectContaining({ file: "src/feature.ts", line: 37 })],
+    }));
+    expect(references(off).some((edge) => edge.target === target!.id)).toBe(false);
+    expect(references(on).some((edge) => (
+      edge.source === invocationSource!.id && edge.target === target!.id
+    ))).toBe(false);
+    expect(on.edges.some((edge) => (
+      edge.kind === "calls"
+      && (edge.source === constructorSource!.id || edge.source === returnSource!.id)
+      && edge.target === target!.id
+    ))).toBe(false);
+    expect(on.edges).toContainEqual(expect.objectContaining({
+      source: invocationSource!.id,
+      target: target!.id,
+      kind: "calls",
+    }));
+    expect(references(on).some((edge) => edge.source === target!.id && edge.target === target!.id)).toBe(false);
   });
 });
 

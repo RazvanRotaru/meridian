@@ -5,8 +5,8 @@
  * coordinate space for surviving and added declarations, but it necessarily omits declarations
  * (and whole files) removed by the PR. This helper builds a presentation-only composite: HEAD stays
  * authoritative for surviving nodes, extensions, and flows, while proven base-only declarations
- * are appended as tombstones. Their merge-base call edges are retained only when they touch a
- * proven tombstone, so selecting deleted code can still show who called it and what it called.
+ * are appended as tombstones. Merge-base calls touching a tombstone and incoming value references
+ * are retained, so selecting deleted code can still show who called or used it.
  * Original node ids and source locations are retained; only a parentId or a surviving edge endpoint
  * may be remapped to the corresponding HEAD declaration after a rename.
  *
@@ -36,6 +36,7 @@ import type {
 } from "@meridian/core";
 import { buildGraphIndex, type GraphIndex } from "../graph/graphIndex";
 import type { PrChangedFile } from "../state/prTypes";
+import { isDeletedContextEdge } from "./deletedContextEdges";
 import { matchAffectedFiles } from "./matchAffectedFiles";
 import type { ReviewUnitRow } from "./reviewFiles";
 
@@ -122,8 +123,6 @@ interface Counterparts {
   /** Ambiguous declarations are treated as possibly surviving, so projection fails closed. */
   uncertainBaseIds: Set<string>;
 }
-
-const CALL_EDGE_KIND = "calls";
 
 /** Pure two-sided deletion projection. Unrelated base edges and every base extension stay excluded. */
 export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): DeletedNodeProjection {
@@ -339,10 +338,10 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
   }
 
   // HEAD remains authoritative for the current graph. The only old relationships admitted are the
-  // call edges needed to explain a proven tombstone's immediate caller/callee neighbourhood.
+  // calls and incoming references needed to explain a proven tombstone's immediate usage context.
   // Their surviving endpoints are translated through the same fail-closed semantic counterpart map
   // as nodes, and dangling resolved edges are dropped rather than fabricating context declarations.
-  const deletedCallEdges = projectDeletedCallEdges(
+  const deletedContextEdges = projectDeletedContextEdges(
     args,
     counterparts,
     baseSourceNodeIds,
@@ -351,9 +350,9 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
   const artifact: GraphArtifact = {
     ...args.headArtifact,
     nodes: [...args.headArtifact.nodes, ...appendedNodes],
-    edges: deletedCallEdges.length === 0
+    edges: deletedContextEdges.length === 0
       ? args.headArtifact.edges
-      : [...args.headArtifact.edges, ...deletedCallEdges],
+      : [...args.headArtifact.edges, ...deletedContextEdges],
   };
   return {
     artifact,
@@ -367,10 +366,10 @@ export function deriveDeletedNodeProjection(args: DeletedNodeProjectionArgs): De
   };
 }
 
-/** Project only merge-base call edges incident to proven-deleted declarations. Surviving
- * endpoints keep HEAD identity; projected tombstones keep base identity. This preserves the exact
- * direction needed by caller/callee ghosts without importing the comparison graph wholesale. */
-function projectDeletedCallEdges(
+/** Project merge-base calls incident to proven-deleted declarations plus incoming references.
+ * Surviving endpoints keep HEAD identity; projected tombstones keep base identity. This preserves
+ * caller/callee and historical-user ghosts without importing the comparison graph wholesale. */
+function projectDeletedContextEdges(
   args: DeletedNodeProjectionArgs,
   counterparts: Counterparts,
   baseSourceNodeIds: ReadonlySet<string>,
@@ -387,10 +386,7 @@ function projectDeletedCallEdges(
   };
 
   for (const edge of args.baseIndex.edges) {
-    if (
-      edge.kind !== CALL_EDGE_KIND
-      || (!deletedNodeIds.has(edge.source) && !deletedNodeIds.has(edge.target))
-    ) {
+    if (!isDeletedContextEdge(edge, (nodeId) => deletedNodeIds.has(nodeId))) {
       continue;
     }
     const source = endpointOnComposite(edge.source);
