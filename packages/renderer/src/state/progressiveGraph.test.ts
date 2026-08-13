@@ -461,7 +461,7 @@ describe("progressive graph protocol client", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("finds surviving comparison-call context across a changed Python package initializer", () => {
+  it.each(["calls", "references"])("finds surviving comparison %s context across a changed Python package initializer", (kind) => {
     const callerFile = {
       ...node("py:consumer", "module", "consumer.py"),
       location: { file: "consumer.py", startLine: 1 },
@@ -486,8 +486,8 @@ describe("progressive graph protocol client", () => {
       target: { name: "fixture", root: ".", language: "python" },
       nodes: [PY_PACKAGE, PY_INIT_FN, callerFile, caller],
       edges: [{
-        id: `calls@${caller.id}|${PY_INIT_FN.id}`,
-        kind: "calls",
+        id: `${kind}@${caller.id}|${PY_INIT_FN.id}`,
+        kind,
         source: caller.id,
         target: PY_INIT_FN.id,
       }],
@@ -502,6 +502,95 @@ describe("progressive graph protocol client", () => {
     });
 
     expect(comparisonContextPathsMissingFromHead(emptyHead, comparison)).toEqual(["consumer.py"]);
+  });
+
+  it("does not hydrate outgoing references or unrelated historical edge kinds", () => {
+    const consumerFile = {
+      ...node("py:consumer", "module", "consumer.py"),
+      location: { file: "consumer.py", startLine: 1 },
+    };
+    const consumer = {
+      ...node("py:consumer#use", "function", "use", consumerFile.id),
+      location: { file: "consumer.py", startLine: 2 },
+    };
+    const head = projection({
+      nodes: [],
+      edges: [],
+      rootFileIds: [],
+      readyFileIds: [],
+      loadedFileIds: [],
+      frontier: [],
+      counts: { full: { nodes: 100, edges: 200, files: 25 }, slice: { nodes: 0, edges: 0, files: 0 } },
+    });
+    const comparison = projection({
+      target: { name: "fixture", root: ".", language: "python" },
+      nodes: [PY_PACKAGE, PY_INIT_FN, consumerFile, consumer],
+      edges: [
+        {
+          id: `references@${PY_INIT_FN.id}|${consumer.id}`,
+          kind: "references",
+          source: PY_INIT_FN.id,
+          target: consumer.id,
+        },
+        {
+          id: `instantiates@${consumer.id}|${PY_INIT_FN.id}`,
+          kind: "instantiates",
+          source: consumer.id,
+          target: PY_INIT_FN.id,
+        },
+      ],
+      rootFileIds: [PY_PACKAGE.id],
+      readyFileIds: [PY_PACKAGE.id],
+      loadedFileIds: [PY_PACKAGE.id, consumerFile.id],
+      frontier: [
+        { fileId: PY_PACKAGE.id, hasMore: true, completeThroughDepth: 1 },
+        { fileId: consumerFile.id, hasMore: true, completeThroughDepth: 0 },
+      ],
+      counts: { full: { nodes: 100, edges: 200, files: 25 }, slice: { nodes: 4, edges: 2, files: 2 } },
+    });
+
+    expect(comparisonContextPathsMissingFromHead(head, comparison)).toEqual([]);
+  });
+
+  it("does not hydrate dependents of a historical reference target already present in HEAD", () => {
+    const consumerFile = {
+      ...node("py:consumer", "module", "consumer.py"),
+      location: { file: "consumer.py", startLine: 1 },
+    };
+    const consumer = {
+      ...node("py:consumer#use", "function", "use", consumerFile.id),
+      location: { file: "consumer.py", startLine: 2 },
+    };
+    const head = projection({
+      target: { name: "fixture", root: ".", language: "python" },
+      nodes: [PY_PACKAGE, PY_INIT_FN],
+      edges: [],
+      rootFileIds: [PY_PACKAGE.id],
+      readyFileIds: [PY_PACKAGE.id],
+      loadedFileIds: [PY_PACKAGE.id],
+      frontier: [{ fileId: PY_PACKAGE.id, hasMore: false, completeThroughDepth: 1 }],
+      counts: { full: { nodes: 100, edges: 200, files: 25 }, slice: { nodes: 2, edges: 0, files: 1 } },
+    });
+    const comparison = projection({
+      target: { name: "fixture", root: ".", language: "python" },
+      nodes: [PY_PACKAGE, PY_INIT_FN, consumerFile, consumer],
+      edges: [{
+        id: `references@${consumer.id}|${PY_INIT_FN.id}`,
+        kind: "references",
+        source: consumer.id,
+        target: PY_INIT_FN.id,
+      }],
+      rootFileIds: [PY_PACKAGE.id],
+      readyFileIds: [PY_PACKAGE.id],
+      loadedFileIds: [PY_PACKAGE.id, consumerFile.id],
+      frontier: [
+        { fileId: PY_PACKAGE.id, hasMore: true, completeThroughDepth: 1 },
+        { fileId: consumerFile.id, hasMore: true, completeThroughDepth: 0 },
+      ],
+      counts: { full: { nodes: 100, edges: 200, files: 25 }, slice: { nodes: 4, edges: 1, files: 2 } },
+    });
+
+    expect(comparisonContextPathsMissingFromHead(head, comparison)).toEqual([]);
   });
 
   it("merges disconnected/cumulative slices idempotently and merges logic flows by id", () => {

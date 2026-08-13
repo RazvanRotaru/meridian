@@ -15,8 +15,9 @@ import type { GitDiffExecutor } from "./git-diff";
  * graph declarations so type-reference edges and symbol search resolve them consistently. Version
  * 15 includes meaningful module-scope inline callbacks passed to value-producing calls. Version
  * 16 materializes object-literal declarations through transparent TypeScript expression wrappers.
+ * Version 17 retains same-file callback handoffs as value-reference edges.
  */
-export const REPOSITORY_ANALYSIS_VERSION = 16;
+export const REPOSITORY_ANALYSIS_VERSION = 17;
 
 export const REPOSITORY_ANALYSIS_POLICY = Object.freeze({
   scope: "workspace",

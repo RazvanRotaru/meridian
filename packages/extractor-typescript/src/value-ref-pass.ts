@@ -5,7 +5,9 @@
  * edge. All that survives is a featureless module→module `imports` wire that doesn't say WHY the
  * two files are coupled. This pass fills that gap: for each such value use it emits a `references`
  * edge from the enclosing callable to the symbol's definition, so the meaning is traceable (and the
- * renderer's `suppressRedundantImports` folds away the now-redundant import).
+ * renderer's `suppressRedundantImports` folds away the now-redundant import). Plain-value uses of
+ * emitted same-file callables are included as well: passing, returning, or storing a function is a
+ * real relationship even when no import is involved.
  *
  * It also rescues UNEMITTED symbols via the module fallback: a type alias or plain const has no
  * graph node, so both the type pass and the plain path above resolve it to nothing — the dominant
@@ -14,17 +16,17 @@
  * positions are eligible ONLY through that fallback — a type ref that resolves to a real node
  * belongs to the edge pass, and emitting it here too would double-count its weight.
  *
- * Cheap by construction. It never resolves arbitrary identifiers: it gates on the file's imported
- * local names (a syntactic prefilter), skips positions already covered by another pass, and only
- * the survivors hit the type checker via `resolveTarget`. That resolution also handles shadowing and
- * aliasing honestly — a local `const Foo` reusing an imported name resolves to the local (not the
- * import), so it never mints a spurious cross-module edge. Concrete cross-module and import-known
- * external values become edges; unresolved and intra-file values remain noise.
+ * Cheap by construction. It never resolves arbitrary identifiers: it gates on imported names plus
+ * names of emitted declarations (a syntactic prefilter), skips positions already covered by another
+ * pass, and only the survivors hit the type checker via `resolveTarget`. That resolution also handles
+ * shadowing and aliasing honestly — a local `const Foo` reusing an imported name resolves to the
+ * local declaration, not the import. Concrete imported values and local callable value uses become
+ * edges; unresolved values and self-references remain noise.
  */
 
 import { Node, SyntaxKind, type SourceFile } from "ts-morph";
 import type { ExtractionDiagnostic } from "@meridian/core";
-import type { NodeDescriptor } from "./model";
+import { nodeKey, type NodeDescriptor } from "./model";
 import { callSiteOf, enclosingCallable, recordThrow, type RawEdge } from "./edge-pass";
 import { resolveTarget, type CrossPackageResolver } from "./edge-resolve";
 import type { ResolutionIndex } from "./resolution-index";
@@ -33,6 +35,7 @@ import {
   reportRelationshipFileProgress,
   type RelationshipFileProgress,
 } from "./progress";
+import { unwrapTransparentExpression } from "./inline-callables";
 
 /** One target-file's value-reference outputs, with diagnostic provenance retained structurally. */
 export interface ValueRefFileContribution {
@@ -77,6 +80,7 @@ export function collectValueRefContributions(
   const sourceFiles = loaded.sourceFiles
     .map((sourceFile) => ({ sourceFile, relPath: loaded.relativePathOf(sourceFile) }))
     .filter(({ relPath }) => selectedFiles === undefined || selectedFiles.has(relPath));
+  const callableIds = new Set(index.sourceByCallableKey.values());
   return sourceFiles.map(({ sourceFile, relPath }, fileIndex) => {
     const contribution: ValueRefFileContribution = {
       file: relPath,
@@ -89,14 +93,15 @@ export function collectValueRefContributions(
       fileIndex + 1,
       sourceFiles.length,
     );
-    const names = importedLocalNames(sourceFile);
+    const names = candidateLocalNames(sourceFile, index, callableIds);
     if (names.size === 0) {
-      return contribution; // no imports → no value references to surface
+      return contribution;
     }
     collectFileValueRefs(
       sourceFile,
       relPath,
       names,
+      callableIds,
       index,
       moduleByFilePath,
       contribution.diagnostics,
@@ -111,6 +116,7 @@ function collectFileValueRefs(
   sourceFile: SourceFile,
   relPath: string,
   names: ReadonlySet<string>,
+  callableIds: ReadonlySet<string>,
   index: ResolutionIndex,
   moduleByFilePath: Map<string, NodeDescriptor>,
   diagnostics: ExtractionDiagnostic[],
@@ -139,16 +145,26 @@ function collectFileValueRefs(
       continue;
     }
     if (resolution.resolution === "resolved") {
-      if (!resolution.resolvedTarget || moduleOf(source) === moduleOf(resolution.resolvedTarget)) {
-        continue; // local shadow/self-reference: not a dependency
+      if (!resolution.resolvedTarget || source === resolution.resolvedTarget) {
+        continue; // a declaration reading itself is not a dependency
+      }
+      if (
+        moduleOf(source) === moduleOf(resolution.resolvedTarget)
+        && !callableIds.has(resolution.resolvedTarget)
+      ) {
+        continue;
       }
     }
     edges.push({ source, kind: "references", resolution, callSite: callSiteOf(id, relPath) });
   }
 }
 
-/** The local binding names an `import` introduces: default, `* as ns`, and each named/aliased import. */
-function importedLocalNames(sourceFile: SourceFile): ReadonlySet<string> {
+/** Imported bindings plus names of emitted callables eligible for same-file handoff discovery. */
+function candidateLocalNames(
+  sourceFile: SourceFile,
+  index: ResolutionIndex,
+  callableIds: ReadonlySet<string>,
+): ReadonlySet<string> {
   const names = new Set<string>();
   for (const declaration of sourceFile.getImportDeclarations()) {
     const defaultImport = declaration.getDefaultImport();
@@ -163,7 +179,25 @@ function importedLocalNames(sourceFile: SourceFile): ReadonlySet<string> {
       names.add((named.getAliasNode() ?? named.getNameNode()).getText());
     }
   }
+  for (const declaration of sourceFile.getDescendants()) {
+    const targetId = index.targetByDeclKey.get(nodeKey(declaration));
+    if (targetId === undefined || !callableIds.has(targetId)) {
+      continue;
+    }
+    const name = namedDeclarationName(declaration);
+    if (name !== null) {
+      names.add(name);
+    }
+  }
   return names;
+}
+
+function namedDeclarationName(declaration: Node): string | null {
+  const named = declaration as Node & { getNameNode?(): Node | undefined };
+  const name = named.getNameNode?.();
+  return name && (Node.isIdentifier(name) || Node.isStringLiteral(name))
+    ? name.getText().replace(/^['"]|['"]$/g, "")
+    : null;
 }
 
 /**
@@ -184,8 +218,15 @@ function referencePosition(id: Node): "value" | "type" | null {
   if (id.getFirstAncestorByKind(SyntaxKind.HeritageClause)) {
     return null; // extends / implements — owned by the inheritance pass
   }
+  if (id.getFirstAncestorByKind(SyntaxKind.TypeQuery)) {
+    return null; // `typeof value` in a type — not a runtime value use
+  }
   const parent = id.getParent();
   if (!parent) {
+    return null;
+  }
+  const declaredName = (parent as Node & { getNameNode?(): Node | undefined }).getNameNode?.();
+  if (declaredName === id && !Node.isShorthandPropertyAssignment(parent)) {
     return null;
   }
   if (isJsxTagName(parent)) {
@@ -200,10 +241,26 @@ function referencePosition(id: Node): "value" | "type" | null {
   if (Node.isTypeReference(parent) || Node.isQualifiedName(parent)) {
     return "type";
   }
-  if ((Node.isCallExpression(parent) || Node.isNewExpression(parent)) && parent.getExpression() === id) {
+  const expression = transparentExpressionRoot(id);
+  const expressionParent = expression.getParent();
+  if (
+    (Node.isCallExpression(expressionParent) || Node.isNewExpression(expressionParent))
+    && expressionParent.getExpression() === expression
+  ) {
     return null; // direct callee — owned by the calls / instantiates pass
   }
   return "value";
+}
+
+/** Outermost parentheses/assertion wrapper that still represents the identifier's runtime value. */
+function transparentExpressionRoot(id: Node): Node {
+  let current = id;
+  let parent = current.getParent();
+  while (parent && unwrapTransparentExpression(parent) === id) {
+    current = parent;
+    parent = current.getParent();
+  }
+  return current;
 }
 
 /** True when the identifier's parent marks it as a JSX tag: `<Foo/>` or a dotted `<Foo.Bar/>`. */
