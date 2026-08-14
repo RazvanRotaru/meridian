@@ -356,13 +356,19 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await openNodePreviewWithModifier(page, changedFunction, contextLoyaltyPreview);
     await contextLoyaltyPreview.getByText("src/pricing/loyaltyTiers.ts", { exact: true }).waitFor();
     await contextLoyaltyPreview.hover();
+    await page.keyboard.up(PRIMARY_MODIFIER);
+    await page.waitForTimeout(500);
     expect(await contextLoyaltyPreview.isVisible()).toBe(true);
+    await page.getByText("Files changed", { exact: true }).hover();
+    await contextLoyaltyPreview.waitFor({ state: "detached" });
     // Modifier-hover source is available throughout an active review, including untouched nodes.
-    await unchangedModule.hover();
     const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
+    await openNodePreviewWithModifier(page, unchangedModule, codePreview);
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
     await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
-    await closeNodePreviewByReleasingModifier(page, codePreview);
+    // A preview whose card was never entered still closes from modifier release alone.
+    await page.keyboard.up(PRIMARY_MODIFIER);
+    await codePreview.waitFor({ state: "detached" });
 
     // A painted context wire ignores an ordinary physical pointer click. The same screen point
     // opens evidence while the platform modifier is held, across either BaseEdge or bundle paint.
@@ -599,21 +605,29 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await lineActionStyle(previewLineAction)).toEqual({ opacity: "0", pointerEvents: "none" });
     await previewSourceRow.hover();
     await expect.poll(() => lineActionStyle(previewLineAction)).toEqual({ opacity: "1", pointerEvents: "auto" });
-    // Modified code-cell clicks intentionally preserve native selection semantics. Use the
-    // revealed, named gutter action to enter the composer before releasing the chord for typing.
-    await previewLineAction.click();
+    // Entering the card makes it sticky, so release the chord before using the ordinary code-cell
+    // interaction. Modified code-cell clicks intentionally preserve native selection semantics.
+    await page.keyboard.up(PRIMARY_MODIFIER);
+    expect(await loyaltyPreview.isVisible()).toBe(true);
+    await previewSourceRow.locator(`td[data-source-code-cell="${firstInlineLine}"]`).click();
     const previewDraft = loyaltyPreview.getByPlaceholder(`Comment on line ${firstInlineLine}…`);
     await previewDraft.waitFor();
     expect(await previewDraft.evaluate((element) => element === document.activeElement)).toBe(true);
-    await page.keyboard.up(PRIMARY_MODIFIER);
     expect(await loyaltyPreview.isVisible()).toBe(true);
     await previewDraft.pressSequentially(DRAFT_TEXT);
     await page.getByText("Files changed", { exact: true }).hover();
     await page.waitForTimeout(500);
     expect(await loyaltyPreview.isVisible()).toBe(true);
     expect(await previewDraft.inputValue()).toBe(DRAFT_TEXT);
-    await loyaltyPreview.getByRole("button", { name: "Add comment", exact: true }).click();
-    await loyaltyPreview.waitFor({ state: "detached" });
+    // Re-pressing the modifier away from both node and card must not cancel the deferred close.
+    // Submit through the real keyboard shortcut and prove resolution closes before keyup.
+    await page.keyboard.down(PRIMARY_MODIFIER);
+    try {
+      await page.keyboard.press("Enter");
+      await loyaltyPreview.waitFor({ state: "detached" });
+    } finally {
+      await page.keyboard.up(PRIMARY_MODIFIER);
+    }
     await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     const previewPendingDraft = loyaltyPreview.locator(`[data-pending-review-comments-line="${firstInlineLine}"]`);
     await previewPendingDraft.getByText(DRAFT_TEXT, { exact: true }).waitFor();
@@ -1445,6 +1459,9 @@ async function openNodePreviewWithModifier(page: Page, node: Locator, preview: L
 
 async function closeNodePreviewByReleasingModifier(page: Page, preview: Locator): Promise<void> {
   await page.keyboard.up(PRIMARY_MODIFIER);
+  // A card that the test interacted with is intentionally sticky after release. Move outside so
+  // callers that are done with the preview still exercise its normal leave-grace dismissal.
+  await page.mouse.move(0, 0);
   await preview.waitFor({ state: "detached" });
 }
 

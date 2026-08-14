@@ -661,6 +661,9 @@ async function openNodePreviewWithModifier(
 
 async function closeNodePreviewByReleasingModifier(page: Page, preview: Locator): Promise<void> {
   await page.keyboard.up(PRIMARY_MODIFIER);
+  // Expanded diff controls place the pointer inside the card, which intentionally pins it after
+  // modifier release. Leave the card before waiting for the transient preview to dismiss.
+  await page.mouse.move(0, 0);
   await preview.waitFor({ state: "detached" });
 }
 

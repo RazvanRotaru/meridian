@@ -608,7 +608,7 @@ describe("CanvasActionBar code-preview visibility", () => {
     const disabledButton = actionButtonMarkup(codebaseMarkup, "Code previews");
     expect(disabledButton).toContain('aria-pressed="false"');
     expect(describedText(codebaseMarkup, disabledButton)).toBe(
-      "Enable code previews while holding Control or Command over a node",
+      "Enable code previews while holding Control or Command over a node; move onto a preview to release it",
     );
     expect(codebaseMarkup.match(/aria-label="Code previews"/g)).toHaveLength(1);
     expect(codebaseMarkup.indexOf('aria-label="Code previews"')).toBeGreaterThan(

@@ -4,9 +4,9 @@
  * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
  * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
  * pointer bridge the gap into the card and scroll it. The preview is admitted only while Control or
- * Command is held; releasing the modifier cancels a pending dwell and closes an open preview. Source
- * payload reuse belongs to the store's immutable request cache, so the transient view cannot diverge
- * through a second node-local cache that outlives a review revision.
+ * Command is held; once the pointer enters the card, it stays open without the modifier until the
+ * pointer leaves. Source payload reuse belongs to the store's immutable request cache, so the
+ * transient view cannot diverge through a second node-local cache that outlives a review revision.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
@@ -197,12 +197,13 @@ export function useNodeDiffPreview(
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
   const hoveredNode = useRef<{ target: HTMLElement; node: FlowNode } | null>(null);
+  const previewHoveredRef = useRef(false);
   const modifier = usePrimaryModifierKey(enabled);
   // An active line composer locks its source subject so a pointer crossing the graph cannot replace
   // the code underneath a draft. Ordinary preview actions remain transient.
   const composerEngagedRef = useRef(false);
-  // Releasing the modifier while writing is an intent to close once the shared composer resolves.
-  // The exception lets ordinary text entry work without turning every key into a Ctrl/Cmd shortcut.
+  // Leaving the sticky card—or releasing before reaching it—while writing is an intent to close
+  // once the shared composer resolves. The card itself still permits ordinary unmodified text entry.
   const closeAfterComposerRef = useRef(false);
 
   const clearOpenTimer = useCallback(() => {
@@ -223,6 +224,7 @@ export function useNodeDiffPreview(
     clearCloseTimer();
     requestToken.current += 1;
     activeId.current = null;
+    previewHoveredRef.current = false;
     composerEngagedRef.current = false;
     closeAfterComposerRef.current = false;
     setPreview(null);
@@ -241,6 +243,19 @@ export function useNodeDiffPreview(
     clearOpenTimer();
     clearCloseTimer();
   }, [clearCloseTimer, clearOpenTimer]);
+  const onPreviewMouseEnter = useCallback(() => {
+    previewHoveredRef.current = true;
+    // Re-entering the card is a fresh intent to keep it, including while a composer owns the source.
+    closeAfterComposerRef.current = false;
+    holdPreview();
+  }, [holdPreview]);
+  const onPreviewMouseLeave = useCallback(() => {
+    previewHoveredRef.current = false;
+    if (!modifier.pressed && composerEngagedRef.current) {
+      closeAfterComposerRef.current = true;
+    }
+    scheduleHide();
+  }, [modifier.pressed, scheduleHide]);
   const engageComposer = useCallback(() => {
     if (activeId.current === null) return;
     composerEngagedRef.current = true;
@@ -286,6 +301,7 @@ export function useNodeDiffPreview(
     requestToken.current += 1;
     activeId.current = null;
     hoveredNode.current = null;
+    previewHoveredRef.current = false;
   }, [clearCloseTimer, clearOpenTimer]);
 
   const activatePreview = useCallback((
@@ -337,6 +353,7 @@ export function useNodeDiffPreview(
       pendingId.current = null;
       const token = ++requestToken.current;
       activeId.current = anchorId;
+      previewHoveredRef.current = false;
       composerEngagedRef.current = false;
       setPreview({
         anchorId,
@@ -391,6 +408,7 @@ export function useNodeDiffPreview(
     if (!modifier.pressed) {
       clearOpenTimer();
       if (activeId.current !== null) {
+        if (previewHoveredRef.current) return;
         const composerOwnsPreview = preview !== null
           && composerPath === preview.node.location.file;
         if (composerEngagedRef.current || composerOwnsPreview) {
@@ -401,8 +419,10 @@ export function useNodeDiffPreview(
       }
       return;
     }
-    closeAfterComposerRef.current = false;
     const hovered = hoveredNode.current;
+    if (previewHoveredRef.current || hovered !== null) {
+      closeAfterComposerRef.current = false;
+    }
     if (hovered !== null) {
       activatePreview(hovered.target, hovered.node, true);
     }
@@ -414,8 +434,8 @@ export function useNodeDiffPreview(
           preview={preview}
           onComposerEngage={engageComposer}
           onExpand={() => expandNodeDiffPreview(showCode, preview.node)}
-          onMouseEnter={holdPreview}
-          onMouseLeave={onPointerLeave}
+          onMouseEnter={onPreviewMouseEnter}
+          onMouseLeave={onPreviewMouseLeave}
         />,
         document.body,
       )
