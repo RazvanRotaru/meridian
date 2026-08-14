@@ -41,6 +41,7 @@ import type { WireHover } from "../WireTooltip";
 import { isGhostHierarchyEdge, isInteractiveSemanticEdge } from "./presentationEdges";
 import { relationKindOf } from "../../graph/relationEdge";
 import { wireReferencesAnyArtifactEdge } from "../../graph/edgeEvidence";
+import { primaryModifierPressed } from "./usePrimaryModifierKey";
 
 const EMPTY_SPOTLIGHT_EDGE_IDS: ReadonlySet<string> = new Set<string>();
 const EMPTY_SELECTED_NODE_IDS: ReadonlySet<string> = new Set<string>();
@@ -48,6 +49,15 @@ const EMPTY_SELECTED_NODE_IDS: ReadonlySet<string> = new Set<string>();
 export const SELECTED_NODE_EDGE_Z = 1_000;
 /** Interaction-only z above React Flow's card layer; released as soon as the socket lens closes. */
 export const INCOMING_CALL_SPOTLIGHT_Z = 1_000;
+export const MODIFIER_GATED_EDGE_CLASS = "modifier-gated-edge";
+export const MODIFIER_GATED_EDGE_CSS = `.${MODIFIER_GATED_EDGE_CLASS} { pointer-events: none; }`;
+
+export interface WireModifierClickGate {
+  /** Require Control/Command for graph-originated edge inspection. Inspector drill actions bypass it. */
+  required: boolean;
+  /** Live key state also removes the edge's hit target so ordinary review clicks pass through. */
+  pressed: boolean;
+}
 
 export interface WireInteractionApi {
   /** The input edges, z-ordered always; hover/inspector-boosted (and hit-widened) when enabled. */
@@ -81,6 +91,7 @@ export function useWireHover(
   selectedNodeIds: ReadonlySet<string> = EMPTY_SELECTED_NODE_IDS,
   /** Exact artifact call edges temporarily raised by a directional node-socket lens. */
   spotlightEdgeIds: ReadonlySet<string> = EMPTY_SPOTLIGHT_EDGE_IDS,
+  modifierClick?: WireModifierClickGate,
 ): WireInteractionApi {
   const [hover, setHover] = useState<WireHover | null>(null);
   const [inspected, setInspected] = useState<Edge | null>(null);
@@ -121,6 +132,9 @@ export function useWireHover(
   useEffect(() => {
     if (!enabled) clearInspected();
   }, [enabled, clearInspected]);
+  useEffect(() => {
+    if (modifierClick?.required === true && !modifierClick.pressed) setHover(null);
+  }, [modifierClick?.pressed, modifierClick?.required]);
   // Unmount cannot set hook state, but it still owes the shared edge-evidence lifecycle its end.
   useEffect(() => {
     mountedRef.current = true;
@@ -235,9 +249,16 @@ export function useWireHover(
       };
     });
   }, [edges, hover?.id, inspectedIds, nestingById, enabled]);
+  const clickGatedEdges = useMemo(
+    () => gateWireClickInteraction(
+      baseDressedEdges,
+      modifierClick?.required === true && !modifierClick.pressed,
+    ),
+    [baseDressedEdges, modifierClick?.pressed, modifierClick?.required],
+  );
   const selectedNodeEdges = useMemo(
-    () => raiseSelectedNodeEdges(baseDressedEdges, selectedNodeIds),
-    [baseDressedEdges, selectedNodeIds],
+    () => raiseSelectedNodeEdges(clickGatedEdges, selectedNodeIds),
+    [clickGatedEdges, selectedNodeIds],
   );
   const dressedEdges = useMemo(
     () => applyIncomingCallSpotlight(selectedNodeEdges, spotlightEdgeIds),
@@ -274,10 +295,25 @@ export function useWireHover(
     clearInspected,
     onEdgeMouseEnter,
     onEdgeMouseLeave: () => setHover(null),
-    onEdgeClick: (_event, edge) => {
+    onEdgeClick: (event, edge) => {
+      if (modifierClick?.required === true && !primaryModifierPressed(event)) return;
       inspect(edge);
     },
   };
+}
+
+/** Remove every edge hit target until the review's primary modifier is held. */
+export function gateWireClickInteraction(edges: Edge[], blocked: boolean): Edge[] {
+  if (!blocked) return edges;
+  return edges.map((edge) => {
+    const classNames = new Set((edge.className ?? "").split(/\s+/).filter(Boolean));
+    classNames.add(MODIFIER_GATED_EDGE_CLASS);
+    return {
+      ...edge,
+      className: [...classNames].join(" "),
+      interactionWidth: 0,
+    };
+  });
 }
 
 /** Resolve a freshly-painted object for the same pinned strand, or null once it is truly gone. */

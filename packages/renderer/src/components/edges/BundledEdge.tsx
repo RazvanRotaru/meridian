@@ -37,9 +37,12 @@ export function BundledEdge({
 
   const strokeWidth = (style.strokeWidth as number) ?? bundleWidth(bundle.count);
   const stroke = (style.stroke as string) ?? "#8B95A3";
-  const opacity = hovered ? Math.min((style.opacity as number ?? 0.4) + 0.3, 1) : (style.opacity as number ?? 0.4);
   const dash = style.strokeDasharray as string | undefined;
   const hitWidth = interactionWidth ?? strokeWidth + 12;
+  // A modifier release can remove the wrapper hit target without dispatching mouseleave. Derive
+  // visual hover from the live hit width so a highway tooltip cannot remain stranded afterward.
+  const activelyHovered = hovered && hitWidth > 0;
+  const opacity = activelyHovered ? Math.min((style.opacity as number ?? 0.4) + 0.3, 1) : (style.opacity as number ?? 0.4);
 
   const label = bundleLabel(bundle.breakdown);
 
@@ -79,7 +82,7 @@ export function BundledEdge({
           fontSize: 9,
           fontFamily: "var(--font-mono, monospace)",
           fill: stroke,
-          opacity: hovered ? 1 : 0.6,
+          opacity: activelyHovered ? 1 : 0.6,
           transition: "opacity 0.15s ease",
           pointerEvents: "none",
           userSelect: "none",
@@ -88,7 +91,7 @@ export function BundledEdge({
         {bundle.count}
       </text>
       {/* Hover tooltip with breakdown */}
-      {hovered && (
+      {activelyHovered && (
         <foreignObject
           x={(sourceX + targetX) / 2 - 80}
           y={(sourceY + targetY) / 2 - strokeWidth / 2 - 34}

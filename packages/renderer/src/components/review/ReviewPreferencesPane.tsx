@@ -5,7 +5,7 @@
 
 import type { CSSProperties } from "react";
 import { STATIC_LOGIC_VIEW_MODES } from "../../derive/flowViewModel";
-import type { ReviewCodePreviewTrigger, ReviewFlowSplitView } from "../../state/reviewPreferences";
+import type { ReviewFlowSplitView } from "../../state/reviewPreferences";
 
 const HEADING_ID = "review-preferences-heading";
 const TEST_CHANGES_DESCRIPTION_ID = "review-test-changes-description";
@@ -17,7 +17,6 @@ const CODE_PREVIEW_DESCRIPTION_ID = "review-code-preview-description";
 const PROJECTION_DESCRIPTION_ID = "review-flow-view-description";
 const NOTE_ID = "review-preferences-storage-note";
 const FLOW_VIEW_RADIO_NAME = "review-flow-split-view";
-const CODE_PREVIEW_RADIO_NAME = "review-code-preview-trigger";
 
 interface ReviewPreferencesPaneProps {
   excludeTestChanges: boolean;
@@ -25,7 +24,6 @@ interface ReviewPreferencesPaneProps {
   hideNodesNotInDiff: boolean;
   flowView: ReviewFlowSplitView;
   openFlowSplitOnSelect: boolean;
-  codePreviewTrigger: ReviewCodePreviewTrigger;
   hideAddedSourceCommentDiffs: boolean;
   progressiveContext?: {
     requestedDepth: number;
@@ -40,7 +38,6 @@ interface ReviewPreferencesPaneProps {
   onHideNodesNotInDiffChange: (hide: boolean) => void;
   onFlowViewChange: (view: ReviewFlowSplitView) => void;
   onOpenFlowSplitOnSelectChange: (open: boolean) => void;
-  onCodePreviewTriggerChange: (trigger: ReviewCodePreviewTrigger) => void;
   onHideAddedSourceCommentDiffsChange: (hide: boolean) => void;
   onProgressiveDepthChange?: (depth: number) => void;
   onClose: () => void;
@@ -78,15 +75,6 @@ const OPTIONS = [
     .map(({ mode }) => mode)
     .filter((mode) => mode !== "timeline"),
 ].map((value) => ({ value, ...OPTION_DETAILS[value] }));
-
-const CODE_PREVIEW_OPTIONS: Array<{
-  value: ReviewCodePreviewTrigger;
-  label: string;
-  description: string;
-}> = [
-  { value: "hover", label: "On hover", description: "Open after pausing over a source-backed node in the graph or logic flow." },
-  { value: "click", label: "On click", description: "Open when a source-backed node in the graph or logic flow is clicked; keep it open until another node or the canvas is clicked." },
-];
 
 export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
   return (
@@ -206,30 +194,11 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
         </label>
       </fieldset>
 
-      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={`${CODE_PREVIEW_DESCRIPTION_ID} ${NOTE_ID}`}>
-        <legend style={LEGEND}>Code preview behavior</legend>
-        <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>Choose how source-backed code previews open across the review graph and logic flow.</p>
-        <div style={OPTION_LIST}>
-          {CODE_PREVIEW_OPTIONS.map((option) => {
-            const selected = props.codePreviewTrigger === option.value;
-            return (
-              <label key={option.value} style={optionStyle(selected)}>
-                <input
-                  type="radio"
-                  name={CODE_PREVIEW_RADIO_NAME}
-                  value={option.value}
-                  checked={selected}
-                  style={RADIO}
-                  onChange={() => props.onCodePreviewTriggerChange(option.value)}
-                />
-                <span style={OPTION_COPY}>
-                  <span style={OPTION_TITLE}>{option.label}</span>
-                  <span style={OPTION_DESCRIPTION}>{option.description}</span>
-                </span>
-              </label>
-            );
-          })}
-        </div>
+      <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={CODE_PREVIEW_DESCRIPTION_ID}>
+        <legend style={LEGEND}>Modifier navigation</legend>
+        <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>
+          Hold Command on macOS or Control on Windows while hovering a source-backed node to preview code. Hold it while clicking a semantic edge to inspect evidence.
+        </p>
       </fieldset>
 
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={NOTE_ID}>
@@ -278,7 +247,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
       </fieldset>
 
       <p id={NOTE_ID} style={NOTE}>
-        Formatting-only filtering, flow, code preview, and source diff preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
+        Formatting-only filtering, flow, and source diff preferences are saved in this browser. Graph display and test visibility apply to the current PR review.
       </p>
     </section>
   );

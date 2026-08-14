@@ -4,13 +4,11 @@ import {
   DEFAULT_REVIEW_PREFERENCES,
   readReviewPreferences,
   writeReviewPreferences,
-  type ReviewCodePreviewTrigger,
   type ReviewPreferences,
   type ReviewFlowSplitView,
 } from "./reviewPreferences";
 
 const REVIEW_FLOW_MODES: ReviewFlowSplitView[] = STATIC_LOGIC_VIEW_MODES.map(({ mode }) => mode);
-const CODE_PREVIEW_TRIGGERS: ReviewCodePreviewTrigger[] = ["hover", "click"];
 
 function stubStorage(initial: Record<string, string> = {}): Record<string, string> {
   const data = { ...initial };
@@ -30,41 +28,37 @@ afterEach(() => {
 });
 
 describe("reviewPreferences", () => {
-  it("defaults to Timeline, split opening, hover previews, visible source-comment diffs, and excluded formatting-only changes", () => {
+  it("defaults to Timeline, split opening, visible source-comment diffs, and excluded formatting-only changes", () => {
     stubStorage();
 
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: true,
-      codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
+    expect(DEFAULT_REVIEW_PREFERENCES.version).toBe(6);
     expect(DEFAULT_REVIEW_PREFERENCES.flowSplitView).toBe("timeline");
     expect(DEFAULT_REVIEW_PREFERENCES.openFlowSplitOnSelect).toBe(true);
-    expect(DEFAULT_REVIEW_PREFERENCES.codePreviewTrigger).toBe("hover");
     expect(DEFAULT_REVIEW_PREFERENCES.hideAddedSourceCommentDiffs).toBe(false);
     expect(DEFAULT_REVIEW_PREFERENCES.excludeFormatOnlyChanges).toBe(true);
   });
 
   it.each(REVIEW_FLOW_MODES.flatMap((mode) =>
     [true, false].flatMap((openFlowSplitOnSelect) =>
-      CODE_PREVIEW_TRIGGERS.flatMap((codePreviewTrigger) =>
-        [true, false].flatMap((hideAddedSourceCommentDiffs) =>
-          [true, false].map((excludeFormatOnlyChanges) => ({
-            flowSplitView: mode,
-            openFlowSplitOnSelect,
-            codePreviewTrigger,
-            hideAddedSourceCommentDiffs,
-            excludeFormatOnlyChanges,
-          })),
-        ),
+      [true, false].flatMap((hideAddedSourceCommentDiffs) =>
+        [true, false].map((excludeFormatOnlyChanges) => ({
+          flowSplitView: mode,
+          openFlowSplitOnSelect,
+          hideAddedSourceCommentDiffs,
+          excludeFormatOnlyChanges,
+        })),
       ),
     ),
-  ))("round-trips $flowSplitView with split opening=$openFlowSplitOnSelect, previews=$codePreviewTrigger, hidden added comment diffs=$hideAddedSourceCommentDiffs, and excluded formatting=$excludeFormatOnlyChanges", (choice) => {
+  ))("round-trips $flowSplitView with split opening=$openFlowSplitOnSelect, hidden added comment diffs=$hideAddedSourceCommentDiffs, and excluded formatting=$excludeFormatOnlyChanges", (choice) => {
     const data = stubStorage();
-    const preferences: ReviewPreferences = { version: 5, ...choice };
+    const preferences: ReviewPreferences = { version: 6, ...choice };
 
     writeReviewPreferences(preferences);
 
@@ -78,10 +72,9 @@ describe("reviewPreferences", () => {
     });
 
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView,
       openFlowSplitOnSelect: true,
-      codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
@@ -96,15 +89,14 @@ describe("reviewPreferences", () => {
     });
 
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       ...choice,
-      codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
   });
 
-  it.each(CODE_PREVIEW_TRIGGERS)("migrates the v3 %s preview choice with added source comments visible", (codePreviewTrigger) => {
+  it.each(["hover", "click", "press"])("migrates v3 while ignoring the retired %s preview choice", (codePreviewTrigger) => {
     stubStorage({
       "meridian.prReviewPreferences": JSON.stringify({
         version: 3,
@@ -114,14 +106,15 @@ describe("reviewPreferences", () => {
       }),
     });
 
-    expect(readReviewPreferences()).toEqual({
-      version: 5,
+    const preferences = readReviewPreferences();
+    expect(preferences).toEqual({
+      version: 6,
       flowSplitView: "metro",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger,
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
+    expect(preferences).not.toHaveProperty("codePreviewTrigger");
   });
 
   it("ignores the obsolete comment-hover field in an unshipped v4 record", () => {
@@ -136,10 +129,9 @@ describe("reviewPreferences", () => {
     });
 
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView: "metro",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
@@ -156,10 +148,9 @@ describe("reviewPreferences", () => {
       }),
     });
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView: "blocks",
       openFlowSplitOnSelect: true,
-      codePreviewTrigger: "hover",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
@@ -172,10 +163,9 @@ describe("reviewPreferences", () => {
       hideAddedSourceCommentDiffs: true,
     });
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
       excludeFormatOnlyChanges: true,
     });
@@ -193,21 +183,45 @@ describe("reviewPreferences", () => {
       }),
     });
 
-    expect(readReviewPreferences()).toEqual({
-      version: 5,
+    const preferences = readReviewPreferences();
+    expect(preferences).toEqual({
+      version: 6,
       flowSplitView: "graph",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
       excludeFormatOnlyChanges: true,
     });
+    expect(preferences).not.toHaveProperty("codePreviewTrigger");
+  });
+
+  it("defaults malformed v6 fields independently and drops obsolete trigger data", () => {
+    stubStorage({
+      "meridian.prReviewPreferences": JSON.stringify({
+        version: 6,
+        flowSplitView: "graph",
+        openFlowSplitOnSelect: "no",
+        codePreviewTrigger: "click",
+        hideAddedSourceCommentDiffs: true,
+        excludeFormatOnlyChanges: "yes",
+      }),
+    });
+
+    const preferences = readReviewPreferences();
+    expect(preferences).toEqual({
+      version: 6,
+      flowSplitView: "graph",
+      openFlowSplitOnSelect: true,
+      hideAddedSourceCommentDiffs: true,
+      excludeFormatOnlyChanges: true,
+    });
+    expect(preferences).not.toHaveProperty("codePreviewTrigger");
   });
 
   it("rejects malformed, unknown-version, and unsupported v1 records", () => {
     const data = stubStorage({ "meridian.prReviewPreferences": "not json" });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
 
-    data["meridian.prReviewPreferences"] = JSON.stringify({ version: 6, flowSplitView: "graph" });
+    data["meridian.prReviewPreferences"] = JSON.stringify({ version: 7, flowSplitView: "graph" });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
 
     data["meridian.prReviewPreferences"] = JSON.stringify({ version: 1, flowSplitView: "bogus" });
@@ -220,10 +234,9 @@ describe("reviewPreferences", () => {
       codePreviewTrigger: "click",
     });
     expect(readReviewPreferences()).toEqual({
-      version: 5,
+      version: 6,
       flowSplitView: "timeline",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: false,
       excludeFormatOnlyChanges: true,
     });
@@ -233,10 +246,9 @@ describe("reviewPreferences", () => {
     vi.stubGlobal("window", undefined);
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
     expect(() => writeReviewPreferences({
-      version: 5,
+      version: 6,
       flowSplitView: "graph",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
       excludeFormatOnlyChanges: false,
     })).not.toThrow();
@@ -249,10 +261,9 @@ describe("reviewPreferences", () => {
     });
     expect(readReviewPreferences()).toEqual(DEFAULT_REVIEW_PREFERENCES);
     expect(() => writeReviewPreferences({
-      version: 5,
+      version: 6,
       flowSplitView: "graph",
       openFlowSplitOnSelect: false,
-      codePreviewTrigger: "click",
       hideAddedSourceCommentDiffs: true,
       excludeFormatOnlyChanges: false,
     })).not.toThrow();

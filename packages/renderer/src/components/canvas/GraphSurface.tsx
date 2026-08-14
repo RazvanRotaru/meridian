@@ -61,7 +61,13 @@ import { MINIMAP_NODE_CAP } from "./flowCanvasProps";
 import { ReadonlyGraphCanvas } from "./ReadonlyGraphCanvas";
 import { MapLod } from "./MapLod";
 import type { ModuleNodeHandlers } from "./useModuleNodeInteractions";
-import { requestWireInspectionEnd, retainedInspectedEdge, useWireHover } from "./useWireHover";
+import {
+  MODIFIER_GATED_EDGE_CSS,
+  requestWireInspectionEnd,
+  retainedInspectedEdge,
+  useWireHover,
+} from "./useWireHover";
+import { usePrimaryModifierKey } from "./usePrimaryModifierKey";
 import type { HighwayFlags } from "./surfaceSpec";
 import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { BundledEdge } from "../edges/BundledEdge";
@@ -336,8 +342,9 @@ export function GraphSurface(props: GraphSurfaceProps) {
   const storeSelected = useBlueprint((state) => state.moduleSelected);
   const selected = props.selectionOverride ?? storeSelected;
   const reviewLit = useBlueprint((state) => state.reviewLitNodeIds);
-  const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
+  const reviewSurfaceEnabled = props.nodeDiffPreview === true;
+  const reviewModifier = usePrimaryModifierKey(reviewSurfaceEnabled);
   const index = useBlueprint((state) => state.index);
   const artifact = useBlueprint((state) => state.artifact);
   const telemetryMode = useBlueprint((state) => state.telemetryMode);
@@ -760,6 +767,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
     endWireInspection,
     selected,
     incomingCallSpotlightIds,
+    { required: reviewSurfaceEnabled, pressed: reviewModifier.pressed },
   );
   useEffect(() => {
     if (!ordinarySourceOpen) return;
@@ -773,9 +781,8 @@ export function GraphSurface(props: GraphSurfaceProps) {
     () => [...wire.edges, ...preparedEdges.hierarchyEdges],
     [wire.edges, preparedEdges.hierarchyEdges],
   );
-  const reviewSurfaceEnabled = props.nodeDiffPreview === true;
   const codePreviewEnabled = reviewSurfaceEnabled && reviewCodePreviewEnabled;
-  const nodeDiff = useNodeDiffPreview(codePreviewEnabled, reviewCodePreviewTrigger);
+  const nodeDiff = useNodeDiffPreview(codePreviewEnabled);
   const surfaceNodeClick = props.readOnly
     ? props.selectionOnly
       ? props.interactions.onNodeClick
@@ -837,12 +844,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         nodeTypes={moduleNodeTypes}
         edgeTypes={moduleEdgeTypes}
         onInit={props.onInit}
-        onNodeClick={codePreviewEnabled
-          ? (event, node) => {
-              nodeDiff.onNodeClick(event, node);
-              surfaceNodeClick?.(event, node);
-            }
-          : surfaceNodeClick}
+        onNodeClick={surfaceNodeClick}
         onNodeDoubleClick={props.readOnly || props.selectionOnly ? undefined : props.interactions.onNodeDoubleClick}
         onNodeMouseEnter={codePreviewEnabled ? nodeDiff.onNodeMouseEnter : undefined}
         onNodeMouseMove={codePreviewEnabled ? nodeDiff.onNodeMouseMove : undefined}
@@ -879,6 +881,7 @@ export function GraphSurface(props: GraphSurfaceProps) {
         miniMapColor={props.miniMapColor}
         minimap={!virtualizeCanvas}
       >
+        {reviewSurfaceEnabled ? <style>{MODIFIER_GATED_EDGE_CSS}</style> : null}
         <style>{REVIEW_NODE_VIEWED_CSS}</style>
         <style>{INCOMING_CALL_LENS_CSS}</style>
         <MapLod
