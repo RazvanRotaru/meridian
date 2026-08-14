@@ -197,7 +197,7 @@ export function ReviewPreferencesPane(props: ReviewPreferencesPaneProps) {
       <fieldset style={BEHAVIOR_FIELDSET} aria-describedby={CODE_PREVIEW_DESCRIPTION_ID}>
         <legend style={LEGEND}>Modifier navigation</legend>
         <p id={CODE_PREVIEW_DESCRIPTION_ID} style={DESCRIPTION}>
-          Hold Command on macOS or Control on Windows while hovering a source-backed node to preview code. Hold it while clicking a semantic edge to inspect evidence.
+          Hold Command on macOS or Control on Windows while hovering a source-backed node to preview code. Move onto the preview to release the modifier and keep it open. Hold the modifier while clicking a semantic edge to inspect evidence.
         </p>
       </fieldset>
 

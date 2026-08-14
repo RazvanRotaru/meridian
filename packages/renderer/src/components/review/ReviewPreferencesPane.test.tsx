@@ -68,7 +68,8 @@ describe("ReviewPreferencesPane", () => {
     expect(markup).toMatch(/<input(?=[^>]*type="checkbox")(?=[^>]*aria-describedby="review-added-source-comments-description")[^>]*>/);
     expect(markup).toContain("Modifier navigation");
     expect(markup).toContain("Hold Command on macOS or Control on Windows while hovering a source-backed node to preview code");
-    expect(markup).toContain("Hold it while clicking a semantic edge to inspect evidence");
+    expect(markup).toContain("Move onto the preview to release the modifier and keep it open");
+    expect(markup).toContain("Hold the modifier while clicking a semantic edge to inspect evidence");
     expect(markup).not.toContain('name="review-code-preview-trigger"');
     expect(markup).not.toContain("On click");
     expect(markup).toContain("Split view presentation");
