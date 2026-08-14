@@ -37,6 +37,7 @@ const SOURCE_COMMENT_TEXT = "// Keep the loyalty threshold explicit before choos
 const SOURCE_COMMENT_LINE = 2;
 const LOYALTY_RETURN_LINE = 3;
 const EXISTING_COMMENT_LINE = LOYALTY_RETURN_LINE;
+const PRIMARY_MODIFIER = process.platform === "darwin" ? "Meta" : "Control";
 const SOURCE_SEARCH_SHORTCUT = process.platform === "darwin" ? "Meta+f" : "Control+f";
 const MODIFIED_SOURCE_SEARCH_SHORTCUT = process.platform === "darwin" ? "Meta+Shift+f" : "Control+Shift+f";
 const ORDER_SERVICE_MODULE_ID = buildNodeId({ lang: "ts", modulePath: "src/services/orderService.ts" });
@@ -348,20 +349,54 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await syncProvenance.count()).toBe(1);
     expect(await page.getByText("Files changed", { exact: true }).count()).toBe(1);
 
-    // A nested preview remains reachable even when the pointer crosses its previewable parent.
-    await changedFunction.hover();
+    // Plain hover and click remain ordinary graph gestures. Holding the platform modifier while
+    // hovering opens a nested preview even when the pointer crosses its previewable parent.
     const contextLoyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
-    await contextLoyaltyPreview.waitFor();
+    await assertPlainNodePreviewGesturesInert(page, changedFunction, contextLoyaltyPreview);
+    await openNodePreviewWithModifier(page, changedFunction, contextLoyaltyPreview);
     await contextLoyaltyPreview.getByText("src/pricing/loyaltyTiers.ts", { exact: true }).waitFor();
     await contextLoyaltyPreview.hover();
     expect(await contextLoyaltyPreview.isVisible()).toBe(true);
-    // Hover source is available throughout an active review, including nodes untouched by its diff.
+    // Modifier-hover source is available throughout an active review, including untouched nodes.
     await unchangedModule.hover();
     const codePreview = page.getByRole("dialog", { name: /^Code preview for / });
     await codePreview.getByText("src/pricing/pricingService.ts", { exact: true }).waitFor();
     await codePreview.getByText("export class PricingService {", { exact: true }).waitFor();
-    await page.getByText("Files changed", { exact: true }).hover();
-    await codePreview.waitFor({ state: "detached" });
+    await closeNodePreviewByReleasingModifier(page, codePreview);
+
+    // A painted context wire ignores an ordinary physical pointer click. The same screen point
+    // opens evidence while the platform modifier is held, across either BaseEdge or bundle paint.
+    const edgeInspection = page.getByRole("dialog", { name: "Edge inspection" });
+    const semanticEdges = codebaseContext
+      .locator(".react-flow__edge:not(.react-flow__edge-ghostHierarchy)");
+    await page.keyboard.down(PRIMARY_MODIFIER);
+    let edgeClickTarget: { index: number; x: number; y: number } | null = null;
+    try {
+      await expect.poll(async () => {
+        edgeClickTarget = await semanticEdgeClickTarget(semanticEdges);
+        return edgeClickTarget !== null;
+      }, { timeout: 5_000 }).toBe(true);
+    } finally {
+      await page.keyboard.up(PRIMARY_MODIFIER);
+    }
+    if (edgeClickTarget === null) throw new Error("No painted semantic edge exposed a physical click target");
+    const visibleSemanticEdge = semanticEdges.nth(edgeClickTarget.index);
+    await expect.poll(async () => (await visibleSemanticEdge.getAttribute("class"))?.includes("modifier-gated-edge") ?? false)
+      .toBe(true);
+    await page.mouse.click(edgeClickTarget.x, edgeClickTarget.y);
+    await page.waitForTimeout(100);
+    expect(await edgeInspection.count()).toBe(0);
+    await page.keyboard.down(PRIMARY_MODIFIER);
+    try {
+      await expect.poll(async () => (await visibleSemanticEdge.getAttribute("class"))?.includes("modifier-gated-edge") ?? false)
+        .toBe(false);
+      await page.mouse.click(edgeClickTarget.x, edgeClickTarget.y);
+    } finally {
+      await page.keyboard.up(PRIMARY_MODIFIER);
+    }
+    await edgeInspection.waitFor();
+    await edgeInspection.getByRole("button", { name: /^(Close edge inspection|Close source)$/ }).click();
+    await edgeInspection.waitFor({ state: "detached" });
 
     const expansionParam = new URL(page.url()).searchParams.get("mexp");
     const pricingContext = codebaseContext.locator(`.react-flow__node[data-id="${PRICING_PACKAGE_ID}"]`);
@@ -428,6 +463,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     // the review-panel control hides and restores that layer without disabling either host.
     const loyaltyTierNode = extractedReviewSurface.locator(`.react-flow__node[data-id="${LOYALTY_TIER_FUNCTION_ID}"]`);
     await loyaltyTierNode.waitFor();
+    const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
 
     // A graph-node selection offers a local affected-flow filter. It keeps the block's own flow and
     // direct callers, removes unrelated review stories, and disappears again with the selection.
@@ -439,7 +475,13 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     const allAffectedHeaderText = await affectedFlowsDisclosure.textContent();
     expect(allAffectedFlowNames).toContain("View sequence for loyaltyTierFor");
     expect(allAffectedFlowNames).toContain("View sequence for reviewFixtureMarker");
+    await page.mouse.move(0, 0);
+    await loyaltyTierNode.hover();
+    await page.waitForTimeout(350);
+    expect(await loyaltyPreview.count()).toBe(0);
     await nodeHeader(loyaltyTierNode).click();
+    await page.waitForTimeout(250);
+    expect(await loyaltyPreview.count()).toBe(0);
     const relatedOnly = page.getByRole("button", { name: "Show only flows related to loyaltyTierFor" });
     await relatedOnly.waitFor();
     expect(await relatedOnly.getAttribute("aria-pressed")).toBe("false");
@@ -495,9 +537,7 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await extractedReviewSurface.locator(".react-flow__controls-zoomin").click();
     await waitForGraphViewportToSettle(extractedReviewSurface);
 
-    await loyaltyTierNode.hover();
-    const loyaltyPreview = page.getByRole("dialog", { name: "Code preview for loyaltyTierFor" });
-    await loyaltyPreview.waitFor();
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
 
     // Ordinary preview actions remain transient: toggling viewed must not introduce a second
@@ -512,11 +552,8 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
       { path: "src/pricing/loyaltyTiers.ts", viewed: true },
       { path: "src/pricing/loyaltyTiers.ts", viewed: false },
     ]);
-    await page.getByText("Files changed", { exact: true }).hover();
-    await page.waitForTimeout(500);
-    await loyaltyPreview.waitFor({ state: "detached" });
-    await loyaltyTierNode.hover();
-    await loyaltyPreview.waitFor();
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
 
     const sourceCommentRow = loyaltyPreview.locator(`tr[data-source-line="${SOURCE_COMMENT_LINE}"]`);
     const loyaltyReturnRow = loyaltyPreview.locator(`tr[data-source-line="${LOYALTY_RETURN_LINE}"]`);
@@ -528,28 +565,26 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await hideComments.waitFor();
     expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
     await hideComments.click();
-    await loyaltyPreview.waitFor({ state: "detached" });
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
     await loyaltyCommentIndicator.waitFor({ state: "detached" });
     const viewComments = page.getByRole("button", { name: "Show comments on canvas", exact: true });
     await viewComments.waitFor();
     expect(await viewComments.getAttribute("aria-pressed")).toBe("false");
 
-    await loyaltyTierNode.hover();
-    await loyaltyPreview.waitFor();
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     expect(await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     await viewComments.click();
-    await loyaltyPreview.waitFor({ state: "detached" });
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
     await loyaltyCommentIndicator.waitFor();
     await hideComments.waitFor();
     expect(await hideComments.getAttribute("aria-pressed")).toBe("true");
 
-    await loyaltyTierNode.hover();
-    await loyaltyPreview.waitFor();
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     await loyaltyPreview.getByText(EXISTING_COMMENT_TEXT, { exact: true }).waitFor();
 
-    // Starting a line comment keeps the default hover preview stable while the draft is active.
-    // Pointer movement past the full hover-close grace preserves the exact draft, and adding it
-    // keeps the card open with Pending confirmation until the reader dismisses it from the canvas.
+    // Starting a line comment promotes the transient card into its existing composer lock. The
+    // modifier can then be released so ordinary keyboard text is not interpreted as shortcuts;
+    // resolving the composer completes the deferred close.
     const inlineRange = fixture!.files[0].headerHunks[0];
     const firstInlineLine = inlineRange.start;
     const secondInlineLine = inlineRange.end;
@@ -564,24 +599,27 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await lineActionStyle(previewLineAction)).toEqual({ opacity: "0", pointerEvents: "none" });
     await previewSourceRow.hover();
     await expect.poll(() => lineActionStyle(previewLineAction)).toEqual({ opacity: "1", pointerEvents: "auto" });
-    // Click the code itself: this is the compact-card path people naturally use, and guards
-    // against regressing to a hidden, tiny gutter-only target.
-    await previewSourceRow.locator(`[data-source-code-cell="${firstInlineLine}"]`).click();
+    // Modified code-cell clicks intentionally preserve native selection semantics. Use the
+    // revealed, named gutter action to enter the composer before releasing the chord for typing.
+    await previewLineAction.click();
     const previewDraft = loyaltyPreview.getByPlaceholder(`Comment on line ${firstInlineLine}…`);
     await previewDraft.waitFor();
     expect(await previewDraft.evaluate((element) => element === document.activeElement)).toBe(true);
-    await previewDraft.fill(DRAFT_TEXT);
+    await page.keyboard.up(PRIMARY_MODIFIER);
+    expect(await loyaltyPreview.isVisible()).toBe(true);
+    await previewDraft.pressSequentially(DRAFT_TEXT);
     await page.getByText("Files changed", { exact: true }).hover();
     await page.waitForTimeout(500);
     expect(await loyaltyPreview.isVisible()).toBe(true);
     expect(await previewDraft.inputValue()).toBe(DRAFT_TEXT);
     await loyaltyPreview.getByRole("button", { name: "Add comment", exact: true }).click();
+    await loyaltyPreview.waitFor({ state: "detached" });
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     const previewPendingDraft = loyaltyPreview.locator(`[data-pending-review-comments-line="${firstInlineLine}"]`);
     await previewPendingDraft.getByText(DRAFT_TEXT, { exact: true }).waitFor();
     await previewPendingDraft.getByText("Pending", { exact: true }).waitFor();
     expect(await loyaltyPreview.isVisible()).toBe(true);
-    await clickBareCanvas(page, extractedReviewSurface);
-    await loyaltyPreview.waitFor({ state: "detached" });
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
 
     // Agent-authored source explanations can be removed from the review surface. The preference
     // omits a full-line source comment while the changed code that follows stays marked as added.
@@ -592,54 +630,41 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await hideSourceCommentDiff.isChecked()).toBe(false);
     await hideSourceCommentDiff.check();
     await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
-    await loyaltyTierNode.hover();
-    await loyaltyPreview.waitFor();
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     await sourceCommentRow.waitFor({ state: "detached" });
     expect(await loyaltyPreview.getByText(SOURCE_COMMENT_TEXT, { exact: true }).count()).toBe(0);
     expect(await loyaltyReturnRow.getAttribute("data-diff-origin")).toBe("add");
 
-    // The saved hover/click preference remains independently configurable. Restore the source-comment
-    // diff before exercising click-to-open, then return to hover for the visibility control below.
+    // Restore the source-comment diff before exercising the visibility control below.
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
     await preferencesButton.click();
     await hideSourceCommentDiff.uncheck();
-    await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
-    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
-    await loyaltyTierNode.hover();
-    await page.waitForTimeout(350);
-    expect(await loyaltyPreview.count()).toBe(0);
-    await nodeHeader(loyaltyTierNode).click();
-    await loyaltyPreview.waitFor();
-    await page.mouse.move(0, 0);
-    await page.waitForTimeout(250);
-    expect(await loyaltyPreview.isVisible()).toBe(true);
-    await clickBareCanvas(page, extractedReviewSurface);
-    await loyaltyPreview.waitFor({ state: "detached" });
-    await preferencesButton.click();
-    await preferencesPane.getByRole("radio", { name: /^On hover/ }).check();
     await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
 
     // The right-side action fully disables automatic previews without disabling the node header's
-    // explicit source action. Both hover and click stay inert while the control is unpressed.
+    // explicit source action. Plain hover/click and modifier-hover stay inert while unpressed.
     const codePreviewToggle = extractedReviewSurface
       .getByRole("group", { name: "Canvas actions" })
       .getByRole("group", { name: "Extracted graph actions" })
       .getByRole("button", { name: "Code previews", exact: true });
     expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("true");
-    await loyaltyTierNode.hover();
-    await loyaltyPreview.waitFor();
+    await openNodePreviewWithModifier(page, loyaltyTierNode, loyaltyPreview);
     await codePreviewToggle.click();
-    await loyaltyPreview.waitFor({ state: "detached" });
+    await closeNodePreviewByReleasingModifier(page, loyaltyPreview);
     expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("false");
+    await page.mouse.move(0, 0);
     await loyaltyTierNode.hover();
     await page.waitForTimeout(350);
     expect(await loyaltyPreview.count()).toBe(0);
-    await preferencesButton.click();
-    await preferencesPane.getByRole("radio", { name: /^On click/ }).check();
-    await preferencesPane.getByRole("button", { name: "Close review preferences" }).click();
-    expect(await codePreviewToggle.getAttribute("aria-pressed")).toBe("false");
     await nodeHeader(loyaltyTierNode).click();
     await page.waitForTimeout(250);
     expect(await loyaltyPreview.count()).toBe(0);
+    await page.mouse.move(0, 0);
+    await page.keyboard.down(PRIMARY_MODIFIER);
+    await loyaltyTierNode.hover();
+    await page.waitForTimeout(350);
+    expect(await loyaltyPreview.count()).toBe(0);
+    await page.keyboard.up(PRIMARY_MODIFIER);
 
     const loyaltyCodeButton = loyaltyTierNode.getByRole("button", { name: "View source" });
     await loyaltyCodeButton.click();
@@ -1399,6 +1424,53 @@ async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
     previous = current;
     return stableSamples;
   }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+}
+
+async function assertPlainNodePreviewGesturesInert(page: Page, node: Locator, preview: Locator): Promise<void> {
+  await page.mouse.move(0, 0);
+  await node.hover();
+  await page.waitForTimeout(350);
+  expect(await preview.count()).toBe(0);
+  await nodeHeader(node).click();
+  await page.waitForTimeout(250);
+  expect(await preview.count()).toBe(0);
+}
+
+async function openNodePreviewWithModifier(page: Page, node: Locator, preview: Locator): Promise<void> {
+  await page.mouse.move(0, 0);
+  await page.keyboard.down(PRIMARY_MODIFIER);
+  await node.hover();
+  await preview.waitFor();
+}
+
+async function closeNodePreviewByReleasingModifier(page: Page, preview: Locator): Promise<void> {
+  await page.keyboard.up(PRIMARY_MODIFIER);
+  await preview.waitFor({ state: "detached" });
+}
+
+async function semanticEdgeClickTarget(
+  edges: Locator,
+): Promise<{ index: number; x: number; y: number } | null> {
+  return edges.evaluateAll((groups) => {
+    for (const [index, group] of groups.entries()) {
+      // Base/ribbon edges expose React Flow's interaction path; highway bundles own a plain
+      // transparent hit path. Probe both renderers at actual painted points.
+      for (const path of group.querySelectorAll<SVGPathElement>("path")) {
+        const matrix = path.getScreenCTM();
+        if (matrix === null) continue;
+        const length = path.getTotalLength();
+        for (const ratio of [0.2, 0.35, 0.5, 0.65, 0.8]) {
+          const point = path.getPointAtLength(length * ratio).matrixTransform(matrix);
+          if (point.x < 0 || point.y < 0 || point.x >= window.innerWidth || point.y >= window.innerHeight) continue;
+          const hit = document.elementFromPoint(point.x, point.y);
+          if (hit?.closest(".react-flow__edge") === group) {
+            return { index, x: point.x, y: point.y };
+          }
+        }
+      }
+    }
+    return null;
+  });
 }
 
 async function lineActionStyle(action: Locator): Promise<{ opacity: string; pointerEvents: string }> {

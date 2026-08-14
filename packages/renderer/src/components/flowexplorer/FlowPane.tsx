@@ -720,7 +720,6 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
     (state) => state.flowSelection !== null && state.reviewFlowBaseline !== null,
   );
   const reviewCodePreviewEnabled = useBlueprint((state) => state.reviewCodePreviewEnabled);
-  const reviewCodePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const codePreviewEnabled = reviewCodePreviewEligible && reviewCodePreviewEnabled;
   const executionOpen = useBlueprint((state) => state.flowPaneOrigin === "request" || state.flowPaneOrigin === "synthetic");
   const syntheticOpen = useBlueprint((state) => state.flowPaneOrigin === "synthetic");
@@ -735,7 +734,6 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
   } = useBlueprintActions();
   const nodeDiff = useNodeDiffPreview(
     codePreviewEnabled,
-    reviewCodePreviewTrigger,
     flowPaneCodePreviewTarget,
   );
   const focusedSynthetic = syntheticOpen && syntheticPresentation === "focused";
@@ -860,10 +858,7 @@ function FlowPaneSurface({ focusRequest = null }: { focusRequest?: FlowPaneFocus
               fittedNodes.current = null;
               fitReadyNodes(instance);
             }}
-            onNodeClick={(event, node) => {
-              if (codePreviewEnabled) {
-                nodeDiff.onNodeClick(event, node);
-              }
+            onNodeClick={(_event, node) => {
               const target = artifactTargetOf(node);
               if (syntheticOpen) {
                 const runtime = (node.data as Partial<LogicNodeData>).runtime;

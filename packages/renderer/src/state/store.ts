@@ -164,7 +164,6 @@ import { readSolidMetricsPref, writeSolidMetricsPref } from "./solidMetricsPref"
 import {
   readReviewPreferences,
   writeReviewPreferences,
-  type ReviewCodePreviewTrigger,
   type ReviewFlowSplitView,
 } from "./reviewPreferences";
 import { isCanonicalFileNode, moduleRevealStateFor, nearestModuleIds } from "./flowExplorer";
@@ -888,9 +887,6 @@ export interface BlueprintState {
   /** One explicit "View flow" request. Non-null forces the current review split open in this
    * projection without mutating the reader's persisted auto-open or projection preferences. */
   reviewFlowExplicitView: ReviewFlowSplitView | null;
-  /** Pointer gesture which opens the graph node's transient code preview. Browser-local so a
-   * reader's preference follows them between repositories and reviews. */
-  reviewCodePreviewTrigger: ReviewCodePreviewTrigger;
   /** Whether graph and logic-flow node gestures may open transient code previews. Session-only;
    * source stays available through each node header's explicit View source action. */
   reviewCodePreviewEnabled: boolean;
@@ -1294,7 +1290,6 @@ export interface BlueprintState {
   deleteReviewComment(id: string): void;
   setReviewFlowSplitView(view: ReviewFlowSplitView): void;
   setReviewOpenFlowSplitOnSelect(open: boolean): void;
-  setReviewCodePreviewTrigger(trigger: ReviewCodePreviewTrigger): void;
   toggleReviewCodePreview(): void;
   setReviewHideAddedSourceCommentDiffs(hide: boolean): void;
   setReviewExcludeFormatOnlyChanges(exclude: boolean): void;
@@ -5334,7 +5329,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     reviewFlowSplitView: reviewPreferences.flowSplitView,
     reviewOpenFlowSplitOnSelect: reviewPreferences.openFlowSplitOnSelect,
     reviewFlowExplicitView: null,
-    reviewCodePreviewTrigger: reviewPreferences.codePreviewTrigger,
     reviewCodePreviewEnabled: true,
     reviewHideAddedSourceCommentDiffs: reviewPreferences.hideAddedSourceCommentDiffs,
     reviewExcludeFormatOnlyChanges: reviewPreferences.excludeFormatOnlyChanges,
@@ -9276,10 +9270,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
     setReviewFlowSplitView(view) {
       const state = get();
       writeReviewPreferences({
-        version: 5,
+        version: 6,
         flowSplitView: view,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
-        codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
         excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
@@ -9314,10 +9307,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 5,
+        version: 6,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: open,
-        codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
         excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
@@ -9341,22 +9333,6 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       void get().flowPaneRelayout();
-    },
-
-    setReviewCodePreviewTrigger(trigger) {
-      const state = get();
-      if (state.reviewCodePreviewTrigger === trigger) {
-        return;
-      }
-      writeReviewPreferences({
-        version: 5,
-        flowSplitView: state.reviewFlowSplitView,
-        openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
-        codePreviewTrigger: trigger,
-        hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
-        excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
-      });
-      set({ reviewCodePreviewTrigger: trigger });
     },
 
     toggleReviewCodePreview() {
@@ -9383,10 +9359,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         state = get();
       }
       writeReviewPreferences({
-        version: 5,
+        version: 6,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
-        codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: hide,
         excludeFormatOnlyChanges: state.reviewExcludeFormatOnlyChanges,
       });
@@ -9445,10 +9420,9 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
         return;
       }
       writeReviewPreferences({
-        version: 5,
+        version: 6,
         flowSplitView: state.reviewFlowSplitView,
         openFlowSplitOnSelect: state.reviewOpenFlowSplitOnSelect,
-        codePreviewTrigger: state.reviewCodePreviewTrigger,
         hideAddedSourceCommentDiffs: state.reviewHideAddedSourceCommentDiffs,
         excludeFormatOnlyChanges: exclude,
       });
@@ -10119,8 +10093,8 @@ export function createBlueprintStore(dependencies: StoreDependencies): Blueprint
       await Promise.all([metricsTask, tracesTask]);
     },
 
-    // Hover previews have their own local lifecycle. Loading through this action reuses the exact
-    // click-to-open source rules without mutating `codeView`, so hovering can never replace an open
+    // Modifier-hover previews have their own local lifecycle. Loading through this action reuses
+    // the exact explicit-source rules without mutating `codeView`, so hovering can never replace an open
     // modal. The preview component owns dwell, stale-result, and per-node caching behavior.
     async loadCodePreview(node, opts) {
       const state = get();

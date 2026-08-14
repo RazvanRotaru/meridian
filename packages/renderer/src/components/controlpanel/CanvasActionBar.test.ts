@@ -596,7 +596,7 @@ describe("CanvasActionBar code-preview visibility", () => {
     const enabledButton = actionButtonMarkup(graphMarkup, "Code previews");
     expect(enabledButton).toContain('aria-pressed="true"');
     expect(describedText(graphMarkup, enabledButton)).toBe(
-      "Disable automatic code previews; use the node header View source button instead",
+      "Disable Control/Command-hover code previews; use the node header View source button instead",
     );
     expect(graphMarkup.match(/aria-label="Code previews"/g)).toHaveLength(1);
     expect(graphMarkup.indexOf('aria-label="Code previews"')).toBeGreaterThan(
@@ -608,7 +608,7 @@ describe("CanvasActionBar code-preview visibility", () => {
     const disabledButton = actionButtonMarkup(codebaseMarkup, "Code previews");
     expect(disabledButton).toContain('aria-pressed="false"');
     expect(describedText(codebaseMarkup, disabledButton)).toBe(
-      "Enable automatic code previews using the saved hover or click behavior",
+      "Enable code previews while holding Control or Command over a node",
     );
     expect(codebaseMarkup.match(/aria-label="Code previews"/g)).toHaveLength(1);
     expect(codebaseMarkup.indexOf('aria-label="Code previews"')).toBeGreaterThan(

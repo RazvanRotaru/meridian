@@ -52,7 +52,6 @@ function ReviewPanelImpl() {
   usePrReviewFreshnessWatcher();
   const flowView = useBlueprint((state) => state.reviewFlowSplitView);
   const openFlowSplitOnSelect = useBlueprint((state) => state.reviewOpenFlowSplitOnSelect);
-  const codePreviewTrigger = useBlueprint((state) => state.reviewCodePreviewTrigger);
   const hideAddedSourceCommentDiffs = useBlueprint((state) => state.reviewHideAddedSourceCommentDiffs);
   const excludeFormatOnlyChanges = useBlueprint((state) => state.reviewExcludeFormatOnlyChanges);
   const progressiveGraph = useBlueprint((state) => state.progressiveGraph);
@@ -94,7 +93,6 @@ function ReviewPanelImpl() {
   const {
     setReviewFlowSplitView,
     setReviewOpenFlowSplitOnSelect,
-    setReviewCodePreviewTrigger,
     setReviewHideAddedSourceCommentDiffs,
     setReviewExcludeFormatOnlyChanges,
     toggleReviewDiffOnly,
@@ -186,7 +184,6 @@ function ReviewPanelImpl() {
               hideNodesNotInDiff={reviewDiffOnly}
               flowView={flowView}
               openFlowSplitOnSelect={openFlowSplitOnSelect}
-              codePreviewTrigger={codePreviewTrigger}
               hideAddedSourceCommentDiffs={hideAddedSourceCommentDiffs}
               progressiveContext={progressiveGraph === null ? null : {
                 requestedDepth: progressiveGraph.requestedDepth,
@@ -209,7 +206,6 @@ function ReviewPanelImpl() {
               }}
               onFlowViewChange={setReviewFlowSplitView}
               onOpenFlowSplitOnSelectChange={setReviewOpenFlowSplitOnSelect}
-              onCodePreviewTriggerChange={setReviewCodePreviewTrigger}
               onHideAddedSourceCommentDiffsChange={setReviewHideAddedSourceCommentDiffs}
               onProgressiveDepthChange={(depth) => { void setProgressiveGraphDepth(depth); }}
               onClose={closePreferences}

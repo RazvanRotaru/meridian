@@ -6,8 +6,10 @@ import { BUNDLE_EDGE_TYPE } from "../../layout/edgeBundling";
 import { GHOST_HIERARCHY_EDGE_ROLE } from "./presentationEdges";
 import {
   INCOMING_CALL_SPOTLIGHT_Z,
+  MODIFIER_GATED_EDGE_CLASS,
   SELECTED_NODE_EDGE_Z,
   applyIncomingCallSpotlight,
+  gateWireClickInteraction,
   raiseSelectedNodeEdges,
   requestWireInspectionEnd,
   retainedInspectedEdge,
@@ -35,6 +37,28 @@ const hierarchy: Edge = {
   type: GHOST_HIERARCHY_EDGE_TYPE,
   data: { edgeRole: GHOST_HIERARCHY_EDGE_ROLE, underlyingEdgeIds: [CALL_ID] },
 };
+
+describe("gateWireClickInteraction", () => {
+  it("removes edge hit targets until the primary modifier is held", () => {
+    const named = { ...call, className: "existing" };
+    const result = gateWireClickInteraction([named, unrelated], true);
+
+    expect(result).not.toEqual([named, unrelated]);
+    expect(result[0]).toMatchObject({
+      interactionWidth: 0,
+      className: `existing ${MODIFIER_GATED_EDGE_CLASS}`,
+    });
+    expect(result[1]).toMatchObject({
+      interactionWidth: 0,
+      className: MODIFIER_GATED_EDGE_CLASS,
+    });
+  });
+
+  it("preserves the exact edge array while modifier interaction is available", () => {
+    const input = [call, unrelated];
+    expect(gateWireClickInteraction(input, false)).toBe(input);
+  });
+});
 
 describe("raiseSelectedNodeEdges", () => {
   it("raises only semantic wires incident to the selected node above the card layer", () => {

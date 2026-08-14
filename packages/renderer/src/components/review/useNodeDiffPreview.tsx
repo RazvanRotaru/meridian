@@ -1,11 +1,12 @@
 /**
- * Hover/click-to-preview for every source-backed node on PR review canvases. React Flow owns the
+ * Modifier-hover preview for every source-backed node on PR review canvases. React Flow owns the
  * node elements (and scales/clips them with the canvas), so this hook listens at the shared surface
  * and portals one fixed, interactive card to document.body. Hover uses a short dwell to avoid
  * fetching source while the pointer merely crosses the graph, plus a leave grace that lets the
- * pointer bridge the gap into the card and scroll it. Click previews stay open until another node
- * or the canvas is clicked. Source payload reuse belongs to the store's immutable request cache, so
- * hover and click cannot diverge through a second node-local cache that outlives a review revision.
+ * pointer bridge the gap into the card and scroll it. The preview is admitted only while Control or
+ * Command is held; releasing the modifier cancels a pending dwell and closes an open preview. Source
+ * payload reuse belongs to the store's immutable request cache, so the transient view cannot diverge
+ * through a second node-local cache that outlives a review revision.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
@@ -14,10 +15,10 @@ import type { Node as FlowNode } from "@xyflow/react";
 import type { FlowSourceAnchor, GraphNode } from "@meridian/core";
 import { isSourceBackedNode } from "../../derive/sourceBackedNode";
 import { useBlueprint, useBlueprintActions } from "../../state/StoreContext";
-import type { ReviewCodePreviewTrigger } from "../../state/reviewPreferences";
 import type { CodeView } from "../../state/store";
 import { SourceDiffBody, useSourceDiffModel } from "../SourceDiffBody";
 import { useClearOnEscape } from "../canvas/useClearOnEscape";
+import { usePrimaryModifierKey } from "../canvas/usePrimaryModifierKey";
 import { MaximizeIcon } from "../controlpanel/icons";
 import { ReviewPreviewViewedControl } from "./ReviewFileNodeViewedControls";
 import { useReviewLineComposerGuard } from "./useReviewLineComposerGuard";
@@ -161,7 +162,6 @@ interface PreviewState {
 }
 
 export interface NodeDiffPreviewControls {
-  onNodeClick(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseEnter(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseMove(event: ReactMouseEvent, node: FlowNode): void;
   onNodeMouseLeave(): void;
@@ -183,7 +183,6 @@ export function expandNodeDiffPreview(showCode: ShowCodeAction, node: LocatedGra
 
 export function useNodeDiffPreview(
   enabled: boolean,
-  trigger: ReviewCodePreviewTrigger,
   resolveTarget: CodePreviewTargetResolver = defaultCodePreviewTarget,
 ): NodeDiffPreviewControls {
   const index = useBlueprint((state) => state.index);
@@ -197,9 +196,14 @@ export function useNodeDiffPreview(
   const requestToken = useRef(0);
   const activeId = useRef<string | null>(null);
   const pendingId = useRef<string | null>(null);
+  const hoveredNode = useRef<{ target: HTMLElement; node: FlowNode } | null>(null);
+  const modifier = usePrimaryModifierKey(enabled);
   // An active line composer locks its source subject so a pointer crossing the graph cannot replace
   // the code underneath a draft. Ordinary preview actions remain transient.
   const composerEngagedRef = useRef(false);
+  // Releasing the modifier while writing is an intent to close once the shared composer resolves.
+  // The exception lets ordinary text entry work without turning every key into a Ctrl/Cmd shortcut.
+  const closeAfterComposerRef = useRef(false);
 
   const clearOpenTimer = useCallback(() => {
     if (openTimer.current !== null) {
@@ -220,6 +224,7 @@ export function useNodeDiffPreview(
     requestToken.current += 1;
     activeId.current = null;
     composerEngagedRef.current = false;
+    closeAfterComposerRef.current = false;
     setPreview(null);
   }, [clearCloseTimer, clearOpenTimer]);
   const scheduleHide = useCallback(() => {
@@ -244,21 +249,23 @@ export function useNodeDiffPreview(
   const requestHide = useReviewLineComposerGuard(hideNow, preview?.node.location.file ?? null);
   const requestHideRef = useRef(requestHide);
   const previousEnabled = useRef(enabled);
-  const previousTrigger = useRef(trigger);
   requestHideRef.current = requestHide;
   useClearOnEscape(requestHide, preview !== null);
 
   useEffect(() => {
-    if (preview === null || composerPath !== preview.node.location.file) {
-      composerEngagedRef.current = false;
-    }
-  }, [composerPath, preview?.node.location.file]);
+    if (preview !== null && composerPath === preview.node.location.file) return;
+    const wasEngaged = composerEngagedRef.current;
+    composerEngagedRef.current = false;
+    if (wasEngaged && closeAfterComposerRef.current) hideNow();
+  }, [composerPath, hideNow, preview?.node.location.file]);
 
   useEffect(() => {
+    hoveredNode.current = null;
     hideNow();
   }, [reviewRevision, hideNow]);
   useEffect(() => {
     if (codeModalOpen) {
+      hoveredNode.current = null;
       hideNow();
     }
   }, [codeModalOpen, hideNow]);
@@ -266,32 +273,32 @@ export function useNodeDiffPreview(
     if (previousEnabled.current === enabled) return;
     previousEnabled.current = enabled;
     if (!enabled) {
+      hoveredNode.current = null;
       // Disabling previews is a user-facing host close. Preserve the same Keep/Discard guard used
-      // for trigger changes so an active line-comment draft is never orphaned.
+      // for other host closes so an active line-comment draft is never orphaned.
       requestHideRef.current();
     }
   }, [enabled]);
-  useEffect(() => {
-    if (previousTrigger.current === trigger) return;
-    previousTrigger.current = trigger;
-    // Preference changes are allowed while a preview is open, but they are still a host close.
-    // Route them through the same Keep/Discard contract instead of orphaning an engaged draft.
-    requestHideRef.current();
-  }, [trigger]);
   useEffect(() => () => {
     // Unmount invalidates late requests and timers; no state write is needed once the layer is gone.
     clearOpenTimer();
     clearCloseTimer();
     requestToken.current += 1;
     activeId.current = null;
+    hoveredNode.current = null;
   }, [clearCloseTimer, clearOpenTimer]);
 
   const activatePreview = useCallback((
-    event: ReactMouseEvent,
+    target: HTMLElement,
     flowNode: FlowNode,
     dwell: boolean,
   ) => {
     clearCloseTimer();
+    if (!target.isConnected) {
+      if (hoveredNode.current?.target === target) hoveredNode.current = null;
+      scheduleHide();
+      return;
+    }
     if (!enabled || codeModalOpen) {
       hideNow();
       return;
@@ -320,7 +327,6 @@ export function useNodeDiffPreview(
       return;
     }
     clearOpenTimer();
-    const target = event.currentTarget as HTMLElement;
     const anchor = rectOf(target.getBoundingClientRect());
     const pane = target.closest<HTMLElement>(".react-flow")?.getBoundingClientRect();
     const bounds = pane
@@ -368,20 +374,39 @@ export function useNodeDiffPreview(
   }, [clearCloseTimer, clearOpenTimer, codeModalOpen, enabled, hideNow, index, loadCodePreview, resolveTarget, scheduleHide]);
 
   const onNodeMouseEnter = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
-    if (trigger === "hover") {
-      activatePreview(event, flowNode, true);
+    const target = event.currentTarget as HTMLElement;
+    hoveredNode.current = { target, node: flowNode };
+    if (modifier.sync(event)) {
+      activatePreview(target, flowNode, true);
+    } else {
+      clearOpenTimer();
     }
-  }, [activatePreview, trigger]);
-  const onNodeClick = useCallback((event: ReactMouseEvent, flowNode: FlowNode) => {
-    if (trigger === "click") {
-      activatePreview(event, flowNode, false);
-    }
-  }, [activatePreview, trigger]);
+  }, [activatePreview, clearOpenTimer, modifier]);
   const onPointerLeave = useCallback(() => {
-    if (trigger === "hover") {
-      scheduleHide();
+    hoveredNode.current = null;
+    scheduleHide();
+  }, [scheduleHide]);
+
+  useEffect(() => {
+    if (!modifier.pressed) {
+      clearOpenTimer();
+      if (activeId.current !== null) {
+        const composerOwnsPreview = preview !== null
+          && composerPath === preview.node.location.file;
+        if (composerEngagedRef.current || composerOwnsPreview) {
+          closeAfterComposerRef.current = true;
+        } else {
+          requestHideRef.current();
+        }
+      }
+      return;
     }
-  }, [scheduleHide, trigger]);
+    closeAfterComposerRef.current = false;
+    const hovered = hoveredNode.current;
+    if (hovered !== null) {
+      activatePreview(hovered.target, hovered.node, true);
+    }
+  }, [activatePreview, clearOpenTimer, composerPath, modifier.pressed, preview?.node.location.file]);
 
   const layer = preview && !codeModalOpen && typeof document !== "undefined"
     ? createPortal(
@@ -397,7 +422,6 @@ export function useNodeDiffPreview(
     : null;
 
   return {
-    onNodeClick,
     onNodeMouseEnter,
     onNodeMouseMove: onNodeMouseEnter,
     onNodeMouseLeave: onPointerLeave,

@@ -1,6 +1,6 @@
 /**
  * Browser contract for a trustworthy code diff. Four real local PR refs travel through the same
- * GitHub proxy, smart-HTTP clone, merge-base extraction, hover preview, and </> modal as production.
+ * GitHub proxy, smart-HTTP clone, merge-base extraction, modifier-hover preview, and </> modal as production.
  * Every assertion is scoped to one exact file path. The rendered rows must independently equal
  * both that file's GitHub-style U3 patch and a raw `git diff -U0` merge-base oracle.
  */
@@ -44,6 +44,7 @@ const REPO_ROOT = fileURLToPath(new URL("../../../", import.meta.url));
 const WEB_UI = fileURLToPath(new URL("../web-ui/index.html", import.meta.url));
 const nativeFetch = globalThis.fetch.bind(globalThis);
 const HAS_CHROMIUM = chromiumInstalled();
+const PRIMARY_MODIFIER = process.platform === "darwin" ? "Meta" : "Control";
 
 if (process.env.CI && !HAS_CHROMIUM) {
   throw new Error("canonical diff parity requires Chromium in CI; run the workflow's Playwright install step");
@@ -255,6 +256,7 @@ async function assertPrDiff(context: BrowserContext, pr: DiffParityPr, spec: Dif
   const targetNode = fileNodeFor(reviewSurface, pr.targetPath);
   await targetNode.waitFor({ state: "visible", timeout: 60_000 });
   await waitForGraphViewportToSettle(reviewSurface);
+  await assertPlainNodePreviewGesturesInert(page, reviewSurface, targetNode);
   if (spec.removedFile) {
     await expectDeletedRing(targetNode, `PR #${pr.number} removed file`);
   }
@@ -341,13 +343,11 @@ async function assertTextualFileDiff(
   const fileNode = fileNodeFor(reviewSurface, path);
   await fileNode.waitFor({ state: "visible", timeout: 60_000 });
 
-  // Aim at the file frame's title strip rather than its expanded child cards. The hover card then
+  // Aim at the file frame's title strip rather than its expanded child cards. The modifier-hover card then
   // represents this exact file, matching both same-path GitHub and raw Git oracles without filtering.
   // Move away first because a newly laid-out node can otherwise appear under a stationary pointer.
-  await page.mouse.move(0, 0);
-  await fileNode.hover({ position: { x: 8, y: 8 } });
   const preview = page.getByRole("dialog", { name: /^Code preview for / });
-  await preview.waitFor();
+  await openNodePreviewWithModifier(page, fileNode, preview, { x: 8, y: 8 });
   await preview.getByText(path, { exact: true }).waitFor();
   await waitForDiffRows(preview, file.oracleRows.length);
   const previewRows = await renderedDiffRows(preview);
@@ -365,6 +365,7 @@ async function assertTextualFileDiff(
     await assertContextFold(preview, pr);
     expectSameFileParity(await renderedDiffRows(preview), pr, file, "expanded hover preview");
   }
+  await closeNodePreviewByReleasingModifier(page, preview);
 
   // Dispatch directly so the fixed hover portal cannot intercept a coordinate click. The modal's
   // source and diff rows must be the same semantic document, not a separately reconstructed view.
@@ -408,13 +409,12 @@ async function assertMetadataOnlyRename(
   await node.waitFor({ state: "visible", timeout: 60_000 });
   const notice = `Renamed from ${renamed.previousPath}; Git reports no textual diff.`;
 
-  await page.mouse.move(0, 0);
-  await node.hover({ position: { x: 8, y: 8 } });
   const preview = page.getByRole("dialog", { name: /^Code preview for / });
-  await preview.waitFor();
+  await openNodePreviewWithModifier(page, node, preview, { x: 8, y: 8 });
   await preview.getByText(renamed.path, { exact: true }).waitFor();
   await preview.getByText(notice, { exact: true }).waitFor();
   expect(await preview.locator("tr[data-diff-origin]").count()).toBe(0);
+  await closeNodePreviewByReleasingModifier(page, preview);
 
   await node.getByRole("button", { name: "View source" }).dispatchEvent("click");
   const modal = page.getByRole("dialog", { name: "Source code" });
@@ -457,10 +457,8 @@ async function assertDeletedNodeDiff(
     `PR #${pr.number} GitHub patch and git oracle select different deleted-node rows for ${pr.targetPath}`,
   ).toEqual(expectedRows);
 
-  await page.mouse.move(0, 0);
-  await node.hover();
   const preview = page.getByRole("dialog", { name: `Code preview for ${deleted.displayName}` });
-  await preview.waitFor();
+  await openNodePreviewWithModifier(page, node, preview);
   await waitForDiffRows(preview, expectedRows.length);
   const previewRows = await renderedDiffRows(preview);
   await expectHeaderCounts(preview, 0, expectedRows.length);
@@ -468,6 +466,7 @@ async function assertDeletedNodeDiff(
     previewRows,
     `PR #${pr.number} deleted ${deleted.displayName} hover differs from same-file oracle ${pr.targetPath}`,
   ).toEqual(expectedRows);
+  await closeNodePreviewByReleasingModifier(page, preview);
 
   await node.getByRole("button", { name: "View source" }).dispatchEvent("click");
   const modal = page.getByRole("dialog", { name: "Source code" });
@@ -632,6 +631,37 @@ async function waitForGraphViewportToSettle(surface: Locator): Promise<void> {
     previous = current;
     return stableSamples;
   }, { interval: 100, timeout: 5_000 }).toBeGreaterThanOrEqual(3);
+}
+
+async function assertPlainNodePreviewGesturesInert(page: Page, surface: Locator, node: Locator): Promise<void> {
+  const preview = page.getByRole("dialog", { name: /^Code preview for / });
+  await page.mouse.move(0, 0);
+  await node.hover({ position: { x: 8, y: 8 } });
+  await page.waitForTimeout(350);
+  expect(await preview.count()).toBe(0);
+  await nodeHeader(node).click();
+  await page.waitForTimeout(250);
+  expect(await preview.count()).toBe(0);
+  // The ordinary header click still performs its normal selection. Clear it so appearance oracles
+  // below continue to inspect review-change paint rather than the selected-node ring.
+  await surface.locator(".react-flow__pane").dispatchEvent("click");
+}
+
+async function openNodePreviewWithModifier(
+  page: Page,
+  node: Locator,
+  preview: Locator,
+  position?: { x: number; y: number },
+): Promise<void> {
+  await page.mouse.move(0, 0);
+  await page.keyboard.down(PRIMARY_MODIFIER);
+  await node.hover(position === undefined ? undefined : { position });
+  await preview.waitFor();
+}
+
+async function closeNodePreviewByReleasingModifier(page: Page, preview: Locator): Promise<void> {
+  await page.keyboard.up(PRIMARY_MODIFIER);
+  await preview.waitFor({ state: "detached" });
 }
 
 async function expectHeaderCounts(host: Locator, additions: number, deletions: number): Promise<void> {

@@ -311,8 +311,8 @@ export function CanvasActionBar({
         <CanvasActionButton
           ariaLabel="Code previews"
           title={reviewCodePreviewEnabled
-            ? "Disable automatic code previews; use the node header View source button instead"
-            : "Enable automatic code previews using the saved hover or click behavior"}
+            ? "Disable Control/Command-hover code previews; use the node header View source button instead"
+            : "Enable code previews while holding Control or Command over a node"}
           icon={<CodePreviewVisibilityIcon size={18} />}
           onClick={toggleReviewCodePreview}
           pressed={reviewCodePreviewEnabled}
@@ -357,8 +357,8 @@ export function CanvasActionBar({
     <CanvasActionButton
       ariaLabel="Code previews"
       title={reviewCodePreviewEnabled
-        ? "Disable automatic code previews; use the node header View source button instead"
-        : "Enable automatic code previews using the saved hover or click behavior"}
+        ? "Disable Control/Command-hover code previews; use the node header View source button instead"
+        : "Enable code previews while holding Control or Command over a node"}
       icon={<CodePreviewVisibilityIcon size={18} />}
       onClick={toggleReviewCodePreview}
       pressed={reviewCodePreviewEnabled}
