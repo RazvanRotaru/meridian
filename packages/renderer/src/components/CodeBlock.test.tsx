@@ -112,31 +112,41 @@ describe("CodeBlock symbol selection", () => {
 describe("CodeBlock review line ranges", () => {
   it("ends drag selection on document-level pointer release and cleans up both listeners", () => {
     const listeners = new Map<string, EventListener>();
+    const captureByType = new Map<string, boolean>();
     const ownerDocument = {
-      addEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      addEventListener: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | AddEventListenerOptions,
+      ) => {
         listeners.set(type, listener as EventListener);
+        captureByType.set(type, options === true || (typeof options === "object" && options.capture === true));
       },
-      removeEventListener: (type: string, listener: EventListenerOrEventListenerObject) => {
+      removeEventListener: (
+        type: string,
+        listener: EventListenerOrEventListenerObject,
+        options?: boolean | EventListenerOptions,
+      ) => {
+        expect(options === true || (typeof options === "object" && options.capture === true)).toBe(true);
         if (listeners.get(type) === listener) listeners.delete(type);
       },
     };
-    let ended = 0;
+    const endings: boolean[] = [];
 
-    const unsubscribe = subscribeToCodeReviewDragEnd(ownerDocument, () => { ended += 1; });
+    const unsubscribe = subscribeToCodeReviewDragEnd(ownerDocument, (cancelled) => { endings.push(cancelled); });
     listeners.get("pointerup")?.(new Event("pointerup"));
     listeners.get("pointercancel")?.(new Event("pointercancel"));
 
-    expect(ended).toBe(2);
+    expect(endings).toEqual([false, true]);
+    expect(captureByType).toEqual(new Map([["pointerup", true], ["pointercancel", true]]));
     unsubscribe();
     expect(listeners.size).toBe(0);
   });
 
-  it("normalizes upward selections and stops before a hidden, folded, or un-commentable row", () => {
+  it("keeps GitHub range selection downward and stops before a hidden, folded, or un-commentable row", () => {
     const commentable = new Set([40, 41, 42, 43, 45]);
 
     expect(codeReviewRangeTarget(43, 40, "RIGHT", commentable)).toEqual({
-      startLine: 40,
-      startSide: "RIGHT",
       line: 43,
       side: "RIGHT",
     });
@@ -185,7 +195,8 @@ describe("CodeBlock review line ranges", () => {
     expect(html).toContain('aria-label="Comment on lines 40–42"');
     expect(html).toContain('placeholder="Comment on lines 40–42…"');
     expect(html).toContain("Shift-select another line, or drag across line numbers, to choose a range");
-    expect(html).toContain("Activate the selected final line again to open its comment composer");
+    expect(html).toContain("Activate the + button to comment, or drag that button across lines to open a range comment");
+    expect(html).toContain('data-review-comment-trigger="42"');
     expect(html).toMatch(/data-review-line-selector="42"[^>]*aria-describedby="[^"]+"[^>]*aria-pressed="true"/);
     expect(html).toContain('data-review-line-selector="42" data-review-line-selector-side="RIGHT"');
     expect(html.indexOf('data-source-line="42"')).toBeLessThan(html.indexOf('data-line-comment-composer="42"'));
@@ -460,6 +471,8 @@ describe("CodeBlock canonical diff rows", () => {
     expect(headRow).toContain('data-review-comment-side="RIGHT"');
     expect(html).toContain('aria-label="Comment on deleted line 10"');
     expect(html).toContain('aria-label="Comment on line 10"');
+    expect(html).toContain('data-review-comment-trigger="10" data-review-range-line="10" data-review-range-side="LEFT"');
+    expect(html).not.toContain("Click to comment");
     expect(html).toContain('data-line-comment-composer="10" data-line-comment-composer-side="LEFT"');
     expect(html).toContain('placeholder="Comment on deleted line 10…"');
     expect(html).toContain("Unfinished deleted-line thought");
@@ -617,9 +630,12 @@ describe("CodeBlock review comments", () => {
     expect(html.match(/data-review-comment-line=/g)).toHaveLength(1);
     expect(html).toContain('data-review-comment-line="41"');
     expect(html).toContain('data-source-code-cell="41"');
-    expect(html).toContain('title="Click to comment on line 41"');
+    expect(html).not.toContain("Click to comment");
     expect(html).toContain('aria-label="Comment on line 41"');
     expect(html).toContain('class="mrd-line-comment-button"');
+    expect(html).toContain("touch-action:none");
+    expect(html).toContain('data-review-comment-trigger="41"');
+    expect(html).toContain('data-review-range-line="41" data-review-range-side="RIGHT"');
     expect(html).toContain("tr[data-review-comment-line] .mrd-line-comment-button");
     expect(html).toContain("opacity: 0");
     expect(html).toContain("pointer-events: none");
