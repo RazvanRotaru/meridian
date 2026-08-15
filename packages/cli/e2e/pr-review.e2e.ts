@@ -605,12 +605,14 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     expect(await lineActionStyle(previewLineAction)).toEqual({ opacity: "0", pointerEvents: "none" });
     await previewSourceRow.hover();
     await expect.poll(() => lineActionStyle(previewLineAction)).toEqual({ opacity: "1", pointerEvents: "auto" });
-    // Entering the card makes it sticky, so release the chord before using the ordinary code-cell
-    // interaction. Modified code-cell clicks intentionally preserve native selection semantics.
+    // Entering the card makes it sticky, so release the chord before using its review controls.
+    // Ordinary code clicks preserve source interaction; only the dedicated + opens a composer.
     await page.keyboard.up(PRIMARY_MODIFIER);
     expect(await loyaltyPreview.isVisible()).toBe(true);
     await previewSourceRow.locator(`td[data-source-code-cell="${firstInlineLine}"]`).click();
     const previewDraft = loyaltyPreview.getByPlaceholder(`Comment on line ${firstInlineLine}…`);
+    expect(await previewDraft.count()).toBe(0);
+    await previewLineAction.click();
     await previewDraft.waitFor();
     expect(await previewDraft.evaluate((element) => element === document.activeElement)).toBe(true);
     expect(await loyaltyPreview.isVisible()).toBe(true);
@@ -1112,26 +1114,72 @@ describe.skipIf(!chromiumInstalled())("pull-request review (headless chromium)",
     await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').waitFor();
     expect(await loyaltySourceDialog.locator('[data-review-comment-reply="true"]').count()).toBe(1);
 
-    // Add the second draft with GitHub's range gesture: select one eligible line number, Shift-click
-    // its contiguous neighbour, then use the terminal +. An attempted window close first exposes
-    // the shared Keep/Discard choice; keeping resumes the exact ranged draft before Add.
+    // Add the second draft with GitHub's direct range gesture: press the first +, drag to the final
+    // row's +, and release to open the ranged composer. An attempted window close first exposes the
+    // shared Keep/Discard choice; keeping resumes the exact ranged draft before Add.
     const secondRangeStartRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondRangeStartLine}"]`);
     const secondSourceRow = loyaltySourceDialog.locator(`tr[data-source-line="${secondInlineLine}"]`);
     await secondRangeStartRow.scrollIntoViewIfNeeded();
-    await secondRangeStartRow.getByRole("button", {
+
+    // Keep GitHub's alternate line-number route, but prove that selecting rows alone cannot open a
+    // comment. The selected terminal + remains the only action that commits that range.
+    const rangeStartSelector = secondRangeStartRow.getByRole("button", {
       name: `Select line ${secondRangeStartLine} for a review comment`,
       exact: true,
-    }).click();
-    await secondSourceRow.getByRole("button", {
+    });
+    const rangeEndSelector = secondSourceRow.getByRole("button", {
       name: `Select line ${secondInlineLine} for a review comment`,
       exact: true,
-    }).click({ modifiers: ["Shift"] });
-    expect(await secondRangeStartRow.getAttribute("data-review-comment-range-selected")).toBe("true");
-    expect(await secondSourceRow.getAttribute("data-review-comment-range-terminal")).toBe("true");
+    });
+    await rangeStartSelector.press("Enter");
+    await rangeStartSelector.press("Enter");
+    expect(await loyaltySourceDialog.getByPlaceholder(`Comment on line ${secondRangeStartLine}…`).count()).toBe(0);
+    await rangeStartSelector.click();
+    await rangeEndSelector.click({ modifiers: ["Shift"] });
+    const selectedRangeDraft = loyaltySourceDialog.getByPlaceholder(
+      `Comment on lines ${secondRangeStartLine}–${secondInlineLine}…`,
+    );
+    expect(await selectedRangeDraft.count()).toBe(0);
     await secondSourceRow.getByRole("button", {
       name: `Comment on lines ${secondRangeStartLine}–${secondInlineLine}`,
       exact: true,
     }).click();
+    await selectedRangeDraft.waitFor();
+    await loyaltySourceDialog
+      .locator(`[data-line-comment-composer="${secondInlineLine}"]`)
+      .getByRole("button", { name: "Cancel", exact: true })
+      .click();
+    await selectedRangeDraft.waitFor({ state: "detached" });
+
+    const rangeStartAction = secondRangeStartRow.getByRole("button", {
+      name: `Comment on line ${secondRangeStartLine}`,
+      exact: true,
+    });
+    const rangeEndAction = secondSourceRow.getByRole("button", {
+      name: `Comment on line ${secondInlineLine}`,
+      exact: true,
+    });
+    const [rangeStartBox, rangeEndBox] = await Promise.all([
+      rangeStartAction.boundingBox(),
+      rangeEndAction.boundingBox(),
+    ]);
+    if (rangeStartBox === null || rangeEndBox === null) {
+      throw new Error("range comment + controls are not measurable");
+    }
+    await page.mouse.move(
+      rangeStartBox.x + rangeStartBox.width / 2,
+      rangeStartBox.y + rangeStartBox.height / 2,
+    );
+    await expect.poll(() => lineActionStyle(rangeStartAction)).toEqual({ opacity: "1", pointerEvents: "auto" });
+    await page.mouse.down();
+    await page.mouse.move(
+      rangeEndBox.x + rangeEndBox.width / 2,
+      rangeEndBox.y + rangeEndBox.height / 2,
+      { steps: 4 },
+    );
+    await page.mouse.up();
+    expect(await secondRangeStartRow.getAttribute("data-review-comment-range-selected")).toBe("true");
+    expect(await secondSourceRow.getAttribute("data-review-comment-range-terminal")).toBe("true");
     const secondDraft = loyaltySourceDialog.getByPlaceholder(
       `Comment on lines ${secondRangeStartLine}–${secondInlineLine}…`,
     );
