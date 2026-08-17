@@ -2,12 +2,24 @@ import type { Order, OrderLine, OrderRequest } from "../domain/order.js";
 
 const TAX_RATE = 0.2;
 
+/** Loyalty-tier discount rate: gold customers get more off than silver. */
+export function loyaltyDiscount(tier: string): number {
+  if (tier === "gold") return 0.1;
+  if (tier === "silver") return 0.05;
+  return 0;
+}
+
 /** Turns a raw request into the money side of an order: subtotal, discount, tax, total. */
 export class PricingService {
   /** Compute every monetary field for an order request. */
-  price(request: OrderRequest): Pick<Order, "subtotalCents" | "discountCents" | "taxCents" | "totalCents"> {
+  price(
+    request: OrderRequest,
+    customerTier?: string,
+  ): Pick<Order, "subtotalCents" | "discountCents" | "taxCents" | "totalCents"> {
     const subtotalCents = this.subtotal(request.lines);
-    const discountCents = this.discountFor(subtotalCents, request.discountCode);
+    const codeDiscountCents = this.discountFor(subtotalCents, request.discountCode);
+    const loyaltyDiscountCents = Math.round(subtotalCents * loyaltyDiscount(customerTier ?? ""));
+    const discountCents = codeDiscountCents + loyaltyDiscountCents;
     const taxedBase = subtotalCents - discountCents;
     const taxCents = this.tax(taxedBase);
     return {

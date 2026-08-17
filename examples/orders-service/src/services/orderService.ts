@@ -15,9 +15,9 @@ export class OrderService {
   ) {}
 
   /** Validate, price, store, and confirm a new order. */
-  placeOrder(request: OrderRequest): Order {
+  placeOrder(request: OrderRequest, customerTier?: string): Order {
     validateOrderRequest(request);
-    const money = this.pricing.price(request);
+    const money = this.pricing.price(request, customerTier);
     const order = this.assemble(request, money);
     this.repository.save(order);
     this.email.sendOrderConfirmation(order);
