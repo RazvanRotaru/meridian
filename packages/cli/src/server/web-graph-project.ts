@@ -164,15 +164,29 @@ export interface InitialProjectionCacheResult {
  * provisional PR publisher. The graph id is server-owned provenance, while source and compact
  * descriptor bounds prevent an arbitrary registration from receiving the stricter child heap.
  */
+/**
+ * Identity, not size: is this exactly the immutable provisional PR artifact the server generated?
+ * A pull request of any size answers yes, so this is what routes work into the provisional
+ * source-backed lane. Whether that work also fits the stricter lightweight child heap is a
+ * separate question, answered by `boundedProvisionalGraphWorkerHeapMb`. Keeping the two apart is
+ * the point: a 500-file pull request is still a provisional PR graph, it just needs a normal heap.
+ */
+export function isProvisionalPrGraphInput(
+  descriptor: WebGraphDescriptor,
+  input: GraphProjectWorkerArtifactInput,
+): boolean {
+  return descriptor.id === input.graphId
+    && descriptor.byteDigest === input.sha256
+    && PROVISIONAL_GRAPH_ID.test(descriptor.id)
+    && descriptor.source.kind === "github";
+}
+
 export function boundedProvisionalGraphWorkerHeapMb(
   descriptor: WebGraphDescriptor,
   input: GraphProjectWorkerArtifactInput,
 ): number | null {
   if (
-    descriptor.id !== input.graphId
-    || descriptor.byteDigest !== input.sha256
-    || !PROVISIONAL_GRAPH_ID.test(descriptor.id)
-    || descriptor.source.kind !== "github"
+    !isProvisionalPrGraphInput(descriptor, input)
     || input.bytes > MAX_LIGHTWEIGHT_GRAPH_INPUT_BYTES
     || descriptor.summary.nodeCount > MAX_LIGHTWEIGHT_GRAPH_INPUT_NODES
     || descriptor.summary.edgeCount > MAX_LIGHTWEIGHT_GRAPH_INPUT_EDGES
@@ -1296,10 +1310,13 @@ async function ensureProvisionalSourceIndexWork(
   signal: AbortSignal,
 ): Promise<ProvisionalSourceIndexHandles> {
   const input = artifactInput(graphId, graph);
-  const workerHeapMb = boundedProvisionalGraphWorkerHeapMb(graph.descriptor, input);
-  if (workerHeapMb === null) {
+  if (!isProvisionalPrGraphInput(graph.descriptor, input)) {
     throw new WebError(422, "source indexing requires a bounded provisional PR graph");
   }
+  // Oversize is a heap answer, not a refusal. A pull request past the lightweight node/edge/byte
+  // bounds still needs its source index; it just cannot promise the stricter child heap, so it
+  // falls back to ordinary analysis admission the way the projection and symbol lanes already do.
+  const workerHeapMb = boundedProvisionalGraphWorkerHeapMb(graph.descriptor, input);
   const topologyKey = sourceTopologyCacheKey(graph);
   const cached = acquireSourceIndexHandles(ctx, key, topologyKey);
   if (cached !== null) return cached;
@@ -1331,10 +1348,10 @@ async function ensureProvisionalSourceIndexWork(
         };
         const runWorker = (workerSignal: AbortSignal) => ctx.graphProject(workerRequest, {
           signal: workerSignal,
-          workerHeapMb,
+          ...(workerHeapMb === null ? {} : { workerHeapMb }),
         });
-        // This scan has a small child heap but still uses ordinary analysis admission. The serial
-        // graph fence prevents it from overlapping partial extraction/projection; equal-key
+        // This scan usually has a small child heap but still uses ordinary analysis admission. The
+        // serial graph fence prevents it from overlapping partial extraction/projection; equal-key
         // interactive promotion lets a waiting expansion run the already-started scan to completion.
         const result = await runSpeculativeGraphWorker(
           ctx,
@@ -1380,7 +1397,9 @@ async function ensureSymbols(
   key: string,
   signal: AbortSignal,
 ): Promise<void> {
-  if (boundedProvisionalGraphWorkerHeapMb(graph.descriptor, artifactInput(graphId, graph)) !== null) {
+  // Route on what the graph is, not on how big it is. Asking the heap question here sent large
+  // pull requests down the canonical lane while their projection took the provisional one.
+  if (isProvisionalPrGraphInput(graph.descriptor, artifactInput(graphId, graph))) {
     const handles = await ensureProvisionalSourceIndexWork(ctx, graphId, graph, key, signal);
     handles.symbols.release();
     handles.topology.release();

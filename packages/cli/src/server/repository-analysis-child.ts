@@ -33,7 +33,10 @@ import {
   type VerifiedFileArtifactMaterial,
   type WebGraphArtifactSummary,
 } from "./web-graph-store";
-import { repositoryAnalysisWorkerHeapArg } from "./repository-analysis-memory";
+import {
+  repositoryAnalysisWorkerHeapArg,
+  repositoryAnalysisWorkerHeapMb,
+} from "./repository-analysis-memory";
 import {
   benchmarkWorkerOwnerArgs,
   registerBenchmarkOwnedChild,
@@ -54,6 +57,9 @@ const DEFAULT_PROCESS_TREE_KILL_WAIT_MS = 5_000;
 const PROCESS_TREE_POLL_MS = 25;
 const DEFAULT_ANALYSIS_TIMEOUT_MS = 20 * 60_000;
 const WORKER_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+// V8 prints this fixed phrase before it aborts the process on heap exhaustion. It carries no
+// path, argument or credential, which is why it is the only stderr content ever read.
+const V8_HEAP_EXHAUSTION = "JavaScript heap out of memory";
 
 export interface RepositoryAnalysisBranchVariantResult {
   material: VerifiedFileArtifactMaterial;
@@ -181,8 +187,9 @@ function runRepositoryWorkerProcess(
     : sourceMode
       ? sourceWorkerExecArgv()
       : [];
+  const workerHeapMb = options.workerHeapMb ?? repositoryAnalysisWorkerHeapMb();
   // Keep this last so test/dev argv cannot enlarge the reserved heap.
-  execArgv.push(repositoryAnalysisWorkerHeapArg(options.workerHeapMb));
+  execArgv.push(repositoryAnalysisWorkerHeapArg(workerHeapMb));
 
   return new Promise<RepositoryAnalysisWorkerFileResult>((resolve, reject) => {
     let spawned: ReturnType<typeof fork> | null = null;
@@ -223,6 +230,7 @@ function runRepositoryWorkerProcess(
     let terminating = false;
     let settled = false;
     let stderrTail: Buffer = Buffer.alloc(0);
+    let heapExhausted = false;
     const signal = options.signal;
 
     const terminate = () => {
@@ -268,6 +276,10 @@ function runRepositoryWorkerProcess(
 
     child.stderr?.on("data", (chunk: Buffer | string) => {
       stderrTail = appendCappedTail(stderrTail, Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+      // Worker stderr stays unreportable — it can carry the clone path and the access token. Only
+      // this one fixed V8 phrase is read out of it, as a boolean, so an abrupt SIGABRT can be
+      // named instead of being reported as an anonymous transport failure.
+      heapExhausted ||= stderrTail.includes(V8_HEAP_EXHAUSTION);
     });
     child.on("message", (value: unknown) => {
       if (settled || terminalReason !== undefined) return;
@@ -349,6 +361,14 @@ function runRepositoryWorkerProcess(
         }
         const cleanResponseExit = code === 0 && closeSignal === null;
         if ((!cleanResponseExit && !windowsResponseCleanup) || response === undefined) {
+          if (heapExhausted) {
+            rejectAfterCleanup(new CliError(
+              EXIT.extractor,
+              `repository analysis ran out of memory in a ${workerHeapMb} MiB worker; `
+                + "raise MERIDIAN_REPOSITORY_ANALYSIS_WORKER_HEAP_MB and retry",
+            ));
+            return;
+          }
           const exitSummary = closeSignal === null
             ? `exit ${code ?? "unknown"}`
             : `signal ${closeSignal}`;
