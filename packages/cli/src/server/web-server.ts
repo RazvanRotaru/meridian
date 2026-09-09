@@ -727,13 +727,30 @@ function sendError(response: ServerResponse, error: unknown): void {
     return;
   }
   if (error instanceof SyntheticExecutionError || error instanceof WebError) {
+    reportApiError(error.status, error.message);
     sendJson(response, error.status, { error: error.message });
     return;
   }
   if (error instanceof CliError) {
+    reportApiError(422, error.message);
     sendJson(response, 422, { error: error.message });
     return;
   }
   // Never echo an unknown error's text — it could carry a path or secret we did not vet.
+  reportApiError(500, unvettedErrorLabel(error));
   sendJson(response, 500, { error: "internal error while generating the blueprint" });
+}
+
+/**
+ * Name the rejection the browser just received. The renderer wraps a failed stage in its own
+ * summary ("the partial PR graph projection is unavailable"), so without this the operator sees a
+ * red step and no reason. Only text already sent to that browser is logged; an unvetted error
+ * contributes its type alone, never its message.
+ */
+function reportApiError(status: number, detail: string): void {
+  console.error(`[meridian] api ${status}: ${detail}`);
+}
+
+function unvettedErrorLabel(error: unknown): string {
+  return error instanceof Error ? `unhandled ${error.name}` : "unhandled non-error rejection";
 }

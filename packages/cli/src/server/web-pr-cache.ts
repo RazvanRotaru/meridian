@@ -837,10 +837,11 @@ async function createCachedGraph(
 // outer ring is the initial ghost frontier. Deeper semantic rings are independent partial slices
 // produced only by post-navigation lookahead or an explicit expansion/search action.
 const INITIAL_GRAPH_EXTRACTION_DEPTH = 1;
-// Bounded extraction must not inherit the canonical worker heap reservation. Two GiB handles
-// large monorepo depth-one slices while remaining one quarter of the ordinary 8 GiB reservation;
-// exhaustion still fails the progressive request safely and retryably.
-const INITIAL_GRAPH_WORKER_HEAP_MB = 2_048;
+// Bounded extraction uses the service's ordinary worker reservation rather than narrowing itself.
+// A depth-one slice is smaller than a whole repository, but "smaller" is not "small": a 500-file
+// pull request in a large monorepo exceeded a quarter-sized 2 GiB child and V8 aborts on heap
+// exhaustion instead of failing retryably. The pair below is sequential and admission already
+// reserves a full slot per analysis, so spending that whole slot over-commits nothing.
 
 /**
  * Build the bounded HEAD side first so its exact manifest can seed the merge-base side, then
@@ -885,7 +886,6 @@ async function extractAndPublishProvisionalPair(inputs: {
       },
       {
         artifactOutputPath: headPath,
-        workerHeapMb: INITIAL_GRAPH_WORKER_HEAP_MB,
         token: inputs.inputs.token,
         signal: inputs.signal,
         reviewFingerprints: { mode: "changed" },
@@ -913,7 +913,6 @@ async function extractAndPublishProvisionalPair(inputs: {
       },
       {
         artifactOutputPath: comparisonPath,
-        workerHeapMb: INITIAL_GRAPH_WORKER_HEAP_MB,
         token: inputs.inputs.token,
         signal: inputs.signal,
         reviewFingerprints: { mode: "files", files: comparisonFiles },

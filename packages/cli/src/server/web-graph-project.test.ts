@@ -9,6 +9,7 @@ import { OperationCancelledError } from "./web-cancellation";
 import {
   beginForegroundGraphWork,
   boundedProvisionalGraphWorkerHeapMb,
+  isProvisionalPrGraphInput,
   GRAPH_PROJECTION_CACHE_HEADER,
   GRAPH_PROJECTION_KEY_HEADER,
   GRAPH_PROJECTION_READY_HEADER,
@@ -488,6 +489,27 @@ describe("web graph projection route", () => {
       ...descriptor,
       summary: { ...descriptor.summary, edgeCount: 100_001 },
     }, input)).toBeNull();
+  });
+
+  it("keeps an oversize pull request a provisional graph that merely needs an ordinary heap", () => {
+    const descriptor = provisionalDescriptor();
+    const input = {
+      graphId: descriptor.id,
+      path: "/tmp/artifact.json",
+      bytes: 64 * 1024 * 1024,
+      sha256: descriptor.byteDigest,
+    };
+    const oversize = {
+      ...descriptor,
+      summary: { ...descriptor.summary, nodeCount: 22_772, edgeCount: 81_706 },
+    };
+    // Too big for the stricter lightweight child heap...
+    expect(boundedProvisionalGraphWorkerHeapMb(oversize, input)).toBeNull();
+    // ...but still exactly the server-generated provisional artifact, so it is indexed rather
+    // than rejected. Only a genuine identity mismatch leaves the provisional lane.
+    expect(isProvisionalPrGraphInput(oversize, input)).toBe(true);
+    expect(isProvisionalPrGraphInput({ ...oversize, source: { kind: "path" } }, input)).toBe(false);
+    expect(isProvisionalPrGraphInput(oversize, { ...input, sha256: "0".repeat(64) })).toBe(false);
   });
 
   it("queues a second warm before global admission so foreground analysis keeps capacity two", async () => {

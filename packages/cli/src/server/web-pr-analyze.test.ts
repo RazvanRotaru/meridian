@@ -382,9 +382,11 @@ describe("handlePrAnalyze", () => {
     expect(vi.mocked(analyzeRepository).mock.calls.every(([request]) => (
       request.initialGraph !== undefined
     ))).toBe(true);
+    // Bounded extraction states no heap of its own, so both children inherit the service's
+    // reserved worker heap instead of a narrower quarter-slot that aborts on large monorepos.
     expect(repositoryAnalysis.mock.calls.map(([, options]) => options.workerHeapMb)).toEqual([
-      2_048,
-      2_048,
+      undefined,
+      undefined,
     ]);
   });
 
